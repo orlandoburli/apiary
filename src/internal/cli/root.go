@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/version"
 )
 
@@ -16,6 +17,13 @@ var rootCmd = &cobra.Command{
 	Short:   "Task-driven agent orchestration",
 	Long:    "Apiary routes tasks from project management tools to AI agent runners based on declarative rules.",
 	Version: version.Version,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		v, _ := cmd.Flags().GetBool("verbose")
+		if !v {
+			v, _ = cmd.Root().PersistentFlags().GetBool("verbose")
+		}
+		aplog.Enable(v)
+	},
 }
 
 func Execute() {
@@ -28,6 +36,7 @@ func init() {
 	rootCmd.SetVersionTemplate("apiary {{.Version}}\n")
 
 	rootCmd.PersistentFlags().StringVar(&configFile, "config", "apiary.yaml", "config file path")
+	rootCmd.PersistentFlags().Bool("verbose", false, "enable verbose (debug) output")
 
 	rootCmd.AddCommand(
 		newRunCmd(),

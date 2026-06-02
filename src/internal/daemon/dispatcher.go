@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/config"
+	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/router"
 	"github.com/orlandoburli/apiary/internal/runner"
@@ -132,11 +132,13 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 			continue
 		}
 
+		aplog.Debug("polling source %s (once)", sc.ID)
 		cells, err := adapter.Poll(ctx, time.Time{})
 		if err != nil {
-			log.Printf("[apiary] source %s: poll error: %v", sc.ID, err)
+			aplog.Error("source %s: poll error: %v", sc.ID, err)
 			continue
 		}
+		aplog.Info("source %s: found %d cell(s)", sc.ID, len(cells))
 		d.recordPoll(sc.ID, len(cells))
 
 		for _, cell := range cells {
@@ -254,7 +256,7 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		defer wg.Done()
 		defer os.Remove(path)
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			log.Printf("[apiary] IPC server error: %v", err)
+			aplog.Error("IPC server error: %v", err)
 		}
 	}()
 
@@ -275,7 +277,7 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 func (d *Dispatcher) pollLoop(ctx context.Context, sc config.SourceConfig, adapter source.Adapter) {
 	interval, err := sc.ParsedPollInterval()
 	if err != nil {
-		log.Printf("[apiary] source %s: invalid poll_interval: %v — using 60s", sc.ID, err)
+		aplog.Error("source %s: invalid poll_interval: %v — using 60s", sc.ID, err)
 		interval = 60 * time.Second
 	}
 
@@ -298,25 +300,30 @@ func (d *Dispatcher) pollLoop(ctx context.Context, sc config.SourceConfig, adapt
 }
 
 func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter source.Adapter, since time.Time) {
+	aplog.Debug("polling source %s (since %s)", sc.ID, since.Format(time.RFC3339))
 	cells, err := adapter.Poll(ctx, since)
 	if err != nil {
-		log.Printf("[apiary] source %s: poll error: %v", sc.ID, err)
+		aplog.Error("source %s: poll error: %v", sc.ID, err)
 		return
 	}
+	aplog.Info("source %s: found %d cell(s)", sc.ID, len(cells))
 	d.recordPoll(sc.ID, len(cells))
 
 	for _, cell := range cells {
 		cell := cell
 		if _, loaded := d.inFlight.LoadOrStore(cell.ID, struct{}{}); loaded {
+			aplog.Debug("cell %s: already in-flight, skipping", cell.ID)
 			continue
 		}
 		match, ok := d.router.Route(cell)
 		if !ok {
+			aplog.Debug("cell %s (%q): no matching route, skipping", cell.ID, cell.Title)
 			d.inFlight.Delete(cell.ID)
 			continue
 		}
 
-		log.Printf("[apiary] dispatching %s (%q) → worker %s", cell.ID, cell.Title, match.Worker.ID)
+		aplog.Info("dispatching cell %s (%q) → worker %s [%s]",
+			cell.ID, cell.Title, match.Worker.ID, match.Worker.Model)
 
 		d.sem <- struct{}{}
 		d.active.Add(1)
@@ -349,13 +356,13 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 
 	if d.cfg.Settings.StateLock {
 		if err := adapter.Acknowledge(ctx, cell, model.AckActionInProgress); err != nil {
-			log.Printf("[apiary] cell %s: acknowledge error: %v", cell.ID, err)
+			aplog.Error("cell %s: acknowledge error: %v", cell.ID, err)
 		}
 	}
 
 	ra, ok := d.runners[wc.ID]
 	if !ok {
-		log.Printf("[apiary] cell %s: runner for worker %q not found", cell.ID, wc.ID)
+		aplog.Error("cell %s: runner for worker %q not found", cell.ID, wc.ID)
 		return model.RunResult{WorkerID: wc.ID, Success: false}
 	}
 
@@ -379,19 +386,19 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 	}
 	result.WorkerID = wc.ID
 
-	log.Printf("[apiary] cell %s: done success=%v duration=%s",
+	aplog.Info("cell %s: done success=%v duration=%s",
 		cell.ID, result.Success, result.Duration.Round(time.Second))
 
 	if d.cfg.Settings.ResultComment {
 		if err := adapter.WriteResult(ctx, cell, result); err != nil {
-			log.Printf("[apiary] cell %s: write result: %v", cell.ID, err)
+			aplog.Error("cell %s: write result: %v", cell.ID, err)
 		}
 	}
 
 	if match.Route.OnComplete.SetState != "" {
 		if ss, ok := adapter.(source.StateSetter); ok {
 			if err := ss.SetState(ctx, cell, match.Route.OnComplete.SetState); err != nil {
-				log.Printf("[apiary] cell %s: set_state: %v", cell.ID, err)
+				aplog.Error("cell %s: set_state: %v", cell.ID, err)
 			}
 		}
 	}
