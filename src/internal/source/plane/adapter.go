@@ -8,6 +8,7 @@ import (
 	"html"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	aplog "github.com/orlandoburli/apiary/internal/log"
@@ -25,21 +26,26 @@ type Adapter struct {
 	workspace string
 	project   string
 
-	// resolved at Connect time
-	stateIDToName   map[string]string // state UUID → name
-	stateNameToID   map[string]string // lowercase name → UUID
-	labelIDToName   map[string]string // label UUID → name
-	labelNameToID   map[string]string // lowercase name → UUID
-	startedStateID  string            // first state in "started" group
+	// lazily loaded on first Poll()
+	metaOnce      sync.Once
+	metaErr       error
+	stateIDToName map[string]string
+	stateNameToID map[string]string
+	labelIDToName map[string]string
+	labelNameToID map[string]string
+	startedStateID string
 
 	// filter config
-	filterStates []string // lowercase state names
-	filterLabels []string // lowercase label names
+	filterStates []string
+	filterLabels []string
 }
 
 func (a *Adapter) ID() string { return "plane" }
 
-func (a *Adapter) Connect(ctx context.Context, cfg map[string]any) error {
+// Connect validates config and creates the HTTP client.
+// Metadata (states, labels) is loaded lazily on first Poll to avoid
+// hitting the rate limit at startup.
+func (a *Adapter) Connect(_ context.Context, cfg map[string]any) error {
 	apiKey, _ := cfg["api_key"].(string)
 	if apiKey == "" {
 		return fmt.Errorf("plane: config.api_key is required")
@@ -59,18 +65,35 @@ func (a *Adapter) Connect(ctx context.Context, cfg map[string]any) error {
 	a.project = project
 	a.client = newClient(baseURL, apiKey)
 
-	aplog.Info("plane: connecting  workspace=%s  project=%s", workspace, project)
-
-	if err := a.loadStates(ctx); err != nil {
-		return err
-	}
-	if err := a.loadLabels(ctx); err != nil {
-		return err
-	}
-
-	aplog.Info("plane: ready  states=%d  labels=%d  started-state=%q",
-		len(a.stateIDToName), len(a.labelIDToName), a.stateIDToName[a.startedStateID])
+	aplog.Info("plane: configured  workspace=%s  project=%s  (metadata loads on first poll)",
+		workspace, project)
 	return nil
+}
+
+// loadMetadata fetches states and labels exactly once.
+// A 500ms pause between the two requests avoids back-to-back rate limit hits.
+func (a *Adapter) loadMetadata(ctx context.Context) error {
+	a.metaOnce.Do(func() {
+		aplog.Info("plane: loading metadata (states + labels)…")
+		if err := a.loadStates(ctx); err != nil {
+			a.metaErr = err
+			return
+		}
+		// brief pause so we don't fire two requests in the same rate-limit window
+		select {
+		case <-ctx.Done():
+			a.metaErr = ctx.Err()
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+		if err := a.loadLabels(ctx); err != nil {
+			a.metaErr = err
+			return
+		}
+		aplog.Info("plane: ready  states=%d  labels=%d  started-state=%q",
+			len(a.stateIDToName), len(a.labelIDToName), a.stateIDToName[a.startedStateID])
+	})
+	return a.metaErr
 }
 
 func (a *Adapter) loadStates(ctx context.Context) error {
@@ -84,7 +107,6 @@ func (a *Adapter) loadStates(ctx context.Context) error {
 
 	a.stateIDToName = make(map[string]string, len(states))
 	a.stateNameToID = make(map[string]string, len(states))
-
 	for _, s := range states {
 		a.stateIDToName[s.ID] = s.Name
 		a.stateNameToID[strings.ToLower(s.Name)] = s.ID
@@ -106,7 +128,6 @@ func (a *Adapter) loadLabels(ctx context.Context) error {
 
 	a.labelIDToName = make(map[string]string, len(labels))
 	a.labelNameToID = make(map[string]string, len(labels))
-
 	for _, l := range labels {
 		a.labelIDToName[l.ID] = l.Name
 		a.labelNameToID[strings.ToLower(l.Name)] = l.ID
@@ -115,7 +136,6 @@ func (a *Adapter) loadLabels(ctx context.Context) error {
 }
 
 // SetFilters stores the filter config passed from the source config.
-// Called by the dispatcher before the first Poll.
 func (a *Adapter) SetFilters(states, labels []string) {
 	for _, s := range states {
 		a.filterStates = append(a.filterStates, strings.ToLower(s))
@@ -126,8 +146,11 @@ func (a *Adapter) SetFilters(states, labels []string) {
 }
 
 func (a *Adapter) Poll(ctx context.Context, since time.Time) ([]model.Cell, error) {
-	path := a.workItemsBase() + "/"
+	if err := a.loadMetadata(ctx); err != nil {
+		return nil, err
+	}
 
+	path := a.workItemsBase() + "/"
 	items, err := getAll[workItem](ctx, a.client, path)
 	if err != nil {
 		return nil, fmt.Errorf("plane: polling work items: %w", err)
@@ -154,7 +177,6 @@ func (a *Adapter) matchesFilters(item workItem) bool {
 			return false
 		}
 	}
-
 	if len(a.filterLabels) > 0 {
 		itemLabels := make([]string, 0, len(item.Labels))
 		for _, id := range item.Labels {
@@ -166,7 +188,6 @@ func (a *Adapter) matchesFilters(item workItem) bool {
 			}
 		}
 	}
-
 	return true
 }
 
@@ -177,7 +198,6 @@ func (a *Adapter) Acknowledge(ctx context.Context, cell model.Cell, action model
 	if a.startedStateID == "" {
 		return fmt.Errorf("plane: no 'started' state found in project — cannot acknowledge")
 	}
-
 	path := a.workItemsBase() + "/" + cell.ID + "/"
 	_, err := a.client.patch(ctx, path, patchRequest{State: a.startedStateID})
 	if err != nil {
@@ -188,7 +208,6 @@ func (a *Adapter) Acknowledge(ctx context.Context, cell model.Cell, action model
 
 func (a *Adapter) WriteResult(ctx context.Context, cell model.Cell, result model.RunResult) error {
 	path := a.workItemsBase() + "/" + cell.ID + "/comments/"
-
 	comment := formatComment(result)
 	_, err := a.client.post(ctx, path, commentRequest{CommentHTML: comment})
 	if err != nil {
@@ -199,9 +218,11 @@ func (a *Adapter) WriteResult(ctx context.Context, cell model.Cell, result model
 
 func (a *Adapter) WebhookHandler() http.Handler { return nil }
 
-// SetState implements source.StateSetter. It transitions the work item to
-// the named state, looked up case-insensitively from the project's state list.
+// SetState implements source.StateSetter.
 func (a *Adapter) SetState(ctx context.Context, cell model.Cell, stateName string) error {
+	if err := a.loadMetadata(ctx); err != nil {
+		return err
+	}
 	stateID, ok := a.stateNameToID[strings.ToLower(stateName)]
 	if !ok {
 		return fmt.Errorf("plane: state %q not found in project", stateName)
@@ -214,12 +235,10 @@ func (a *Adapter) SetState(ctx context.Context, cell model.Cell, stateName strin
 	return nil
 }
 
-// workItemsBase returns the base path for work-items in this project.
 func (a *Adapter) workItemsBase() string {
 	return fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items", a.workspace, a.project)
 }
 
-// toCell maps a Plane work item to a model.Cell.
 func (a *Adapter) toCell(item workItem) model.Cell {
 	labels := make([]string, 0, len(item.Labels))
 	for _, id := range item.Labels {
@@ -227,10 +246,8 @@ func (a *Adapter) toCell(item workItem) model.Cell {
 			labels = append(labels, name)
 		}
 	}
-
 	createdAt, _ := time.Parse(time.RFC3339, item.CreatedAt)
 	updatedAt, _ := time.Parse(time.RFC3339, item.UpdatedAt)
-
 	return model.Cell{
 		ID:          item.ID,
 		SourceID:    a.ID(),
@@ -245,31 +262,25 @@ func (a *Adapter) toCell(item workItem) model.Cell {
 	}
 }
 
-// formatComment formats a RunResult as HTML for posting to Plane.
 func formatComment(result model.RunResult) string {
 	var b strings.Builder
-
 	if result.Success {
 		b.WriteString("<p>✓ <strong>Apiary run complete</strong>")
 	} else {
 		b.WriteString("<p>✗ <strong>Apiary run failed</strong>")
 	}
-
 	b.WriteString(fmt.Sprintf(" · worker: <code>%s</code>", html.EscapeString(result.WorkerID)))
 	b.WriteString(fmt.Sprintf(" · duration: %s</p>", result.Duration.Round(time.Second)))
-
 	if result.Output != "" {
 		b.WriteString("<pre>")
 		b.WriteString(html.EscapeString(result.Output))
 		b.WriteString("</pre>")
 	}
-
 	if result.Error != nil {
 		b.WriteString("<p><strong>Error:</strong> <code>")
 		b.WriteString(html.EscapeString(result.Error.Error()))
 		b.WriteString("</code></p>")
 	}
-
 	return b.String()
 }
 
