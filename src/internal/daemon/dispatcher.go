@@ -119,6 +119,51 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 	}
 }
 
+// DryRun polls every source once, routes cells, and prints what would be
+// dispatched — without invoking any runners or modifying any task state.
+func (d *Dispatcher) DryRun(ctx context.Context) error {
+	total := 0
+	matched := 0
+
+	for _, sc := range d.cfg.Sources {
+		adapter, ok := d.sources[sc.ID]
+		if !ok {
+			continue
+		}
+
+		aplog.Debug("polling source %s (dry-run)", sc.ID)
+		cells, err := adapter.Poll(ctx, time.Time{})
+		if err != nil {
+			aplog.Error("source %s: poll error: %v", sc.ID, err)
+			continue
+		}
+		aplog.Info("source %s: found %d cell(s)", sc.ID, len(cells))
+		total += len(cells)
+
+		for _, cell := range cells {
+			m, ok := d.router.Route(cell)
+			if !ok {
+				aplog.Info("  %-40s  no matching route — skipped",
+					truncate(cell.Title, 40))
+				continue
+			}
+			matched++
+			aplog.Info("  %-40s  → worker %-16s  model %s",
+				truncate(cell.Title, 40), m.Worker.ID, m.Worker.Model)
+		}
+	}
+
+	aplog.Info("dry-run complete: %d cell(s) found, %d would be dispatched", total, matched)
+	return nil
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-1] + "…"
+}
+
 // RunOnce polls every source once, dispatches all matching cells, waits for
 // completion, and returns an error if any run failed.
 func (d *Dispatcher) RunOnce(ctx context.Context) error {

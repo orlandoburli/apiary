@@ -115,10 +115,17 @@ settings:
   result_comment: false   # don't post comments while testing
 ```
 
-Set your API key:
+Create a `.env` file next to your `apiary.yaml` with your secrets:
 
 ```sh
-export PLANE_API_KEY=your_key_here
+# .env  (never committed — already in .gitignore)
+PLANE_API_KEY=your_key_here
+```
+
+Apiary loads `.env` automatically on every command. Already-set shell variables always take precedence. To point at a different file:
+
+```sh
+apiary run --env-file /path/to/secrets.env
 ```
 
 ### 2. Validate the config
