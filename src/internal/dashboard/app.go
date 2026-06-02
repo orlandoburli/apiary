@@ -40,7 +40,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		a.handleKeyMsg(msg)
+		model, cmd := a.handleKeyMsg(msg)
+		return model, cmd
 	case tea.WindowSizeMsg:
 		a.model.width = msg.Width
 		a.model.height = msg.Height
