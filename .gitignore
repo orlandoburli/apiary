@@ -12,6 +12,12 @@ coverage.out
 .env.local
 apiary.yaml.local
 
+# apiary runtime state (project-scoped, written to a .apiary/ dir beside the config)
+**/.apiary/apiary.db
+**/.apiary/apiary.db-*
+**/.apiary/apiary.sock
+**/.apiary/logs/
+
 # editor
 .DS_Store
 .idea/

@@ -21,12 +21,28 @@ const (
 	LevelError Level = "ERROR"
 )
 
+// severity orders levels so the logger can drop messages below its threshold.
+func severity(l Level) int {
+	switch l {
+	case LevelDebug:
+		return 0
+	case LevelInfo:
+		return 1
+	case LevelWarn:
+		return 2
+	case LevelError:
+		return 3
+	default:
+		return 1
+	}
+}
+
 type LogEntry struct {
-	Level      Level
-	Message    string
-	Component  string
-	TaskID     string
-	Timestamp  time.Time
+	Level     Level
+	Message   string
+	Component string
+	TaskID    string
+	Timestamp time.Time
 }
 
 // Logger writes to file and optional SQLite.
@@ -88,6 +104,13 @@ func (l *Logger) Debug(ctx context.Context, msg string, component string) {
 	l.log(ctx, LevelDebug, msg, component, "")
 }
 
+// TaskDebug logs a task-specific message at DEBUG level. Used for the verbose
+// real-time stream (prompt, claude conversation, routing decision) that only
+// shows up when the dispatcher runs with --debug.
+func (l *Logger) TaskDebug(ctx context.Context, taskID, msg string) {
+	l.log(ctx, LevelDebug, msg, "task", taskID)
+}
+
 // TaskInfo logs a task-specific message at INFO level.
 func (l *Logger) TaskInfo(ctx context.Context, taskID, msg string) {
 	l.log(ctx, LevelInfo, msg, "task", taskID)
@@ -99,6 +122,11 @@ func (l *Logger) TaskError(ctx context.Context, taskID, msg string) {
 }
 
 func (l *Logger) log(ctx context.Context, level Level, msg, component, taskID string) {
+	// Drop messages below the configured threshold (both file and DB).
+	if severity(level) < severity(l.level) {
+		return
+	}
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
