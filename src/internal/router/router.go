@@ -100,11 +100,33 @@ func (r *Router) evaluate(route config.RouteConfig, cell model.Cell) (bool, stri
 		return false, fmt.Sprintf("source %q != required %q", cell.SourceID, m.Source)
 	}
 
+	if len(m.States) > 0 && !containsInsensitive(m.States, cell.State) {
+		return false, fmt.Sprintf("state %q not in %v", cell.State, m.States)
+	}
+
 	if len(m.Labels) > 0 {
 		cellLabels := toLowerSet(cell.Labels)
 		for _, required := range m.Labels {
 			if !cellLabels[strings.ToLower(required)] {
 				return false, fmt.Sprintf("missing required label %q (cell has %v)", required, cell.Labels)
+			}
+		}
+	}
+
+	if len(m.ExcludeLabels) > 0 {
+		cellLabels := toLowerSet(cell.Labels)
+		for _, excluded := range m.ExcludeLabels {
+			if cellLabels[strings.ToLower(excluded)] {
+				return false, fmt.Sprintf("has excluded label %q", excluded)
+			}
+		}
+	}
+
+	if m.ExcludeLabelPrefix != "" {
+		prefix := strings.ToLower(m.ExcludeLabelPrefix)
+		for _, l := range cell.Labels {
+			if strings.HasPrefix(strings.ToLower(l), prefix) {
+				return false, fmt.Sprintf("has label %q matching excluded prefix %q", l, m.ExcludeLabelPrefix)
 			}
 		}
 	}
@@ -132,8 +154,17 @@ func describeCriteria(m config.RouteMatch) string {
 	if m.Source != "" {
 		parts = append(parts, "source="+m.Source)
 	}
+	if len(m.States) > 0 {
+		parts = append(parts, "states="+strings.Join(m.States, ","))
+	}
 	if len(m.Labels) > 0 {
 		parts = append(parts, "labels="+strings.Join(m.Labels, ","))
+	}
+	if len(m.ExcludeLabels) > 0 {
+		parts = append(parts, "exclude_labels="+strings.Join(m.ExcludeLabels, ","))
+	}
+	if m.ExcludeLabelPrefix != "" {
+		parts = append(parts, "exclude_label_prefix="+m.ExcludeLabelPrefix)
 	}
 	if len(m.Types) > 0 {
 		parts = append(parts, "types="+strings.Join(m.Types, ","))

@@ -101,16 +101,9 @@ agents:
 # ── Routes ─────────────────────────────────────────────────────────────────────
 routes:
   # === Claude-based agent routes ===
-
-  # New issues → Investigator for classification
-  - id: new-issue-classify
-    priority: 5
-    match:
-      source: project-erp
-      labels: []  # All new issues without agent assignment
-    agent: investigator
-    on_complete:
-      set_state: in review
+  # Specific agent:* routes are evaluated first (lower priority number wins).
+  # The investigator is the LAST-RESORT fallback (see bottom) and only fires for
+  # an unassigned TODO.
 
   # Complex issues → Staff for design analysis
   - id: complex-design
@@ -161,6 +154,21 @@ routes:
     agent: qa
     on_complete:
       set_state: done
+
+  # New issues → Investigator for classification.
+  # Fallback: only UNASSIGNED issues still in TODO.
+  # - exclude_label_prefix: "agent:" → skip anything already routed to an agent
+  # - states: [todo]                 → only brand-new work
+  # Highest priority number → evaluated last, after every agent:* route.
+  - id: new-issue-classify
+    priority: 100
+    match:
+      source: project-erp
+      states: [todo]
+      exclude_label_prefix: "agent:"
+    agent: investigator
+    on_complete:
+      set_state: in review
 
 
 # ── Settings ───────────────────────────────────────────────────────────────────
