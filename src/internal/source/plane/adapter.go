@@ -27,13 +27,14 @@ type Adapter struct {
 	project   string
 
 	// lazily loaded on first Poll()
-	metaOnce      sync.Once
-	metaErr       error
-	stateIDToName map[string]string
-	stateNameToID map[string]string
-	labelIDToName map[string]string
-	labelNameToID map[string]string
+	metaOnce       sync.Once
+	metaErr        error
+	stateIDToName  map[string]string
+	stateNameToID  map[string]string
+	labelIDToName  map[string]string
+	labelNameToID  map[string]string
 	startedStateID string
+	issuesPath     string // resolved on first poll: "work-items" or "issues"
 
 	// filter config
 	filterStates []string
@@ -94,10 +95,24 @@ func (a *Adapter) loadMetadata(ctx context.Context) error {
 			a.metaErr = err
 			return
 		}
-		aplog.Info("plane: ready  states=%d  labels=%d  started-state=%q",
-			len(a.stateIDToName), len(a.labelIDToName), a.stateIDToName[a.startedStateID])
+		a.issuesPath = a.resolveIssuesPath(ctx)
+		aplog.Info("plane: ready  states=%d  labels=%d  started-state=%q  endpoint=%s",
+			len(a.stateIDToName), len(a.labelIDToName), a.stateIDToName[a.startedStateID], a.issuesPath)
 	})
 	return a.metaErr
+}
+
+// resolveIssuesPath detects whether this Plane instance uses the newer
+// "work-items" endpoint or the legacy "issues" endpoint.
+func (a *Adapter) resolveIssuesPath(ctx context.Context) string {
+	probe := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/?per_page=1", a.workspace, a.project)
+	_, err := a.client.get(ctx, probe, nil)
+	if err == nil {
+		aplog.Debug("plane: using endpoint work-items")
+		return "work-items"
+	}
+	aplog.Debug("plane: work-items not found, falling back to issues")
+	return "issues"
 }
 
 func (a *Adapter) loadStates(ctx context.Context) error {
@@ -240,7 +255,11 @@ func (a *Adapter) SetState(ctx context.Context, cell model.Cell, stateName strin
 }
 
 func (a *Adapter) workItemsBase() string {
-	return fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items", a.workspace, a.project)
+	path := a.issuesPath
+	if path == "" {
+		path = "work-items" // default before first poll
+	}
+	return fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/%s", a.workspace, a.project, path)
 }
 
 func (a *Adapter) toCell(item workItem) model.Cell {
