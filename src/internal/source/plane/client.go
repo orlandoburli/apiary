@@ -93,6 +93,8 @@ func (c *client) doWithRetry(ctx context.Context, method, url string, body []byt
 			return nil, err
 		}
 
+		aplog.Debug("plane: %s %s → %d", method, url, resp.StatusCode)
+
 		if resp.StatusCode == http.StatusTooManyRequests {
 			wait := retryAfter(resp, attempt)
 			lastErr = fmt.Errorf("rate limited")

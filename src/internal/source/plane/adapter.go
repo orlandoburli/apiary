@@ -65,8 +65,12 @@ func (a *Adapter) Connect(_ context.Context, cfg map[string]any) error {
 	a.project = project
 	a.client = newClient(baseURL, apiKey)
 
-	aplog.Info("plane: configured  workspace=%s  project=%s  (metadata loads on first poll)",
-		workspace, project)
+	host := baseURL
+	if host == "" {
+		host = defaultBaseURL
+	}
+	aplog.Info("plane: configured  host=%s  workspace=%s  project=%s  (metadata loads on first poll)",
+		host, workspace, project)
 	return nil
 }
 
