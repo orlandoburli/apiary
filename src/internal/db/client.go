@@ -72,6 +72,9 @@ type Execution struct {
 	ID          int64
 	TaskID      string
 	AgentID     string
+	Title       string
+	Model       string
+	Runner      string
 	Attempt     int
 	Status      string
 	StartedAt   *time.Time
@@ -83,12 +86,12 @@ type Execution struct {
 	CreatedAt   time.Time
 }
 
-func (c *Client) CreateExecution(ctx context.Context, taskID, agentID string, attempt int) (*Execution, error) {
+func (c *Client) CreateExecution(ctx context.Context, taskID, agentID, title, model, runner string, attempt int) (*Execution, error) {
 	now := time.Now()
 	res, err := c.db.ExecContext(ctx, `
-		INSERT INTO task_executions (task_id, agent_id, attempt, status, started_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, taskID, agentID, attempt, "running", now, now)
+		INSERT INTO task_executions (task_id, agent_id, title, model, runner, attempt, status, started_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, taskID, agentID, title, model, runner, attempt, "running", now, now)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +105,9 @@ func (c *Client) CreateExecution(ctx context.Context, taskID, agentID string, at
 		ID:        id,
 		TaskID:    taskID,
 		AgentID:   agentID,
+		Title:     title,
+		Model:     model,
+		Runner:    runner,
 		Attempt:   attempt,
 		Status:    "running",
 		StartedAt: &now,

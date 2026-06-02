@@ -48,9 +48,10 @@ type Dispatcher struct {
 	configFile string
 	startedAt  time.Time
 
-	router  *router.Router
-	sources map[string]source.Adapter // source id → connected adapter
-	runners map[string]runner.Adapter // worker id → configured runner
+	router      *router.Router
+	sources     map[string]source.Adapter // source id → connected adapter
+	runners     map[string]runner.Adapter // worker id → configured runner
+	agentRunner map[string]string         // agent id → runner type (cli, script, …)
 
 	db          *db.Client       // SQLite database for state and logging
 	logger      *logging.Logger  // Structured logger (file + DB)
@@ -82,8 +83,9 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		configFile: configFile,
 		startedAt:  time.Now(),
 		router:     r,
-		sources:    make(map[string]source.Adapter),
-		runners:    make(map[string]runner.Adapter),
+		sources:     make(map[string]source.Adapter),
+		runners:     make(map[string]runner.Adapter),
+		agentRunner: make(map[string]string),
 		db:         dbClient,
 		logger:     logger,
 		retryMgr:   NewRetryManager(&cfg.Settings.RetryPolicy),
@@ -156,6 +158,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		}
 
 		d.runners[pseudoWorkerID] = ra
+		d.agentRunner[ac.ID] = rc.Type
 
 		aplog.Info("loaded agent %s: runner=%s type=%s preferred_models=%v", ac.ID, runnerID, rc.Type, ac.PreferredModels)
 	}
@@ -561,8 +564,12 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 
 	// Use first preferred model
 	selectedModel := agent.PreferredModels[0]
+	runnerType := d.agentRunner[agentID]
 
 	aplog.Info("cell %s: dispatching to agent=%q model=%s", cell.ID, agentID, selectedModel)
+	if d.logger != nil {
+		d.logger.TaskInfo(ctx, cell.ID, fmt.Sprintf("dispatching to agent=%s model=%s runner=%s", agentID, selectedModel, runnerType))
+	}
 
 	// Create request with default values for agent-based dispatch
 	req := model.RunRequest{
@@ -589,7 +596,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 
 	if d.db != nil {
 		var err error
-		exec, err = d.db.CreateExecution(ctx, cell.ID, agentID, attempt)
+		exec, err = d.db.CreateExecution(ctx, cell.ID, agentID, cell.Title, selectedModel, runnerType, attempt)
 		if err != nil {
 			aplog.Error("cell %s: create execution record: %v", cell.ID, err)
 		}
@@ -610,6 +617,18 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 	}
 	if result.Error != nil {
 		aplog.Error("cell %s: agent error: %v", cell.ID, result.Error)
+	}
+
+	// Per-task logs (visible in the dashboard Tasks → logs view)
+	if d.logger != nil {
+		if result.Output != "" {
+			d.logger.TaskInfo(ctx, cell.ID, result.Output)
+		}
+		if result.Error != nil {
+			d.logger.TaskError(ctx, cell.ID, result.Error.Error())
+		}
+		d.logger.TaskInfo(ctx, cell.ID, fmt.Sprintf("done success=%v duration=%s",
+			result.Success, result.Duration.Round(time.Second)))
 	}
 
 	// Update execution record with results
