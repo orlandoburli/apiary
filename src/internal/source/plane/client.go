@@ -152,10 +152,10 @@ func getAll[T any](ctx context.Context, c *client, path string) ([]T, error) {
 
 		all = append(all, pg.Results...)
 
-		if pg.NextCursor == nil || *pg.NextCursor == "" {
+		if !pg.NextPageResults {
 			break
 		}
-		cursor = *pg.NextCursor
+		cursor = pg.NextCursor
 	}
 
 	return all, nil
