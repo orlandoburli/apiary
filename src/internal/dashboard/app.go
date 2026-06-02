@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/orlandoburli/apiary/internal/db"
 )
@@ -153,15 +154,44 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleTaskSubViewKey(key)
 	}
 
+	const hStep = 8
+
 	switch key {
-	case "tab", "right":
+	case "tab":
 		a.model.NextTab()
 		a.model.loading = true
 		return a, a.fetchActiveTab()
-	case "shift+tab", "left":
+	case "shift+tab":
 		a.model.PrevTab()
 		a.model.loading = true
 		return a, a.fetchActiveTab()
+	case "right":
+		// In the Logs tab (unwrapped), → scrolls the message horizontally.
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil && !a.model.logsTab.Wrap {
+			a.model.logsTab.HScroll += hStep
+			return a, nil
+		}
+		a.model.NextTab()
+		a.model.loading = true
+		return a, a.fetchActiveTab()
+	case "left":
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil && !a.model.logsTab.Wrap {
+			a.model.logsTab.HScroll -= hStep
+			if a.model.logsTab.HScroll < 0 {
+				a.model.logsTab.HScroll = 0
+			}
+			return a, nil
+		}
+		a.model.PrevTab()
+		a.model.loading = true
+		return a, a.fetchActiveTab()
+	case "w":
+		// Toggle line-wrap in the Logs tab.
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
+			a.model.logsTab.Wrap = !a.model.logsTab.Wrap
+			a.model.logsTab.HScroll = 0
+			a.model.logsTab.Scrolled = 0
+		}
 	case "r":
 		a.model.loading = true
 		return a, a.fetchActiveTab()
@@ -191,7 +221,7 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.model.agentsTab.SelectedIdx++
 			}
 		case "Logs":
-			if a.model.logsTab != nil && a.model.logsTab.Scrolled < len(a.model.logsTab.Logs)-1 {
+			if a.model.logsTab != nil && a.model.logsTab.Scrolled < len(a.logVisualLines())-1 {
 				a.model.logsTab.Scrolled++
 			}
 		}
@@ -508,22 +538,18 @@ func (a *App) renderTabs() string {
 	return lipgloss.JoinHorizontal(lipgloss.Center, row...) + "\n"
 }
 
-// box wraps inner content in a titled border that spans the terminal width,
-// padding the content so the whole block is exactly `height` lines tall.
+// box frames inner content in a titled, full 4-sided border that spans the
+// terminal width and is exactly `height` lines tall. Each content line is
+// padded/truncated (ANSI-aware) so the right border lines up.
 func (a *App) box(label, content string, height int) string {
 	width := a.model.width
 	if width < 24 {
 		width = 24
 	}
-
-	// Pad inner content to fill (height - 2) lines (top + bottom borders).
-	inner := height - 2
-	if inner < 1 {
-		inner = 1
-	}
-	lines := strings.Count(content, "\n")
-	if pad := inner - lines; pad > 0 {
-		content += strings.Repeat("\n", pad)
+	inner := width - 2 // columns between the two vertical bars
+	bodyRows := height - 2
+	if bodyRows < 1 {
+		bodyRows = 1
 	}
 
 	prefix := "┌─ " + label + " "
@@ -533,7 +559,36 @@ func (a *App) box(label, content string, height int) string {
 	}
 	top := prefix + strings.Repeat("─", dashes) + "┐"
 	bottom := "└" + strings.Repeat("─", width-2) + "┘"
-	return top + "\n" + content + bottom + "\n"
+
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	var b strings.Builder
+	b.WriteString(top + "\n")
+	for i := 0; i < bodyRows; i++ {
+		line := ""
+		if i < len(lines) {
+			line = lines[i]
+		}
+		b.WriteString("│" + fitLine(line, inner) + "│\n")
+	}
+	b.WriteString(bottom + "\n")
+	return b.String()
+}
+
+// fitLine pads (with spaces) or truncates s to exactly w visible columns,
+// preserving ANSI styling. Used to align the right border of a box.
+func fitLine(s string, w int) string {
+	if w < 0 {
+		w = 0
+	}
+	vis := lipgloss.Width(s)
+	switch {
+	case vis == w:
+		return s
+	case vis < w:
+		return s + strings.Repeat(" ", w-vis)
+	default:
+		return ansi.Truncate(s, w, "")
+	}
 }
 
 func (a *App) renderOverviewTab(height int) string {
@@ -597,18 +652,31 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 		return a.box("TASKS", body, height)
 	}
 
+	const (
+		cursorW = 2
+		agentW  = 16
+		statusW = 8
+		whenW   = 11
+	)
+	inner := a.model.width - 2
+	titleW := inner - cursorW - agentW - statusW - whenW - 4 // 4 single-space separators
+	if titleW < 10 {
+		titleW = 10
+	}
+
 	var b strings.Builder
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("  %-3s %-30s %-16s %-9s %s", "", "TASK", "AGENT", "STATUS", "WHEN")) + "\n")
+	header := pad("", cursorW) + " " + pad("TASK", titleW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + "WHEN"
+	b.WriteString(StyleMuted.Render(header) + "\n")
 	for i, it := range t.History {
 		cursor := "  "
 		if i == t.SelectedIdx {
-			cursor = StyleInfo.Render("▶ ")
+			cursor = StyleInfo.Render("▶") + " "
 		}
-		title := pad(truncate(valueOr(it.Title, it.TaskID), 30), 30)
-		agent := pad(truncate(valueOr(it.Agent, "—"), 16), 16)
-		status := taskStatusBadge(it.Status)
-		when := taskWhen(it)
-		b.WriteString(fmt.Sprintf("%s%s %s %s %s\n", cursor, title, agent, status, StyleMuted.Render(when)))
+		title := pad(truncate(valueOr(it.Title, it.TaskID), titleW), titleW)
+		agent := pad(truncate(valueOr(it.Agent, "—"), agentW), agentW)
+		status := taskStatusBadge(it.Status) // already padded to width 8
+		when := StyleMuted.Render(taskWhen(it))
+		b.WriteString(cursor + " " + title + " " + agent + " " + status + " " + when + "\n")
 	}
 	b.WriteString("\n")
 	b.WriteString(StyleMuted.Render("enter/l logs   d details   ↑/↓ select"))
@@ -702,11 +770,11 @@ func (a *App) taskLogLines() []string {
 	if t == nil {
 		return nil
 	}
-	msgWidth := a.model.width - 16
+	const prefixWidth = 15                      // "15:04:05" + space + 5-char level + space
+	msgWidth := a.model.width - 2 - prefixWidth // inner minus the prefix column
 	if msgWidth < 20 {
 		msgWidth = 20
 	}
-	const prefixWidth = 15 // "15:04:05" + space + 5-char level + space
 	indent := strings.Repeat(" ", prefixWidth)
 
 	var out []string
@@ -761,22 +829,33 @@ func (a *App) renderAgentsTab(height int) string {
 		return a.box("AGENTS", StyleMuted.Render("No agents yet")+"\n", height)
 	}
 
+	const (
+		cursorW    = 2
+		statusW    = 9
+		completedW = 10
+		avgW       = 9
+		successW   = 7
+	)
+	inner := a.model.width - 2
+	agentW := inner - cursorW - statusW - completedW - avgW - successW - 5 // 5 separators
+	if agentW < 12 {
+		agentW = 12
+	}
+
 	var b strings.Builder
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("  %-16s %-8s %-10s %-10s %s", "AGENT", "STATUS", "COMPLETED", "AVG", "SUCCESS")) + "\n")
+	header := pad("", cursorW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + pad("COMPLETED", completedW) + " " + pad("AVG", avgW) + " " + "SUCCESS"
+	b.WriteString(StyleMuted.Render(header) + "\n")
 	for i, agent := range ag.Agents {
 		cursor := "  "
 		if i == ag.SelectedIdx {
-			cursor = StyleInfo.Render("▶ ")
+			cursor = StyleInfo.Render("▶") + " "
 		}
-		avg := fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000)
-		b.WriteString(fmt.Sprintf("%s%-16s %s %-10d %-10s %.0f%%\n",
-			cursor,
-			truncate(agent.ID, 16),
-			StatusColor(agent.Status),
-			agent.CompletedCount,
-			avg,
-			agent.SuccessRate*100,
-		))
+		status := pad(StatusColor(agent.Status)+" "+valueOr(agent.Status, "—"), statusW)
+		completed := pad(fmt.Sprintf("%d", agent.CompletedCount), completedW)
+		avg := pad(fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000), avgW)
+		success := fmt.Sprintf("%.0f%%", agent.SuccessRate*100)
+		name := pad(truncate(valueOr(agent.ID, "—"), agentW), agentW)
+		b.WriteString(cursor + " " + name + " " + status + " " + completed + " " + avg + " " + success + "\n")
 	}
 	return a.box("AGENTS", b.String(), height)
 }
@@ -787,29 +866,90 @@ func (a *App) renderLogsTab(height int) string {
 		return a.box("LOGS", StyleMuted.Render("No logs yet")+"\n", height)
 	}
 
-	// Show the most recent logs that fit in the available rows.
-	rows := height - 2
+	lines := a.logVisualLines()
+
+	rows := height - 3 // borders + hint line
 	if rows < 1 {
 		rows = 1
 	}
 	start := l.Scrolled
-	if start > len(l.Logs)-1 {
+	if start > len(lines)-1 {
+		start = len(lines) - 1
+	}
+	if start < 0 {
 		start = 0
 	}
 	end := start + rows
-	if end > len(l.Logs) {
-		end = len(l.Logs)
+	if end > len(lines) {
+		end = len(lines)
 	}
 
 	var b strings.Builder
 	for i := start; i < end; i++ {
-		entry := l.Logs[i]
-		ts := entry.Timestamp.Format("15:04:05")
-		level := levelStyle(entry.Level).Render(fmt.Sprintf("%-5s", entry.Level))
-		msg := truncate(entry.Message, a.model.width-22)
-		b.WriteString(fmt.Sprintf("%s %s %s\n", StyleMuted.Render(ts), level, msg))
+		b.WriteString(lines[i] + "\n")
 	}
+	// fill remaining body rows so the hint sits at the bottom
+	for i := end - start; i < rows; i++ {
+		b.WriteString("\n")
+	}
+
+	mode := "wrap on"
+	if !l.Wrap {
+		mode = fmt.Sprintf("wrap off  ←/→ scroll (col %d)", l.HScroll)
+	}
+	b.WriteString(StyleMuted.Render(fmt.Sprintf("w %s   ↑/↓ lines   [%d-%d/%d]", mode, start+1, end, len(lines))))
 	return a.box("LOGS", b.String(), height)
+}
+
+// logVisualLines renders the service logs into display lines. When Wrap is on,
+// long messages break across lines; otherwise each entry is a single line that
+// can be scrolled horizontally via HScroll.
+func (a *App) logVisualLines() []string {
+	l := a.model.logsTab
+	const prefixWidth = 15 // "15:04:05" + space + 5-char level + space
+	indent := strings.Repeat(" ", prefixWidth)
+	msgWidth := a.model.width - 2 - prefixWidth // inner minus prefix
+	if msgWidth < 10 {
+		msgWidth = 10
+	}
+
+	var out []string
+	for _, entry := range l.Logs {
+		ts := StyleMuted.Render(entry.Timestamp.Format("15:04:05"))
+		level := levelStyle(entry.Level).Render(fmt.Sprintf("%-5s", entry.Level))
+		msg := entry.Message
+
+		if l.Wrap {
+			wrapped := wrapPlain(msg, msgWidth)
+			if len(wrapped) == 0 {
+				wrapped = []string{""}
+			}
+			for j, w := range wrapped {
+				if j == 0 {
+					out = append(out, fmt.Sprintf("%s %s %s", ts, level, w))
+				} else {
+					out = append(out, indent+w)
+				}
+			}
+		} else {
+			// Single line; scroll the message horizontally by HScroll columns.
+			flat := strings.ReplaceAll(strings.ReplaceAll(msg, "\t", "    "), "\n", " ")
+			out = append(out, fmt.Sprintf("%s %s %s", ts, level, hScroll(flat, l.HScroll)))
+		}
+	}
+	return out
+}
+
+// hScroll drops the first n runes of s (horizontal scroll for plain text).
+func hScroll(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if n >= len(r) {
+		return ""
+	}
+	return string(r[n:])
 }
 
 func (a *App) renderFooter() string {
@@ -820,8 +960,12 @@ func (a *App) renderFooter() string {
 	if !a.model.lastRefresh.IsZero() {
 		updated = time.Since(a.model.lastRefresh).Round(time.Second).String() + " ago"
 	}
-	footer := fmt.Sprintf("updated %s   │   ←/→ tab   ↑/↓ nav   r refresh   q quit", updated)
-	return StyleMuted.Render(footer)
+	nav := "tab/⇧tab switch   ←/→ tab   ↑/↓ nav"
+	if a.model.ActiveTab() == "Logs" {
+		nav = "tab/⇧tab switch   w wrap   ←/→ scroll   ↑/↓ lines"
+	}
+	footer := fmt.Sprintf("updated %s   │   %s   r refresh   q quit", updated, nav)
+	return fitLine(StyleMuted.Render(footer), a.model.width)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
