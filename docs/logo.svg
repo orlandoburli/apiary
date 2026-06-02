@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200" width="600" height="200">
+  <defs>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F5A623"/>
+      <stop offset="100%" stop-color="#D4841A"/>
+    </linearGradient>
+    <linearGradient id="goldLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F9C96A"/>
+      <stop offset="100%" stop-color="#F5A623"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Icon: Hex + honeycomb "A" -->
+  <g transform="translate(85, 100)">
+    <!-- Outer hexagon (radius 55) -->
+    <polygon points="55,0 27.5,47.6 -27.5,47.6 -55,0 -27.5,-47.6 27.5,-47.6"
+             fill="none" stroke="url(#gold)" stroke-width="5" stroke-linejoin="round"/>
+
+    <!-- Inner honeycomb forming "A" (3 cells, radius 14) -->
+    <!-- Top cell -->
+    <g transform="translate(0, -24)">
+      <polygon points="14,0 7,12.1 -7,12.1 -14,0 -7,-12.1 7,-12.1"
+               fill="url(#goldLight)" opacity="0.85"/>
+    </g>
+    <!-- Bottom-left cell -->
+    <g transform="translate(-20, 12)">
+      <polygon points="14,0 7,12.1 -7,12.1 -14,0 -7,-12.1 7,-12.1"
+               fill="url(#goldLight)" opacity="0.85"/>
+    </g>
+    <!-- Bottom-right cell -->
+    <g transform="translate(20, 12)">
+      <polygon points="14,0 7,12.1 -7,12.1 -14,0 -7,-12.1 7,-12.1"
+               fill="url(#goldLight)" opacity="0.85"/>
+    </g>
+  </g>
+
+  <!-- Wordmark -->
+  <g transform="translate(155, 95)">
+    <text font-family="'SF Pro', 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif"
+          font-size="44" font-weight="700" letter-spacing="2" fill="#1D1D1F">
+      <tspan fill="url(#gold)">⬡</tspan>
+      <tspan fill="#1D1D1F"> apiary</tspan>
+    </text>
+  </g>
+
+  <g transform="translate(189, 123)">
+    <text font-family="'SF Pro', 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif"
+          font-size="13" font-weight="400" letter-spacing="3.5" fill="#86868B">
+      HARNESS AGENT ORCHESTRATOR
+    </text>
+  </g>
+</svg>
