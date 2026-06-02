@@ -10,11 +10,14 @@ import (
 )
 
 type Config struct {
-	Version  string         `yaml:"version"`
-	Sources  []SourceConfig `yaml:"sources"`
-	Workers  []WorkerConfig `yaml:"workers"`
-	Routes   []RouteConfig  `yaml:"routes"`
-	Settings Settings       `yaml:"settings"`
+	Version       string         `yaml:"version"`
+	Runners       []RunnerConfig `yaml:"runners"`
+	DefaultRunner string         `yaml:"default_runner"`
+	Sources       []SourceConfig `yaml:"sources"`
+	Agents        []AgentConfig  `yaml:"agents"`
+	Workers       []WorkerConfig `yaml:"workers"`
+	Routes        []RouteConfig  `yaml:"routes"`
+	Settings      Settings       `yaml:"settings"`
 }
 
 type SourceConfig struct {
@@ -32,10 +35,36 @@ func (s SourceConfig) ParsedPollInterval() (time.Duration, error) {
 	return time.ParseDuration(s.PollInterval)
 }
 
+func (r *RetryPolicy) ParsedBackoff() time.Duration {
+	if r.parsedBackoff == 0 && r.BackoffBase != "" {
+		d, _ := time.ParseDuration(r.BackoffBase)
+		r.parsedBackoff = d
+	}
+	if r.parsedBackoff == 0 {
+		return 1 * time.Second
+	}
+	return r.parsedBackoff
+}
+
 type SourceFilters struct {
 	States []string `yaml:"states"`
 	Labels []string `yaml:"labels"`
 	JQL    string   `yaml:"jql"`
+}
+
+type RunnerConfig struct {
+	ID     string         `yaml:"id"`
+	Type   string         `yaml:"type"`
+	Config map[string]any `yaml:"config"`
+}
+
+type AgentConfig struct {
+	ID              string   `yaml:"id"`
+	Description     string   `yaml:"description"`
+	SoulFile        string   `yaml:"soul_file"`
+	PreferredModels []string `yaml:"preferred_models"`
+	Skills          []string `yaml:"skills"`
+	Runner          string   `yaml:"runner"`
 }
 
 type WorkerConfig struct {
@@ -72,6 +101,7 @@ type RouteConfig struct {
 	ID         string      `yaml:"id"`
 	Priority   int         `yaml:"priority"`
 	Match      RouteMatch  `yaml:"match"`
+	Agent      string      `yaml:"agent"`
 	Worker     string      `yaml:"worker"`
 	OnComplete OnComplete  `yaml:"on_complete"`
 }
@@ -89,17 +119,56 @@ type OnComplete struct {
 	AddLabels []string `yaml:"add_labels"`
 }
 
+type RetryPolicy struct {
+	Enabled            bool          `yaml:"enabled"`
+	MaxAttempts        int           `yaml:"max_attempts"`
+	BackoffStrategy    string        `yaml:"backoff_strategy"` // "exponential" or "fixed"
+	BackoffBase        string        `yaml:"backoff_base"`     // e.g., "1s", "5s"
+	RetriableErrors    []string      `yaml:"retriable_errors"`
+	NonRetriableErrors []string      `yaml:"non_retriable_errors"`
+	parsedBackoff      time.Duration
+}
+
 type Settings struct {
 	Concurrency   int         `yaml:"concurrency"`
 	LogLevel      string      `yaml:"log_level"`
 	StateLock     bool        `yaml:"state_lock"`
 	ResultComment bool        `yaml:"result_comment"`
+	RetryPolicy   RetryPolicy `yaml:"retry_policy"`
 	Telemetry     Telemetry   `yaml:"telemetry"`
 }
 
 type Telemetry struct {
 	Enabled  bool   `yaml:"enabled"`
 	Endpoint string `yaml:"endpoint"`
+}
+
+// LoadDefaults returns a Config with sensible defaults.
+func LoadDefaults() *Config {
+	return &Config{
+		Version: "1.0",
+		Settings: Settings{
+			Concurrency: 4,
+			LogLevel:    "info",
+			RetryPolicy: RetryPolicy{
+				Enabled:         true,
+				MaxAttempts:     3,
+				BackoffStrategy: "exponential",
+				BackoffBase:     "1s",
+				RetriableErrors: []string{
+					"timeout",
+					"connection_error",
+					"resource_unavailable",
+					"rate_limited",
+				},
+				NonRetriableErrors: []string{
+					"validation_error",
+					"configuration_error",
+					"not_found",
+				},
+			},
+		},
+	}
 }
 
 func Load(path string) (*Config, error) {
@@ -120,6 +189,19 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Settings.LogLevel == "" {
 		cfg.Settings.LogLevel = "info"
+	}
+	// Fill in retry policy defaults if not specified
+	if cfg.Settings.RetryPolicy.MaxAttempts == 0 {
+		cfg.Settings.RetryPolicy.MaxAttempts = 3
+	}
+	if cfg.Settings.RetryPolicy.BackoffStrategy == "" {
+		cfg.Settings.RetryPolicy.BackoffStrategy = "exponential"
+	}
+	if cfg.Settings.RetryPolicy.BackoffBase == "" {
+		cfg.Settings.RetryPolicy.BackoffBase = "1s"
+	}
+	if !cfg.Settings.RetryPolicy.Enabled && cfg.Settings.RetryPolicy.MaxAttempts > 0 {
+		cfg.Settings.RetryPolicy.Enabled = true
 	}
 
 	return &cfg, nil
