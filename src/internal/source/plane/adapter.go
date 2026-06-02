@@ -106,12 +106,12 @@ func (a *Adapter) loadMetadata(ctx context.Context) error {
 // "work-items" endpoint or the legacy "issues" endpoint.
 func (a *Adapter) resolveIssuesPath(ctx context.Context) string {
 	probe := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/?per_page=1", a.workspace, a.project)
-	_, err := a.client.get(ctx, probe, nil)
+	_, err := a.client.getNoLog(ctx, probe)
 	if err == nil {
-		aplog.Debug("plane: using endpoint work-items")
+		aplog.Debug("plane: endpoint=work-items")
 		return "work-items"
 	}
-	aplog.Debug("plane: work-items not found, falling back to issues")
+	aplog.Debug("plane: endpoint=issues (work-items not available on this version)")
 	return "issues"
 }
 

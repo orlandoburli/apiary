@@ -45,6 +45,28 @@ func (c *client) get(ctx context.Context, path string, params url.Values) ([]byt
 	return c.doWithRetry(ctx, http.MethodGet, u, nil)
 }
 
+// getNoLog performs a single GET without retry or response logging.
+// Used for endpoint probes where a 404 is an expected outcome.
+func (c *client) getNoLog(ctx context.Context, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-API-Key", c.apiKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
+	return body, nil
+}
+
 func (c *client) patch(ctx context.Context, path string, payload any) ([]byte, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
