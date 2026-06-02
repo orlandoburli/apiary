@@ -51,6 +51,15 @@ func newRunCmd() *cobra.Command {
 			dbPath := getDBPath()
 			logDir := getLogDir()
 
+			// Create directories
+			dbDir := filepath.Dir(dbPath)
+			if err := os.MkdirAll(dbDir, 0755); err != nil {
+				return fmt.Errorf("creating database directory: %w", err)
+			}
+			if err := os.MkdirAll(logDir, 0755); err != nil {
+				return fmt.Errorf("creating log directory: %w", err)
+			}
+
 			dbClient, err := db.New(ctx, dbPath)
 			if err != nil {
 				return fmt.Errorf("initializing database: %w", err)
