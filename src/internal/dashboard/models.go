@@ -6,15 +6,17 @@ import (
 
 // Model holds the state for the dashboard TUI.
 type Model struct {
-	activeTab   int
-	tabs        []string
-	overviewTab *OverviewTab
-	tasksTab    *TasksTab
-	agentsTab   *AgentsTab
-	logsTab     *LogsTab
-	width       int
-	height      int
-	lastRefresh time.Time
+	activeTab      int
+	tabs           []string
+	overviewTab    *OverviewTab
+	tasksTab       *TasksTab
+	agentsTab      *AgentsTab
+	logsTab        *LogsTab
+	width          int
+	height         int
+	lastRefresh    time.Time
+	lastTabRefresh map[int]time.Time // Track refresh per tab
+	loading        bool               // Show loading state
 }
 
 // OverviewTab shows dispatcher status and summary metrics.
@@ -102,7 +104,7 @@ func NewModel() *Model {
 			Concurrency: 4,
 		},
 		tasksTab: &TasksTab{
-			ActiveRuns: []ActiveRun{},
+			ActiveRuns:  []ActiveRun{},
 			RecentTasks: []TaskSummary{},
 		},
 		agentsTab: &AgentsTab{
@@ -112,6 +114,8 @@ func NewModel() *Model {
 			Logs:        []LogEntry{},
 			FilterLevel: "All",
 		},
+		lastTabRefresh: make(map[int]time.Time),
+		loading:        true,
 	}
 }
 
