@@ -48,13 +48,13 @@ func newRunCmd() *cobra.Command {
 				return fmt.Errorf("initialising dispatcher: %w", err)
 			}
 
-			if dryRun {
-				fmt.Println("dry-run: sources connected, no runners will be invoked")
-				return nil
-			}
-
 			_ = src
 			_ = worker
+
+			// ── dry-run mode ──────────────────────────────────────────────
+			if dryRun {
+				return disp.DryRun(ctx)
+			}
 
 			// ── once mode ────────────────────────────────────────────────
 			if once {
