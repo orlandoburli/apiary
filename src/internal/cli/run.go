@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"sync"
@@ -32,7 +33,6 @@ func newRunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-
 			if errs := cfg.Validate(); len(errs) > 0 {
 				for _, e := range errs {
 					fmt.Fprintf(os.Stderr, "  config error: %s\n", e)
@@ -43,7 +43,7 @@ func newRunCmd() *cobra.Command {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 
-			disp, err := daemon.New(ctx, cfg)
+			disp, err := daemon.New(ctx, cfg, configFile)
 			if err != nil {
 				return fmt.Errorf("initialising dispatcher: %w", err)
 			}
@@ -55,12 +55,25 @@ func newRunCmd() *cobra.Command {
 
 			_ = src
 			_ = worker
-			_ = once
 
+			// ── once mode ────────────────────────────────────────────────
+			if once {
+				if err := disp.RunOnce(ctx); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(4)
+				}
+				return nil
+			}
+
+			// ── daemon mode ───────────────────────────────────────────────
 			var wg sync.WaitGroup
+
+			if err := disp.StartServer(ctx, &wg); err != nil {
+				log.Printf("[apiary] IPC server unavailable: %v", err)
+			}
+
 			disp.Start(ctx, &wg)
 
-			// TUI runs in the foreground; dispatcher runs in background goroutines
 			m := tui.New()
 			p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 			if _, tuiErr := p.Run(); tuiErr != nil {
@@ -76,7 +89,7 @@ func newRunCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "connect to sources but do not invoke runners")
-	cmd.Flags().BoolVar(&once, "once", false, "poll once, process pending tasks, then exit")
+	cmd.Flags().BoolVar(&once, "once", false, "poll once, dispatch all matching tasks, then exit (exit 4 if any run failed)")
 	cmd.Flags().StringVar(&src, "source", "", "restrict to a single source id")
 	cmd.Flags().StringVar(&worker, "worker", "", "restrict to a single worker id")
 
