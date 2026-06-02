@@ -1,0 +1,87 @@
+version: "1.0"
+
+runners:
+  - id: claude-cli
+    type: cli
+    config:
+      command: claude
+      model_flag: --model
+      prompt_flag: --input-text
+      turns_flag: --turns
+
+default_runner: claude-cli
+
+sources:
+  - id: project-erp
+    type: plane
+    config:
+      workspace_id: ${PLANE_WORKSPACE_ID}
+      project_id: ${PLANE_PROJECT_ID}
+      api_token: ${PLANE_API_TOKEN}
+    poll_interval: 60s
+    filters:
+      states: [backlog, todo]
+
+agents:
+  - id: engineer
+    description: Senior software engineer — backend and API design
+    soul_file: .apiary/souls/engineer.md
+    preferred_models: [claude-sonnet-4-6, claude-haiku-4-5]
+    skills: [backend-api, error-handling, database]
+    runner: claude-cli
+
+  - id: reviewer
+    description: Code reviewer — quality assurance and best practices
+    soul_file: .apiary/souls/reviewer.md
+    preferred_models: [claude-sonnet-4-6]
+    skills: [code-review, testing]
+    runner: claude-cli
+
+routes:
+  - id: engineer-work
+    priority: 10
+    match:
+      source: project-erp
+      labels: [agent:engineer]
+    agent: engineer
+    on_complete:
+      set_state: in review
+
+  - id: review-work
+    priority: 20
+    match:
+      source: project-erp
+      labels: [agent:reviewer]
+    agent: reviewer
+    on_complete:
+      set_state: done
+
+settings:
+  concurrency: 4
+  log_level: info
+  state_lock: true
+  result_comment: true
+
+  # Crash recovery configuration
+  retry_policy:
+    enabled: true
+    max_attempts: 3
+    backoff_strategy: exponential    # or "fixed"
+    backoff_base: 1s                 # e.g., "1s", "5s", "10s"
+
+    # Errors that should trigger automatic retry
+    retriable_errors:
+      - timeout
+      - connection_error
+      - connection refused
+      - temporarily unavailable
+      - rate_limited
+      - deadlock detected
+
+    # Errors that should NOT retry
+    non_retriable_errors:
+      - validation error
+      - config error
+      - authentication failed
+      - not found
+      - permission denied

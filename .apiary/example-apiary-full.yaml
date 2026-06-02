@@ -1,0 +1,166 @@
+version: "1"
+
+# ── Runners ────────────────────────────────────────────────────────────────────
+# Define how agents will execute (CLI, API, custom gateway, etc.)
+runners:
+  # Claude CLI runner (local development, no API keys needed)
+  - id: claude-cli
+    type: cli
+    config:
+      command: claude
+      model_flag: --model
+      prompt_flag: -p
+
+  # Claude API runner (Anthropic API with full model access)
+  - id: claude-api
+    type: api
+    config:
+      provider: anthropic
+      base_url: https://api.anthropic.com/v1
+      api_key: ${ANTHROPIC_API_KEY}
+      # Optional: model name mappings if needed
+      # models:
+      #   claude-opus-4-8: claude-4-20250514
+      #   claude-sonnet-4-6: claude-3-5-sonnet-20241022
+
+  # OpenCode runner (alternative provider with DeepSeek and other models)
+  - id: opencode
+    type: api
+    config:
+      provider: opencode-go
+      base_url: https://opencode.ai/zen/go/v1
+      api_key: ${OPENCODE_API_KEY}
+
+# Default runner used by agents if not overridden
+default_runner: claude-cli
+
+# ── Sources ────────────────────────────────────────────────────────────────────
+sources:
+  - id: project-erp
+    type: plane
+    config:
+      workspace: project-erp
+      project: 6ee18c57-7f88-414c-bad5-44ef4afd979b
+      api_key: ${PLANE_API_KEY}
+      base_url: http://localhost:8091
+    poll_interval: 60s
+    filters:
+      states: [backlog, todo, in progress]
+
+# ── Agents ─────────────────────────────────────────────────────────────────────
+agents:
+  # === Claude-based agents (original design) ===
+
+  - id: investigator
+    description: "Investigator — analyzes and classifies tasks by complexity"
+    soul_file: .apiary/souls/investigator.md
+    runner: claude-cli
+    preferred_models: [claude-opus-4-8, claude-sonnet-4-6]
+    skills: [gitnexus-codebase, changelog-contexto]
+
+  - id: po
+    description: "Product Owner — transforms business demands into specifications"
+    soul_file: .apiary/souls/po.md
+    runner: claude-cli
+    preferred_models: [claude-opus-4-8]
+    skills: [gitnexus-codebase, changelog-contexto, delegate-to-agent]
+
+  - id: staff
+    description: "Staff Engineer — designs complex solutions and decomposes tasks"
+    soul_file: .apiary/souls/staff.md
+    runner: claude-cli
+    preferred_models: [claude-opus-4-8]
+    skills: [gitnexus-codebase, git-workflow, changelog-contexto]
+
+  - id: engineer
+    description: "Engineer — implements tasks following project conventions"
+    soul_file: .apiary/souls/engineer.md
+    runner: claude-cli
+    preferred_models: [claude-sonnet-4-6, claude-haiku-4-5]
+    skills: [git-workflow, e2e-before-pr, gitnexus-codebase, handler-error-logging, changelog-contexto]
+
+  - id: reviewer
+    description: "Reviewer — performs code review and quality checks"
+    soul_file: .apiary/souls/reviewer.md
+    runner: claude-cli
+    preferred_models: [claude-sonnet-4-6]
+    skills: [git-workflow, gitnexus-codebase, e2e-before-pr]
+
+  - id: qa
+    description: "QA — validates implementation against acceptance criteria"
+    soul_file: .apiary/souls/qa.md
+    runner: claude-cli
+    preferred_models: [claude-sonnet-4-6, claude-haiku-4-5]
+    skills: [e2e-before-pr, changelog-contexto]
+
+# ── Routes ─────────────────────────────────────────────────────────────────────
+routes:
+  # === Claude-based agent routes ===
+
+  # New issues → Investigator for classification
+  - id: new-issue-classify
+    priority: 5
+    match:
+      source: project-erp
+      labels: []  # All new issues without agent assignment
+    agent: investigator
+    on_complete:
+      set_state: in review
+
+  # Complex issues → Staff for design analysis
+  - id: complex-design
+    priority: 10
+    match:
+      source: project-erp
+      labels: [agent:staff]
+    agent: staff
+    on_complete:
+      set_state: in review
+
+  # Requirements → PO for specification
+  - id: requirements-spec
+    priority: 15
+    match:
+      source: project-erp
+      labels: [agent:po]
+    agent: po
+    on_complete:
+      set_state: in review
+
+  # Implementation → Engineer
+  - id: engineer-implement
+    priority: 20
+    match:
+      source: project-erp
+      labels: [agent:engineer]
+    agent: engineer
+    on_complete:
+      set_state: in review
+
+  # Code review → Reviewer
+  - id: code-review
+    priority: 25
+    match:
+      source: project-erp
+      labels: [agent:reviewer]
+    agent: reviewer
+    on_complete:
+      set_state: in review
+
+  # Testing → QA
+  - id: qa-validate
+    priority: 30
+    match:
+      source: project-erp
+      labels: [agent:qa]
+    agent: qa
+    on_complete:
+      set_state: done
+
+
+# ── Settings ───────────────────────────────────────────────────────────────────
+settings:
+  concurrency: 2
+  log_level: info
+  state_lock: true
+  result_comment: true
