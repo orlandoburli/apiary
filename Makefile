@@ -1,6 +1,10 @@
 SRC     := src
 BINARY  := apiary
 BIN_DIR := bin
+PKG     := github.com/orlandoburli/apiary/internal/version
+
+VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
+LDFLAGS  := -ldflags "-X $(PKG).Version=$(VERSION)"
 
 .DEFAULT_GOAL := help
 
@@ -9,13 +13,13 @@ BIN_DIR := bin
 .PHONY: build
 build: ## Build the apiary binary into bin/
 	@mkdir -p $(BIN_DIR)
-	cd $(SRC) && go build -o ../$(BIN_DIR)/$(BINARY) ./cmd/apiary
-	@echo "→ $(BIN_DIR)/$(BINARY)"
+	cd $(SRC) && go build $(LDFLAGS) -o ../$(BIN_DIR)/$(BINARY) ./cmd/apiary
+	@echo "→ $(BIN_DIR)/$(BINARY)  ($(VERSION))"
 
 .PHONY: install
 install: ## Install apiary to $$GOPATH/bin (makes it available on PATH)
-	cd $(SRC) && go install ./cmd/apiary
-	@echo "→ installed to $$(go env GOPATH)/bin/$(BINARY)"
+	cd $(SRC) && go install $(LDFLAGS) ./cmd/apiary
+	@echo "→ installed to $$(go env GOPATH)/bin/$(BINARY)  ($(VERSION))"
 
 # ── test ───────────────────────────────────────────────────────────────────────
 
@@ -29,6 +33,7 @@ test-verbose: ## Run all tests with per-test output
 
 .PHONY: test-cover
 test-cover: ## Run tests and open an HTML coverage report
+	@mkdir -p $(BIN_DIR)
 	cd $(SRC) && go test -coverprofile=../$(BIN_DIR)/coverage.out ./...
 	go tool cover -html=$(BIN_DIR)/coverage.out
 

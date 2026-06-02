@@ -6,9 +6,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/orlandoburli/apiary/internal/tui/styles"
+	"github.com/orlandoburli/apiary/internal/version"
 )
-
-const version = "0.1.0-dev"
 
 func (m Model) View() string {
 	if m.width == 0 {
@@ -25,7 +24,7 @@ func (m Model) View() string {
 
 func (m Model) renderHeader() string {
 	logo := styles.Header.Render("⬡ apiary")
-	ver := styles.StatusBar.Render("v" + version)
+	ver := styles.StatusBar.Render("v" + version.Version)
 	spacer := strings.Repeat(" ", max(0, m.width-lipgloss.Width(logo)-lipgloss.Width(ver)-2))
 	return lipgloss.JoinHorizontal(lipgloss.Top, logo, spacer, ver)
 }
