@@ -3,14 +3,15 @@ package model
 import "time"
 
 type RunRequest struct {
-	Cell         Cell
-	WorkerID     string
-	Model        string
-	MaxTurns     int
-	SystemAppend string
-	WorkingDir   string
-	Env          map[string]string
-	Timeout      time.Duration
+	Cell            Cell
+	WorkerID        string
+	Model           string
+	MaxTurns        int
+	SystemAppend    string
+	WorkingDir      string
+	Env             map[string]string
+	Timeout         time.Duration
+	AgentMetadata   map[string]any // optional: for future use with agent-specific features
 }
 
 type RunResult struct {

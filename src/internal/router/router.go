@@ -57,6 +57,11 @@ func New(cfg *config.Config) (*Router, error) {
 func (r *Router) Route(cell model.Cell) (Match, bool) {
 	for _, route := range r.routes {
 		if r.matches(route, cell) {
+			// Agent-based routing: route.Agent is required; worker is for backward compat
+			if route.Agent != "" {
+				return Match{Route: route}, true
+			}
+			// Backward compat: fall back to worker if agent not specified
 			worker, ok := r.workers[route.Worker]
 			if !ok {
 				continue
@@ -77,7 +82,8 @@ func (r *Router) matches(route config.RouteConfig, cell model.Cell) bool {
 	if len(m.Labels) > 0 {
 		cellLabels := toLowerSet(cell.Labels)
 		for _, required := range m.Labels {
-			if !cellLabels[strings.ToLower(required)] {
+			lowerRequired := strings.ToLower(required)
+			if !cellLabels[lowerRequired] {
 				return false
 			}
 		}
