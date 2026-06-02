@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"os/user"
+	"path/filepath"
 	"sync"
 	"syscall"
 
@@ -14,6 +16,8 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/daemon"
+	"github.com/orlandoburli/apiary/internal/db"
+	"github.com/orlandoburli/apiary/internal/logging"
 	"github.com/orlandoburli/apiary/internal/tui"
 )
 
@@ -43,7 +47,23 @@ func newRunCmd() *cobra.Command {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 
-			disp, err := daemon.New(ctx, cfg, configFile)
+			// Initialize database and logger
+			dbPath := getDBPath()
+			logDir := getLogDir()
+
+			dbClient, err := db.New(ctx, dbPath)
+			if err != nil {
+				return fmt.Errorf("initializing database: %w", err)
+			}
+			defer dbClient.Close()
+
+			logger, err := logging.New(logDir, dbClient, logging.LevelInfo)
+			if err != nil {
+				return fmt.Errorf("initializing logger: %w", err)
+			}
+			defer logger.Close()
+
+			disp, err := daemon.New(ctx, cfg, configFile, dbClient, logger)
 			if err != nil {
 				return fmt.Errorf("initialising dispatcher: %w", err)
 			}
@@ -94,4 +114,22 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&worker, "worker", "", "restrict to a single worker id")
 
 	return cmd
+}
+
+// getDBPath returns the path to the SQLite database (~/.apiary/apiary.db)
+func getDBPath() string {
+	usr, err := user.Current()
+	if err != nil {
+		return ".apiary/apiary.db"
+	}
+	return filepath.Join(usr.HomeDir, ".apiary", "apiary.db")
+}
+
+// getLogDir returns the log directory (~/.apiary/logs)
+func getLogDir() string {
+	usr, err := user.Current()
+	if err != nil {
+		return ".apiary/logs"
+	}
+	return filepath.Join(usr.HomeDir, ".apiary", "logs")
 }
