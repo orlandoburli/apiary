@@ -57,6 +57,10 @@ type taskLogsMsg struct {
 	logs   []LogEntry
 }
 type agentsDataMsg struct{ agents []AgentStatus }
+type agentActivityMsg struct {
+	agentID string
+	items   []TaskItem
+}
 type logsDataMsg struct{ logs []LogEntry }
 
 // ── lifecycle ───────────────────────────────────────────────────────────────
@@ -130,6 +134,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.model.loading = false
 		a.model.lastRefresh = time.Now()
 
+	case agentActivityMsg:
+		if a.model.agentsTab != nil {
+			a.model.agentsTab.Activity = msg.items
+			a.model.agentsTab.ActivityScroll = 0
+			a.model.agentsTab.View = AgentViewActivity
+		}
+		a.model.loading = false
+
 	case logsDataMsg:
 		if a.model.logsTab != nil {
 			a.model.logsTab.Logs = msg.logs
@@ -152,6 +164,10 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// While a Tasks sub-view (detail/logs) is open, keys are scoped to it.
 	if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.View != TaskViewList {
 		return a.handleTaskSubViewKey(key)
+	}
+	// While an Agents sub-view (detail/activity) is open, keys are scoped to it.
+	if a.model.ActiveTab() == "Agents" && a.model.agentsTab != nil && a.model.agentsTab.View != AgentViewList {
+		return a.handleAgentSubViewKey(key)
 	}
 
 	const hStep = 8
@@ -226,20 +242,84 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "enter", "l":
-		// Open the logs view for the selected task.
-		if a.model.ActiveTab() == "Tasks" {
+		switch a.model.ActiveTab() {
+		case "Tasks":
 			if id, ok := a.selectedTaskID(); ok {
 				a.model.loading = true
 				return a, a.fetchTaskLogs(id)
 			}
+		case "Agents":
+			if id, ok := a.selectedAgentID(); ok {
+				a.model.loading = true
+				return a, a.fetchAgentActivity(id)
+			}
 		}
 	case "d":
-		// Open the detail view for the selected task.
-		if a.model.ActiveTab() == "Tasks" {
+		switch a.model.ActiveTab() {
+		case "Tasks":
 			if id, ok := a.selectedTaskID(); ok {
 				a.model.loading = true
 				return a, a.fetchTaskDetail(id)
 			}
+		case "Agents":
+			// Detail uses the already-loaded stats — no DB round-trip needed.
+			if ag, ok := a.selectedAgent(); ok {
+				a.model.agentsTab.Detail = ag
+				a.model.agentsTab.View = AgentViewDetail
+			}
+		}
+	}
+	return a, nil
+}
+
+// selectedAgent returns the agent under the cursor in the Agents list.
+func (a *App) selectedAgent() (*AgentStatus, bool) {
+	ag := a.model.agentsTab
+	if ag == nil || ag.SelectedIdx < 0 || ag.SelectedIdx >= len(ag.Agents) {
+		return nil, false
+	}
+	sel := ag.Agents[ag.SelectedIdx]
+	return &sel, true
+}
+
+func (a *App) selectedAgentID() (string, bool) {
+	if ag, ok := a.selectedAgent(); ok {
+		return ag.ID, true
+	}
+	return "", false
+}
+
+// handleAgentSubViewKey handles keys while an agent detail/activity view is open.
+func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
+	ag := a.model.agentsTab
+	switch key {
+	case "esc", "backspace", "h", "left":
+		ag.View = AgentViewList
+		ag.Detail = nil
+		ag.Activity = nil
+		ag.ActivityScroll = 0
+	case "d":
+		if a2, ok := a.selectedAgent(); ok {
+			ag.Detail = a2
+			ag.View = AgentViewDetail
+		}
+	case "l", "enter":
+		if id, ok := a.selectedAgentID(); ok {
+			a.model.loading = true
+			return a, a.fetchAgentActivity(id)
+		}
+	case "r":
+		if id, ok := a.selectedAgentID(); ok && ag.View == AgentViewActivity {
+			a.model.loading = true
+			return a, a.fetchAgentActivity(id)
+		}
+	case "up":
+		if ag.View == AgentViewActivity && ag.ActivityScroll > 0 {
+			ag.ActivityScroll--
+		}
+	case "down":
+		if ag.View == AgentViewActivity && ag.ActivityScroll < len(ag.Activity)-1 {
+			ag.ActivityScroll++
 		}
 	}
 	return a, nil
@@ -383,6 +463,42 @@ func (a *App) fetchTasks() tea.Cmd {
 			}
 		}
 		return tasksDataMsg{items: items}
+	}
+}
+
+// taskItemFromHistory converts a DB history row into a dashboard TaskItem.
+func taskItemFromHistory(r db.TaskHistoryItem) TaskItem {
+	return TaskItem{
+		TaskID:      r.TaskID,
+		Title:       r.Title,
+		Agent:       r.AgentID,
+		Model:       r.Model,
+		Runner:      r.Runner,
+		Status:      r.Status,
+		Attempt:     r.Attempt,
+		Duration:    time.Duration(r.DurationMs) * time.Millisecond,
+		StartedAt:   r.StartedAt,
+		CompletedAt: r.CompletedAt,
+		Error:       r.Error,
+	}
+}
+
+// fetchAgentActivity loads the recent tasks handled by an agent.
+func (a *App) fetchAgentActivity(agentID string) tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+
+		items := make([]TaskItem, 0)
+		if dbConn != nil {
+			if rows, err := dbConn.GetTasksByAgent(ctx, agentID, 200); err == nil {
+				for _, r := range rows {
+					items = append(items, taskItemFromHistory(r))
+				}
+			}
+		}
+		return agentActivityMsg{agentID: agentID, items: items}
 	}
 }
 
@@ -552,13 +668,15 @@ func (a *App) box(label, content string, height int) string {
 		bodyRows = 1
 	}
 
-	prefix := "┌─ " + label + " "
-	dashes := width - lipgloss.Width(prefix) - 1
+	prefixPlain := "┌─ " + label + " "
+	dashes := width - lipgloss.Width(prefixPlain) - 1
 	if dashes < 0 {
 		dashes = 0
 	}
-	top := prefix + strings.Repeat("─", dashes) + "┐"
-	bottom := "└" + strings.Repeat("─", width-2) + "┘"
+	top := StyleBorder.Render("┌─ ") + StyleBoxTitle.Render(label) +
+		StyleBorder.Render(" "+strings.Repeat("─", dashes)+"┐")
+	bottom := StyleBorder.Render("└" + strings.Repeat("─", width-2) + "┘")
+	bar := StyleBorder.Render("│")
 
 	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
 	var b strings.Builder
@@ -568,7 +686,7 @@ func (a *App) box(label, content string, height int) string {
 		if i < len(lines) {
 			line = lines[i]
 		}
-		b.WriteString("│" + fitLine(line, inner) + "│\n")
+		b.WriteString(bar + fitLine(line, inner) + bar + "\n")
 	}
 	b.WriteString(bottom + "\n")
 	return b.String()
@@ -666,28 +784,27 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 
 	var b strings.Builder
 	header := pad("", cursorW) + " " + pad("TASK", titleW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + "WHEN"
-	b.WriteString(StyleMuted.Render(header) + "\n")
+	b.WriteString(StyleTableHeader.Render(header) + "\n")
 	for i, it := range t.History {
+		selected := i == t.SelectedIdx
 		cursor := "  "
-		if i == t.SelectedIdx {
-			cursor = StyleInfo.Render("▶") + " "
+		titleText := pad(truncate(valueOr(it.Title, it.TaskID), titleW), titleW)
+		if selected {
+			cursor = StyleFocusedArrow.Render("▶") + " "
+			titleText = StyleSelectedRow.Render(titleText)
 		}
-		title := pad(truncate(valueOr(it.Title, it.TaskID), titleW), titleW)
 		agent := pad(truncate(valueOr(it.Agent, "—"), agentW), agentW)
 		status := taskStatusBadge(it.Status) // already padded to width 8
 		when := StyleMuted.Render(taskWhen(it))
-		b.WriteString(cursor + " " + title + " " + agent + " " + status + " " + when + "\n")
+		b.WriteString(cursor + " " + titleText + " " + agent + " " + status + " " + when + "\n")
 	}
-	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("enter/l logs   d details   ↑/↓ select"))
-	b.WriteString("\n")
 	return a.box("TASKS", b.String(), height)
 }
 
 func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	d := t.Detail
 	if d == nil {
-		return a.box("TASK DETAILS", StyleMuted.Render("No details")+"\n"+a.backHint(), height)
+		return a.box("TASK DETAILS", StyleMuted.Render("No details")+"\n", height)
 	}
 
 	started, completed, dur := "—", "—", "—"
@@ -703,9 +820,9 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 
 	var b strings.Builder
 	row := func(k, v string) {
-		b.WriteString(fmt.Sprintf("  %-14s %s\n", k+":", v))
+		b.WriteString("  " + StyleLabel.Render(pad(k+":", 14)) + " " + v + "\n")
 	}
-	row("Task ID", d.TaskID)
+	row("Task ID", StyleValueStrong.Render(d.TaskID))
 	row("Title", valueOr(d.Title, "—"))
 	row("Status", taskStatusBadge(d.Status))
 	row("Agent", valueOr(d.Agent, "—"))
@@ -718,23 +835,19 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	if d.Error != "" {
 		b.WriteString("\n")
 		b.WriteString("  " + StyleError.Render("Error:") + "\n")
-		b.WriteString("  " + truncate(d.Error, a.model.width-4) + "\n")
+		b.WriteString("  " + StyleError.Render(truncate(d.Error, a.model.width-4)) + "\n")
 	}
-	b.WriteString("\n")
-	b.WriteString(a.backHint())
-	b.WriteString("\n")
-	return a.box("TASK DETAILS", b.String(), height)
+	return a.box("TASK DETAILS — "+valueOr(d.TaskID, ""), b.String(), height)
 }
 
 func (a *App) renderTaskLogs(t *TasksTab, height int) string {
 	if len(t.Logs) == 0 {
-		body := StyleMuted.Render("No logs recorded for this task.") + "\n\n" + a.backHint() + "\n"
-		return a.box("TASK LOGS", body, height)
+		return a.box("TASK LOGS", StyleMuted.Render("No logs recorded for this task.")+"\n", height)
 	}
 
 	lines := a.taskLogLines()
 
-	rows := height - 4 // borders + back hint
+	rows := height - 2 // top + bottom borders
 	if rows < 1 {
 		rows = 1
 	}
@@ -754,10 +867,6 @@ func (a *App) renderTaskLogs(t *TasksTab, height int) string {
 	for i := start; i < end; i++ {
 		b.WriteString(lines[i] + "\n")
 	}
-	b.WriteString("\n")
-	b.WriteString(a.backHint())
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("   [%d-%d/%d]", start+1, end, len(lines))))
-	b.WriteString("\n")
 	return a.box("TASK LOGS", b.String(), height)
 }
 
@@ -819,14 +928,24 @@ func wrapPlain(s string, width int) []string {
 	return out
 }
 
-func (a *App) backHint() string {
-	return StyleMuted.Render("esc back   d details   l logs   ↑/↓ scroll   g/G top/bottom")
-}
-
 func (a *App) renderAgentsTab(height int) string {
 	ag := a.model.agentsTab
-	if ag == nil || len(ag.Agents) == 0 {
+	if ag == nil {
 		return a.box("AGENTS", StyleMuted.Render("No agents yet")+"\n", height)
+	}
+	switch ag.View {
+	case AgentViewDetail:
+		return a.renderAgentDetail(ag, height)
+	case AgentViewActivity:
+		return a.renderAgentActivity(ag, height)
+	default:
+		return a.renderAgentList(ag, height)
+	}
+}
+
+func (a *App) renderAgentList(ag *AgentsTab, height int) string {
+	if len(ag.Agents) == 0 {
+		return a.box("AGENTS", StyleMuted.Render("No agents yet — they appear after running at least one task.")+"\n", height)
 	}
 
 	const (
@@ -844,20 +963,141 @@ func (a *App) renderAgentsTab(height int) string {
 
 	var b strings.Builder
 	header := pad("", cursorW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + pad("COMPLETED", completedW) + " " + pad("AVG", avgW) + " " + "SUCCESS"
-	b.WriteString(StyleMuted.Render(header) + "\n")
+	b.WriteString(StyleTableHeader.Render(header) + "\n")
 	for i, agent := range ag.Agents {
+		selected := i == ag.SelectedIdx
 		cursor := "  "
-		if i == ag.SelectedIdx {
-			cursor = StyleInfo.Render("▶") + " "
+		name := pad(truncate(valueOr(agent.ID, "—"), agentW), agentW)
+		if selected {
+			cursor = StyleFocusedArrow.Render("▶") + " "
+			name = StyleSelectedRow.Render(name)
 		}
-		status := pad(StatusColor(agent.Status)+" "+valueOr(agent.Status, "—"), statusW)
+		status := pad(StatusColor(agent.Status)+" "+agentStatusText(agent.Status), statusW)
 		completed := pad(fmt.Sprintf("%d", agent.CompletedCount), completedW)
 		avg := pad(fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000), avgW)
-		success := fmt.Sprintf("%.0f%%", agent.SuccessRate*100)
-		name := pad(truncate(valueOr(agent.ID, "—"), agentW), agentW)
+		success := successRateStyled(agent.SuccessRate)
 		b.WriteString(cursor + " " + name + " " + status + " " + completed + " " + avg + " " + success + "\n")
 	}
 	return a.box("AGENTS", b.String(), height)
+}
+
+func (a *App) renderAgentDetail(ag *AgentsTab, height int) string {
+	d := ag.Detail
+	if d == nil {
+		return a.box("AGENT DETAILS", StyleMuted.Render("No details")+"\n", height)
+	}
+
+	lastEnded := "—"
+	if d.LastTaskEndedAt != nil {
+		lastEnded = d.LastTaskEndedAt.Format("2006-01-02 15:04:05")
+	}
+	completed := d.CompletedCount
+	// Derive succeeded/failed from the success rate (best-effort from aggregates).
+	succeeded := int(float64(completed)*d.SuccessRate + 0.5)
+	failed := completed - succeeded
+	if failed < 0 {
+		failed = 0
+	}
+
+	var b strings.Builder
+	row := func(k, v string) {
+		b.WriteString("  " + StyleLabel.Render(pad(k+":", 16)) + " " + v + "\n")
+	}
+	row("Agent", StyleValueStrong.Render(d.ID))
+	row("Status", StatusColor(d.Status)+" "+agentStatusText(d.Status))
+	row("Current task", valueOr(d.CurrentTask, "—"))
+	b.WriteString("\n")
+	row("Completed", StyleSuccess.Render(fmt.Sprintf("%d", completed)))
+	row("Succeeded", StyleSuccess.Render(fmt.Sprintf("%d ✓", succeeded)))
+	row("Failed", StyleError.Render(fmt.Sprintf("%d ✗", failed)))
+	row("Success rate", successRateStyled(d.SuccessRate))
+	row("Queued", fmt.Sprintf("%d", d.QueuedCount))
+	b.WriteString("\n")
+	row("Avg duration", fmt.Sprintf("%.1fs", float64(d.AvgDurationMs)/1000))
+	row("Last task", lastEnded)
+	return a.box("AGENT DETAILS — "+d.ID, b.String(), height)
+}
+
+func (a *App) renderAgentActivity(ag *AgentsTab, height int) string {
+	name := "—"
+	if ag.Detail != nil {
+		name = ag.Detail.ID
+	} else if id, ok := a.selectedAgentID(); ok {
+		name = id
+	}
+	if len(ag.Activity) == 0 {
+		return a.box("AGENT ACTIVITY — "+name, StyleMuted.Render("No tasks recorded for this agent yet.")+"\n", height)
+	}
+
+	const (
+		cursorW = 2
+		statusW = 8
+		durW    = 8
+		whenW   = 11
+	)
+	inner := a.model.width - 2
+	titleW := inner - cursorW - statusW - durW - whenW - 4
+	if titleW < 10 {
+		titleW = 10
+	}
+
+	var b strings.Builder
+	header := pad("", cursorW) + " " + pad("TASK", titleW) + " " + pad("STATUS", statusW) + " " + pad("DURATION", durW) + " " + "WHEN"
+	b.WriteString(StyleTableHeader.Render(header) + "\n")
+
+	rows := height - 3 // borders + header
+	if rows < 1 {
+		rows = 1
+	}
+	start := ag.ActivityScroll
+	if start > len(ag.Activity)-1 {
+		start = len(ag.Activity) - 1
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := start + rows
+	if end > len(ag.Activity) {
+		end = len(ag.Activity)
+	}
+	for i := start; i < end; i++ {
+		it := ag.Activity[i]
+		title := pad(truncate(valueOr(it.Title, it.TaskID), titleW), titleW)
+		status := taskStatusBadge(it.Status)
+		dur := "—"
+		if it.Duration > 0 {
+			dur = it.Duration.Round(time.Second).String()
+		}
+		b.WriteString("   " + title + " " + status + " " + pad(dur, durW) + " " + StyleMuted.Render(taskWhen(it)) + "\n")
+	}
+	return a.box("AGENT ACTIVITY — "+name, b.String(), height)
+}
+
+// agentStatusText returns a readable label for an agent status.
+func agentStatusText(s string) string {
+	switch s {
+	case "active":
+		return StyleSuccess.Render("active")
+	case "error":
+		return StyleError.Render("error")
+	case "idle":
+		return StyleMuted.Render("idle")
+	default:
+		return valueOr(s, "—")
+	}
+}
+
+// successRateStyled colors a success rate: green high, yellow mid, red low.
+func successRateStyled(rate float64) string {
+	txt := fmt.Sprintf("%.0f%%", rate*100)
+	switch {
+	case rate >= 0.9:
+		return StyleSuccess.Render(txt)
+	case rate >= 0.6:
+		return StyleWarning.Render(txt)
+	default:
+		return StyleError.Render(txt)
+	}
 }
 
 func (a *App) renderLogsTab(height int) string {
@@ -868,7 +1108,7 @@ func (a *App) renderLogsTab(height int) string {
 
 	lines := a.logVisualLines()
 
-	rows := height - 3 // borders + hint line
+	rows := height - 2 // top + bottom borders
 	if rows < 1 {
 		rows = 1
 	}
@@ -888,16 +1128,6 @@ func (a *App) renderLogsTab(height int) string {
 	for i := start; i < end; i++ {
 		b.WriteString(lines[i] + "\n")
 	}
-	// fill remaining body rows so the hint sits at the bottom
-	for i := end - start; i < rows; i++ {
-		b.WriteString("\n")
-	}
-
-	mode := "wrap on"
-	if !l.Wrap {
-		mode = fmt.Sprintf("wrap off  ←/→ scroll (col %d)", l.HScroll)
-	}
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("w %s   ↑/↓ lines   [%d-%d/%d]", mode, start+1, end, len(lines))))
 	return a.box("LOGS", b.String(), height)
 }
 
@@ -960,12 +1190,76 @@ func (a *App) renderFooter() string {
 	if !a.model.lastRefresh.IsZero() {
 		updated = time.Since(a.model.lastRefresh).Round(time.Second).String() + " ago"
 	}
-	nav := "tab/⇧tab switch   ←/→ tab   ↑/↓ nav"
-	if a.model.ActiveTab() == "Logs" {
-		nav = "tab/⇧tab switch   w wrap   ←/→ scroll   ↑/↓ lines"
+	var seg []string
+	for _, f := range a.footerKeys() {
+		seg = append(seg, StyleFooterKey.Render(" "+f.k+" ")+" "+StyleFooterLbl.Render(f.d))
 	}
-	footer := fmt.Sprintf("updated %s   │   %s   r refresh   q quit", updated, nav)
-	return fitLine(StyleMuted.Render(footer), a.model.width)
+	left := strings.Join(seg, StyleFooterDim.Render("  "))
+	right := StyleFooterDim.Render(a.footerStatus(updated))
+
+	gap := a.model.width - lipgloss.Width(left) - lipgloss.Width(right) - 1
+	if gap < 1 {
+		gap = 1
+	}
+	line := " " + left + strings.Repeat(" ", gap) + right
+	return fitLine(line, a.model.width)
+}
+
+// fkey is one key/label pair shown in the footer.
+type fkey struct{ k, d string }
+
+// footerKeys returns the navigation hints for the current tab + sub-view.
+func (a *App) footerKeys() []fkey {
+	switch a.model.ActiveTab() {
+	case "Tasks":
+		if t := a.model.tasksTab; t != nil {
+			switch t.View {
+			case TaskViewDetail:
+				return []fkey{{"esc", "back"}, {"l", "logs"}, {"r", "reload"}, {"q", "quit"}}
+			case TaskViewLogs:
+				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"g/G", "top/bottom"}, {"q", "quit"}}
+			}
+		}
+		return []fkey{{"↑/↓", "select"}, {"enter/l", "logs"}, {"d", "details"}, {"tab", "switch"}, {"r", "refresh"}, {"q", "quit"}}
+	case "Agents":
+		if ag := a.model.agentsTab; ag != nil {
+			switch ag.View {
+			case AgentViewDetail:
+				return []fkey{{"esc", "back"}, {"l", "activity"}, {"q", "quit"}}
+			case AgentViewActivity:
+				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"r", "reload"}, {"q", "quit"}}
+			}
+		}
+		return []fkey{{"↑/↓", "select"}, {"enter/l", "activity"}, {"d", "details"}, {"tab", "switch"}, {"r", "refresh"}, {"q", "quit"}}
+	case "Logs":
+		wrap := "wrap off"
+		if a.model.logsTab != nil && a.model.logsTab.Wrap {
+			wrap = "wrap on"
+		}
+		return []fkey{{"w", wrap}, {"←/→", "scroll"}, {"↑/↓", "lines"}, {"tab", "switch"}, {"q", "quit"}}
+	default: // Overview
+		return []fkey{{"tab", "next"}, {"⇧tab", "prev"}, {"r", "refresh"}, {"q", "quit"}}
+	}
+}
+
+// footerStatus is the right-aligned status: last refresh + any scroll position.
+func (a *App) footerStatus(updated string) string {
+	pos := ""
+	switch a.model.ActiveTab() {
+	case "Tasks":
+		if t := a.model.tasksTab; t != nil && t.View == TaskViewLogs {
+			if n := len(a.taskLogLines()); n > 0 {
+				pos = fmt.Sprintf("line %d/%d   ", t.LogScroll+1, n)
+			}
+		}
+	case "Logs":
+		if a.model.logsTab != nil {
+			if n := len(a.logVisualLines()); n > 0 {
+				pos = fmt.Sprintf("line %d/%d   ", a.model.logsTab.Scrolled+1, n)
+			}
+		}
+	}
+	return pos + "updated " + updated
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

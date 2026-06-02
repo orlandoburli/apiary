@@ -266,6 +266,60 @@ func (c *Client) GetTaskHistory(ctx context.Context, limit int) ([]TaskHistoryIt
 	return items, nil
 }
 
+// GetTasksByAgent returns recent tasks handled by a given agent (latest attempt
+// per task), newest first. Powers the Agents tab activity view.
+func (c *Client) GetTasksByAgent(ctx context.Context, agentID string, limit int) ([]TaskHistoryItem, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT e.task_id, e.title, e.agent_id, e.model, e.runner,
+		       e.status, e.attempt, e.duration_ms, e.started_at, e.completed_at, e.error_message
+		FROM task_executions e
+		JOIN (
+			SELECT task_id, MAX(id) AS max_id
+			FROM task_executions
+			GROUP BY task_id
+		) latest ON e.id = latest.max_id
+		WHERE e.agent_id = ?
+		ORDER BY e.created_at DESC
+		LIMIT ?
+	`, agentID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []TaskHistoryItem
+	for rows.Next() {
+		var it TaskHistoryItem
+		var title, model, runner, status, errMsg sql.NullString
+		var dur sql.NullInt64
+		var startedStr, completedStr sql.NullString
+		if err := rows.Scan(&it.TaskID, &title, &it.AgentID, &model, &runner,
+			&status, &it.Attempt, &dur, &startedStr, &completedStr, &errMsg); err != nil {
+			continue
+		}
+		it.Title = title.String
+		it.Model = model.String
+		it.Runner = runner.String
+		it.Status = status.String
+		it.Error = errMsg.String
+		if dur.Valid {
+			it.DurationMs = dur.Int64
+		}
+		if startedStr.Valid {
+			if t, ok := parseSQLiteTime(startedStr.String); ok {
+				it.StartedAt = &t
+			}
+		}
+		if completedStr.Valid {
+			if t, ok := parseSQLiteTime(completedStr.String); ok {
+				it.CompletedAt = &t
+			}
+		}
+		items = append(items, it)
+	}
+	return items, nil
+}
+
 // GetTaskDetail returns the latest execution for a task with full metadata.
 func (c *Client) GetTaskDetail(ctx context.Context, taskID string) (*TaskHistoryItem, error) {
 	row := c.db.QueryRowContext(ctx, `

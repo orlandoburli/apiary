@@ -69,10 +69,24 @@ type TaskItem struct {
 	Error       string
 }
 
-// AgentsTab shows agent status and performance.
+// AgentView is which sub-screen the Agents tab is showing.
+type AgentView int
+
+const (
+	AgentViewList AgentView = iota
+	AgentViewDetail
+	AgentViewActivity
+)
+
+// AgentsTab shows agent status and performance with detail/activity sub-views.
 type AgentsTab struct {
 	Agents      []AgentStatus
 	SelectedIdx int
+
+	View           AgentView
+	Detail         *AgentStatus // populated when View == AgentViewDetail
+	Activity       []TaskItem   // populated when View == AgentViewActivity
+	ActivityScroll int
 }
 
 type AgentStatus struct {
