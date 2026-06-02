@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,15 +55,15 @@ type Dispatcher struct {
 	runners     map[string]runner.Adapter // worker id → configured runner
 	agentRunner map[string]string         // agent id → runner type (cli, script, …)
 
-	db          *db.Client       // SQLite database for state and logging
-	logger      *logging.Logger  // Structured logger (file + DB)
-	retryMgr    *RetryManager    // Retry logic and backoff
+	db       *db.Client      // SQLite database for state and logging
+	logger   *logging.Logger // Structured logger (file + DB)
+	retryMgr *RetryManager   // Retry logic and backoff
 
 	sem        chan struct{} // concurrency semaphore
-	active     atomic.Int32 // number of goroutines currently running
-	inFlight   sync.Map     // cell id → struct{}: prevents double-dispatch
-	activeRuns sync.Map     // run id → model.ActiveRun
-	retryQueue sync.Map     // cell id → retryQueueEntry: cells pending retry
+	active     atomic.Int32  // number of goroutines currently running
+	inFlight   sync.Map      // cell id → struct{}: prevents double-dispatch
+	activeRuns sync.Map      // run id → model.ActiveRun
+	retryQueue sync.Map      // cell id → retryQueueEntry: cells pending retry
 
 	stats  map[string]*sourceStat // source id → stats
 	statMu sync.RWMutex
@@ -79,18 +81,18 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 	}
 
 	d := &Dispatcher{
-		cfg:        cfg,
-		configFile: configFile,
-		startedAt:  time.Now(),
-		router:     r,
+		cfg:         cfg,
+		configFile:  configFile,
+		startedAt:   time.Now(),
+		router:      r,
 		sources:     make(map[string]source.Adapter),
 		runners:     make(map[string]runner.Adapter),
 		agentRunner: make(map[string]string),
-		db:         dbClient,
-		logger:     logger,
-		retryMgr:   NewRetryManager(&cfg.Settings.RetryPolicy),
-		sem:        make(chan struct{}, max(cfg.Settings.Concurrency, 1)),
-		stats:      make(map[string]*sourceStat),
+		db:          dbClient,
+		logger:      logger,
+		retryMgr:    NewRetryManager(&cfg.Settings.RetryPolicy),
+		sem:         make(chan struct{}, max(cfg.Settings.Concurrency, 1)),
+		stats:       make(map[string]*sourceStat),
 	}
 
 	for _, sc := range cfg.Sources {
@@ -181,6 +183,17 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 // Start launches one poll goroutine per source.
 // Cancel ctx to initiate a graceful shutdown; then call wg.Wait().
 func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
+	// A fresh process owns no in-flight runs: clear any executions left in the
+	// 'running' state by a previously-killed dispatcher so the dashboard's
+	// agent status reflects real, live claude processes rather than orphans.
+	if d.db != nil {
+		if n, err := d.db.ReconcileOrphanExecutions(ctx); err != nil {
+			aplog.Warn("reconcile orphan executions: %v", err)
+		} else if n > 0 {
+			aplog.Info("reconciled %d orphaned running execution(s) from a previous run", n)
+		}
+	}
+
 	for _, sc := range d.cfg.Sources {
 		sc := sc
 		adapter, ok := d.sources[sc.ID]
@@ -392,7 +405,7 @@ func (d *Dispatcher) Status() StatusResponse {
 // StartServer starts an HTTP server on the Unix socket for IPC.
 // It removes any stale socket file before binding.
 func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error {
-	path := SocketPath()
+	path := SocketPath(config.DataDir(d.configFile))
 	if err := ensureSocketDir(path); err != nil {
 		return fmt.Errorf("socket dir: %w", err)
 	}
@@ -536,6 +549,33 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		return model.RunResult{Success: false}
 	}
 
+	// Log the routing decision tree: why this cell landed on this agent, and
+	// which other routes were evaluated and rejected (DEBUG, per-task).
+	if d.logger != nil {
+		_, _, traces := d.router.Explain(cell)
+		d.logger.TaskDebug(ctx, cell.ID, fmt.Sprintf(
+			"routing decision for %q (source=%s labels=%v type=%s priority=%s):",
+			cell.Title, cell.SourceID, cell.Labels, cell.Type, cell.Priority))
+		for _, t := range traces {
+			marker := "·"
+			verb := "skip"
+			if t.Matched {
+				verb = "match"
+			}
+			if t.Selected {
+				marker = "▶"
+				verb = "SELECTED"
+			}
+			target := t.Agent
+			if target == "" {
+				target = "worker:" + t.Worker
+			}
+			d.logger.TaskDebug(ctx, cell.ID, fmt.Sprintf(
+				"  %s route=%s (prio=%d agent=%s) %s — %s",
+				marker, t.RouteID, t.Priority, target, verb, t.Reason))
+		}
+	}
+
 	if d.cfg.Settings.StateLock {
 		if err := adapter.Acknowledge(ctx, cell, model.AckActionInProgress); err != nil {
 			aplog.Error("cell %s: acknowledge error: %v", cell.ID, err)
@@ -583,6 +623,23 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		Timeout:      45 * time.Minute,
 	}
 
+	// Stream the runner's live output (prompt, claude conversation, stderr)
+	// into the per-task log so it shows up in the dashboard in real time.
+	// These are DEBUG entries — visible only when running with --debug.
+	if d.logger != nil {
+		cellID := cell.ID
+		req.LogSink = func(e model.LogEntry) {
+			switch e.Level {
+			case "error":
+				d.logger.TaskError(ctx, cellID, e.Message)
+			case "info":
+				d.logger.TaskInfo(ctx, cellID, e.Message)
+			default:
+				d.logger.TaskDebug(ctx, cellID, e.Message)
+			}
+		}
+	}
+
 	runCtx, cancel := context.WithTimeout(ctx, req.Timeout)
 	defer cancel()
 
@@ -596,7 +653,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 
 	if d.db != nil {
 		var err error
-		exec, err = d.db.CreateExecution(ctx, cell.ID, agentID, cell.Title, selectedModel, runnerType, attempt)
+		exec, err = d.db.CreateExecution(ctx, cell.ID, agentID, cell.Title, cell.Number, cell.URL, selectedModel, runnerType, attempt)
 		if err != nil {
 			aplog.Error("cell %s: create execution record: %v", cell.ID, err)
 		}
@@ -673,15 +730,93 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		}
 	}
 
-	if match.Route.OnComplete.SetState != "" {
+	// on_complete: apply labels (static add_labels + classifier assignment),
+	// then the state transition. Only on a successful run — we don't want to
+	// route a task based on a classification that failed.
+	oc := match.Route.OnComplete
+	if result.Success {
+		labels := append([]string(nil), oc.AddLabels...)
+
+		if oc.AssignFromOutput {
+			if agentID, ok := parseAssignDirective(result.Output); ok {
+				if d.agentExists(agentID) {
+					prefix := oc.AssignLabelPrefix
+					if prefix == "" {
+						prefix = "agent:"
+					}
+					label := prefix + agentID
+					labels = append(labels, label)
+					aplog.Info("cell %s: classifier assigned agent=%s → label %q", cell.ID, agentID, label)
+					if d.logger != nil {
+						d.logger.TaskInfo(ctx, cell.ID, fmt.Sprintf("assigned to agent %q (label %q)", agentID, label))
+					}
+				} else {
+					aplog.Error("cell %s: classifier chose unknown agent %q — not assigning", cell.ID, agentID)
+					if d.logger != nil {
+						d.logger.TaskError(ctx, cell.ID, fmt.Sprintf("classifier chose unknown agent %q", agentID))
+					}
+				}
+			} else {
+				aplog.Warn("cell %s: assign_from_output set but no 'APIARY-ASSIGN: <agent>' directive in output", cell.ID)
+				if d.logger != nil {
+					d.logger.TaskError(ctx, cell.ID, "no APIARY-ASSIGN directive found in output")
+				}
+			}
+		}
+
+		if len(labels) > 0 {
+			if la, ok := adapter.(source.LabelAdder); ok {
+				if err := la.AddLabels(ctx, cell, labels); err != nil {
+					aplog.Error("cell %s: add labels %v: %v", cell.ID, labels, err)
+				}
+			} else {
+				aplog.Error("cell %s: source does not support adding labels", cell.ID)
+			}
+		}
+	}
+
+	if oc.SetState != "" {
 		if ss, ok := adapter.(source.StateSetter); ok {
-			if err := ss.SetState(ctx, cell, match.Route.OnComplete.SetState); err != nil {
+			if err := ss.SetState(ctx, cell, oc.SetState); err != nil {
 				aplog.Error("cell %s: set_state: %v", cell.ID, err)
 			}
 		}
 	}
 
 	return result
+}
+
+// assignDirectiveRe matches a classifier's routing directive, e.g.
+//
+//	APIARY-ASSIGN: engineer
+//
+// anywhere in the agent's output (case-insensitive, one per line).
+var assignDirectiveRe = regexp.MustCompile(`(?im)^\s*APIARY-ASSIGN:\s*(.+?)\s*$`)
+
+// parseAssignDirective extracts the chosen agent id from an agent's output.
+// The last directive wins. A leading "agent:" on the value is tolerated and
+// stripped, so both `engineer` and `agent:engineer` resolve to "engineer".
+func parseAssignDirective(output string) (string, bool) {
+	matches := assignDirectiveRe.FindAllStringSubmatch(output, -1)
+	if len(matches) == 0 {
+		return "", false
+	}
+	val := strings.TrimSpace(matches[len(matches)-1][1])
+	val = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(val), "agent:"))
+	if val == "" {
+		return "", false
+	}
+	return val, true
+}
+
+// agentExists reports whether an agent id is defined in the config.
+func (d *Dispatcher) agentExists(id string) bool {
+	for i := range d.cfg.Agents {
+		if strings.EqualFold(d.cfg.Agents[i].ID, id) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Dispatcher) recordPoll(sourceID string, count int) {

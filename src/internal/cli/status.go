@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/daemon"
 )
 
@@ -64,7 +65,7 @@ func runWatch() error {
 }
 
 func fetchStatus() (*daemon.StatusResponse, error) {
-	socketPath := daemon.SocketPath()
+	socketPath := daemon.SocketPath(config.DataDir(configFile))
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)

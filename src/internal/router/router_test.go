@@ -28,11 +28,99 @@ func cell(opts ...func(*model.Cell)) model.Cell {
 	return c
 }
 
-func withSource(id string) func(*model.Cell)  { return func(c *model.Cell) { c.SourceID = id } }
+func withSource(id string) func(*model.Cell)   { return func(c *model.Cell) { c.SourceID = id } }
 func withLabels(l ...string) func(*model.Cell) { return func(c *model.Cell) { c.Labels = l } }
 func withType(t string) func(*model.Cell)      { return func(c *model.Cell) { c.Type = t } }
 func withPriority(p string) func(*model.Cell)  { return func(c *model.Cell) { c.Priority = p } }
 func withTitle(t string) func(*model.Cell)     { return func(c *model.Cell) { c.Title = t } }
+func withState(s string) func(*model.Cell)     { return func(c *model.Cell) { c.State = s } }
+
+// ── states / exclusion matchers ────────────────────────────────────────────────
+
+// agentRoute builds an agent-based route with the given match.
+func agentRoute(id string, prio int, agent string, m config.RouteMatch) config.RouteConfig {
+	return config.RouteConfig{ID: id, Priority: prio, Agent: agent, Match: m}
+}
+
+func TestRoute_StateFilter(t *testing.T) {
+	r, err := router.New(cfg([]config.RouteConfig{
+		agentRoute("todo-only", 10, "investigator", config.RouteMatch{Source: "src-a", States: []string{"todo"}}),
+	}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := r.Route(cell(withState("Todo"))); !ok {
+		t.Error("expected match for state Todo (case-insensitive)")
+	}
+	if _, ok := r.Route(cell(withState("In Progress"))); ok {
+		t.Error("expected no match for state In Progress")
+	}
+}
+
+func TestRoute_ExcludeLabelPrefix(t *testing.T) {
+	r, err := router.New(cfg([]config.RouteConfig{
+		agentRoute("classify", 10, "investigator", config.RouteMatch{
+			Source: "src-a", ExcludeLabelPrefix: "agent:",
+		}),
+	}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := r.Route(cell(withLabels("type:bug"))); !ok {
+		t.Error("expected match when no agent: label present")
+	}
+	if _, ok := r.Route(cell(withLabels("type:bug", "agent:engineer"))); ok {
+		t.Error("expected no match when an agent: label is present")
+	}
+}
+
+func TestRoute_ExcludeLabels(t *testing.T) {
+	r, err := router.New(cfg([]config.RouteConfig{
+		agentRoute("no-wip", 10, "investigator", config.RouteMatch{
+			Source: "src-a", ExcludeLabels: []string{"wip"},
+		}),
+	}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.Route(cell(withLabels("ready"))); !ok {
+		t.Error("expected match without excluded label")
+	}
+	if _, ok := r.Route(cell(withLabels("WIP"))); ok {
+		t.Error("expected no match with excluded label (case-insensitive)")
+	}
+}
+
+// TestRoute_InvestigatorFallback reproduces the intended pipeline: agent-labeled
+// cells go to their agent; only an unlabeled TODO falls through to the
+// investigator (highest priority number = last).
+func TestRoute_InvestigatorFallback(t *testing.T) {
+	routes := []config.RouteConfig{
+		agentRoute("engineer", 20, "engineer", config.RouteMatch{Source: "src-a", Labels: []string{"agent:engineer"}}),
+		agentRoute("classify", 100, "investigator", config.RouteMatch{
+			Source: "src-a", States: []string{"todo"}, ExcludeLabelPrefix: "agent:",
+		}),
+	}
+	r, err := router.New(cfg(routes, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Unlabeled TODO → investigator.
+	if m, ok := r.Route(cell(withState("Todo"))); !ok || m.Route.Agent != "investigator" {
+		t.Errorf("unlabeled todo: got agent=%q ok=%v, want investigator", m.Route.Agent, ok)
+	}
+	// Labeled cell → engineer (not investigator), regardless of state.
+	if m, ok := r.Route(cell(withState("Todo"), withLabels("agent:engineer"))); !ok || m.Route.Agent != "engineer" {
+		t.Errorf("labeled: got agent=%q ok=%v, want engineer", m.Route.Agent, ok)
+	}
+	// Unlabeled but not TODO → no match (investigator gated to todo).
+	if _, ok := r.Route(cell(withState("In Progress"))); ok {
+		t.Error("unlabeled in-progress should not match the todo-gated investigator")
+	}
+}
 
 // ── construction ──────────────────────────────────────────────────────────────
 

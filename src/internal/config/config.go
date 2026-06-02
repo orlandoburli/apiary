@@ -68,14 +68,14 @@ type AgentConfig struct {
 }
 
 type WorkerConfig struct {
-	ID           string            `yaml:"id"`
-	Description  string            `yaml:"description"`
-	Runner       string            `yaml:"runner"`
-	Model        string            `yaml:"model"`
-	Config       WorkerRunConfig   `yaml:"config"`
+	ID          string          `yaml:"id"`
+	Description string          `yaml:"description"`
+	Runner      string          `yaml:"runner"`
+	Model       string          `yaml:"model"`
+	Config      WorkerRunConfig `yaml:"config"`
 	// RunnerConfig holds runner-specific keys (e.g. command, model_flag for the
 	// cli runner). These are passed directly to runner.Adapter.Configure().
-	RunnerConfig map[string]any    `yaml:"runner_config"`
+	RunnerConfig map[string]any `yaml:"runner_config"`
 }
 
 type WorkerRunConfig struct {
@@ -98,12 +98,12 @@ func (w WorkerRunConfig) ParsedTimeout() time.Duration {
 }
 
 type RouteConfig struct {
-	ID         string      `yaml:"id"`
-	Priority   int         `yaml:"priority"`
-	Match      RouteMatch  `yaml:"match"`
-	Agent      string      `yaml:"agent"`
-	Worker     string      `yaml:"worker"`
-	OnComplete OnComplete  `yaml:"on_complete"`
+	ID         string     `yaml:"id"`
+	Priority   int        `yaml:"priority"`
+	Match      RouteMatch `yaml:"match"`
+	Agent      string     `yaml:"agent"`
+	Worker     string     `yaml:"worker"`
+	OnComplete OnComplete `yaml:"on_complete"`
 }
 
 type RouteMatch struct {
@@ -112,20 +112,37 @@ type RouteMatch struct {
 	Types      []string `yaml:"types"`
 	TitleRegex string   `yaml:"title_regex"`
 	Priority   []string `yaml:"priority"`
+	// States, when set, restricts the route to cells whose state is in this
+	// list (case-insensitive). Use it to gate a route to e.g. `todo` only.
+	States []string `yaml:"states"`
+	// ExcludeLabels rejects the cell if it carries ANY of these labels
+	// (case-insensitive). The inverse of Labels.
+	ExcludeLabels []string `yaml:"exclude_labels"`
+	// ExcludeLabelPrefix rejects the cell if it carries any label starting with
+	// this prefix (case-insensitive). E.g. "agent:" matches "no direct agent
+	// assigned", so a classifier route only runs for unassigned cells.
+	ExcludeLabelPrefix string `yaml:"exclude_label_prefix"`
 }
 
 type OnComplete struct {
 	SetState  string   `yaml:"set_state"`
 	AddLabels []string `yaml:"add_labels"`
+	// AssignFromOutput parses the agent's output for an `APIARY-ASSIGN: <agent>`
+	// directive and adds the corresponding `<prefix><agent>` label, so a
+	// classifier agent can route a task to the agent it picked.
+	AssignFromOutput bool `yaml:"assign_from_output"`
+	// AssignLabelPrefix is the label prefix used for AssignFromOutput. Defaults
+	// to "agent:" so the assigned label matches the agent:* route convention.
+	AssignLabelPrefix string `yaml:"assign_label_prefix"`
 }
 
 type RetryPolicy struct {
-	Enabled            bool          `yaml:"enabled"`
-	MaxAttempts        int           `yaml:"max_attempts"`
-	BackoffStrategy    string        `yaml:"backoff_strategy"` // "exponential" or "fixed"
-	BackoffBase        string        `yaml:"backoff_base"`     // e.g., "1s", "5s"
-	RetriableErrors    []string      `yaml:"retriable_errors"`
-	NonRetriableErrors []string      `yaml:"non_retriable_errors"`
+	Enabled            bool     `yaml:"enabled"`
+	MaxAttempts        int      `yaml:"max_attempts"`
+	BackoffStrategy    string   `yaml:"backoff_strategy"` // "exponential" or "fixed"
+	BackoffBase        string   `yaml:"backoff_base"`     // e.g., "1s", "5s"
+	RetriableErrors    []string `yaml:"retriable_errors"`
+	NonRetriableErrors []string `yaml:"non_retriable_errors"`
 	parsedBackoff      time.Duration
 }
 

@@ -16,7 +16,7 @@ type Model struct {
 	height         int
 	lastRefresh    time.Time
 	lastTabRefresh map[int]time.Time // Track refresh per tab
-	loading        bool               // Show loading state
+	loading        bool              // Show loading state
 }
 
 // OverviewTab shows dispatcher status and summary metrics.
@@ -57,6 +57,8 @@ type TasksTab struct {
 // TaskItem is one task row (its latest execution attempt).
 type TaskItem struct {
 	TaskID      string
+	Number      string // human reference, e.g. "ERP-42"
+	URL         string // link to the task in its source UI
 	Title       string
 	Agent       string
 	Model       string
@@ -69,16 +71,37 @@ type TaskItem struct {
 	Error       string
 }
 
-// AgentsTab shows agent status and performance.
+// AgentView is which sub-screen the Agents tab is showing.
+type AgentView int
+
+const (
+	AgentViewList AgentView = iota
+	AgentViewDetail
+	AgentViewActivity
+	AgentViewTaskLogs
+)
+
+// AgentsTab shows agent status and performance with detail/activity sub-views.
 type AgentsTab struct {
 	Agents      []AgentStatus
 	SelectedIdx int
+
+	View        AgentView
+	Detail      *AgentStatus // populated when View == AgentViewDetail
+	Activity    []TaskItem   // populated when View == AgentViewActivity
+	ActivityIdx int          // cursor within Activity
+
+	// Drill-down: logs of the task selected in the activity list.
+	LogsTaskID string
+	TaskLogs   []LogEntry
+	TaskLogIdx int // vertical scroll within TaskLogs (visual lines)
 }
 
 type AgentStatus struct {
 	ID              string
 	Status          string // active, idle, error
-	CurrentTask     string
+	RunningCount    int    // in-flight executions right now
+	CurrentTask     string // title of an in-flight task (when active)
 	QueuedCount     int
 	CompletedCount  int
 	AvgDurationMs   int64
@@ -92,7 +115,9 @@ type LogsTab struct {
 	FilterLevel string // All, INFO, WARN, ERROR
 	SearchText  string
 	SelectedIdx int
-	Scrolled    int
+	Scrolled    int  // vertical scroll offset (in display lines)
+	Wrap        bool // break long messages onto multiple lines
+	HScroll     int  // horizontal scroll offset (columns) when not wrapping
 }
 
 type LogEntry struct {
@@ -122,6 +147,7 @@ func NewModel() *Model {
 		logsTab: &LogsTab{
 			Logs:        []LogEntry{},
 			FilterLevel: "All",
+			Wrap:        true,
 		},
 		lastTabRefresh: make(map[int]time.Time),
 		loading:        true,

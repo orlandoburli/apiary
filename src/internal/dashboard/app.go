@@ -3,11 +3,14 @@ package dashboard
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/orlandoburli/apiary/internal/db"
 )
@@ -56,6 +59,14 @@ type taskLogsMsg struct {
 	logs   []LogEntry
 }
 type agentsDataMsg struct{ agents []AgentStatus }
+type agentActivityMsg struct {
+	agentID string
+	items   []TaskItem
+}
+type agentTaskLogsMsg struct {
+	taskID string
+	logs   []LogEntry
+}
 type logsDataMsg struct{ logs []LogEntry }
 
 // ── lifecycle ───────────────────────────────────────────────────────────────
@@ -129,6 +140,23 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.model.loading = false
 		a.model.lastRefresh = time.Now()
 
+	case agentActivityMsg:
+		if a.model.agentsTab != nil {
+			a.model.agentsTab.Activity = msg.items
+			a.model.agentsTab.ActivityIdx = 0
+			a.model.agentsTab.View = AgentViewActivity
+		}
+		a.model.loading = false
+
+	case agentTaskLogsMsg:
+		if a.model.agentsTab != nil {
+			a.model.agentsTab.LogsTaskID = msg.taskID
+			a.model.agentsTab.TaskLogs = msg.logs
+			a.model.agentsTab.TaskLogIdx = 0
+			a.model.agentsTab.View = AgentViewTaskLogs
+		}
+		a.model.loading = false
+
 	case logsDataMsg:
 		if a.model.logsTab != nil {
 			a.model.logsTab.Logs = msg.logs
@@ -148,20 +176,61 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	}
 
+	// Open the focused task in the browser, from any task-oriented view.
+	if key == "o" {
+		if u, ok := a.focusedTaskURL(); ok {
+			return a, openURLCmd(u)
+		}
+		return a, nil
+	}
+
 	// While a Tasks sub-view (detail/logs) is open, keys are scoped to it.
 	if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.View != TaskViewList {
 		return a.handleTaskSubViewKey(key)
 	}
+	// While an Agents sub-view (detail/activity) is open, keys are scoped to it.
+	if a.model.ActiveTab() == "Agents" && a.model.agentsTab != nil && a.model.agentsTab.View != AgentViewList {
+		return a.handleAgentSubViewKey(key)
+	}
+
+	const hStep = 8
 
 	switch key {
-	case "tab", "right":
+	case "tab":
 		a.model.NextTab()
 		a.model.loading = true
 		return a, a.fetchActiveTab()
-	case "shift+tab", "left":
+	case "shift+tab":
 		a.model.PrevTab()
 		a.model.loading = true
 		return a, a.fetchActiveTab()
+	case "right":
+		// In the Logs tab (unwrapped), → scrolls the message horizontally.
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil && !a.model.logsTab.Wrap {
+			a.model.logsTab.HScroll += hStep
+			return a, nil
+		}
+		a.model.NextTab()
+		a.model.loading = true
+		return a, a.fetchActiveTab()
+	case "left":
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil && !a.model.logsTab.Wrap {
+			a.model.logsTab.HScroll -= hStep
+			if a.model.logsTab.HScroll < 0 {
+				a.model.logsTab.HScroll = 0
+			}
+			return a, nil
+		}
+		a.model.PrevTab()
+		a.model.loading = true
+		return a, a.fetchActiveTab()
+	case "w":
+		// Toggle line-wrap in the Logs tab.
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
+			a.model.logsTab.Wrap = !a.model.logsTab.Wrap
+			a.model.logsTab.HScroll = 0
+			a.model.logsTab.Scrolled = 0
+		}
 	case "r":
 		a.model.loading = true
 		return a, a.fetchActiveTab()
@@ -191,28 +260,179 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.model.agentsTab.SelectedIdx++
 			}
 		case "Logs":
-			if a.model.logsTab != nil && a.model.logsTab.Scrolled < len(a.model.logsTab.Logs)-1 {
+			if a.model.logsTab != nil && a.model.logsTab.Scrolled < len(a.logVisualLines())-1 {
 				a.model.logsTab.Scrolled++
 			}
 		}
+	case "home":
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
+			a.model.logsTab.Scrolled = 0
+		}
+	case "end":
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
+			a.model.logsTab.Scrolled = lastIndex(len(a.logVisualLines()))
+		}
+	case "pgup", "ctrl+u":
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
+			a.model.logsTab.Scrolled = clampScroll(a.model.logsTab.Scrolled-a.pageSize(), len(a.logVisualLines()))
+		}
+	case "pgdown", "ctrl+d", " ":
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
+			a.model.logsTab.Scrolled = clampScroll(a.model.logsTab.Scrolled+a.pageSize(), len(a.logVisualLines()))
+		}
 	case "enter", "l":
-		// Open the logs view for the selected task.
-		if a.model.ActiveTab() == "Tasks" {
+		switch a.model.ActiveTab() {
+		case "Tasks":
 			if id, ok := a.selectedTaskID(); ok {
 				a.model.loading = true
 				return a, a.fetchTaskLogs(id)
 			}
+		case "Agents":
+			if id, ok := a.selectedAgentID(); ok {
+				a.model.loading = true
+				return a, a.fetchAgentActivity(id)
+			}
 		}
 	case "d":
-		// Open the detail view for the selected task.
-		if a.model.ActiveTab() == "Tasks" {
+		switch a.model.ActiveTab() {
+		case "Tasks":
 			if id, ok := a.selectedTaskID(); ok {
 				a.model.loading = true
 				return a, a.fetchTaskDetail(id)
 			}
+		case "Agents":
+			// Detail uses the already-loaded stats — no DB round-trip needed.
+			if ag, ok := a.selectedAgent(); ok {
+				a.model.agentsTab.Detail = ag
+				a.model.agentsTab.View = AgentViewDetail
+			}
 		}
 	}
 	return a, nil
+}
+
+// selectedAgent returns the agent under the cursor in the Agents list.
+func (a *App) selectedAgent() (*AgentStatus, bool) {
+	ag := a.model.agentsTab
+	if ag == nil || ag.SelectedIdx < 0 || ag.SelectedIdx >= len(ag.Agents) {
+		return nil, false
+	}
+	sel := ag.Agents[ag.SelectedIdx]
+	return &sel, true
+}
+
+func (a *App) selectedAgentID() (string, bool) {
+	if ag, ok := a.selectedAgent(); ok {
+		return ag.ID, true
+	}
+	return "", false
+}
+
+// handleAgentSubViewKey handles keys while an agent detail/activity/task-logs
+// view is open. The activity view mirrors the Tasks tab: ↑/↓ move a cursor and
+// enter/l drills into the selected task's logs.
+func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
+	ag := a.model.agentsTab
+
+	// Task-logs drill-down has its own key map.
+	if ag.View == AgentViewTaskLogs {
+		switch key {
+		case "esc", "backspace", "h", "left":
+			ag.View = AgentViewActivity
+			ag.TaskLogs = nil
+			ag.LogsTaskID = ""
+			ag.TaskLogIdx = 0
+		case "up":
+			if ag.TaskLogIdx > 0 {
+				ag.TaskLogIdx--
+			}
+		case "down":
+			if ag.TaskLogIdx < lastIndex(len(a.agentTaskLogLines())) {
+				ag.TaskLogIdx++
+			}
+		case "g", "home":
+			ag.TaskLogIdx = 0
+		case "G", "end":
+			ag.TaskLogIdx = lastIndex(len(a.agentTaskLogLines()))
+		case "pgup", "ctrl+u":
+			ag.TaskLogIdx = clampScroll(ag.TaskLogIdx-a.pageSize(), len(a.agentTaskLogLines()))
+		case "pgdown", "ctrl+d", " ":
+			ag.TaskLogIdx = clampScroll(ag.TaskLogIdx+a.pageSize(), len(a.agentTaskLogLines()))
+		case "r":
+			if ag.LogsTaskID != "" {
+				a.model.loading = true
+				return a, a.fetchAgentTaskLogs(ag.LogsTaskID)
+			}
+		}
+		return a, nil
+	}
+
+	switch key {
+	case "esc", "backspace", "h", "left":
+		ag.View = AgentViewList
+		ag.Detail = nil
+		ag.Activity = nil
+		ag.ActivityIdx = 0
+	case "d":
+		if a2, ok := a.selectedAgent(); ok {
+			ag.Detail = a2
+			ag.View = AgentViewDetail
+		}
+	case "l", "enter":
+		// From the list/detail: open the agent's activity. From the activity
+		// list: drill into the selected task's logs.
+		if ag.View == AgentViewActivity {
+			if id, ok := a.selectedActivityTaskID(); ok {
+				a.model.loading = true
+				return a, a.fetchAgentTaskLogs(id)
+			}
+			return a, nil
+		}
+		if id, ok := a.selectedAgentID(); ok {
+			a.model.loading = true
+			return a, a.fetchAgentActivity(id)
+		}
+	case "r":
+		if id, ok := a.selectedAgentID(); ok && ag.View == AgentViewActivity {
+			a.model.loading = true
+			return a, a.fetchAgentActivity(id)
+		}
+	case "up":
+		if ag.View == AgentViewActivity && ag.ActivityIdx > 0 {
+			ag.ActivityIdx--
+		}
+	case "down":
+		if ag.View == AgentViewActivity && ag.ActivityIdx < lastIndex(len(ag.Activity)) {
+			ag.ActivityIdx++
+		}
+	case "g", "home":
+		if ag.View == AgentViewActivity {
+			ag.ActivityIdx = 0
+		}
+	case "G", "end":
+		if ag.View == AgentViewActivity {
+			ag.ActivityIdx = lastIndex(len(ag.Activity))
+		}
+	case "pgup", "ctrl+u":
+		if ag.View == AgentViewActivity {
+			ag.ActivityIdx = clampScroll(ag.ActivityIdx-a.pageSize(), len(ag.Activity))
+		}
+	case "pgdown", "ctrl+d", " ":
+		if ag.View == AgentViewActivity {
+			ag.ActivityIdx = clampScroll(ag.ActivityIdx+a.pageSize(), len(ag.Activity))
+		}
+	}
+	return a, nil
+}
+
+// selectedActivityTaskID returns the task id under the cursor in an agent's
+// activity list.
+func (a *App) selectedActivityTaskID() (string, bool) {
+	ag := a.model.agentsTab
+	if ag == nil || ag.ActivityIdx < 0 || ag.ActivityIdx >= len(ag.Activity) {
+		return "", false
+	}
+	return ag.Activity[ag.ActivityIdx].TaskID, true
 }
 
 // handleTaskSubViewKey handles keys while a task detail/logs sub-view is open.
@@ -248,11 +468,56 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 			t.LogScroll--
 		}
 	case "down":
-		if t.View == TaskViewLogs && t.LogScroll < len(t.Logs)-1 {
+		if t.View == TaskViewLogs && t.LogScroll < len(a.taskLogLines())-1 {
 			t.LogScroll++
+		}
+	case "g", "home":
+		if t.View == TaskViewLogs {
+			t.LogScroll = 0
+		}
+	case "G", "end":
+		if t.View == TaskViewLogs {
+			t.LogScroll = lastIndex(len(a.taskLogLines()))
+		}
+	case "pgup", "ctrl+u":
+		if t.View == TaskViewLogs {
+			t.LogScroll = clampScroll(t.LogScroll-a.pageSize(), len(a.taskLogLines()))
+		}
+	case "pgdown", "ctrl+d", " ":
+		if t.View == TaskViewLogs {
+			t.LogScroll = clampScroll(t.LogScroll+a.pageSize(), len(a.taskLogLines()))
 		}
 	}
 	return a, nil
+}
+
+// pageSize approximates the number of visible body rows in a tab, used for
+// page-up/down scrolling. Mirrors the box body height in View.
+func (a *App) pageSize() int {
+	n := a.model.height - 5
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// clampScroll clamps a scroll offset to [0, total-1].
+func clampScroll(v, total int) int {
+	if v < 0 || total == 0 {
+		return 0
+	}
+	if v > total-1 {
+		return total - 1
+	}
+	return v
+}
+
+// lastIndex returns the index of the last line (0 when empty).
+func lastIndex(total int) int {
+	if total <= 0 {
+		return 0
+	}
+	return total - 1
 }
 
 // selectedTaskID returns the task id under the cursor in the Tasks list.
@@ -262,6 +527,61 @@ func (a *App) selectedTaskID() (string, bool) {
 		return "", false
 	}
 	return t.History[t.SelectedIdx].TaskID, true
+}
+
+// focusedTaskURL returns the source URL of the task the user is currently
+// looking at — the selected row in the Tasks list, the open task detail, or the
+// task drilled into from an agent's activity. Reports false when there is no URL.
+func (a *App) focusedTaskURL() (string, bool) {
+	switch a.model.ActiveTab() {
+	case "Tasks":
+		t := a.model.tasksTab
+		if t == nil {
+			return "", false
+		}
+		if t.View == TaskViewDetail && t.Detail != nil {
+			return t.Detail.URL, t.Detail.URL != ""
+		}
+		if t.SelectedIdx >= 0 && t.SelectedIdx < len(t.History) {
+			u := t.History[t.SelectedIdx].URL
+			return u, u != ""
+		}
+	case "Agents":
+		ag := a.model.agentsTab
+		if ag == nil {
+			return "", false
+		}
+		if ag.View == AgentViewActivity || ag.View == AgentViewTaskLogs {
+			if ag.ActivityIdx >= 0 && ag.ActivityIdx < len(ag.Activity) {
+				u := ag.Activity[ag.ActivityIdx].URL
+				return u, u != ""
+			}
+		}
+	}
+	return "", false
+}
+
+// openURLCmd opens a URL in the user's default browser without blocking the UI.
+func openURLCmd(target string) tea.Cmd {
+	return func() tea.Msg {
+		_ = openInBrowser(target)
+		return nil
+	}
+}
+
+// openInBrowser launches the OS default handler for a URL.
+func openInBrowser(target string) error {
+	var name string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		name, args = "open", []string{target}
+	case "windows":
+		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", target}
+	default:
+		name, args = "xdg-open", []string{target}
+	}
+	return exec.Command(name, args...).Start()
 }
 
 // ── commands (run in goroutines; must NOT touch a.model) ─────────────────────
@@ -326,23 +646,73 @@ func (a *App) fetchTasks() tea.Cmd {
 		if dbConn != nil {
 			if rows, err := dbConn.GetTaskHistory(ctx, 100); err == nil {
 				for _, r := range rows {
-					items = append(items, TaskItem{
-						TaskID:      r.TaskID,
-						Title:       r.Title,
-						Agent:       r.AgentID,
-						Model:       r.Model,
-						Runner:      r.Runner,
-						Status:      r.Status,
-						Attempt:     r.Attempt,
-						Duration:    time.Duration(r.DurationMs) * time.Millisecond,
-						StartedAt:   r.StartedAt,
-						CompletedAt: r.CompletedAt,
-						Error:       r.Error,
-					})
+					items = append(items, taskItemFromHistory(r))
 				}
 			}
 		}
 		return tasksDataMsg{items: items}
+	}
+}
+
+// taskItemFromHistory converts a DB history row into a dashboard TaskItem.
+func taskItemFromHistory(r db.TaskHistoryItem) TaskItem {
+	return TaskItem{
+		TaskID:      r.TaskID,
+		Number:      r.Number,
+		URL:         r.URL,
+		Title:       r.Title,
+		Agent:       r.AgentID,
+		Model:       r.Model,
+		Runner:      r.Runner,
+		Status:      r.Status,
+		Attempt:     r.Attempt,
+		Duration:    time.Duration(r.DurationMs) * time.Millisecond,
+		StartedAt:   r.StartedAt,
+		CompletedAt: r.CompletedAt,
+		Error:       r.Error,
+	}
+}
+
+// fetchAgentActivity loads the recent tasks handled by an agent.
+func (a *App) fetchAgentActivity(agentID string) tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+
+		items := make([]TaskItem, 0)
+		if dbConn != nil {
+			if rows, err := dbConn.GetTasksByAgent(ctx, agentID, 200); err == nil {
+				for _, r := range rows {
+					items = append(items, taskItemFromHistory(r))
+				}
+			}
+		}
+		return agentActivityMsg{agentID: agentID, items: items}
+	}
+}
+
+// fetchAgentTaskLogs loads the per-task logs for a task selected in the agent
+// activity list (reuses the same source as the Tasks tab logs view).
+func (a *App) fetchAgentTaskLogs(taskID string) tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+
+		logs := make([]LogEntry, 0)
+		if dbConn != nil {
+			if rows, err := dbConn.GetTaskLogs(ctx, taskID, 5000); err == nil {
+				for _, l := range rows {
+					logs = append(logs, LogEntry{
+						Timestamp: l.Timestamp,
+						Level:     l.Level,
+						Message:   l.Message,
+					})
+				}
+			}
+		}
+		return agentTaskLogsMsg{taskID: taskID, logs: logs}
 	}
 }
 
@@ -357,6 +727,8 @@ func (a *App) fetchTaskDetail(taskID string) tea.Cmd {
 			if r, err := dbConn.GetTaskDetail(ctx, taskID); err == nil && r != nil {
 				detail = &TaskItem{
 					TaskID:      r.TaskID,
+					Number:      r.Number,
+					URL:         r.URL,
 					Title:       r.Title,
 					Agent:       r.AgentID,
 					Model:       r.Model,
@@ -382,7 +754,7 @@ func (a *App) fetchTaskLogs(taskID string) tea.Cmd {
 
 		logs := make([]LogEntry, 0)
 		if dbConn != nil {
-			if rows, err := dbConn.GetTaskLogs(ctx, taskID, 500); err == nil {
+			if rows, err := dbConn.GetTaskLogs(ctx, taskID, 5000); err == nil {
 				for _, l := range rows {
 					logs = append(logs, LogEntry{
 						Timestamp: l.Timestamp,
@@ -409,6 +781,8 @@ func (a *App) fetchAgents() tea.Cmd {
 					agents = append(agents, AgentStatus{
 						ID:              ag.ID,
 						Status:          ag.Status,
+						RunningCount:    ag.RunningCount,
+						CurrentTask:     ag.CurrentTask,
 						QueuedCount:     ag.QueuedCount,
 						CompletedCount:  ag.CompletedCount,
 						AvgDurationMs:   ag.AvgDurationMs,
@@ -430,7 +804,7 @@ func (a *App) fetchLogs() tea.Cmd {
 
 		logs := make([]LogEntry, 0)
 		if dbConn != nil {
-			if rows, err := dbConn.GetRecentLogs(ctx, 100); err == nil {
+			if rows, err := dbConn.GetRecentLogs(ctx, 500); err == nil {
 				for _, l := range rows {
 					logs = append(logs, LogEntry{
 						Timestamp: l.Timestamp,
@@ -498,32 +872,59 @@ func (a *App) renderTabs() string {
 	return lipgloss.JoinHorizontal(lipgloss.Center, row...) + "\n"
 }
 
-// box wraps inner content in a titled border that spans the terminal width,
-// padding the content so the whole block is exactly `height` lines tall.
+// box frames inner content in a titled, full 4-sided border that spans the
+// terminal width and is exactly `height` lines tall. Each content line is
+// padded/truncated (ANSI-aware) so the right border lines up.
 func (a *App) box(label, content string, height int) string {
 	width := a.model.width
 	if width < 24 {
 		width = 24
 	}
-
-	// Pad inner content to fill (height - 2) lines (top + bottom borders).
-	inner := height - 2
-	if inner < 1 {
-		inner = 1
-	}
-	lines := strings.Count(content, "\n")
-	if pad := inner - lines; pad > 0 {
-		content += strings.Repeat("\n", pad)
+	inner := width - 2 // columns between the two vertical bars
+	bodyRows := height - 2
+	if bodyRows < 1 {
+		bodyRows = 1
 	}
 
-	prefix := "┌─ " + label + " "
-	dashes := width - lipgloss.Width(prefix) - 1
+	prefixPlain := "┌─ " + label + " "
+	dashes := width - lipgloss.Width(prefixPlain) - 1
 	if dashes < 0 {
 		dashes = 0
 	}
-	top := prefix + strings.Repeat("─", dashes) + "┐"
-	bottom := "└" + strings.Repeat("─", width-2) + "┘"
-	return top + "\n" + content + bottom + "\n"
+	top := StyleBorder.Render("┌─ ") + StyleBoxTitle.Render(label) +
+		StyleBorder.Render(" "+strings.Repeat("─", dashes)+"┐")
+	bottom := StyleBorder.Render("└" + strings.Repeat("─", width-2) + "┘")
+	bar := StyleBorder.Render("│")
+
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	var b strings.Builder
+	b.WriteString(top + "\n")
+	for i := 0; i < bodyRows; i++ {
+		line := ""
+		if i < len(lines) {
+			line = lines[i]
+		}
+		b.WriteString(bar + fitLine(line, inner) + bar + "\n")
+	}
+	b.WriteString(bottom + "\n")
+	return b.String()
+}
+
+// fitLine pads (with spaces) or truncates s to exactly w visible columns,
+// preserving ANSI styling. Used to align the right border of a box.
+func fitLine(s string, w int) string {
+	if w < 0 {
+		w = 0
+	}
+	vis := lipgloss.Width(s)
+	switch {
+	case vis == w:
+		return s
+	case vis < w:
+		return s + strings.Repeat(" ", w-vis)
+	default:
+		return ansi.Truncate(s, w, "")
+	}
 }
 
 func (a *App) renderOverviewTab(height int) string {
@@ -587,29 +988,46 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 		return a.box("TASKS", body, height)
 	}
 
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("  %-3s %-30s %-16s %-9s %s", "", "TASK", "AGENT", "STATUS", "WHEN")) + "\n")
-	for i, it := range t.History {
-		cursor := "  "
-		if i == t.SelectedIdx {
-			cursor = StyleInfo.Render("▶ ")
-		}
-		title := pad(truncate(valueOr(it.Title, it.TaskID), 30), 30)
-		agent := pad(truncate(valueOr(it.Agent, "—"), 16), 16)
-		status := taskStatusBadge(it.Status)
-		when := taskWhen(it)
-		b.WriteString(fmt.Sprintf("%s%s %s %s %s\n", cursor, title, agent, status, StyleMuted.Render(when)))
+	const (
+		cursorW = 2
+		numW    = 10
+		agentW  = 16
+		statusW = 8
+		whenW   = 11
+	)
+	inner := a.model.width - 2
+	titleW := inner - cursorW - numW - agentW - statusW - whenW - 5 // 5 single-space separators
+	if titleW < 10 {
+		titleW = 10
 	}
-	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("enter/l logs   d details   ↑/↓ select"))
-	b.WriteString("\n")
+
+	var b strings.Builder
+	header := pad("", cursorW) + " " + pad("#", numW) + " " + pad("TASK", titleW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + "WHEN"
+	b.WriteString(StyleTableHeader.Render(header) + "\n")
+	for i, it := range t.History {
+		selected := i == t.SelectedIdx
+		cursor := "  "
+		num := pad(truncate(valueOr(it.Number, "—"), numW), numW)
+		titleText := pad(truncate(valueOr(it.Title, it.TaskID), titleW), titleW)
+		if selected {
+			cursor = StyleFocusedArrow.Render("▶") + " "
+			num = StyleSelectedRow.Render(num)
+			titleText = StyleSelectedRow.Render(titleText)
+		} else {
+			num = StyleAccent.Render(num)
+		}
+		agent := pad(truncate(valueOr(it.Agent, "—"), agentW), agentW)
+		status := taskStatusBadge(it.Status) // already padded to width 8
+		when := StyleMuted.Render(taskWhen(it))
+		b.WriteString(cursor + " " + num + " " + titleText + " " + agent + " " + status + " " + when + "\n")
+	}
 	return a.box("TASKS", b.String(), height)
 }
 
 func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	d := t.Detail
 	if d == nil {
-		return a.box("TASK DETAILS", StyleMuted.Render("No details")+"\n"+a.backHint(), height)
+		return a.box("TASK DETAILS", StyleMuted.Render("No details")+"\n", height)
 	}
 
 	started, completed, dur := "—", "—", "—"
@@ -625,9 +1043,10 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 
 	var b strings.Builder
 	row := func(k, v string) {
-		b.WriteString(fmt.Sprintf("  %-14s %s\n", k+":", v))
+		b.WriteString("  " + StyleLabel.Render(pad(k+":", 14)) + " " + v + "\n")
 	}
-	row("Task ID", d.TaskID)
+	row("Number", StyleAccent.Render(valueOr(d.Number, "—")))
+	row("Task ID", StyleValueStrong.Render(d.TaskID))
 	row("Title", valueOr(d.Title, "—"))
 	row("Status", taskStatusBadge(d.Status))
 	row("Agent", valueOr(d.Agent, "—"))
@@ -637,78 +1056,338 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	row("Started", started)
 	row("Completed", completed)
 	row("Duration", dur)
+	if d.URL != "" {
+		row("URL", StyleInfo.Render(d.URL))
+	}
 	if d.Error != "" {
 		b.WriteString("\n")
 		b.WriteString("  " + StyleError.Render("Error:") + "\n")
-		b.WriteString("  " + truncate(d.Error, a.model.width-4) + "\n")
+		b.WriteString("  " + StyleError.Render(truncate(d.Error, a.model.width-4)) + "\n")
 	}
-	b.WriteString("\n")
-	b.WriteString(a.backHint())
-	b.WriteString("\n")
-	return a.box("TASK DETAILS", b.String(), height)
+	return a.box("TASK DETAILS — "+valueOr(d.TaskID, ""), b.String(), height)
 }
 
 func (a *App) renderTaskLogs(t *TasksTab, height int) string {
 	if len(t.Logs) == 0 {
-		body := StyleMuted.Render("No logs recorded for this task.") + "\n\n" + a.backHint() + "\n"
-		return a.box("TASK LOGS", body, height)
+		return a.box("TASK LOGS", StyleMuted.Render("No logs recorded for this task.")+"\n", height)
 	}
 
-	rows := height - 4 // borders + back hint
+	lines := a.taskLogLines()
+
+	rows := height - 2 // top + bottom borders
 	if rows < 1 {
 		rows = 1
 	}
 	start := t.LogScroll
-	if start > len(t.Logs)-1 {
+	if start > len(lines)-1 {
+		start = len(lines) - 1
+	}
+	if start < 0 {
 		start = 0
 	}
 	end := start + rows
-	if end > len(t.Logs) {
-		end = len(t.Logs)
+	if end > len(lines) {
+		end = len(lines)
 	}
 
 	var b strings.Builder
 	for i := start; i < end; i++ {
-		entry := t.Logs[i]
-		ts := entry.Timestamp.Format("15:04:05")
-		level := levelStyle(entry.Level).Render(fmt.Sprintf("%-5s", entry.Level))
-		msg := truncate(entry.Message, a.model.width-22)
-		b.WriteString(fmt.Sprintf("%s %s %s\n", StyleMuted.Render(ts), level, msg))
+		b.WriteString(lines[i] + "\n")
 	}
-	b.WriteString("\n")
-	b.WriteString(a.backHint())
-	b.WriteString("\n")
 	return a.box("TASK LOGS", b.String(), height)
 }
 
-func (a *App) backHint() string {
-	return StyleMuted.Render("esc back   d details   l logs   ↑/↓ scroll")
+// taskLogLines expands the per-task log entries into fully-wrapped, styled
+// visual lines: messages with embedded newlines (the prompt, the multi-line
+// agent conversation) are split, and long lines are wrapped to the box width,
+// so the *whole* log is viewable by scrolling rather than truncated to one line.
+func (a *App) taskLogLines() []string {
+	t := a.model.tasksTab
+	if t == nil {
+		return nil
+	}
+	return a.logEntryLines(t.Logs)
+}
+
+// agentTaskLogLines renders the drill-down logs of the task selected in an
+// agent's activity list.
+func (a *App) agentTaskLogLines() []string {
+	ag := a.model.agentsTab
+	if ag == nil {
+		return nil
+	}
+	return a.logEntryLines(ag.TaskLogs)
+}
+
+// logEntryLines expands per-task log entries into fully-wrapped, styled visual
+// lines: messages with embedded newlines (the prompt, the multi-line agent
+// conversation) are split, and long lines are wrapped to the box width, so the
+// whole log is viewable by scrolling rather than truncated to one line.
+func (a *App) logEntryLines(logs []LogEntry) []string {
+	const prefixWidth = 15                      // "15:04:05" + space + 5-char level + space
+	msgWidth := a.model.width - 2 - prefixWidth // inner minus the prefix column
+	if msgWidth < 20 {
+		msgWidth = 20
+	}
+	indent := strings.Repeat(" ", prefixWidth)
+
+	var out []string
+	for _, entry := range logs {
+		ts := StyleMuted.Render(entry.Timestamp.Format("15:04:05"))
+		level := levelStyle(entry.Level).Render(fmt.Sprintf("%-5s", entry.Level))
+		wrapped := wrapPlain(entry.Message, msgWidth)
+		if len(wrapped) == 0 {
+			wrapped = []string{""}
+		}
+		for j, w := range wrapped {
+			if j == 0 {
+				out = append(out, fmt.Sprintf("%s %s %s", ts, level, w))
+			} else {
+				out = append(out, indent+w)
+			}
+		}
+	}
+	return out
+}
+
+// wrapPlain splits s on newlines and hard-wraps each line to width runes,
+// expanding tabs so the output aligns in the fixed-width terminal.
+func wrapPlain(s string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	var out []string
+	for _, raw := range strings.Split(s, "\n") {
+		raw = strings.ReplaceAll(raw, "\t", "    ")
+		if raw == "" {
+			out = append(out, "")
+			continue
+		}
+		r := []rune(raw)
+		for len(r) > width {
+			out = append(out, string(r[:width]))
+			r = r[width:]
+		}
+		out = append(out, string(r))
+	}
+	return out
 }
 
 func (a *App) renderAgentsTab(height int) string {
 	ag := a.model.agentsTab
-	if ag == nil || len(ag.Agents) == 0 {
+	if ag == nil {
 		return a.box("AGENTS", StyleMuted.Render("No agents yet")+"\n", height)
+	}
+	switch ag.View {
+	case AgentViewDetail:
+		return a.renderAgentDetail(ag, height)
+	case AgentViewActivity:
+		return a.renderAgentActivity(ag, height)
+	case AgentViewTaskLogs:
+		return a.renderAgentTaskLogs(ag, height)
+	default:
+		return a.renderAgentList(ag, height)
+	}
+}
+
+func (a *App) renderAgentList(ag *AgentsTab, height int) string {
+	if len(ag.Agents) == 0 {
+		return a.box("AGENTS", StyleMuted.Render("No agents yet — they appear after running at least one task.")+"\n", height)
+	}
+
+	const (
+		cursorW    = 2
+		statusW    = 9
+		completedW = 10
+		avgW       = 9
+		successW   = 7
+	)
+	inner := a.model.width - 2
+	agentW := inner - cursorW - statusW - completedW - avgW - successW - 5 // 5 separators
+	if agentW < 12 {
+		agentW = 12
 	}
 
 	var b strings.Builder
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("  %-16s %-8s %-10s %-10s %s", "AGENT", "STATUS", "COMPLETED", "AVG", "SUCCESS")) + "\n")
+	header := pad("", cursorW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + pad("COMPLETED", completedW) + " " + pad("AVG", avgW) + " " + "SUCCESS"
+	b.WriteString(StyleTableHeader.Render(header) + "\n")
 	for i, agent := range ag.Agents {
+		selected := i == ag.SelectedIdx
 		cursor := "  "
-		if i == ag.SelectedIdx {
-			cursor = StyleInfo.Render("▶ ")
+		name := pad(truncate(valueOr(agent.ID, "—"), agentW), agentW)
+		if selected {
+			cursor = StyleFocusedArrow.Render("▶") + " "
+			name = StyleSelectedRow.Render(name)
 		}
-		avg := fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000)
-		b.WriteString(fmt.Sprintf("%s%-16s %s %-10d %-10s %.0f%%\n",
-			cursor,
-			truncate(agent.ID, 16),
-			StatusColor(agent.Status),
-			agent.CompletedCount,
-			avg,
-			agent.SuccessRate*100,
-		))
+		status := pad(StatusColor(agent.Status)+" "+agentStatusText(agent.Status), statusW)
+		completed := pad(fmt.Sprintf("%d", agent.CompletedCount), completedW)
+		avg := pad(fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000), avgW)
+		success := successRateStyled(agent.SuccessRate)
+		b.WriteString(cursor + " " + name + " " + status + " " + completed + " " + avg + " " + success + "\n")
 	}
 	return a.box("AGENTS", b.String(), height)
+}
+
+func (a *App) renderAgentDetail(ag *AgentsTab, height int) string {
+	d := ag.Detail
+	if d == nil {
+		return a.box("AGENT DETAILS", StyleMuted.Render("No details")+"\n", height)
+	}
+
+	lastEnded := "—"
+	if d.LastTaskEndedAt != nil {
+		lastEnded = d.LastTaskEndedAt.Format("2006-01-02 15:04:05")
+	}
+	completed := d.CompletedCount
+	// Derive succeeded/failed from the success rate (best-effort from aggregates).
+	succeeded := int(float64(completed)*d.SuccessRate + 0.5)
+	failed := completed - succeeded
+	if failed < 0 {
+		failed = 0
+	}
+
+	var b strings.Builder
+	row := func(k, v string) {
+		b.WriteString("  " + StyleLabel.Render(pad(k+":", 16)) + " " + v + "\n")
+	}
+	row("Agent", StyleValueStrong.Render(d.ID))
+	row("Status", StatusColor(d.Status)+" "+agentStatusText(d.Status))
+	running := "0"
+	if d.RunningCount > 0 {
+		running = StyleWarning.Render(fmt.Sprintf("%d ⟳", d.RunningCount))
+	}
+	row("Running now", running)
+	row("Current task", valueOr(d.CurrentTask, "—"))
+	b.WriteString("\n")
+	row("Completed", StyleSuccess.Render(fmt.Sprintf("%d", completed)))
+	row("Succeeded", StyleSuccess.Render(fmt.Sprintf("%d ✓", succeeded)))
+	row("Failed", StyleError.Render(fmt.Sprintf("%d ✗", failed)))
+	row("Success rate", successRateStyled(d.SuccessRate))
+	row("Queued", fmt.Sprintf("%d", d.QueuedCount))
+	b.WriteString("\n")
+	row("Avg duration", fmt.Sprintf("%.1fs", float64(d.AvgDurationMs)/1000))
+	row("Last task", lastEnded)
+	return a.box("AGENT DETAILS — "+d.ID, b.String(), height)
+}
+
+func (a *App) renderAgentActivity(ag *AgentsTab, height int) string {
+	name := "—"
+	if ag.Detail != nil {
+		name = ag.Detail.ID
+	} else if id, ok := a.selectedAgentID(); ok {
+		name = id
+	}
+	if len(ag.Activity) == 0 {
+		return a.box("AGENT ACTIVITY — "+name, StyleMuted.Render("No tasks recorded for this agent yet.")+"\n", height)
+	}
+
+	const (
+		cursorW = 2
+		numW    = 10
+		statusW = 8
+		durW    = 8
+		whenW   = 11
+	)
+	inner := a.model.width - 2
+	titleW := inner - cursorW - numW - statusW - durW - whenW - 5
+	if titleW < 10 {
+		titleW = 10
+	}
+
+	var b strings.Builder
+	header := pad("", cursorW) + " " + pad("#", numW) + " " + pad("TASK", titleW) + " " + pad("STATUS", statusW) + " " + pad("DURATION", durW) + " " + "WHEN"
+	b.WriteString(StyleTableHeader.Render(header) + "\n")
+
+	rows := height - 3 // borders + header
+	if rows < 1 {
+		rows = 1
+	}
+	// Window the list so the cursor row stays visible.
+	start := ag.ActivityIdx - rows/2
+	if start > len(ag.Activity)-rows {
+		start = len(ag.Activity) - rows
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := start + rows
+	if end > len(ag.Activity) {
+		end = len(ag.Activity)
+	}
+	for i := start; i < end; i++ {
+		it := ag.Activity[i]
+		selected := i == ag.ActivityIdx
+		num := pad(truncate(valueOr(it.Number, "—"), numW), numW)
+		title := pad(truncate(valueOr(it.Title, it.TaskID), titleW), titleW)
+		status := taskStatusBadge(it.Status)
+		dur := "—"
+		if it.Duration > 0 {
+			dur = it.Duration.Round(time.Second).String()
+		}
+		cursor := "  "
+		if selected {
+			cursor = StyleFocusedArrow.Render("▶") + " "
+			num = StyleSelectedRow.Render(num)
+			title = StyleSelectedRow.Render(title)
+		} else {
+			num = StyleAccent.Render(num)
+		}
+		b.WriteString(cursor + " " + num + " " + title + " " + status + " " + pad(dur, durW) + " " + StyleMuted.Render(taskWhen(it)) + "\n")
+	}
+	return a.box("AGENT ACTIVITY — "+name, b.String(), height)
+}
+
+// renderAgentTaskLogs shows the per-task logs of the task drilled into from an
+// agent's activity list — the same view the Tasks tab offers.
+func (a *App) renderAgentTaskLogs(ag *AgentsTab, height int) string {
+	title := "TASK LOGS — " + valueOr(ag.LogsTaskID, "")
+	if len(ag.TaskLogs) == 0 {
+		return a.box(title, StyleMuted.Render("No logs recorded for this task.")+"\n", height)
+	}
+
+	lines := a.agentTaskLogLines()
+	rows := height - 2 // top + bottom borders
+	if rows < 1 {
+		rows = 1
+	}
+	start := clampScroll(ag.TaskLogIdx, len(lines))
+	end := start + rows
+	if end > len(lines) {
+		end = len(lines)
+	}
+
+	var b strings.Builder
+	for i := start; i < end; i++ {
+		b.WriteString(lines[i] + "\n")
+	}
+	return a.box(title, b.String(), height)
+}
+
+// agentStatusText returns a readable label for an agent status.
+func agentStatusText(s string) string {
+	switch s {
+	case "active":
+		return StyleSuccess.Render("active")
+	case "error":
+		return StyleError.Render("error")
+	case "idle":
+		return StyleMuted.Render("idle")
+	default:
+		return valueOr(s, "—")
+	}
+}
+
+// successRateStyled colors a success rate: green high, yellow mid, red low.
+func successRateStyled(rate float64) string {
+	txt := fmt.Sprintf("%.0f%%", rate*100)
+	switch {
+	case rate >= 0.9:
+		return StyleSuccess.Render(txt)
+	case rate >= 0.6:
+		return StyleWarning.Render(txt)
+	default:
+		return StyleError.Render(txt)
+	}
 }
 
 func (a *App) renderLogsTab(height int) string {
@@ -717,29 +1396,80 @@ func (a *App) renderLogsTab(height int) string {
 		return a.box("LOGS", StyleMuted.Render("No logs yet")+"\n", height)
 	}
 
-	// Show the most recent logs that fit in the available rows.
-	rows := height - 2
+	lines := a.logVisualLines()
+
+	rows := height - 2 // top + bottom borders
 	if rows < 1 {
 		rows = 1
 	}
 	start := l.Scrolled
-	if start > len(l.Logs)-1 {
+	if start > len(lines)-1 {
+		start = len(lines) - 1
+	}
+	if start < 0 {
 		start = 0
 	}
 	end := start + rows
-	if end > len(l.Logs) {
-		end = len(l.Logs)
+	if end > len(lines) {
+		end = len(lines)
 	}
 
 	var b strings.Builder
 	for i := start; i < end; i++ {
-		entry := l.Logs[i]
-		ts := entry.Timestamp.Format("15:04:05")
-		level := levelStyle(entry.Level).Render(fmt.Sprintf("%-5s", entry.Level))
-		msg := truncate(entry.Message, a.model.width-22)
-		b.WriteString(fmt.Sprintf("%s %s %s\n", StyleMuted.Render(ts), level, msg))
+		b.WriteString(lines[i] + "\n")
 	}
 	return a.box("LOGS", b.String(), height)
+}
+
+// logVisualLines renders the service logs into display lines. When Wrap is on,
+// long messages break across lines; otherwise each entry is a single line that
+// can be scrolled horizontally via HScroll.
+func (a *App) logVisualLines() []string {
+	l := a.model.logsTab
+	const prefixWidth = 15 // "15:04:05" + space + 5-char level + space
+	indent := strings.Repeat(" ", prefixWidth)
+	msgWidth := a.model.width - 2 - prefixWidth // inner minus prefix
+	if msgWidth < 10 {
+		msgWidth = 10
+	}
+
+	var out []string
+	for _, entry := range l.Logs {
+		ts := StyleMuted.Render(entry.Timestamp.Format("15:04:05"))
+		level := levelStyle(entry.Level).Render(fmt.Sprintf("%-5s", entry.Level))
+		msg := entry.Message
+
+		if l.Wrap {
+			wrapped := wrapPlain(msg, msgWidth)
+			if len(wrapped) == 0 {
+				wrapped = []string{""}
+			}
+			for j, w := range wrapped {
+				if j == 0 {
+					out = append(out, fmt.Sprintf("%s %s %s", ts, level, w))
+				} else {
+					out = append(out, indent+w)
+				}
+			}
+		} else {
+			// Single line; scroll the message horizontally by HScroll columns.
+			flat := strings.ReplaceAll(strings.ReplaceAll(msg, "\t", "    "), "\n", " ")
+			out = append(out, fmt.Sprintf("%s %s %s", ts, level, hScroll(flat, l.HScroll)))
+		}
+	}
+	return out
+}
+
+// hScroll drops the first n runes of s (horizontal scroll for plain text).
+func hScroll(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if n >= len(r) {
+		return ""
+	}
+	return string(r[n:])
 }
 
 func (a *App) renderFooter() string {
@@ -750,8 +1480,91 @@ func (a *App) renderFooter() string {
 	if !a.model.lastRefresh.IsZero() {
 		updated = time.Since(a.model.lastRefresh).Round(time.Second).String() + " ago"
 	}
-	footer := fmt.Sprintf("updated %s   │   ←/→ tab   ↑/↓ nav   r refresh   q quit", updated)
-	return StyleMuted.Render(footer)
+	var seg []string
+	for _, f := range a.footerKeys() {
+		seg = append(seg, StyleFooterKey.Render(" "+f.k+" ")+" "+StyleFooterLbl.Render(f.d))
+	}
+	left := strings.Join(seg, StyleFooterDim.Render("  "))
+	right := StyleFooterDim.Render(a.footerStatus(updated))
+
+	gap := a.model.width - lipgloss.Width(left) - lipgloss.Width(right) - 1
+	if gap < 1 {
+		gap = 1
+	}
+	line := " " + left + strings.Repeat(" ", gap) + right
+	return fitLine(line, a.model.width)
+}
+
+// fkey is one key/label pair shown in the footer.
+type fkey struct{ k, d string }
+
+// footerKeys returns the navigation hints for the current tab + sub-view.
+func (a *App) footerKeys() []fkey {
+	switch a.model.ActiveTab() {
+	case "Tasks":
+		if t := a.model.tasksTab; t != nil {
+			switch t.View {
+			case TaskViewDetail:
+				return []fkey{{"esc", "back"}, {"l", "logs"}, {"o", "open"}, {"r", "reload"}, {"q", "quit"}}
+			case TaskViewLogs:
+				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"o", "open"}, {"q", "quit"}}
+			}
+		}
+		return []fkey{{"↑/↓", "select"}, {"enter/l", "logs"}, {"d", "details"}, {"o", "open"}, {"tab", "switch"}, {"q", "quit"}}
+	case "Agents":
+		if ag := a.model.agentsTab; ag != nil {
+			switch ag.View {
+			case AgentViewDetail:
+				return []fkey{{"esc", "back"}, {"l", "activity"}, {"q", "quit"}}
+			case AgentViewActivity:
+				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "logs"}, {"o", "open"}, {"pgup/dn", "page"}, {"q", "quit"}}
+			case AgentViewTaskLogs:
+				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"o", "open"}, {"home/end", "ends"}, {"r", "reload"}, {"q", "quit"}}
+			}
+		}
+		return []fkey{{"↑/↓", "select"}, {"enter/l", "activity"}, {"d", "details"}, {"tab", "switch"}, {"r", "refresh"}, {"q", "quit"}}
+	case "Logs":
+		wrap := "wrap off"
+		if a.model.logsTab != nil && a.model.logsTab.Wrap {
+			wrap = "wrap on"
+		}
+		return []fkey{{"w", wrap}, {"←/→", "scroll"}, {"↑/↓", "lines"}, {"pgup/dn", "page"}, {"home/end", "ends"}, {"tab", "switch"}, {"q", "quit"}}
+	default: // Overview
+		return []fkey{{"tab", "next"}, {"⇧tab", "prev"}, {"r", "refresh"}, {"q", "quit"}}
+	}
+}
+
+// footerStatus is the right-aligned status: last refresh + any scroll position.
+func (a *App) footerStatus(updated string) string {
+	pos := ""
+	switch a.model.ActiveTab() {
+	case "Tasks":
+		if t := a.model.tasksTab; t != nil && t.View == TaskViewLogs {
+			if n := len(a.taskLogLines()); n > 0 {
+				pos = fmt.Sprintf("line %d/%d   ", t.LogScroll+1, n)
+			}
+		}
+	case "Logs":
+		if a.model.logsTab != nil {
+			if n := len(a.logVisualLines()); n > 0 {
+				pos = fmt.Sprintf("line %d/%d   ", a.model.logsTab.Scrolled+1, n)
+			}
+		}
+	case "Agents":
+		if ag := a.model.agentsTab; ag != nil {
+			switch ag.View {
+			case AgentViewActivity:
+				if n := len(ag.Activity); n > 0 {
+					pos = fmt.Sprintf("task %d/%d   ", ag.ActivityIdx+1, n)
+				}
+			case AgentViewTaskLogs:
+				if n := len(a.agentTaskLogLines()); n > 0 {
+					pos = fmt.Sprintf("line %d/%d   ", ag.TaskLogIdx+1, n)
+				}
+			}
+		}
+	}
+	return pos + "updated " + updated
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
