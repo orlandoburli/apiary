@@ -34,30 +34,39 @@ type OverviewTab struct {
 	SuccessRate     string
 }
 
-// TasksTab shows active and recent tasks.
+// TaskView is which sub-screen the Tasks tab is showing.
+type TaskView int
+
+const (
+	TaskViewList TaskView = iota
+	TaskViewDetail
+	TaskViewLogs
+)
+
+// TasksTab shows task history with detail and log sub-views.
 type TasksTab struct {
-	ActiveRuns  []ActiveRun
-	RecentTasks []TaskSummary
+	History     []TaskItem // running + past tasks, newest first
 	SelectedIdx int
+
+	View      TaskView
+	Detail    *TaskItem  // populated when View == TaskViewDetail
+	Logs      []LogEntry // populated when View == TaskViewLogs
+	LogScroll int
 }
 
-type ActiveRun struct {
-	ID        string
-	CellID    string
-	Title     string
-	Agent     string
-	StartedAt time.Time
-	Duration  time.Duration
-	Progress  int // 0-100
-}
-
-type TaskSummary struct {
-	ID       string
-	Title    string
-	Agent    string
-	Status   string
-	Duration time.Duration
-	Success  bool
+// TaskItem is one task row (its latest execution attempt).
+type TaskItem struct {
+	TaskID      string
+	Title       string
+	Agent       string
+	Model       string
+	Runner      string
+	Status      string // running, success, failed
+	Attempt     int
+	Duration    time.Duration
+	StartedAt   *time.Time
+	CompletedAt *time.Time
+	Error       string
 }
 
 // AgentsTab shows agent status and performance.
@@ -104,8 +113,8 @@ func NewModel() *Model {
 			Concurrency: 4,
 		},
 		tasksTab: &TasksTab{
-			ActiveRuns:  []ActiveRun{},
-			RecentTasks: []TaskSummary{},
+			History: []TaskItem{},
+			View:    TaskViewList,
 		},
 		agentsTab: &AgentsTab{
 			Agents: []AgentStatus{},

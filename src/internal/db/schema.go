@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 const schema = `
@@ -12,6 +13,9 @@ CREATE TABLE IF NOT EXISTS task_executions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
+  title TEXT,                     -- task title at dispatch time
+  model TEXT,                     -- LLM model used for this attempt
+  runner TEXT,                    -- runner type (cli, script, …)
   attempt INTEGER DEFAULT 1,
   status TEXT,                    -- pending, running, success, failed
   started_at TIMESTAMP,
@@ -107,11 +111,28 @@ CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs(task_id);
 CREATE INDEX IF NOT EXISTS idx_service_logs_timestamp ON service_logs(timestamp DESC);
 `
 
+// migrations are idempotent ALTER statements applied to databases created
+// before a column existed. CREATE TABLE IF NOT EXISTS never alters an existing
+// table, so new columns must be added here. A "duplicate column name" error
+// just means the migration already ran and is ignored.
+var migrations = []string{
+	`ALTER TABLE task_executions ADD COLUMN title TEXT`,
+	`ALTER TABLE task_executions ADD COLUMN model TEXT`,
+	`ALTER TABLE task_executions ADD COLUMN runner TEXT`,
+}
+
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).
 func InitSchema(ctx context.Context, db *sql.DB) error {
-	_, err := db.ExecContext(ctx, schema)
-	if err != nil {
+	if _, err := db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("init schema: %w", err)
+	}
+	for _, m := range migrations {
+		if _, err := db.ExecContext(ctx, m); err != nil {
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
+			return fmt.Errorf("migrate (%s): %w", m, err)
+		}
 	}
 	return nil
 }

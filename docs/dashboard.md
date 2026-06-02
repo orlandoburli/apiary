@@ -63,15 +63,23 @@ numbers.
 
 ### Tasks
 
-The tasks being executed **right now**, one per entry, with the agent handling
-each and how long it's been running. A progress bar gives a rough sense of
-activity. Use `↑` / `↓` to move the `▶` marker between tasks.
+A list of recent tasks — both running and already finished — newest first. Each
+row shows the task title, the agent that handled it, its status (running /
+success / failed), and when it ran. Use `↑` / `↓` to move the `▶` marker.
 
-Tasks appear here while they run and drop off once they finish — check the
-Overview tab's Completed/Failed counts for what's already done.
+From the list you can drill into the selected task:
 
-> The progress bar is an activity indicator based on elapsed time, not a precise
-> "percent complete" — agents don't report exact progress.
+| Key             | Opens                                              |
+|-----------------|----------------------------------------------------|
+| `d`             | **Details** — agent, model, runner, attempts, start/finish times, total duration, and the error message if it failed |
+| `Enter` or `l`  | **Logs** — the per-task log lines for that run     |
+| `Esc`           | Back to the list                                   |
+
+In the **Logs** view, `↑` / `↓` scroll through the lines. From either sub-view
+you can jump straight to the other (`d` ↔ `l`) or press `r` to reload it.
+
+Running tasks show how long they've been going; finished tasks show when they
+completed. A task that was retried shows its attempt count in the Details view.
 
 ### Agents
 

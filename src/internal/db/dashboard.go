@@ -197,6 +197,158 @@ func parseSQLiteTime(s string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// TaskHistoryItem is one task in the Tasks-tab list: the most recent execution
+// attempt for a given task_id, plus how many attempts it took.
+type TaskHistoryItem struct {
+	TaskID      string
+	Title       string
+	AgentID     string
+	Model       string
+	Runner      string
+	Status      string // running, success, failed
+	Attempt     int    // total attempts for this task
+	DurationMs  int64
+	StartedAt   *time.Time
+	CompletedAt *time.Time
+	Error       string
+}
+
+// GetTaskHistory returns recent tasks (running and finished), newest first,
+// one row per task_id (its latest attempt).
+func (c *Client) GetTaskHistory(ctx context.Context, limit int) ([]TaskHistoryItem, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT e.task_id, e.title, e.agent_id, e.model, e.runner,
+		       e.status, e.attempt, e.duration_ms, e.started_at, e.completed_at, e.error_message
+		FROM task_executions e
+		JOIN (
+			SELECT task_id, MAX(id) AS max_id
+			FROM task_executions
+			GROUP BY task_id
+		) latest ON e.id = latest.max_id
+		ORDER BY e.created_at DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []TaskHistoryItem
+	for rows.Next() {
+		var it TaskHistoryItem
+		var title, model, runner, status, errMsg sql.NullString
+		var dur sql.NullInt64
+		var startedStr, completedStr sql.NullString
+		if err := rows.Scan(&it.TaskID, &title, &it.AgentID, &model, &runner,
+			&status, &it.Attempt, &dur, &startedStr, &completedStr, &errMsg); err != nil {
+			continue
+		}
+		it.Title = title.String
+		it.Model = model.String
+		it.Runner = runner.String
+		it.Status = status.String
+		it.Error = errMsg.String
+		if dur.Valid {
+			it.DurationMs = dur.Int64
+		}
+		if startedStr.Valid {
+			if t, ok := parseSQLiteTime(startedStr.String); ok {
+				it.StartedAt = &t
+			}
+		}
+		if completedStr.Valid {
+			if t, ok := parseSQLiteTime(completedStr.String); ok {
+				it.CompletedAt = &t
+			}
+		}
+		items = append(items, it)
+	}
+	return items, nil
+}
+
+// GetTaskDetail returns the latest execution for a task with full metadata.
+func (c *Client) GetTaskDetail(ctx context.Context, taskID string) (*TaskHistoryItem, error) {
+	row := c.db.QueryRowContext(ctx, `
+		SELECT task_id, title, agent_id, model, runner, status, attempt,
+		       duration_ms, started_at, completed_at, error_message
+		FROM task_executions
+		WHERE task_id = ?
+		ORDER BY id DESC
+		LIMIT 1
+	`, taskID)
+
+	var it TaskHistoryItem
+	var title, model, runner, status, errMsg sql.NullString
+	var dur sql.NullInt64
+	var startedStr, completedStr sql.NullString
+	err := row.Scan(&it.TaskID, &title, &it.AgentID, &model, &runner, &status, &it.Attempt,
+		&dur, &startedStr, &completedStr, &errMsg)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	it.Title = title.String
+	it.Model = model.String
+	it.Runner = runner.String
+	it.Status = status.String
+	it.Error = errMsg.String
+	if dur.Valid {
+		it.DurationMs = dur.Int64
+	}
+	if startedStr.Valid {
+		if t, ok := parseSQLiteTime(startedStr.String); ok {
+			it.StartedAt = &t
+		}
+	}
+	if completedStr.Valid {
+		if t, ok := parseSQLiteTime(completedStr.String); ok {
+			it.CompletedAt = &t
+		}
+	}
+	return &it, nil
+}
+
+// TaskLogLine is a single per-task log record.
+type TaskLogLine struct {
+	Timestamp time.Time
+	Level     string
+	Message   string
+}
+
+// GetTaskLogs returns per-task log lines in chronological order.
+func (c *Client) GetTaskLogs(ctx context.Context, taskID string, limit int) ([]TaskLogLine, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT timestamp, level, message
+		FROM task_logs
+		WHERE task_id = ?
+		ORDER BY id DESC
+		LIMIT ?
+	`, taskID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []TaskLogLine
+	for rows.Next() {
+		var l TaskLogLine
+		var level, msg sql.NullString
+		if err := rows.Scan(&l.Timestamp, &level, &msg); err != nil {
+			continue
+		}
+		l.Level = level.String
+		l.Message = msg.String
+		logs = append(logs, l)
+	}
+	// Reverse into chronological order (oldest first).
+	for i, j := 0, len(logs)-1; i < j; i, j = i+1, j-1 {
+		logs[i], logs[j] = logs[j], logs[i]
+	}
+	return logs, nil
+}
+
 // LogEntry holds a log record.
 type ServiceLog struct {
 	Timestamp time.Time
