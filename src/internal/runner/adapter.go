@@ -8,7 +8,7 @@ import (
 
 // Adapter executes an agent runner for a given Cell.
 type Adapter interface {
-	// ID returns the adapter type key (e.g. "opencode", "script").
+	// ID returns the adapter type key (e.g. "cli", "script").
 	ID() string
 
 	// Configure sets runner-level options from the worker config block.
@@ -18,23 +18,29 @@ type Adapter interface {
 	Run(ctx context.Context, req model.RunRequest) (model.RunResult, error)
 }
 
-var registry = map[string]Adapter{}
+// Factory creates a new, unconfigured Adapter instance.
+type Factory func() Adapter
 
-// Register adds a runner adapter to the global registry.
-func Register(a Adapter) {
-	registry[a.ID()] = a
+var factories = map[string]Factory{}
+
+// Register stores a factory for the given adapter type key.
+func Register(id string, f Factory) {
+	factories[id] = f
 }
 
-// Get returns a registered adapter by type key.
-func Get(id string) (Adapter, bool) {
-	a, ok := registry[id]
-	return a, ok
+// New returns a fresh, unconfigured Adapter instance for the given type key.
+func New(id string) (Adapter, bool) {
+	f, ok := factories[id]
+	if !ok {
+		return nil, false
+	}
+	return f(), true
 }
 
-// All returns all registered adapter type keys.
-func All() []string {
-	keys := make([]string, 0, len(registry))
-	for k := range registry {
+// Types returns all registered adapter type keys.
+func Types() []string {
+	keys := make([]string, 0, len(factories))
+	for k := range factories {
 		keys = append(keys, k)
 	}
 	return keys

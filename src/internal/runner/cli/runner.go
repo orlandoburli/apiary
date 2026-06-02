@@ -18,7 +18,7 @@ import (
 )
 
 func init() {
-	runner.Register(&Runner{})
+	runner.Register("cli", func() runner.Adapter { return &Runner{} })
 }
 
 // Runner invokes an agent CLI tool as a subprocess, passing the task
