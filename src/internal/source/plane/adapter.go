@@ -15,7 +15,7 @@ import (
 )
 
 func init() {
-	source.Register(&Adapter{})
+	source.Register("plane", func() source.Adapter { return &Adapter{} })
 }
 
 // Adapter implements source.Adapter for Plane.so.
@@ -192,6 +192,21 @@ func (a *Adapter) WriteResult(ctx context.Context, cell model.Cell, result model
 }
 
 func (a *Adapter) WebhookHandler() http.Handler { return nil }
+
+// SetState implements source.StateSetter. It transitions the work item to
+// the named state, looked up case-insensitively from the project's state list.
+func (a *Adapter) SetState(ctx context.Context, cell model.Cell, stateName string) error {
+	stateID, ok := a.stateNameToID[strings.ToLower(stateName)]
+	if !ok {
+		return fmt.Errorf("plane: state %q not found in project", stateName)
+	}
+	path := a.workItemsBase() + "/" + cell.ID + "/"
+	_, err := a.client.patch(ctx, path, patchRequest{State: stateID})
+	if err != nil {
+		return fmt.Errorf("plane: setting state %q on %s: %w", stateName, cell.ID, err)
+	}
+	return nil
+}
 
 // workItemsBase returns the base path for work-items in this project.
 func (a *Adapter) workItemsBase() string {

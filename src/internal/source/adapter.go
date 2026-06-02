@@ -30,23 +30,35 @@ type Adapter interface {
 	WebhookHandler() http.Handler
 }
 
-var registry = map[string]Adapter{}
-
-// Register adds a source adapter to the global registry.
-func Register(a Adapter) {
-	registry[a.ID()] = a
+// StateSetter is an optional interface that sources may implement to allow
+// the dispatcher to transition a task to a named state (e.g. on_complete).
+type StateSetter interface {
+	SetState(ctx context.Context, cell model.Cell, stateName string) error
 }
 
-// Get returns a registered adapter by type key.
-func Get(id string) (Adapter, bool) {
-	a, ok := registry[id]
-	return a, ok
+// Factory creates a new, unconfigured Adapter instance.
+type Factory func() Adapter
+
+var factories = map[string]Factory{}
+
+// Register stores a factory for the given adapter type key.
+func Register(id string, f Factory) {
+	factories[id] = f
 }
 
-// All returns all registered adapter type keys.
-func All() []string {
-	keys := make([]string, 0, len(registry))
-	for k := range registry {
+// New returns a fresh, unconfigured Adapter instance for the given type key.
+func New(id string) (Adapter, bool) {
+	f, ok := factories[id]
+	if !ok {
+		return nil, false
+	}
+	return f(), true
+}
+
+// Types returns all registered adapter type keys.
+func Types() []string {
+	keys := make([]string, 0, len(factories))
+	for k := range factories {
 		keys = append(keys, k)
 	}
 	return keys

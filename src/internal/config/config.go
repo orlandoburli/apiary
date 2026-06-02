@@ -39,11 +39,14 @@ type SourceFilters struct {
 }
 
 type WorkerConfig struct {
-	ID          string         `yaml:"id"`
-	Description string         `yaml:"description"`
-	Runner      string         `yaml:"runner"`
-	Model       string         `yaml:"model"`
-	Config      WorkerRunConfig `yaml:"config"`
+	ID           string            `yaml:"id"`
+	Description  string            `yaml:"description"`
+	Runner       string            `yaml:"runner"`
+	Model        string            `yaml:"model"`
+	Config       WorkerRunConfig   `yaml:"config"`
+	// RunnerConfig holds runner-specific keys (e.g. command, model_flag for the
+	// cli runner). These are passed directly to runner.Adapter.Configure().
+	RunnerConfig map[string]any    `yaml:"runner_config"`
 }
 
 type WorkerRunConfig struct {

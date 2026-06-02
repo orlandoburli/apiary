@@ -17,7 +17,7 @@ import (
 )
 
 func init() {
-	runner.Register(&Runner{})
+	runner.Register("script", func() runner.Adapter { return &Runner{} })
 }
 
 // Runner executes a shell command with Cell data injected as APIARY_CELL_*
