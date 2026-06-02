@@ -144,7 +144,14 @@ func (a *App) renderOverviewTab(height int) string {
 		content += strings.Repeat("\n", padding)
 	}
 
-	return "┌─ OVERVIEW ─────────────────────────────────────────┐\n" + content + "└─────────────────────────────────────────────────────┘\n"
+	width := a.model.width
+	if width < 20 {
+		width = 20
+	}
+	topBorder := "┌─ OVERVIEW " + strings.Repeat("─", width-13) + "┐"
+	botBorder := strings.Repeat("─", width)
+	botBorder = "└" + botBorder[1:len(botBorder)-1] + "┘"
+	return topBorder + "\n" + content + botBorder + "\n"
 }
 
 func (a *App) renderTasksTab(height int) string {
@@ -157,7 +164,14 @@ func (a *App) renderTasksTab(height int) string {
 		content += strings.Repeat("\n", padding)
 	}
 
-	return "┌─ TASKS ─────────────────────────────────────────────┐\n" + content + "└─────────────────────────────────────────────────────┘\n"
+	width := a.model.width
+	if width < 20 {
+		width = 20
+	}
+	topBorder := "┌─ TASKS " + strings.Repeat("─", width-10) + "┐"
+	botBorder := strings.Repeat("─", width)
+	botBorder = "└" + botBorder[1:len(botBorder)-1] + "┘"
+	return topBorder + "\n" + content + botBorder + "\n"
 }
 
 func (a *App) renderAgentsTab(height int) string {
@@ -170,7 +184,14 @@ func (a *App) renderAgentsTab(height int) string {
 		content += strings.Repeat("\n", padding)
 	}
 
-	return "┌─ AGENTS ────────────────────────────────────────────┐\n" + content + "└─────────────────────────────────────────────────────┘\n"
+	width := a.model.width
+	if width < 20 {
+		width = 20
+	}
+	topBorder := "┌─ AGENTS " + strings.Repeat("─", width-11) + "┐"
+	botBorder := strings.Repeat("─", width)
+	botBorder = "└" + botBorder[1:len(botBorder)-1] + "┘"
+	return topBorder + "\n" + content + botBorder + "\n"
 }
 
 func (a *App) renderLogsTab(height int) string {
@@ -183,7 +204,14 @@ func (a *App) renderLogsTab(height int) string {
 		content += strings.Repeat("\n", padding)
 	}
 
-	return "┌─ LOGS ──────────────────────────────────────────────┐\n" + content + "└─────────────────────────────────────────────────────┘\n"
+	width := a.model.width
+	if width < 20 {
+		width = 20
+	}
+	topBorder := "┌─ LOGS " + strings.Repeat("─", width-9) + "┐"
+	botBorder := strings.Repeat("─", width)
+	botBorder = "└" + botBorder[1:len(botBorder)-1] + "┘"
+	return topBorder + "\n" + content + botBorder + "\n"
 }
 
 func (a *App) renderFooter() string {
