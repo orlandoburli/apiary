@@ -19,9 +19,8 @@ import (
 	"github.com/orlandoburli/apiary/internal/router"
 	"github.com/orlandoburli/apiary/internal/runner"
 	"github.com/orlandoburli/apiary/internal/source"
+	"github.com/orlandoburli/apiary/internal/version"
 )
-
-const version = "0.1.0-dev"
 
 // sourceStat tracks per-source poll metadata.
 type sourceStat struct {
@@ -183,7 +182,7 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 // Status returns a snapshot for the IPC status endpoint.
 func (d *Dispatcher) Status() StatusResponse {
 	resp := StatusResponse{
-		Version:    version,
+		Version:    version.Version,
 		ConfigFile: d.configFile,
 		Uptime:     humanDuration(time.Since(d.startedAt)),
 		Concurrency: ConcurrencyStatus{
