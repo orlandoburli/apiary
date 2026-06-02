@@ -1,0 +1,18 @@
+# binaries
+apiary
+dist/
+
+# test output
+*.test
+coverage.out
+
+# env files
+.env
+.env.local
+apiary.yaml.local
+
+# editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
