@@ -106,6 +106,8 @@ func (r *Runner) Run(ctx context.Context, req model.RunRequest) (model.RunResult
 	for scanner.Scan() {
 		line := scanner.Text()
 		outBuf.WriteString(line + "\n")
+		// Print to console in real-time
+		fmt.Fprintf(os.Stderr, "%s\n", line)
 		logs = append(logs, model.LogEntry{
 			Level:     "info",
 			Message:   line,

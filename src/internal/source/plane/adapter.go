@@ -22,6 +22,7 @@ func init() {
 
 // Adapter implements source.Adapter for Plane.so.
 type Adapter struct {
+	id        string // source ID from config
 	client    *client
 	workspace string
 	project   string
@@ -41,7 +42,10 @@ type Adapter struct {
 	filterLabels []string
 }
 
-func (a *Adapter) ID() string { return "plane" }
+func (a *Adapter) ID() string { return a.id }
+
+// SetID sets the source ID for this adapter.
+func (a *Adapter) SetID(id string) { a.id = id }
 
 // Connect validates config and creates the HTTP client.
 // Metadata (states, labels) is loaded lazily on first Poll to avoid
@@ -193,6 +197,7 @@ func (a *Adapter) matchesFilters(item workItem) bool {
 	if len(a.filterStates) > 0 {
 		stateName := strings.ToLower(a.stateIDToName[item.State])
 		if !containsAny(a.filterStates, stateName) {
+			aplog.Debug("  item %s (%q): state %q not in filter %v", item.ID, item.Name, stateName, a.filterStates)
 			return false
 		}
 	}
@@ -203,6 +208,7 @@ func (a *Adapter) matchesFilters(item workItem) bool {
 		}
 		for _, required := range a.filterLabels {
 			if !containsAny(itemLabels, required) {
+				aplog.Debug("  item %s (%q): missing required label %q (has: %v)", item.ID, item.Name, required, itemLabels)
 				return false
 			}
 		}
@@ -266,12 +272,13 @@ func (a *Adapter) toCell(item workItem) model.Cell {
 	labels := make([]string, 0, len(item.Labels))
 	for _, id := range item.Labels {
 		if name := a.labelIDToName[id]; name != "" {
-			labels = append(labels, name)
+			labels = append(labels, strings.ToLower(name))
 		}
 	}
 	createdAt, _ := time.Parse(time.RFC3339, item.CreatedAt)
 	updatedAt, _ := time.Parse(time.RFC3339, item.UpdatedAt)
-	return model.Cell{
+
+	cell := model.Cell{
 		ID:          item.ID,
 		SourceID:    a.ID(),
 		Title:       item.Name,
@@ -283,6 +290,12 @@ func (a *Adapter) toCell(item workItem) model.Cell {
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 	}
+
+	if len(labels) > 0 {
+		aplog.Debug("item %q: labels=%v", item.Name, labels)
+	}
+
+	return cell
 }
 
 func formatComment(result model.RunResult) string {
