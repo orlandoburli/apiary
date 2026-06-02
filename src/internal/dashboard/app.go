@@ -128,29 +128,21 @@ func (a *App) renderOverviewTab(height int) string {
 		status = StyleWarning.Render("⟳")
 	}
 
-	content := fmt.Sprintf(`
-┌─ DISPATCHER STATUS ─────────────────────────────────┐
-│ %s %s                                                 │
-│ Uptime:        %s                                    │
-│ Concurrency:   %d workers                            │
-└─────────────────────────────────────────────────────┘
+	content := fmt.Sprintf(`Status:     %s %s
+Uptime:     %s
+Concurrency: %d workers
+Agents:     %d active
 
-┌─ AGENTS ───────────────────────────────────────────┐
-│ Active:  %d   Idle:  0                              │
-└─────────────────────────────────────────────────────┘
+Tasks (24h):
+  Running:    %d
+  Queued:     %d
+  Completed:  %d ✓
+  Failed:     %d ✗
 
-┌─ TASKS (24h) ───────────────────────────────────────┐
-│ Running:      %d                                     │
-│ Queued:       %d                                     │
-│ Completed:    %d  ✓                                  │
-│ Failed:       %d  ✗                                  │
-└─────────────────────────────────────────────────────┘
-
-┌─ METRICS ──────────────────────────────────────────┐
-│ Throughput:   %s tasks/min                           │
-│ Avg Duration: %s                                    │
-│ Success Rate: %s                                    │
-└─────────────────────────────────────────────────────┘
+Metrics:
+  Throughput:   %s tasks/min
+  Avg Duration: %s
+  Success Rate: %s
 `,
 		status, a.model.overviewTab.Status,
 		a.model.overviewTab.Uptime,
@@ -166,13 +158,13 @@ func (a *App) renderOverviewTab(height int) string {
 	)
 
 	// Pad to fill height
-	lines := lipgloss.Height(content)
+	lines := strings.Count(content, "\n") + 1
 	padding := height - lines
 	if padding > 0 {
 		content += strings.Repeat("\n", padding)
 	}
 
-	return StyleBorder.Width(a.model.width - 2).Height(height).Render(content)
+	return StyleBorder.Width(a.model.width - 2).Render(content)
 }
 
 func (a *App) renderTasksTab(height int) string {
@@ -180,44 +172,42 @@ func (a *App) renderTasksTab(height int) string {
 	if len(a.model.tasksTab.ActiveRuns) == 0 {
 		content = "No active tasks\n"
 	} else {
-		content = "RUNNING TASKS:\n\n"
+		content = "RUNNING TASKS:\n"
 		for _, run := range a.model.tasksTab.ActiveRuns {
 			duration := time.Since(run.StartedAt).Round(time.Second)
-			progress := ProgressBar(run.Progress, 20)
+			progress := ProgressBar(run.Progress, 15)
 			title := run.Title
-			if len(title) > 40 {
-				title = title[:40] + "…"
+			if len(title) > 30 {
+				title = title[:30] + "…"
 			}
-			line := fmt.Sprintf("%s  %s\n  %s  %s\n\n",
-				StyleInfo.Render(run.Agent), title, progress, duration)
+			line := fmt.Sprintf("\n%s\n%s\n%s  %v\n",
+				StyleInfo.Render(title), StyleMuted.Render(run.Agent), progress, duration)
 			content += line
 		}
 	}
 
 	// Pad to fill height
-	lines := lipgloss.Height(content)
+	lines := strings.Count(content, "\n") + 1
 	padding := height - lines
 	if padding > 0 {
 		content += strings.Repeat("\n", padding)
 	}
 
-	return StyleBorder.Width(a.model.width - 2).Height(height).Render(content)
+	return StyleBorder.Width(a.model.width - 2).Render(content)
 }
 
 func (a *App) renderAgentsTab(height int) string {
 	if len(a.model.agentsTab.Agents) == 0 {
 		content := "No agents configured\n"
-		lines := lipgloss.Height(content)
+		lines := 1
 		padding := height - lines
 		if padding > 0 {
 			content += strings.Repeat("\n", padding)
 		}
-		return StyleBorder.Width(a.model.width - 2).Height(height).Render(content)
+		return StyleBorder.Width(a.model.width - 2).Render(content)
 	}
 
 	content := "AGENT          STATUS  COMPLETED  AVG TIME  SUCCESS\n"
-	content += strings.Repeat("─", 60) + "\n\n"
-
 	for i, agent := range a.model.agentsTab.Agents {
 		selected := " "
 		if i == a.model.agentsTab.SelectedIdx {
@@ -236,24 +226,24 @@ func (a *App) renderAgentsTab(height int) string {
 		content += line
 	}
 
-	lines := lipgloss.Height(content)
+	lines := strings.Count(content, "\n") + 1
 	padding := height - lines
 	if padding > 0 {
 		content += strings.Repeat("\n", padding)
 	}
 
-	return StyleBorder.Width(a.model.width - 2).Height(height).Render(content)
+	return StyleBorder.Width(a.model.width - 2).Render(content)
 }
 
 func (a *App) renderLogsTab(height int) string {
 	if len(a.model.logsTab.Logs) == 0 {
 		content := "No logs yet\n"
-		lines := lipgloss.Height(content)
+		lines := 1
 		padding := height - lines
 		if padding > 0 {
 			content += strings.Repeat("\n", padding)
 		}
-		return StyleBorder.Width(a.model.width - 2).Height(height).Render(content)
+		return StyleBorder.Width(a.model.width - 2).Render(content)
 	}
 
 	content := ""
@@ -278,20 +268,24 @@ func (a *App) renderLogsTab(height int) string {
 			style = StyleMuted
 		}
 		msg := log.Message
-		if len(msg) > a.model.width-30 {
-			msg = msg[:a.model.width-30] + "…"
+		maxLen := a.model.width - 30
+		if maxLen < 20 {
+			maxLen = 20
+		}
+		if len(msg) > maxLen {
+			msg = msg[:maxLen] + "…"
 		}
 		line := fmt.Sprintf("[%s] [%-5s] %s\n", timeStr, log.Level, msg)
 		content += style.Render(line)
 	}
 
-	lines := lipgloss.Height(content)
+	lines := strings.Count(content, "\n") + 1
 	padding := height - lines
 	if padding > 0 {
 		content += strings.Repeat("\n", padding)
 	}
 
-	return StyleBorder.Width(a.model.width - 2).Height(height).Render(content)
+	return StyleBorder.Width(a.model.width - 2).Render(content)
 }
 
 func (a *App) renderFooter() string {
