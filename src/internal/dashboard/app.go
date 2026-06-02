@@ -248,8 +248,18 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 			t.LogScroll--
 		}
 	case "down":
-		if t.View == TaskViewLogs && t.LogScroll < len(t.Logs)-1 {
+		if t.View == TaskViewLogs && t.LogScroll < len(a.taskLogLines())-1 {
 			t.LogScroll++
+		}
+	case "g", "home":
+		if t.View == TaskViewLogs {
+			t.LogScroll = 0
+		}
+	case "G", "end":
+		if t.View == TaskViewLogs {
+			if n := len(a.taskLogLines()); n > 0 {
+				t.LogScroll = n - 1
+			}
 		}
 	}
 	return a, nil
@@ -382,7 +392,7 @@ func (a *App) fetchTaskLogs(taskID string) tea.Cmd {
 
 		logs := make([]LogEntry, 0)
 		if dbConn != nil {
-			if rows, err := dbConn.GetTaskLogs(ctx, taskID, 500); err == nil {
+			if rows, err := dbConn.GetTaskLogs(ctx, taskID, 5000); err == nil {
 				for _, l := range rows {
 					logs = append(logs, LogEntry{
 						Timestamp: l.Timestamp,
@@ -430,7 +440,7 @@ func (a *App) fetchLogs() tea.Cmd {
 
 		logs := make([]LogEntry, 0)
 		if dbConn != nil {
-			if rows, err := dbConn.GetRecentLogs(ctx, 100); err == nil {
+			if rows, err := dbConn.GetRecentLogs(ctx, 500); err == nil {
 				for _, l := range rows {
 					logs = append(logs, LogEntry{
 						Timestamp: l.Timestamp,
@@ -654,35 +664,95 @@ func (a *App) renderTaskLogs(t *TasksTab, height int) string {
 		return a.box("TASK LOGS", body, height)
 	}
 
+	lines := a.taskLogLines()
+
 	rows := height - 4 // borders + back hint
 	if rows < 1 {
 		rows = 1
 	}
 	start := t.LogScroll
-	if start > len(t.Logs)-1 {
+	if start > len(lines)-1 {
+		start = len(lines) - 1
+	}
+	if start < 0 {
 		start = 0
 	}
 	end := start + rows
-	if end > len(t.Logs) {
-		end = len(t.Logs)
+	if end > len(lines) {
+		end = len(lines)
 	}
 
 	var b strings.Builder
 	for i := start; i < end; i++ {
-		entry := t.Logs[i]
-		ts := entry.Timestamp.Format("15:04:05")
-		level := levelStyle(entry.Level).Render(fmt.Sprintf("%-5s", entry.Level))
-		msg := truncate(entry.Message, a.model.width-22)
-		b.WriteString(fmt.Sprintf("%s %s %s\n", StyleMuted.Render(ts), level, msg))
+		b.WriteString(lines[i] + "\n")
 	}
 	b.WriteString("\n")
 	b.WriteString(a.backHint())
+	b.WriteString(StyleMuted.Render(fmt.Sprintf("   [%d-%d/%d]", start+1, end, len(lines))))
 	b.WriteString("\n")
 	return a.box("TASK LOGS", b.String(), height)
 }
 
+// taskLogLines expands the per-task log entries into fully-wrapped, styled
+// visual lines: messages with embedded newlines (the prompt, the multi-line
+// agent conversation) are split, and long lines are wrapped to the box width,
+// so the *whole* log is viewable by scrolling rather than truncated to one line.
+func (a *App) taskLogLines() []string {
+	t := a.model.tasksTab
+	if t == nil {
+		return nil
+	}
+	msgWidth := a.model.width - 16
+	if msgWidth < 20 {
+		msgWidth = 20
+	}
+	const prefixWidth = 15 // "15:04:05" + space + 5-char level + space
+	indent := strings.Repeat(" ", prefixWidth)
+
+	var out []string
+	for _, entry := range t.Logs {
+		ts := StyleMuted.Render(entry.Timestamp.Format("15:04:05"))
+		level := levelStyle(entry.Level).Render(fmt.Sprintf("%-5s", entry.Level))
+		wrapped := wrapPlain(entry.Message, msgWidth)
+		if len(wrapped) == 0 {
+			wrapped = []string{""}
+		}
+		for j, w := range wrapped {
+			if j == 0 {
+				out = append(out, fmt.Sprintf("%s %s %s", ts, level, w))
+			} else {
+				out = append(out, indent+w)
+			}
+		}
+	}
+	return out
+}
+
+// wrapPlain splits s on newlines and hard-wraps each line to width runes,
+// expanding tabs so the output aligns in the fixed-width terminal.
+func wrapPlain(s string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	var out []string
+	for _, raw := range strings.Split(s, "\n") {
+		raw = strings.ReplaceAll(raw, "\t", "    ")
+		if raw == "" {
+			out = append(out, "")
+			continue
+		}
+		r := []rune(raw)
+		for len(r) > width {
+			out = append(out, string(r[:width]))
+			r = r[width:]
+		}
+		out = append(out, string(r))
+	}
+	return out
+}
+
 func (a *App) backHint() string {
-	return StyleMuted.Render("esc back   d details   l logs   ↑/↓ scroll")
+	return StyleMuted.Render("esc back   d details   l logs   ↑/↓ scroll   g/G top/bottom")
 }
 
 func (a *App) renderAgentsTab(height int) string {

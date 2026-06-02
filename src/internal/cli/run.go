@@ -76,6 +76,20 @@ func newRunCmd() *cobra.Command {
 			}
 			defer logger.Close()
 
+			// Persist operational (aplog) messages as service logs so they show
+			// up in the dashboard's Logs tab — not just on the run terminal.
+			aplog.SetSink(func(level, msg string) {
+				switch level {
+				case "ERROR":
+					logger.Error(context.Background(), msg, "dispatcher")
+				case "DEBUG":
+					logger.Debug(context.Background(), msg, "dispatcher")
+				default:
+					logger.Info(context.Background(), msg, "dispatcher")
+				}
+			})
+			defer aplog.SetSink(nil)
+
 			disp, err := daemon.New(ctx, cfg, configFile, dbClient, logger)
 			if err != nil {
 				return fmt.Errorf("initialising dispatcher: %w", err)
