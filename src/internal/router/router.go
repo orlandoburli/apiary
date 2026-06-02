@@ -3,6 +3,7 @@
 package router
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -17,9 +18,21 @@ type Match struct {
 	Route  config.RouteConfig
 }
 
+// RouteTrace records why a single route did or didn't match a cell — the
+// "decision tree" behind an agent assignment. Returned by Explain.
+type RouteTrace struct {
+	RouteID  string
+	Priority int
+	Agent    string
+	Worker   string
+	Matched  bool
+	Reason   string // why it matched, or which condition rejected it
+	Selected bool   // true for the route that actually won (first match)
+}
+
 // Router evaluates priority-ordered routing rules against incoming Cells.
 type Router struct {
-	routes  []config.RouteConfig  // sorted by priority ascending
+	routes  []config.RouteConfig // sorted by priority ascending
 	workers map[string]config.WorkerConfig
 	regexes map[string]*regexp.Regexp // route ID → compiled regex
 }
@@ -73,37 +86,114 @@ func (r *Router) Route(cell model.Cell) (Match, bool) {
 }
 
 func (r *Router) matches(route config.RouteConfig, cell model.Cell) bool {
+	ok, _ := r.evaluate(route, cell)
+	return ok
+}
+
+// evaluate reports whether a route matches a cell and a human-readable reason.
+// On a miss the reason names the first condition that rejected the cell; on a
+// hit it summarises which conditions were satisfied.
+func (r *Router) evaluate(route config.RouteConfig, cell model.Cell) (bool, string) {
 	m := route.Match
 
 	if m.Source != "" && cell.SourceID != m.Source {
-		return false
+		return false, fmt.Sprintf("source %q != required %q", cell.SourceID, m.Source)
 	}
 
 	if len(m.Labels) > 0 {
 		cellLabels := toLowerSet(cell.Labels)
 		for _, required := range m.Labels {
-			lowerRequired := strings.ToLower(required)
-			if !cellLabels[lowerRequired] {
-				return false
+			if !cellLabels[strings.ToLower(required)] {
+				return false, fmt.Sprintf("missing required label %q (cell has %v)", required, cell.Labels)
 			}
 		}
 	}
 
 	if len(m.Types) > 0 && !containsInsensitive(m.Types, cell.Type) {
-		return false
+		return false, fmt.Sprintf("type %q not in %v", cell.Type, m.Types)
 	}
 
 	if len(m.Priority) > 0 && !containsInsensitive(m.Priority, cell.Priority) {
-		return false
+		return false, fmt.Sprintf("priority %q not in %v", cell.Priority, m.Priority)
 	}
 
 	if re, ok := r.regexes[route.ID]; ok {
 		if !re.MatchString(cell.Title) {
-			return false
+			return false, fmt.Sprintf("title %q does not match /%s/", cell.Title, m.TitleRegex)
 		}
 	}
 
-	return true
+	return true, describeCriteria(m)
+}
+
+// describeCriteria summarises the conditions a route requires, for the matched case.
+func describeCriteria(m config.RouteMatch) string {
+	var parts []string
+	if m.Source != "" {
+		parts = append(parts, "source="+m.Source)
+	}
+	if len(m.Labels) > 0 {
+		parts = append(parts, "labels="+strings.Join(m.Labels, ","))
+	}
+	if len(m.Types) > 0 {
+		parts = append(parts, "types="+strings.Join(m.Types, ","))
+	}
+	if len(m.Priority) > 0 {
+		parts = append(parts, "priority="+strings.Join(m.Priority, ","))
+	}
+	if m.TitleRegex != "" {
+		parts = append(parts, "title~/"+m.TitleRegex+"/")
+	}
+	if len(parts) == 0 {
+		return "matches all cells (no criteria)"
+	}
+	return "matched on " + strings.Join(parts, " ")
+}
+
+// Explain evaluates every route against the cell in priority order and returns
+// the full decision trace plus the winning Match (if any). The winning route is
+// the first match; later routes are still reported as "not reached".
+func (r *Router) Explain(cell model.Cell) (Match, bool, []RouteTrace) {
+	traces := make([]RouteTrace, 0, len(r.routes))
+	var winner Match
+	found := false
+
+	for _, route := range r.routes {
+		t := RouteTrace{
+			RouteID:  route.ID,
+			Priority: route.Priority,
+			Agent:    route.Agent,
+			Worker:   route.Worker,
+		}
+
+		if found {
+			t.Reason = "not reached (a higher-priority route already matched)"
+			traces = append(traces, t)
+			continue
+		}
+
+		ok, reason := r.evaluate(route, cell)
+		t.Matched = ok
+		t.Reason = reason
+
+		if ok {
+			if route.Agent != "" {
+				winner = Match{Route: route}
+				t.Selected = true
+				found = true
+			} else if w, wok := r.workers[route.Worker]; wok {
+				winner = Match{Worker: w, Route: route}
+				t.Selected = true
+				found = true
+			} else {
+				t.Matched = false
+				t.Reason = fmt.Sprintf("matched but worker %q is not defined — skipped", route.Worker)
+			}
+		}
+		traces = append(traces, t)
+	}
+
+	return winner, found, traces
 }
 
 func toLowerSet(ss []string) map[string]bool {

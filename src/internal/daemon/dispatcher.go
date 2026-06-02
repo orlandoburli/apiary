@@ -53,15 +53,15 @@ type Dispatcher struct {
 	runners     map[string]runner.Adapter // worker id → configured runner
 	agentRunner map[string]string         // agent id → runner type (cli, script, …)
 
-	db          *db.Client       // SQLite database for state and logging
-	logger      *logging.Logger  // Structured logger (file + DB)
-	retryMgr    *RetryManager    // Retry logic and backoff
+	db       *db.Client      // SQLite database for state and logging
+	logger   *logging.Logger // Structured logger (file + DB)
+	retryMgr *RetryManager   // Retry logic and backoff
 
 	sem        chan struct{} // concurrency semaphore
-	active     atomic.Int32 // number of goroutines currently running
-	inFlight   sync.Map     // cell id → struct{}: prevents double-dispatch
-	activeRuns sync.Map     // run id → model.ActiveRun
-	retryQueue sync.Map     // cell id → retryQueueEntry: cells pending retry
+	active     atomic.Int32  // number of goroutines currently running
+	inFlight   sync.Map      // cell id → struct{}: prevents double-dispatch
+	activeRuns sync.Map      // run id → model.ActiveRun
+	retryQueue sync.Map      // cell id → retryQueueEntry: cells pending retry
 
 	stats  map[string]*sourceStat // source id → stats
 	statMu sync.RWMutex
@@ -79,18 +79,18 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 	}
 
 	d := &Dispatcher{
-		cfg:        cfg,
-		configFile: configFile,
-		startedAt:  time.Now(),
-		router:     r,
+		cfg:         cfg,
+		configFile:  configFile,
+		startedAt:   time.Now(),
+		router:      r,
 		sources:     make(map[string]source.Adapter),
 		runners:     make(map[string]runner.Adapter),
 		agentRunner: make(map[string]string),
-		db:         dbClient,
-		logger:     logger,
-		retryMgr:   NewRetryManager(&cfg.Settings.RetryPolicy),
-		sem:        make(chan struct{}, max(cfg.Settings.Concurrency, 1)),
-		stats:      make(map[string]*sourceStat),
+		db:          dbClient,
+		logger:      logger,
+		retryMgr:    NewRetryManager(&cfg.Settings.RetryPolicy),
+		sem:         make(chan struct{}, max(cfg.Settings.Concurrency, 1)),
+		stats:       make(map[string]*sourceStat),
 	}
 
 	for _, sc := range cfg.Sources {
@@ -392,7 +392,7 @@ func (d *Dispatcher) Status() StatusResponse {
 // StartServer starts an HTTP server on the Unix socket for IPC.
 // It removes any stale socket file before binding.
 func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error {
-	path := SocketPath()
+	path := SocketPath(config.DataDir(d.configFile))
 	if err := ensureSocketDir(path); err != nil {
 		return fmt.Errorf("socket dir: %w", err)
 	}
@@ -536,6 +536,33 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		return model.RunResult{Success: false}
 	}
 
+	// Log the routing decision tree: why this cell landed on this agent, and
+	// which other routes were evaluated and rejected (DEBUG, per-task).
+	if d.logger != nil {
+		_, _, traces := d.router.Explain(cell)
+		d.logger.TaskDebug(ctx, cell.ID, fmt.Sprintf(
+			"routing decision for %q (source=%s labels=%v type=%s priority=%s):",
+			cell.Title, cell.SourceID, cell.Labels, cell.Type, cell.Priority))
+		for _, t := range traces {
+			marker := "·"
+			verb := "skip"
+			if t.Matched {
+				verb = "match"
+			}
+			if t.Selected {
+				marker = "▶"
+				verb = "SELECTED"
+			}
+			target := t.Agent
+			if target == "" {
+				target = "worker:" + t.Worker
+			}
+			d.logger.TaskDebug(ctx, cell.ID, fmt.Sprintf(
+				"  %s route=%s (prio=%d agent=%s) %s — %s",
+				marker, t.RouteID, t.Priority, target, verb, t.Reason))
+		}
+	}
+
 	if d.cfg.Settings.StateLock {
 		if err := adapter.Acknowledge(ctx, cell, model.AckActionInProgress); err != nil {
 			aplog.Error("cell %s: acknowledge error: %v", cell.ID, err)
@@ -581,6 +608,23 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		WorkingDir:   "/",
 		Env:          map[string]string{},
 		Timeout:      45 * time.Minute,
+	}
+
+	// Stream the runner's live output (prompt, claude conversation, stderr)
+	// into the per-task log so it shows up in the dashboard in real time.
+	// These are DEBUG entries — visible only when running with --debug.
+	if d.logger != nil {
+		cellID := cell.ID
+		req.LogSink = func(e model.LogEntry) {
+			switch e.Level {
+			case "error":
+				d.logger.TaskError(ctx, cellID, e.Message)
+			case "info":
+				d.logger.TaskInfo(ctx, cellID, e.Message)
+			default:
+				d.logger.TaskDebug(ctx, cellID, e.Message)
+			}
+		}
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, req.Timeout)

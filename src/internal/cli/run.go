@@ -6,25 +6,24 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"os/user"
 	"path/filepath"
 	"sync"
 	"syscall"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/daemon"
 	"github.com/orlandoburli/apiary/internal/db"
+	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/logging"
-	"github.com/orlandoburli/apiary/internal/tui"
 )
 
 func newRunCmd() *cobra.Command {
 	var (
 		dryRun bool
 		once   bool
+		debug  bool
 		src    string
 		worker string
 	)
@@ -66,7 +65,12 @@ func newRunCmd() *cobra.Command {
 			}
 			defer dbClient.Close()
 
-			logger, err := logging.New(logDir, dbClient, logging.LevelInfo)
+			logLevel := logging.LevelInfo
+			if debug {
+				logLevel = logging.LevelDebug
+				aplog.Enable(true)
+			}
+			logger, err := logging.New(logDir, dbClient, logLevel)
 			if err != nil {
 				return fmt.Errorf("initializing logger: %w", err)
 			}
@@ -103,13 +107,14 @@ func newRunCmd() *cobra.Command {
 
 			disp.Start(ctx, &wg)
 
-			m := tui.New()
-			p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
-			if _, tuiErr := p.Run(); tuiErr != nil {
-				cancel()
-				wg.Wait()
-				return fmt.Errorf("tui: %w", tuiErr)
+			level := "info"
+			if debug {
+				level = "debug"
 			}
+			fmt.Fprintf(os.Stderr, "apiary running (%s) — logs at %s. Run `apiary dashboard` to watch. Press Ctrl+C to stop.\n", level, logDir)
+
+			// Block until interrupted (SIGINT/SIGTERM via signal.NotifyContext).
+			<-ctx.Done()
 
 			cancel()
 			wg.Wait()
@@ -119,26 +124,25 @@ func newRunCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "connect to sources but do not invoke runners")
 	cmd.Flags().BoolVar(&once, "once", false, "poll once, dispatch all matching tasks, then exit (exit 4 if any run failed)")
+	cmd.Flags().BoolVar(&debug, "debug", false, "verbose DEBUG logging: per-task prompt, live agent conversation, and routing decisions (view in the dashboard)")
 	cmd.Flags().StringVar(&src, "source", "", "restrict to a single source id")
 	cmd.Flags().StringVar(&worker, "worker", "", "restrict to a single worker id")
 
 	return cmd
 }
 
-// getDBPath returns the path to the SQLite database (~/.apiary/apiary.db)
-func getDBPath() string {
-	usr, err := user.Current()
-	if err != nil {
-		return ".apiary/apiary.db"
-	}
-	return filepath.Join(usr.HomeDir, ".apiary", "apiary.db")
+// projectDataDir returns the project-scoped data directory (a `.apiary` folder
+// alongside the active --config file). See config.DataDir.
+func projectDataDir() string {
+	return config.DataDir(configFile)
 }
 
-// getLogDir returns the log directory (~/.apiary/logs)
+// getDBPath returns the path to the SQLite database (<config-dir>/.apiary/apiary.db)
+func getDBPath() string {
+	return filepath.Join(projectDataDir(), "apiary.db")
+}
+
+// getLogDir returns the log directory (<config-dir>/.apiary/logs)
 func getLogDir() string {
-	usr, err := user.Current()
-	if err != nil {
-		return ".apiary/logs"
-	}
-	return filepath.Join(usr.HomeDir, ".apiary", "logs")
+	return filepath.Join(projectDataDir(), "logs")
 }

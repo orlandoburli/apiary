@@ -10,6 +10,11 @@ runners:
       command: claude
       model_flag: --model
       prompt_flag: -p
+      # Emit the full conversation as newline-delimited JSON events. Apiary
+      # streams every event (assistant text, tool calls, results) into the
+      # per-task DEBUG log in real time — run `apiary run --debug` and watch
+      # the Tasks tab. Remove these args for plain text output.
+      args: ["--output-format", "stream-json", "--verbose"]
 
   # Claude API runner (Anthropic API with full model access)
   - id: claude-api
