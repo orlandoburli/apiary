@@ -6,6 +6,7 @@
 |---|---|---|
 | [Go](https://go.dev/dl/) | 1.22+ | All source lives in `src/` |
 | [Git](https://git-scm.com/) | any | |
+| `make` | any | GNU Make or compatible |
 | An agent CLI | any | e.g. [opencode](https://opencode.ai), for testing runners |
 | A Plane account | any | For testing the Plane source adapter (free tier works) |
 
@@ -13,35 +14,39 @@
 
 ```sh
 git clone https://github.com/orlandoburli/apiary.git
-cd apiary/src
+cd apiary
 ```
-
-**Check that everything compiles** (no output file produced):
 
 ```sh
-go build ./...
+make build      # compile → bin/apiary
+make install    # compile + install to $GOPATH/bin (puts apiary on your PATH)
 ```
 
-`./...` is a Go path pattern meaning "this package and all sub-packages recursively." This command compiles the whole tree and reports any errors, but doesn't write a binary anywhere. Use it as a quick sanity check.
+Run `make` or `make help` to see all available targets:
 
-**Build the runnable binary:**
-
-```sh
-go build -o apiary ./cmd/apiary
-./apiary --help
+```
+  build             Build the apiary binary into bin/
+  install           Install apiary to $GOPATH/bin (makes it available on PATH)
+  test              Run all tests
+  test-verbose      Run all tests with per-test output
+  test-cover        Run tests and open an HTML coverage report
+  check             Build + test (use in CI)
+  tidy              Run go mod tidy
+  vet               Run go vet
+  clean             Remove build artifacts
+  help              Show available targets
 ```
 
-**Install to `$GOPATH/bin`** (so `apiary` is on your PATH):
-
-```sh
-go install ./cmd/apiary
-apiary --help
-```
+> **Note on `go build ./...`** — you may see this pattern in Go docs. It compiles
+> every package in the module but produces no output file; it's used purely as a
+> compile-error check. `make build` is the command that actually produces the
+> `bin/apiary` binary.
 
 ## Project structure
 
 ```
 apiary/
+├── Makefile                # build, test, install targets
 ├── src/                    # Go source
 │   ├── cmd/apiary/         # Binary entry point
 │   ├── internal/
@@ -153,25 +158,16 @@ apiary run --once && echo "all runs succeeded"
 ## Run tests
 
 ```sh
+make test              # run all tests
+make test-verbose      # run all tests with per-test output
+make test-cover        # run tests + open HTML coverage report in browser
+```
+
+To run a specific package or test directly:
+
+```sh
 cd src
-go test ./...
-```
-
-To see per-test output:
-
-```sh
-go test -v ./...
-```
-
-To run a specific package:
-
-```sh
 go test ./internal/router/...
-```
-
-To run a specific test by name:
-
-```sh
 go test -run TestRoute_FirstMatchWins ./internal/router/...
 ```
 
