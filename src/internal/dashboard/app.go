@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -30,7 +31,7 @@ func New(dbConn *db.Client) *App {
 func (a *App) Init() tea.Cmd {
 	return tea.Batch(
 		tea.EnterAltScreen,
-		a.refreshData(),
+		a.refreshActiveTab(),
 		a.tickCmd(),
 	)
 }
@@ -39,12 +40,17 @@ func (a *App) Init() tea.Cmd {
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		return a.handleKeyMsg(msg)
+		_, cmd := a.handleKeyMsg(msg)
+		// Immediately refresh active tab when tab is changed
+		if cmd != nil {
+			return a, tea.Batch(cmd, a.refreshActiveTab())
+		}
+		return a, a.refreshActiveTab()
 	case tea.WindowSizeMsg:
 		a.model.width = msg.Width
 		a.model.height = msg.Height
 	case refreshMsg:
-		cmd := a.refreshData()
+		cmd := a.refreshActiveTab()
 		return a, tea.Batch(cmd, a.tickCmd())
 	}
 	return a, nil
@@ -58,29 +64,38 @@ func (a *App) View() string {
 
 	// Header
 	header := a.renderHeader()
+	headerHeight := lipgloss.Height(header)
 
 	// Tabs
 	tabs := a.renderTabs()
+	tabsHeight := lipgloss.Height(tabs)
 
-	// Content
+	// Footer
+	footer := a.renderFooter()
+	footerHeight := lipgloss.Height(footer)
+
+	// Calculate available space for content
+	contentHeight := a.model.height - headerHeight - tabsHeight - footerHeight - 2 // 2 for padding
+
+	// Content with full screen height
 	var content string
 	switch a.model.ActiveTab() {
 	case "Overview":
-		content = a.renderOverviewTab()
+		content = a.renderOverviewTab(contentHeight)
 	case "Tasks":
-		content = a.renderTasksTab()
+		content = a.renderTasksTab(contentHeight)
 	case "Agents":
-		content = a.renderAgentsTab()
+		content = a.renderAgentsTab(contentHeight)
 	case "Logs":
-		content = a.renderLogsTab()
+		content = a.renderLogsTab(contentHeight)
 	default:
 		content = "Unknown tab"
 	}
 
-	// Footer
-	footer := a.renderFooter()
+	// Apply width to content
+	content = lipgloss.NewStyle().Width(a.model.width).Render(content)
 
-	// Combine
+	// Combine all sections
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		header,
@@ -107,83 +122,143 @@ func (a *App) renderTabs() string {
 	return lipgloss.JoinHorizontal(lipgloss.Center, tabs...) + "\n"
 }
 
-func (a *App) renderOverviewTab() string {
-	return StyleBorder.Render(fmt.Sprintf(`
-Status:     %s %s
-Uptime:     %s
-Concurrency: %d
-Agents:     %d active
-Tasks:      %d running, %d queued
+func (a *App) renderOverviewTab(height int) string {
+	status := StyleSuccess.Render("●")
+	if a.model.loading {
+		status = StyleWarning.Render("⟳")
+	}
 
-Today:      %d completed, %d failed
-Rate:       %s/min
-Duration:   %s avg
-Success:    %s
+	content := fmt.Sprintf(`
+┌─ DISPATCHER STATUS ─────────────────────────────────┐
+│ %s %s                                                 │
+│ Uptime:        %s                                    │
+│ Concurrency:   %d workers                            │
+└─────────────────────────────────────────────────────┘
 
-← → Tab | ↑ ↓ Select | q Quit
+┌─ AGENTS ───────────────────────────────────────────┐
+│ Active:  %d   Idle:  0                              │
+└─────────────────────────────────────────────────────┘
+
+┌─ TASKS (24h) ───────────────────────────────────────┐
+│ Running:      %d                                     │
+│ Queued:       %d                                     │
+│ Completed:    %d  ✓                                  │
+│ Failed:       %d  ✗                                  │
+└─────────────────────────────────────────────────────┘
+
+┌─ METRICS ──────────────────────────────────────────┐
+│ Throughput:   %s tasks/min                           │
+│ Avg Duration: %s                                    │
+│ Success Rate: %s                                    │
+└─────────────────────────────────────────────────────┘
 `,
-		StatusColor("active"), a.model.overviewTab.Status,
+		status, a.model.overviewTab.Status,
 		a.model.overviewTab.Uptime,
 		a.model.overviewTab.Concurrency,
 		a.model.overviewTab.ActiveAgents,
-		a.model.overviewTab.ActiveRuns, a.model.overviewTab.QueuedTasks,
-		a.model.overviewTab.CompletedToday, a.model.overviewTab.FailedToday,
+		a.model.overviewTab.ActiveRuns,
+		a.model.overviewTab.QueuedTasks,
+		a.model.overviewTab.CompletedToday,
+		a.model.overviewTab.FailedToday,
 		a.model.overviewTab.ThroughputRatio,
 		a.model.overviewTab.AvgDuration,
 		a.model.overviewTab.SuccessRate,
-	))
+	)
+
+	// Pad to fill height
+	lines := lipgloss.Height(content)
+	padding := height - lines
+	if padding > 0 {
+		content += strings.Repeat("\n", padding)
+	}
+
+	return StyleBorder.Width(a.model.width - 2).Height(height).Render(content)
 }
 
-func (a *App) renderTasksTab() string {
+func (a *App) renderTasksTab(height int) string {
 	var content string
 	if len(a.model.tasksTab.ActiveRuns) == 0 {
-		content = StyleMuted.Render("No active tasks")
+		content = "No active tasks\n"
 	} else {
+		content = "RUNNING TASKS:\n\n"
 		for _, run := range a.model.tasksTab.ActiveRuns {
 			duration := time.Since(run.StartedAt).Round(time.Second)
 			progress := ProgressBar(run.Progress, 20)
-			line := fmt.Sprintf("%s  %s  %s  %s\n",
-				run.Agent, run.Title[:min(30, len(run.Title))], progress, duration)
+			title := run.Title
+			if len(title) > 40 {
+				title = title[:40] + "…"
+			}
+			line := fmt.Sprintf("%s  %s\n  %s  %s\n\n",
+				StyleInfo.Render(run.Agent), title, progress, duration)
 			content += line
 		}
 	}
-	return StyleBorder.Render(content)
-}
 
-func (a *App) renderAgentsTab() string {
-	if len(a.model.agentsTab.Agents) == 0 {
-		return StyleBorder.Render(StyleMuted.Render("No agents configured"))
+	// Pad to fill height
+	lines := lipgloss.Height(content)
+	padding := height - lines
+	if padding > 0 {
+		content += strings.Repeat("\n", padding)
 	}
 
-	content := "ID          Status  Working  Queue  Completed  Success\n"
+	return StyleBorder.Width(a.model.width - 2).Height(height).Render(content)
+}
+
+func (a *App) renderAgentsTab(height int) string {
+	if len(a.model.agentsTab.Agents) == 0 {
+		content := "No agents configured\n"
+		lines := lipgloss.Height(content)
+		padding := height - lines
+		if padding > 0 {
+			content += strings.Repeat("\n", padding)
+		}
+		return StyleBorder.Width(a.model.width - 2).Height(height).Render(content)
+	}
+
+	content := "AGENT          STATUS  COMPLETED  AVG TIME  SUCCESS\n"
+	content += strings.Repeat("─", 60) + "\n\n"
+
 	for i, agent := range a.model.agentsTab.Agents {
-		selected := ""
+		selected := " "
 		if i == a.model.agentsTab.SelectedIdx {
-			selected = "→ "
+			selected = "→"
 		}
 		statusIcon := StatusColor(agent.Status)
-		line := fmt.Sprintf("%s%-11s  %s  %-7d  %-5d  %-9d  %.1f%%\n",
+		avgTime := fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000)
+		line := fmt.Sprintf("%s %-14s %s  %-9d  %-9s  %.1f%%\n",
 			selected,
 			agent.ID,
 			statusIcon,
-			1, // Would be current task count
-			agent.QueuedCount,
 			agent.CompletedCount,
+			avgTime,
 			agent.SuccessRate*100,
 		)
 		content += line
 	}
-	return StyleBorder.Render(content)
+
+	lines := lipgloss.Height(content)
+	padding := height - lines
+	if padding > 0 {
+		content += strings.Repeat("\n", padding)
+	}
+
+	return StyleBorder.Width(a.model.width - 2).Height(height).Render(content)
 }
 
-func (a *App) renderLogsTab() string {
+func (a *App) renderLogsTab(height int) string {
 	if len(a.model.logsTab.Logs) == 0 {
-		return StyleBorder.Render(StyleMuted.Render("No logs yet"))
+		content := "No logs yet\n"
+		lines := lipgloss.Height(content)
+		padding := height - lines
+		if padding > 0 {
+			content += strings.Repeat("\n", padding)
+		}
+		return StyleBorder.Width(a.model.width - 2).Height(height).Render(content)
 	}
 
 	content := ""
 	start := a.model.logsTab.Scrolled
-	end := start + (a.model.height / 2)
+	end := start + height - 2
 	if end > len(a.model.logsTab.Logs) {
 		end = len(a.model.logsTab.Logs)
 	}
@@ -202,11 +277,21 @@ func (a *App) renderLogsTab() string {
 		default:
 			style = StyleMuted
 		}
-		line := fmt.Sprintf("[%s] [%-5s] %s\n", timeStr, log.Level, log.Message[:min(60, len(log.Message))])
+		msg := log.Message
+		if len(msg) > a.model.width-30 {
+			msg = msg[:a.model.width-30] + "…"
+		}
+		line := fmt.Sprintf("[%s] [%-5s] %s\n", timeStr, log.Level, msg)
 		content += style.Render(line)
 	}
 
-	return StyleBorder.Render(content)
+	lines := lipgloss.Height(content)
+	padding := height - lines
+	if padding > 0 {
+		content += strings.Repeat("\n", padding)
+	}
+
+	return StyleBorder.Width(a.model.width - 2).Height(height).Render(content)
 }
 
 func (a *App) renderFooter() string {
@@ -258,63 +343,65 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
-func (a *App) refreshData() tea.Cmd {
+// refreshActiveTab fetches data ONLY for the currently active tab (lazy loading)
+func (a *App) refreshActiveTab() tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 
-		// Fetch overview stats
-		stats, err := a.dbConn.GetDashboardStats(ctx, time.Now().AddDate(0, 0, -1))
-		if err == nil && stats != nil {
-			a.model.overviewTab.Status = stats.DispatcherStatus
-			a.model.overviewTab.ActiveAgents = stats.ActiveAgents
-			a.model.overviewTab.ActiveRuns = stats.ActiveRuns
-			a.model.overviewTab.QueuedTasks = stats.QueuedTasks
-			a.model.overviewTab.CompletedToday = stats.CompletedToday
-			a.model.overviewTab.FailedToday = stats.FailedToday
-			a.model.overviewTab.AvgDuration = fmt.Sprintf("%.1fs", float64(stats.AvgDurationMs)/1000)
-			a.model.overviewTab.SuccessRate = fmt.Sprintf("%.1f%%", stats.SuccessRate*100)
-			if stats.CompletedToday > 0 {
-				a.model.overviewTab.ThroughputRatio = fmt.Sprintf("%.1f", float64(stats.CompletedToday)/24)
-			}
-		}
+		a.model.loading = true
+		activeTab := a.model.ActiveTab()
 
-		// Fetch recent tasks
-		tasks, err := a.dbConn.GetRecentTasks(ctx, 10)
-		if err == nil {
-			a.model.tasksTab.RecentTasks = make([]TaskSummary, 0)
-			for _, t := range tasks {
-				a.model.tasksTab.RecentTasks = append(a.model.tasksTab.RecentTasks, TaskSummary{
-					ID:       t.ID,
-					Title:    t.Title,
-					Agent:    t.AgentID,
-					Status:   t.Status,
-					Duration: time.Duration(t.Duration) * time.Millisecond,
-					Success:  t.Success,
+		// Only fetch data for the active tab
+		switch activeTab {
+		case "Overview":
+			stats, err := a.dbConn.GetDashboardStats(ctx, time.Now().AddDate(0, 0, -1))
+			if err == nil && stats != nil {
+				a.model.overviewTab.Status = stats.DispatcherStatus
+				a.model.overviewTab.ActiveAgents = stats.ActiveAgents
+				a.model.overviewTab.ActiveRuns = stats.ActiveRuns
+				a.model.overviewTab.QueuedTasks = stats.QueuedTasks
+				a.model.overviewTab.CompletedToday = stats.CompletedToday
+				a.model.overviewTab.FailedToday = stats.FailedToday
+				a.model.overviewTab.AvgDuration = fmt.Sprintf("%.1fs", float64(stats.AvgDurationMs)/1000)
+				a.model.overviewTab.SuccessRate = fmt.Sprintf("%.1f%%", stats.SuccessRate*100)
+				if stats.CompletedToday > 0 {
+					a.model.overviewTab.ThroughputRatio = fmt.Sprintf("%.1f", float64(stats.CompletedToday)/24)
+				}
+			}
+
+		case "Tasks":
+			runs, _ := a.dbConn.GetActiveRuns(ctx)
+			a.model.tasksTab.ActiveRuns = make([]ActiveRun, 0)
+			for _, run := range runs {
+				a.model.tasksTab.ActiveRuns = append(a.model.tasksTab.ActiveRuns, ActiveRun{
+					ID:        run.CellID,
+					CellID:    run.CellID,
+					Title:     run.Title,
+					Agent:     run.AgentID,
+					StartedAt: time.Now().Add(-time.Duration(run.Duration) * time.Millisecond),
+					Duration:  time.Duration(run.Duration) * time.Millisecond,
+					Progress:  int((run.Duration % 10000) / 100),
 				})
 			}
-		}
 
-		// Fetch agent stats
-		agents, err := a.dbConn.GetAgentStats(ctx)
-		if err == nil {
+		case "Agents":
+			agents, _ := a.dbConn.GetAgentStats(ctx)
 			a.model.agentsTab.Agents = make([]AgentStatus, 0)
 			for _, agent := range agents {
 				a.model.agentsTab.Agents = append(a.model.agentsTab.Agents, AgentStatus{
-					ID:            agent.ID,
-					Status:        agent.Status,
-					QueuedCount:   agent.QueuedCount,
-					CompletedCount: agent.CompletedCount,
-					AvgDurationMs: agent.AvgDurationMs,
-					SuccessRate:   agent.SuccessRate,
+					ID:              agent.ID,
+					Status:          agent.Status,
+					QueuedCount:     agent.QueuedCount,
+					CompletedCount:  agent.CompletedCount,
+					AvgDurationMs:   agent.AvgDurationMs,
+					SuccessRate:     agent.SuccessRate,
 					LastTaskEndedAt: agent.LastTaskEndedAt,
 				})
 			}
-		}
 
-		// Fetch logs
-		logs, err := a.dbConn.GetRecentLogs(ctx, 50)
-		if err == nil {
+		case "Logs":
+			logs, _ := a.dbConn.GetRecentLogs(ctx, 100)
 			a.model.logsTab.Logs = make([]LogEntry, 0)
 			for _, log := range logs {
 				a.model.logsTab.Logs = append(a.model.logsTab.Logs, LogEntry{
@@ -326,24 +413,9 @@ func (a *App) refreshData() tea.Cmd {
 			}
 		}
 
-		// Fetch active runs
-		runs, err := a.dbConn.GetActiveRuns(ctx)
-		if err == nil {
-			a.model.tasksTab.ActiveRuns = make([]ActiveRun, 0)
-			for _, run := range runs {
-				a.model.tasksTab.ActiveRuns = append(a.model.tasksTab.ActiveRuns, ActiveRun{
-					ID:        run.CellID,
-					CellID:    run.CellID,
-					Title:     run.Title,
-					Agent:     run.AgentID,
-					StartedAt: time.Now().Add(-time.Duration(run.Duration) * time.Millisecond),
-					Duration:  time.Duration(run.Duration) * time.Millisecond,
-					Progress:  int((run.Duration % 10000) / 100), // Simple progress simulation
-				})
-			}
-		}
-
 		a.model.lastRefresh = time.Now()
+		a.model.lastTabRefresh[a.model.activeTab] = time.Now()
+		a.model.loading = false
 		return refreshMsg{}
 	}
 }
