@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/source"
 )
@@ -58,19 +59,23 @@ func (a *Adapter) Connect(ctx context.Context, cfg map[string]any) error {
 	a.project = project
 	a.client = newClient(baseURL, apiKey)
 
+	aplog.Info("plane: connecting  workspace=%s  project=%s", workspace, project)
+
 	if err := a.loadStates(ctx); err != nil {
 		return err
 	}
 	if err := a.loadLabels(ctx); err != nil {
 		return err
 	}
+
+	aplog.Info("plane: ready  states=%d  labels=%d  started-state=%q",
+		len(a.stateIDToName), len(a.labelIDToName), a.stateIDToName[a.startedStateID])
 	return nil
 }
 
 func (a *Adapter) loadStates(ctx context.Context) error {
-	path := a.workItemsBase() + "/states/"
-	// states live at project level, not work-items level
-	path = fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/states/", a.workspace, a.project)
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/states/", a.workspace, a.project)
+	aplog.Debug("plane: fetching states from %s", path)
 
 	states, err := getAll[state](ctx, a.client, path)
 	if err != nil {
@@ -92,6 +97,7 @@ func (a *Adapter) loadStates(ctx context.Context) error {
 
 func (a *Adapter) loadLabels(ctx context.Context) error {
 	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/labels/", a.workspace, a.project)
+	aplog.Debug("plane: fetching labels from %s", path)
 
 	labels, err := getAll[label](ctx, a.client, path)
 	if err != nil {

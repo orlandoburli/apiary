@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	aplog "github.com/orlandoburli/apiary/internal/log"
 )
 
 const (
@@ -93,8 +95,9 @@ func (c *client) doWithRetry(ctx context.Context, method, url string, body []byt
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			wait := retryAfter(resp, attempt)
-			lastErr = fmt.Errorf("plane API %s %s: rate limited (attempt %d/%d, waiting %s)",
-				method, url, attempt+1, maxRetries, wait.Round(time.Millisecond))
+			lastErr = fmt.Errorf("rate limited")
+			aplog.Info("plane: rate limited — waiting %s before retry %d/%d",
+				wait.Round(time.Millisecond), attempt+1, maxRetries)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
