@@ -73,6 +73,8 @@ type Execution struct {
 	TaskID      string
 	AgentID     string
 	Title       string
+	Number      string
+	URL         string
 	Model       string
 	Runner      string
 	Attempt     int
@@ -86,12 +88,12 @@ type Execution struct {
 	CreatedAt   time.Time
 }
 
-func (c *Client) CreateExecution(ctx context.Context, taskID, agentID, title, model, runner string, attempt int) (*Execution, error) {
+func (c *Client) CreateExecution(ctx context.Context, taskID, agentID, title, number, taskURL, model, runner string, attempt int) (*Execution, error) {
 	now := time.Now()
 	res, err := c.db.ExecContext(ctx, `
-		INSERT INTO task_executions (task_id, agent_id, title, model, runner, attempt, status, started_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, taskID, agentID, title, model, runner, attempt, "running", now, now)
+		INSERT INTO task_executions (task_id, agent_id, title, task_number, task_url, model, runner, attempt, status, started_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, taskID, agentID, title, number, taskURL, model, runner, attempt, "running", now, now)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +108,8 @@ func (c *Client) CreateExecution(ctx context.Context, taskID, agentID, title, mo
 		TaskID:    taskID,
 		AgentID:   agentID,
 		Title:     title,
+		Number:    number,
+		URL:       taskURL,
 		Model:     model,
 		Runner:    runner,
 		Attempt:   attempt,
@@ -122,6 +126,31 @@ func (c *Client) UpdateExecution(ctx context.Context, exec *Execution) error {
 		WHERE id = ?
 	`, exec.Status, exec.CompletedAt, exec.DurationMs, exec.ErrorMsg, exec.CanRetry, exec.NextRetryAt, exec.ID)
 	return err
+}
+
+// ReconcileOrphanExecutions marks any executions still in the 'running' state
+// as failed. A fresh dispatcher process owns no in-flight runs, so a row left
+// 'running' is an orphan from a previous process that was killed mid-run.
+// Clearing them keeps the dashboard's agent "active/idle" status truthful —
+// "running" then always reflects a real, live claude process. Returns the
+// number of rows reconciled.
+func (c *Client) ReconcileOrphanExecutions(ctx context.Context) (int64, error) {
+	now := time.Now()
+	res, err := c.db.ExecContext(ctx, `
+		UPDATE task_executions
+		SET status = 'failed',
+		    completed_at = ?,
+		    error_message = CASE
+		        WHEN error_message IS NULL OR error_message = '' THEN 'interrupted (dispatcher restarted)'
+		        ELSE error_message
+		    END
+		WHERE status = 'running'
+	`, now)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 func (c *Client) GetLastExecution(ctx context.Context, taskID string) (*Execution, error) {

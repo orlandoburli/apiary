@@ -10,18 +10,25 @@ type page[T any] struct {
 
 // workItem represents a Plane work item (formerly "issue").
 type workItem struct {
-	ID                 string   `json:"id"`
-	Name               string   `json:"name"`
-	SequenceID         int      `json:"sequence_id"`
-	DescriptionStripped string  `json:"description_stripped"`
-	DescriptionHTML    string   `json:"description_html"`
-	Priority           string   `json:"priority"`
-	State              string   `json:"state"`     // state UUID
-	Labels             []string `json:"labels"`    // label UUIDs
-	TypeID             *string  `json:"type_id"`
-	ProjectID          string   `json:"project_id"`
-	CreatedAt          string   `json:"created_at"`
-	UpdatedAt          string   `json:"updated_at"`
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	SequenceID          int      `json:"sequence_id"`
+	DescriptionStripped string   `json:"description_stripped"`
+	DescriptionHTML     string   `json:"description_html"`
+	Priority            string   `json:"priority"`
+	State               string   `json:"state"`  // state UUID
+	Labels              []string `json:"labels"` // label UUIDs
+	TypeID              *string  `json:"type_id"`
+	ProjectID           string   `json:"project_id"`
+	CreatedAt           string   `json:"created_at"`
+	UpdatedAt           string   `json:"updated_at"`
+}
+
+// projectDetail carries the project-level fields we need, notably the
+// human-facing identifier (e.g. "ERP") used to render work-item numbers.
+type projectDetail struct {
+	ID         string `json:"id"`
+	Identifier string `json:"identifier"`
 }
 
 // state represents a Plane workflow state.
@@ -45,4 +52,16 @@ type commentRequest struct {
 // patchRequest is the request body for PATCH .../work-items/{id}/.
 type patchRequest struct {
 	State string `json:"state"`
+}
+
+// labelsPatchRequest is the request body for PATCH .../work-items/{id}/ when
+// replacing the label set. Plane's PATCH replaces labels wholesale, so callers
+// must send the full merged list of label UUIDs.
+type labelsPatchRequest struct {
+	Labels []string `json:"labels"`
+}
+
+// labelCreateRequest is the request body for POST .../labels/.
+type labelCreateRequest struct {
+	Name string `json:"name"`
 }

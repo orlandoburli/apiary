@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS task_executions (
   task_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
   title TEXT,                     -- task title at dispatch time
+  task_number TEXT,               -- human reference, e.g. "ERP-42"
+  task_url TEXT,                  -- link to the task in its source UI
   model TEXT,                     -- LLM model used for this attempt
   runner TEXT,                    -- runner type (cli, script, …)
   attempt INTEGER DEFAULT 1,
@@ -119,6 +121,8 @@ var migrations = []string{
 	`ALTER TABLE task_executions ADD COLUMN title TEXT`,
 	`ALTER TABLE task_executions ADD COLUMN model TEXT`,
 	`ALTER TABLE task_executions ADD COLUMN runner TEXT`,
+	`ALTER TABLE task_executions ADD COLUMN task_number TEXT`,
+	`ALTER TABLE task_executions ADD COLUMN task_url TEXT`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).

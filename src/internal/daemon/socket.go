@@ -5,17 +5,18 @@ import (
 	"path/filepath"
 )
 
-// SocketPath returns the Unix socket path for the IPC server.
-// Defaults to ~/.apiary/apiary.sock, overridable with APIARY_SOCKET.
-func SocketPath() string {
+// SocketPath returns the Unix socket path for the IPC server. It lives in the
+// project's data directory (dataDir/apiary.sock) so each project's daemon has
+// its own socket and `apiary status` talks to the right one. Overridable with
+// APIARY_SOCKET. Falls back to /tmp/apiary.sock if dataDir is empty.
+func SocketPath(dataDir string) string {
 	if s := os.Getenv("APIARY_SOCKET"); s != "" {
 		return s
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	if dataDir == "" {
 		return "/tmp/apiary.sock"
 	}
-	return filepath.Join(home, ".apiary", "apiary.sock")
+	return filepath.Join(dataDir, "apiary.sock")
 }
 
 // ensureSocketDir creates the directory that will hold the socket file.

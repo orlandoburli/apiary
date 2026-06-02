@@ -120,7 +120,9 @@ func (c *Client) GetRecentTasks(ctx context.Context, limit int) ([]RecentTask, e
 // AgentStats holds agent performance information.
 type AgentStats struct {
 	ID              string
-	Status          string
+	Status          string // active (a claude run is in flight) or idle
+	RunningCount    int    // number of in-flight executions right now
+	CurrentTask     string // title of an in-flight task (if any)
 	QueuedCount     int
 	CompletedCount  int
 	AvgDurationMs   int64
@@ -128,7 +130,11 @@ type AgentStats struct {
 	LastTaskEndedAt *time.Time
 }
 
-// GetAgentStats retrieves statistics for all agents.
+// GetAgentStats retrieves statistics for all agents. An agent is "active" when
+// it has at least one execution still in the 'running' state — that row is
+// written immediately before the claude runner is invoked and flipped to
+// success/failed when it returns, so it mirrors a real in-flight process rather
+// than a guess.
 func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT
@@ -138,7 +144,9 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 			CAST(AVG(duration_ms) AS INTEGER),
 			CAST(COUNT(CASE WHEN status = 'success' THEN 1 END) AS FLOAT) /
 				NULLIF(COUNT(*), 0) as success_rate,
-			MAX(completed_at)
+			MAX(completed_at),
+			COUNT(CASE WHEN status = 'running' THEN 1 END) as running,
+			MAX(CASE WHEN status = 'running' THEN title END) as current_task
 		FROM task_executions
 		GROUP BY agent_id
 		ORDER BY agent_id
@@ -153,11 +161,14 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 		var s AgentStats
 		var avgMs sql.NullInt64
 		var successRate sql.NullFloat64
+		var running sql.NullInt64
+		var currentTask sql.NullString
 		// MAX(completed_at) is an aggregate, so SQLite drops its column type and
 		// go-sqlite3 hands it back as a string rather than a time.Time. Scan it
 		// as text and parse leniently.
 		var lastEnded sql.NullString
-		err := rows.Scan(&s.ID, &s.QueuedCount, &s.CompletedCount, &avgMs, &successRate, &lastEnded)
+		err := rows.Scan(&s.ID, &s.QueuedCount, &s.CompletedCount, &avgMs, &successRate,
+			&lastEnded, &running, &currentTask)
 		if err != nil {
 			continue
 		}
@@ -172,7 +183,15 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 				s.LastTaskEndedAt = &t
 			}
 		}
-		s.Status = "idle" // Would need active task tracking for "active"
+		if running.Valid {
+			s.RunningCount = int(running.Int64)
+		}
+		if s.RunningCount > 0 {
+			s.Status = "active"
+			s.CurrentTask = currentTask.String
+		} else {
+			s.Status = "idle"
+		}
 		stats = append(stats, s)
 	}
 	return stats, nil
@@ -201,6 +220,8 @@ func parseSQLiteTime(s string) (time.Time, bool) {
 // attempt for a given task_id, plus how many attempts it took.
 type TaskHistoryItem struct {
 	TaskID      string
+	Number      string
+	URL         string
 	Title       string
 	AgentID     string
 	Model       string
@@ -217,7 +238,7 @@ type TaskHistoryItem struct {
 // one row per task_id (its latest attempt).
 func (c *Client) GetTaskHistory(ctx context.Context, limit int) ([]TaskHistoryItem, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT e.task_id, e.title, e.agent_id, e.model, e.runner,
+		SELECT e.task_id, e.task_number, e.task_url, e.title, e.agent_id, e.model, e.runner,
 		       e.status, e.attempt, e.duration_ms, e.started_at, e.completed_at, e.error_message
 		FROM task_executions e
 		JOIN (
@@ -236,13 +257,71 @@ func (c *Client) GetTaskHistory(ctx context.Context, limit int) ([]TaskHistoryIt
 	var items []TaskHistoryItem
 	for rows.Next() {
 		var it TaskHistoryItem
-		var title, model, runner, status, errMsg sql.NullString
+		var number, taskURL, title, model, runner, status, errMsg sql.NullString
 		var dur sql.NullInt64
 		var startedStr, completedStr sql.NullString
-		if err := rows.Scan(&it.TaskID, &title, &it.AgentID, &model, &runner,
+		if err := rows.Scan(&it.TaskID, &number, &taskURL, &title, &it.AgentID, &model, &runner,
 			&status, &it.Attempt, &dur, &startedStr, &completedStr, &errMsg); err != nil {
 			continue
 		}
+		it.Number = number.String
+		it.URL = taskURL.String
+		it.Title = title.String
+		it.Model = model.String
+		it.Runner = runner.String
+		it.Status = status.String
+		it.Error = errMsg.String
+		if dur.Valid {
+			it.DurationMs = dur.Int64
+		}
+		if startedStr.Valid {
+			if t, ok := parseSQLiteTime(startedStr.String); ok {
+				it.StartedAt = &t
+			}
+		}
+		if completedStr.Valid {
+			if t, ok := parseSQLiteTime(completedStr.String); ok {
+				it.CompletedAt = &t
+			}
+		}
+		items = append(items, it)
+	}
+	return items, nil
+}
+
+// GetTasksByAgent returns recent tasks handled by a given agent (latest attempt
+// per task), newest first. Powers the Agents tab activity view.
+func (c *Client) GetTasksByAgent(ctx context.Context, agentID string, limit int) ([]TaskHistoryItem, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT e.task_id, e.task_number, e.task_url, e.title, e.agent_id, e.model, e.runner,
+		       e.status, e.attempt, e.duration_ms, e.started_at, e.completed_at, e.error_message
+		FROM task_executions e
+		JOIN (
+			SELECT task_id, MAX(id) AS max_id
+			FROM task_executions
+			GROUP BY task_id
+		) latest ON e.id = latest.max_id
+		WHERE e.agent_id = ?
+		ORDER BY e.created_at DESC
+		LIMIT ?
+	`, agentID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []TaskHistoryItem
+	for rows.Next() {
+		var it TaskHistoryItem
+		var number, taskURL, title, model, runner, status, errMsg sql.NullString
+		var dur sql.NullInt64
+		var startedStr, completedStr sql.NullString
+		if err := rows.Scan(&it.TaskID, &number, &taskURL, &title, &it.AgentID, &model, &runner,
+			&status, &it.Attempt, &dur, &startedStr, &completedStr, &errMsg); err != nil {
+			continue
+		}
+		it.Number = number.String
+		it.URL = taskURL.String
 		it.Title = title.String
 		it.Model = model.String
 		it.Runner = runner.String
@@ -269,7 +348,7 @@ func (c *Client) GetTaskHistory(ctx context.Context, limit int) ([]TaskHistoryIt
 // GetTaskDetail returns the latest execution for a task with full metadata.
 func (c *Client) GetTaskDetail(ctx context.Context, taskID string) (*TaskHistoryItem, error) {
 	row := c.db.QueryRowContext(ctx, `
-		SELECT task_id, title, agent_id, model, runner, status, attempt,
+		SELECT task_id, task_number, task_url, title, agent_id, model, runner, status, attempt,
 		       duration_ms, started_at, completed_at, error_message
 		FROM task_executions
 		WHERE task_id = ?
@@ -278,10 +357,10 @@ func (c *Client) GetTaskDetail(ctx context.Context, taskID string) (*TaskHistory
 	`, taskID)
 
 	var it TaskHistoryItem
-	var title, model, runner, status, errMsg sql.NullString
+	var number, taskURL, title, model, runner, status, errMsg sql.NullString
 	var dur sql.NullInt64
 	var startedStr, completedStr sql.NullString
-	err := row.Scan(&it.TaskID, &title, &it.AgentID, &model, &runner, &status, &it.Attempt,
+	err := row.Scan(&it.TaskID, &number, &taskURL, &title, &it.AgentID, &model, &runner, &status, &it.Attempt,
 		&dur, &startedStr, &completedStr, &errMsg)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -289,6 +368,8 @@ func (c *Client) GetTaskDetail(ctx context.Context, taskID string) (*TaskHistory
 	if err != nil {
 		return nil, err
 	}
+	it.Number = number.String
+	it.URL = taskURL.String
 	it.Title = title.String
 	it.Model = model.String
 	it.Runner = runner.String
