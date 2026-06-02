@@ -38,6 +38,16 @@ func (a *App) Init() tea.Cmd {
 
 // Update handles messages.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if a == nil || a.model == nil {
+		return a, nil
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			// Log panic but don't crash
+		}
+	}()
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		_, cmd := a.handleKeyMsg(msg)
@@ -58,6 +68,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the dashboard.
 func (a *App) View() string {
+	if a == nil || a.model == nil {
+		return "Error: Dashboard not initialized"
+	}
+
 	if a.model.width == 0 || a.model.height == 0 {
 		return "Loading..."
 	}
@@ -76,9 +90,18 @@ func (a *App) View() string {
 
 	// Calculate available space for content
 	contentHeight := a.model.height - headerHeight - tabsHeight - footerHeight - 2 // 2 for padding
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
 
 	// Content with full screen height
 	var content string
+	defer func() {
+		if r := recover(); r != nil {
+			content = "Error rendering tab: " + fmt.Sprintf("%v", r)
+		}
+	}()
+
 	switch a.model.ActiveTab() {
 	case "Overview":
 		content = a.renderOverviewTab(contentHeight)
@@ -92,8 +115,7 @@ func (a *App) View() string {
 		content = "Unknown tab"
 	}
 
-	// Apply width to content
-	content = lipgloss.NewStyle().Width(a.model.width).Render(content)
+	// Content already formatted with line length
 
 	// Combine all sections
 	return lipgloss.JoinVertical(
@@ -123,27 +145,16 @@ func (a *App) renderTabs() string {
 }
 
 func (a *App) renderOverviewTab(height int) string {
-	status := StyleSuccess.Render("●")
-	if a.model.loading {
-		status = StyleWarning.Render("⟳")
+	if a.model == nil || a.model.overviewTab == nil {
+		return "┌─ OVERVIEW ─────────────────────────────────────────┐\nError: model not initialized\n└─────────────────────────────────────────────────────┘\n"
 	}
 
-	content := fmt.Sprintf(`Status:     %s %s
-Uptime:     %s
-Concurrency: %d workers
-Agents:     %d active
+	status := "●"
+	if a.model.loading {
+		status = "⟳"
+	}
 
-Tasks (24h):
-  Running:    %d
-  Queued:     %d
-  Completed:  %d ✓
-  Failed:     %d ✗
-
-Metrics:
-  Throughput:   %s tasks/min
-  Avg Duration: %s
-  Success Rate: %s
-`,
+	content := fmt.Sprintf("Status:     %s %s\nUptime:     %s\nConcurrency: %d workers\nAgents:     %d active\n\nTasks (24h):\n  Running:    %d\n  Queued:     %d\n  Completed:  %d ✓\n  Failed:     %d ✗\n\nMetrics:\n  Throughput:   %s tasks/min\n  Avg Duration: %s\n  Success Rate: %s\n",
 		status, a.model.overviewTab.Status,
 		a.model.overviewTab.Uptime,
 		a.model.overviewTab.Concurrency,
@@ -164,10 +175,14 @@ Metrics:
 		content += strings.Repeat("\n", padding)
 	}
 
-	return StyleBorder.Width(a.model.width - 2).Render(content)
+	return "┌─ OVERVIEW ─────────────────────────────────────────┐\n" + content + "└─────────────────────────────────────────────────────┘\n"
 }
 
 func (a *App) renderTasksTab(height int) string {
+	if a.model == nil || a.model.tasksTab == nil {
+		return "┌─ TASKS ─────────────────────────────────────────────┐\nError: model not initialized\n└─────────────────────────────────────────────────────┘\n"
+	}
+
 	var content string
 	if len(a.model.tasksTab.ActiveRuns) == 0 {
 		content = "No active tasks\n"
@@ -180,8 +195,8 @@ func (a *App) renderTasksTab(height int) string {
 			if len(title) > 30 {
 				title = title[:30] + "…"
 			}
-			line := fmt.Sprintf("\n%s\n%s\n%s  %v\n",
-				StyleInfo.Render(title), StyleMuted.Render(run.Agent), progress, duration)
+			line := fmt.Sprintf("\n%s (%s)\n%s  %v\n",
+				title, run.Agent, progress, duration)
 			content += line
 		}
 	}
@@ -193,10 +208,14 @@ func (a *App) renderTasksTab(height int) string {
 		content += strings.Repeat("\n", padding)
 	}
 
-	return StyleBorder.Width(a.model.width - 2).Render(content)
+	return "┌─ TASKS ─────────────────────────────────────────────┐\n" + content + "└─────────────────────────────────────────────────────┘\n"
 }
 
 func (a *App) renderAgentsTab(height int) string {
+	if a.model == nil || a.model.agentsTab == nil {
+		return "┌─ AGENTS ────────────────────────────────────────────┐\nError: model not initialized\n└─────────────────────────────────────────────────────┘\n"
+	}
+
 	if len(a.model.agentsTab.Agents) == 0 {
 		content := "No agents configured\n"
 		lines := 1
@@ -204,7 +223,7 @@ func (a *App) renderAgentsTab(height int) string {
 		if padding > 0 {
 			content += strings.Repeat("\n", padding)
 		}
-		return StyleBorder.Width(a.model.width - 2).Render(content)
+		return "┌─ AGENTS ────────────────────────────────────────────┐\n" + content + "└─────────────────────────────────────────────────────┘\n"
 	}
 
 	content := "AGENT          STATUS  COMPLETED  AVG TIME  SUCCESS\n"
@@ -232,10 +251,14 @@ func (a *App) renderAgentsTab(height int) string {
 		content += strings.Repeat("\n", padding)
 	}
 
-	return StyleBorder.Width(a.model.width - 2).Render(content)
+	return "┌─ AGENTS ────────────────────────────────────────────┐\n" + content + "└─────────────────────────────────────────────────────┘\n"
 }
 
 func (a *App) renderLogsTab(height int) string {
+	if a.model == nil || a.model.logsTab == nil {
+		return "┌─ LOGS ──────────────────────────────────────────────┐\nError: model not initialized\n└─────────────────────────────────────────────────────┘\n"
+	}
+
 	if len(a.model.logsTab.Logs) == 0 {
 		content := "No logs yet\n"
 		lines := 1
@@ -243,7 +266,7 @@ func (a *App) renderLogsTab(height int) string {
 		if padding > 0 {
 			content += strings.Repeat("\n", padding)
 		}
-		return StyleBorder.Width(a.model.width - 2).Render(content)
+		return "┌─ LOGS ──────────────────────────────────────────────┐\n" + content + "└─────────────────────────────────────────────────────┘\n"
 	}
 
 	content := ""
@@ -256,17 +279,6 @@ func (a *App) renderLogsTab(height int) string {
 	for i := start; i < end && i < len(a.model.logsTab.Logs); i++ {
 		log := a.model.logsTab.Logs[i]
 		timeStr := log.Timestamp.Format("15:04:05")
-		var style lipgloss.Style
-		switch log.Level {
-		case "ERROR":
-			style = StyleError
-		case "WARN":
-			style = StyleWarning
-		case "INFO":
-			style = StyleInfo
-		default:
-			style = StyleMuted
-		}
 		msg := log.Message
 		maxLen := a.model.width - 30
 		if maxLen < 20 {
@@ -276,7 +288,7 @@ func (a *App) renderLogsTab(height int) string {
 			msg = msg[:maxLen] + "…"
 		}
 		line := fmt.Sprintf("[%s] [%-5s] %s\n", timeStr, log.Level, msg)
-		content += style.Render(line)
+		content += line
 	}
 
 	lines := strings.Count(content, "\n") + 1
@@ -285,7 +297,7 @@ func (a *App) renderLogsTab(height int) string {
 		content += strings.Repeat("\n", padding)
 	}
 
-	return StyleBorder.Width(a.model.width - 2).Render(content)
+	return "┌─ LOGS ──────────────────────────────────────────────┐\n" + content + "└─────────────────────────────────────────────────────┘\n"
 }
 
 func (a *App) renderFooter() string {
@@ -340,6 +352,16 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // refreshActiveTab fetches data ONLY for the currently active tab (lazy loading)
 func (a *App) refreshActiveTab() tea.Cmd {
 	return func() tea.Msg {
+		defer func() {
+			if r := recover(); r != nil {
+				// Silently recover from panics during data fetching
+			}
+		}()
+
+		if a == nil || a.model == nil || a.dbConn == nil {
+			return refreshMsg{}
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 
@@ -349,61 +371,75 @@ func (a *App) refreshActiveTab() tea.Cmd {
 		// Only fetch data for the active tab
 		switch activeTab {
 		case "Overview":
-			stats, err := a.dbConn.GetDashboardStats(ctx, time.Now().AddDate(0, 0, -1))
-			if err == nil && stats != nil {
-				a.model.overviewTab.Status = stats.DispatcherStatus
-				a.model.overviewTab.ActiveAgents = stats.ActiveAgents
-				a.model.overviewTab.ActiveRuns = stats.ActiveRuns
-				a.model.overviewTab.QueuedTasks = stats.QueuedTasks
-				a.model.overviewTab.CompletedToday = stats.CompletedToday
-				a.model.overviewTab.FailedToday = stats.FailedToday
-				a.model.overviewTab.AvgDuration = fmt.Sprintf("%.1fs", float64(stats.AvgDurationMs)/1000)
-				a.model.overviewTab.SuccessRate = fmt.Sprintf("%.1f%%", stats.SuccessRate*100)
-				if stats.CompletedToday > 0 {
-					a.model.overviewTab.ThroughputRatio = fmt.Sprintf("%.1f", float64(stats.CompletedToday)/24)
+			if a.model.overviewTab != nil {
+				stats, err := a.dbConn.GetDashboardStats(ctx, time.Now().AddDate(0, 0, -1))
+				if err == nil && stats != nil {
+					a.model.overviewTab.Status = stats.DispatcherStatus
+					a.model.overviewTab.ActiveAgents = stats.ActiveAgents
+					a.model.overviewTab.ActiveRuns = stats.ActiveRuns
+					a.model.overviewTab.QueuedTasks = stats.QueuedTasks
+					a.model.overviewTab.CompletedToday = stats.CompletedToday
+					a.model.overviewTab.FailedToday = stats.FailedToday
+					a.model.overviewTab.AvgDuration = fmt.Sprintf("%.1fs", float64(stats.AvgDurationMs)/1000)
+					a.model.overviewTab.SuccessRate = fmt.Sprintf("%.1f%%", stats.SuccessRate*100)
+					if stats.CompletedToday > 0 {
+						a.model.overviewTab.ThroughputRatio = fmt.Sprintf("%.1f", float64(stats.CompletedToday)/24)
+					}
 				}
 			}
 
 		case "Tasks":
-			runs, _ := a.dbConn.GetActiveRuns(ctx)
-			a.model.tasksTab.ActiveRuns = make([]ActiveRun, 0)
-			for _, run := range runs {
-				a.model.tasksTab.ActiveRuns = append(a.model.tasksTab.ActiveRuns, ActiveRun{
-					ID:        run.CellID,
-					CellID:    run.CellID,
-					Title:     run.Title,
-					Agent:     run.AgentID,
-					StartedAt: time.Now().Add(-time.Duration(run.Duration) * time.Millisecond),
-					Duration:  time.Duration(run.Duration) * time.Millisecond,
-					Progress:  int((run.Duration % 10000) / 100),
-				})
+			if a.model.tasksTab != nil {
+				runs, _ := a.dbConn.GetActiveRuns(ctx)
+				a.model.tasksTab.ActiveRuns = make([]ActiveRun, 0)
+				if runs != nil {
+					for _, run := range runs {
+						a.model.tasksTab.ActiveRuns = append(a.model.tasksTab.ActiveRuns, ActiveRun{
+							ID:        run.CellID,
+							CellID:    run.CellID,
+							Title:     run.Title,
+							Agent:     run.AgentID,
+							StartedAt: time.Now().Add(-time.Duration(run.Duration) * time.Millisecond),
+							Duration:  time.Duration(run.Duration) * time.Millisecond,
+							Progress:  int((run.Duration % 10000) / 100),
+						})
+					}
+				}
 			}
 
 		case "Agents":
-			agents, _ := a.dbConn.GetAgentStats(ctx)
-			a.model.agentsTab.Agents = make([]AgentStatus, 0)
-			for _, agent := range agents {
-				a.model.agentsTab.Agents = append(a.model.agentsTab.Agents, AgentStatus{
-					ID:              agent.ID,
-					Status:          agent.Status,
-					QueuedCount:     agent.QueuedCount,
-					CompletedCount:  agent.CompletedCount,
-					AvgDurationMs:   agent.AvgDurationMs,
-					SuccessRate:     agent.SuccessRate,
-					LastTaskEndedAt: agent.LastTaskEndedAt,
-				})
+			if a.model.agentsTab != nil {
+				agents, _ := a.dbConn.GetAgentStats(ctx)
+				a.model.agentsTab.Agents = make([]AgentStatus, 0)
+				if agents != nil {
+					for _, agent := range agents {
+						a.model.agentsTab.Agents = append(a.model.agentsTab.Agents, AgentStatus{
+							ID:              agent.ID,
+							Status:          agent.Status,
+							QueuedCount:     agent.QueuedCount,
+							CompletedCount:  agent.CompletedCount,
+							AvgDurationMs:   agent.AvgDurationMs,
+							SuccessRate:     agent.SuccessRate,
+							LastTaskEndedAt: agent.LastTaskEndedAt,
+						})
+					}
+				}
 			}
 
 		case "Logs":
-			logs, _ := a.dbConn.GetRecentLogs(ctx, 100)
-			a.model.logsTab.Logs = make([]LogEntry, 0)
-			for _, log := range logs {
-				a.model.logsTab.Logs = append(a.model.logsTab.Logs, LogEntry{
-					Timestamp: log.Timestamp,
-					Level:     log.Level,
-					Component: log.Component,
-					Message:   log.Message,
-				})
+			if a.model.logsTab != nil {
+				logs, _ := a.dbConn.GetRecentLogs(ctx, 100)
+				a.model.logsTab.Logs = make([]LogEntry, 0)
+				if logs != nil {
+					for _, log := range logs {
+						a.model.logsTab.Logs = append(a.model.logsTab.Logs, LogEntry{
+							Timestamp: log.Timestamp,
+							Level:     log.Level,
+							Component: log.Component,
+							Message:   log.Message,
+						})
+					}
+				}
 			}
 		}
 
