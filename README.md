@@ -1,5 +1,9 @@
 # Apiary
 
+<p align="center">
+  <img src="docs/logo.svg" alt="Apiary logo" width="600">
+</p>
+
 **Task-driven agent orchestration. Route work from any task system to the right AI agent and model.**
 
 Apiary is an open-source harness that connects project management tools (Jira, Plane, GitHub Issues, Linear) to AI agent runners and routes each task to the right agent profile and LLM model based on declarative rules.
