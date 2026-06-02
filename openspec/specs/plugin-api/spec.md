@@ -1,0 +1,148 @@
+# Apiary — Plugin API
+
+Apiary is extended through two plugin types: **Source Adapters** and **Runner Adapters**. Both implement Go interfaces.
+
+## Source Adapter
+
+A Source Adapter connects Apiary to a task management system.
+
+```go
+// SourceAdapter pulls tasks from an external task system.
+type SourceAdapter interface {
+    // ID returns the adapter type key (e.g. "plane", "jira", "linear").
+    ID() string
+
+    // Connect initialises the connection using the raw config map from apiary.yaml.
+    Connect(ctx context.Context, config map[string]any) error
+
+    // Poll returns tasks matching the source's filter config since the last call.
+    // Apiary calls this on the configured poll_interval.
+    Poll(ctx context.Context, since time.Time) ([]Cell, error)
+
+    // Acknowledge is called after a Cell has been dispatched to a worker.
+    // Adapters use this to transition the task state or add a comment.
+    Acknowledge(ctx context.Context, cell Cell, action AckAction) error
+
+    // WriteResult posts the agent run output back to the source task.
+    WriteResult(ctx context.Context, cell Cell, result RunResult) error
+
+    // WebhookHandler returns an http.Handler for push-mode sources.
+    // Return nil for poll-only adapters.
+    WebhookHandler() http.Handler
+}
+```
+
+### The `Cell` type
+
+`Cell` is a normalised, source-system-agnostic task unit.
+
+```go
+type Cell struct {
+    ID          string            // native task ID in the source system
+    SourceID    string            // apiary source id (e.g. "main-plane")
+    Title       string
+    Description string            // markdown body
+    Labels      []string
+    Type        string            // "bug", "feature", "improvement", etc.
+    Priority    string            // "urgent", "high", "medium", "low"
+    State       string            // current state name in the source system
+    URL         string            // direct link back to the task
+    Metadata    map[string]any    // adapter-specific extra fields
+    CreatedAt   time.Time
+    UpdatedAt   time.Time
+}
+```
+
+## Runner Adapter
+
+A Runner Adapter invokes an AI agent runner with a task's context.
+
+```go
+// RunnerAdapter executes an agent for a given Cell.
+type RunnerAdapter interface {
+    // ID returns the adapter type key (e.g. "opencode", "script").
+    ID() string
+
+    // Configure sets runner-level options from the worker config block.
+    Configure(config map[string]any) error
+
+    // Run executes the agent and streams progress. Blocks until completion.
+    Run(ctx context.Context, req RunRequest) (RunResult, error)
+}
+
+type RunRequest struct {
+    Cell         Cell
+    WorkerID     string
+    Model        string   // opaque model ID — passed as-is to the runner CLI
+    MaxTurns     int
+    SystemAppend string   // extra system prompt text from worker config
+    WorkingDir   string
+    Env          map[string]string
+    Timeout      time.Duration
+}
+
+type RunResult struct {
+    WorkerID string
+    Success  bool
+    Output   string        // final agent summary / last message
+    Logs     []LogEntry
+    Duration time.Duration
+    Error    error
+}
+```
+
+## Built-in Adapters (v1)
+
+### Source Adapters
+
+| Adapter | Type key | Trigger modes |
+|---|---|---|
+| Plane | `plane` | Poll + webhook |
+| Jira Cloud | `jira` | Poll + webhook |
+| Linear | `linear` | Poll + webhook (GraphQL) |
+| GitHub Issues | `github` | Poll + webhook (GitHub App) |
+
+### Runner Adapters
+
+| Adapter | Type key | Notes |
+|---|---|---|
+| OpenCode | `opencode` | Invokes `opencode` CLI; streams stdout/stderr |
+| Shell Script | `script` | Runs an arbitrary command; Cell fields injected as env vars |
+
+## Custom Adapters (v1 — embedded)
+
+Register custom adapters before calling `apiary.Run()`:
+
+```go
+import "github.com/orlandoburli/apiary/sdk"
+
+func main() {
+    apiary.RegisterSource(&MyCustomSource{})
+    apiary.RegisterRunner(&MyCustomRunner{})
+    apiary.Run()
+}
+```
+
+## External Plugin Protocol (v2 — planned)
+
+In v2, Apiary will support out-of-process plugin binaries via a gRPC-based protocol (similar to the Terraform/Vault plugin model). Plugin binaries will be discovered by name convention (`apiary-source-<type>`, `apiary-runner-<type>`) and launched as child processes with a stable gRPC interface.
+
+This allows the community to distribute adapters as standalone binaries without forking Apiary.
+
+## Cell Env Vars (for `script` runner)
+
+When using the `script` runner, the following environment variables are injected into the subprocess:
+
+| Variable | Value |
+|---|---|
+| `APIARY_CELL_ID` | Cell.ID |
+| `APIARY_CELL_SOURCE_ID` | Cell.SourceID |
+| `APIARY_CELL_TITLE` | Cell.Title |
+| `APIARY_CELL_DESCRIPTION` | Cell.Description |
+| `APIARY_CELL_TYPE` | Cell.Type |
+| `APIARY_CELL_PRIORITY` | Cell.Priority |
+| `APIARY_CELL_URL` | Cell.URL |
+| `APIARY_CELL_LABELS` | comma-separated labels |
+| `APIARY_WORKER_ID` | RunRequest.WorkerID |
+| `APIARY_MODEL` | RunRequest.Model |
+| `APIARY_WORKING_DIR` | RunRequest.WorkingDir |
