@@ -44,7 +44,7 @@ func (c *Client) GetDashboardStats(ctx context.Context, startTime time.Time) (*D
 		SELECT
 			COUNT(CASE WHEN status = 'success' THEN 1 END),
 			COUNT(CASE WHEN status = 'failed' THEN 1 END),
-			AVG(duration_ms),
+			CAST(AVG(duration_ms) AS INTEGER),
 			CAST(COUNT(CASE WHEN status = 'success' THEN 1 END) AS FLOAT) /
 				NULLIF(COUNT(*), 0)
 		FROM task_executions
@@ -135,7 +135,7 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 			agent_id,
 			COUNT(*) as total,
 			COUNT(CASE WHEN status = 'success' THEN 1 END) as completed,
-			AVG(duration_ms),
+			CAST(AVG(duration_ms) AS INTEGER),
 			CAST(COUNT(CASE WHEN status = 'success' THEN 1 END) AS FLOAT) /
 				NULLIF(COUNT(*), 0) as success_rate,
 			MAX(completed_at)
@@ -153,7 +153,10 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 		var s AgentStats
 		var avgMs sql.NullInt64
 		var successRate sql.NullFloat64
-		var lastEnded sql.NullTime
+		// MAX(completed_at) is an aggregate, so SQLite drops its column type and
+		// go-sqlite3 hands it back as a string rather than a time.Time. Scan it
+		// as text and parse leniently.
+		var lastEnded sql.NullString
 		err := rows.Scan(&s.ID, &s.QueuedCount, &s.CompletedCount, &avgMs, &successRate, &lastEnded)
 		if err != nil {
 			continue
@@ -165,12 +168,33 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 			s.SuccessRate = successRate.Float64
 		}
 		if lastEnded.Valid {
-			s.LastTaskEndedAt = &lastEnded.Time
+			if t, ok := parseSQLiteTime(lastEnded.String); ok {
+				s.LastTaskEndedAt = &t
+			}
 		}
 		s.Status = "idle" // Would need active task tracking for "active"
 		stats = append(stats, s)
 	}
 	return stats, nil
+}
+
+// parseSQLiteTime parses the timestamp formats SQLite/go-sqlite3 may emit for
+// aggregated time columns (which arrive as strings). Returns ok=false if none match.
+func parseSQLiteTime(s string) (time.Time, bool) {
+	layouts := []string{
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05-07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+		time.RFC3339Nano,
+		time.RFC3339,
+	}
+	for _, l := range layouts {
+		if t, err := time.Parse(l, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // LogEntry holds a log record.

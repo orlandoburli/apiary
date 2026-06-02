@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/orlandoburli/apiary/internal/dashboard"
+	"github.com/orlandoburli/apiary/internal/db"
 )
 
 func newDashboardCmd() *cobra.Command {
@@ -24,8 +26,18 @@ Run 'apiary run' in another terminal first.`,
 }
 
 func runDashboard(ctx context.Context) error {
-	// Create and run dashboard
-	app := dashboard.New()
+	dbPath := getDBPath()
+	if _, err := os.Stat(dbPath); err != nil {
+		return fmt.Errorf("database not found at %s\nRun 'apiary run' in another terminal first", dbPath)
+	}
+
+	dbConn, err := db.New(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer dbConn.Close()
+
+	app := dashboard.New(dbConn)
 	if err := app.Run(); err != nil {
 		return fmt.Errorf("dashboard error: %w", err)
 	}
