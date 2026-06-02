@@ -24,6 +24,13 @@ type workItem struct {
 	UpdatedAt           string   `json:"updated_at"`
 }
 
+// projectDetail carries the project-level fields we need, notably the
+// human-facing identifier (e.g. "ERP") used to render work-item numbers.
+type projectDetail struct {
+	ID         string `json:"id"`
+	Identifier string `json:"identifier"`
+}
+
 // state represents a Plane workflow state.
 type state struct {
 	ID    string `json:"id"`

@@ -83,7 +83,12 @@ From the list you can drill into the selected task:
 |-----------------|----------------------------------------------------|
 | `d`             | **Details** — agent, model, runner, attempts, start/finish times, total duration, and the error message if it failed |
 | `Enter` or `l`  | **Logs** — the per-task log lines for that run     |
+| `o`             | **Open** the task in your browser (its source URL) |
 | `Esc`           | Back to the list                                   |
+
+The `#` column shows each task's human reference (e.g. `ERP-42`) so you can
+match a row to the work item in Plane. Press `o` on any task — in the list, in
+Details, or drilled into from an agent — to open it directly in the browser.
 
 In the **Logs** view, `↑` / `↓` scroll through the lines. From either sub-view
 you can jump straight to the other (`d` ↔ `l`) or press `r` to reload it.

@@ -56,6 +56,9 @@ var (
 	StyleLabel       = lipgloss.NewStyle().Foreground(ColorAccent)
 	StyleValueStrong = lipgloss.NewStyle().Bold(true).Foreground(ColorText)
 
+	// Task reference number (e.g. "ERP-42").
+	StyleAccent = lipgloss.NewStyle().Foreground(ColorAccent)
+
 	// Footer: each key is a small highlighted chip, labels are dim text.
 	StyleFooterKey = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(ColorTabBg)
 	StyleFooterLbl = lipgloss.NewStyle().Foreground(ColorText)

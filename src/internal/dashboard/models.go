@@ -57,6 +57,8 @@ type TasksTab struct {
 // TaskItem is one task row (its latest execution attempt).
 type TaskItem struct {
 	TaskID      string
+	Number      string // human reference, e.g. "ERP-42"
+	URL         string // link to the task in its source UI
 	Title       string
 	Agent       string
 	Model       string

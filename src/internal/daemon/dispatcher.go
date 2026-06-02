@@ -653,7 +653,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 
 	if d.db != nil {
 		var err error
-		exec, err = d.db.CreateExecution(ctx, cell.ID, agentID, cell.Title, selectedModel, runnerType, attempt)
+		exec, err = d.db.CreateExecution(ctx, cell.ID, agentID, cell.Title, cell.Number, cell.URL, selectedModel, runnerType, attempt)
 		if err != nil {
 			aplog.Error("cell %s: create execution record: %v", cell.ID, err)
 		}

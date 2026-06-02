@@ -220,6 +220,8 @@ func parseSQLiteTime(s string) (time.Time, bool) {
 // attempt for a given task_id, plus how many attempts it took.
 type TaskHistoryItem struct {
 	TaskID      string
+	Number      string
+	URL         string
 	Title       string
 	AgentID     string
 	Model       string
@@ -236,7 +238,7 @@ type TaskHistoryItem struct {
 // one row per task_id (its latest attempt).
 func (c *Client) GetTaskHistory(ctx context.Context, limit int) ([]TaskHistoryItem, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT e.task_id, e.title, e.agent_id, e.model, e.runner,
+		SELECT e.task_id, e.task_number, e.task_url, e.title, e.agent_id, e.model, e.runner,
 		       e.status, e.attempt, e.duration_ms, e.started_at, e.completed_at, e.error_message
 		FROM task_executions e
 		JOIN (
@@ -255,13 +257,15 @@ func (c *Client) GetTaskHistory(ctx context.Context, limit int) ([]TaskHistoryIt
 	var items []TaskHistoryItem
 	for rows.Next() {
 		var it TaskHistoryItem
-		var title, model, runner, status, errMsg sql.NullString
+		var number, taskURL, title, model, runner, status, errMsg sql.NullString
 		var dur sql.NullInt64
 		var startedStr, completedStr sql.NullString
-		if err := rows.Scan(&it.TaskID, &title, &it.AgentID, &model, &runner,
+		if err := rows.Scan(&it.TaskID, &number, &taskURL, &title, &it.AgentID, &model, &runner,
 			&status, &it.Attempt, &dur, &startedStr, &completedStr, &errMsg); err != nil {
 			continue
 		}
+		it.Number = number.String
+		it.URL = taskURL.String
 		it.Title = title.String
 		it.Model = model.String
 		it.Runner = runner.String
@@ -289,7 +293,7 @@ func (c *Client) GetTaskHistory(ctx context.Context, limit int) ([]TaskHistoryIt
 // per task), newest first. Powers the Agents tab activity view.
 func (c *Client) GetTasksByAgent(ctx context.Context, agentID string, limit int) ([]TaskHistoryItem, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT e.task_id, e.title, e.agent_id, e.model, e.runner,
+		SELECT e.task_id, e.task_number, e.task_url, e.title, e.agent_id, e.model, e.runner,
 		       e.status, e.attempt, e.duration_ms, e.started_at, e.completed_at, e.error_message
 		FROM task_executions e
 		JOIN (
@@ -309,13 +313,15 @@ func (c *Client) GetTasksByAgent(ctx context.Context, agentID string, limit int)
 	var items []TaskHistoryItem
 	for rows.Next() {
 		var it TaskHistoryItem
-		var title, model, runner, status, errMsg sql.NullString
+		var number, taskURL, title, model, runner, status, errMsg sql.NullString
 		var dur sql.NullInt64
 		var startedStr, completedStr sql.NullString
-		if err := rows.Scan(&it.TaskID, &title, &it.AgentID, &model, &runner,
+		if err := rows.Scan(&it.TaskID, &number, &taskURL, &title, &it.AgentID, &model, &runner,
 			&status, &it.Attempt, &dur, &startedStr, &completedStr, &errMsg); err != nil {
 			continue
 		}
+		it.Number = number.String
+		it.URL = taskURL.String
 		it.Title = title.String
 		it.Model = model.String
 		it.Runner = runner.String
@@ -342,7 +348,7 @@ func (c *Client) GetTasksByAgent(ctx context.Context, agentID string, limit int)
 // GetTaskDetail returns the latest execution for a task with full metadata.
 func (c *Client) GetTaskDetail(ctx context.Context, taskID string) (*TaskHistoryItem, error) {
 	row := c.db.QueryRowContext(ctx, `
-		SELECT task_id, title, agent_id, model, runner, status, attempt,
+		SELECT task_id, task_number, task_url, title, agent_id, model, runner, status, attempt,
 		       duration_ms, started_at, completed_at, error_message
 		FROM task_executions
 		WHERE task_id = ?
@@ -351,10 +357,10 @@ func (c *Client) GetTaskDetail(ctx context.Context, taskID string) (*TaskHistory
 	`, taskID)
 
 	var it TaskHistoryItem
-	var title, model, runner, status, errMsg sql.NullString
+	var number, taskURL, title, model, runner, status, errMsg sql.NullString
 	var dur sql.NullInt64
 	var startedStr, completedStr sql.NullString
-	err := row.Scan(&it.TaskID, &title, &it.AgentID, &model, &runner, &status, &it.Attempt,
+	err := row.Scan(&it.TaskID, &number, &taskURL, &title, &it.AgentID, &model, &runner, &status, &it.Attempt,
 		&dur, &startedStr, &completedStr, &errMsg)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -362,6 +368,8 @@ func (c *Client) GetTaskDetail(ctx context.Context, taskID string) (*TaskHistory
 	if err != nil {
 		return nil, err
 	}
+	it.Number = number.String
+	it.URL = taskURL.String
 	it.Title = title.String
 	it.Model = model.String
 	it.Runner = runner.String

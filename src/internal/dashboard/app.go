@@ -3,6 +3,8 @@ package dashboard
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -172,6 +174,14 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Quit is always available.
 	if key == "q" || key == "ctrl+c" {
 		return a, tea.Quit
+	}
+
+	// Open the focused task in the browser, from any task-oriented view.
+	if key == "o" {
+		if u, ok := a.focusedTaskURL(); ok {
+			return a, openURLCmd(u)
+		}
+		return a, nil
 	}
 
 	// While a Tasks sub-view (detail/logs) is open, keys are scoped to it.
@@ -519,6 +529,61 @@ func (a *App) selectedTaskID() (string, bool) {
 	return t.History[t.SelectedIdx].TaskID, true
 }
 
+// focusedTaskURL returns the source URL of the task the user is currently
+// looking at — the selected row in the Tasks list, the open task detail, or the
+// task drilled into from an agent's activity. Reports false when there is no URL.
+func (a *App) focusedTaskURL() (string, bool) {
+	switch a.model.ActiveTab() {
+	case "Tasks":
+		t := a.model.tasksTab
+		if t == nil {
+			return "", false
+		}
+		if t.View == TaskViewDetail && t.Detail != nil {
+			return t.Detail.URL, t.Detail.URL != ""
+		}
+		if t.SelectedIdx >= 0 && t.SelectedIdx < len(t.History) {
+			u := t.History[t.SelectedIdx].URL
+			return u, u != ""
+		}
+	case "Agents":
+		ag := a.model.agentsTab
+		if ag == nil {
+			return "", false
+		}
+		if ag.View == AgentViewActivity || ag.View == AgentViewTaskLogs {
+			if ag.ActivityIdx >= 0 && ag.ActivityIdx < len(ag.Activity) {
+				u := ag.Activity[ag.ActivityIdx].URL
+				return u, u != ""
+			}
+		}
+	}
+	return "", false
+}
+
+// openURLCmd opens a URL in the user's default browser without blocking the UI.
+func openURLCmd(target string) tea.Cmd {
+	return func() tea.Msg {
+		_ = openInBrowser(target)
+		return nil
+	}
+}
+
+// openInBrowser launches the OS default handler for a URL.
+func openInBrowser(target string) error {
+	var name string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		name, args = "open", []string{target}
+	case "windows":
+		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", target}
+	default:
+		name, args = "xdg-open", []string{target}
+	}
+	return exec.Command(name, args...).Start()
+}
+
 // ── commands (run in goroutines; must NOT touch a.model) ─────────────────────
 
 func tickCmd() tea.Cmd {
@@ -581,19 +646,7 @@ func (a *App) fetchTasks() tea.Cmd {
 		if dbConn != nil {
 			if rows, err := dbConn.GetTaskHistory(ctx, 100); err == nil {
 				for _, r := range rows {
-					items = append(items, TaskItem{
-						TaskID:      r.TaskID,
-						Title:       r.Title,
-						Agent:       r.AgentID,
-						Model:       r.Model,
-						Runner:      r.Runner,
-						Status:      r.Status,
-						Attempt:     r.Attempt,
-						Duration:    time.Duration(r.DurationMs) * time.Millisecond,
-						StartedAt:   r.StartedAt,
-						CompletedAt: r.CompletedAt,
-						Error:       r.Error,
-					})
+					items = append(items, taskItemFromHistory(r))
 				}
 			}
 		}
@@ -605,6 +658,8 @@ func (a *App) fetchTasks() tea.Cmd {
 func taskItemFromHistory(r db.TaskHistoryItem) TaskItem {
 	return TaskItem{
 		TaskID:      r.TaskID,
+		Number:      r.Number,
+		URL:         r.URL,
 		Title:       r.Title,
 		Agent:       r.AgentID,
 		Model:       r.Model,
@@ -672,6 +727,8 @@ func (a *App) fetchTaskDetail(taskID string) tea.Cmd {
 			if r, err := dbConn.GetTaskDetail(ctx, taskID); err == nil && r != nil {
 				detail = &TaskItem{
 					TaskID:      r.TaskID,
+					Number:      r.Number,
+					URL:         r.URL,
 					Title:       r.Title,
 					Agent:       r.AgentID,
 					Model:       r.Model,
@@ -933,31 +990,36 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 
 	const (
 		cursorW = 2
+		numW    = 10
 		agentW  = 16
 		statusW = 8
 		whenW   = 11
 	)
 	inner := a.model.width - 2
-	titleW := inner - cursorW - agentW - statusW - whenW - 4 // 4 single-space separators
+	titleW := inner - cursorW - numW - agentW - statusW - whenW - 5 // 5 single-space separators
 	if titleW < 10 {
 		titleW = 10
 	}
 
 	var b strings.Builder
-	header := pad("", cursorW) + " " + pad("TASK", titleW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + "WHEN"
+	header := pad("", cursorW) + " " + pad("#", numW) + " " + pad("TASK", titleW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + "WHEN"
 	b.WriteString(StyleTableHeader.Render(header) + "\n")
 	for i, it := range t.History {
 		selected := i == t.SelectedIdx
 		cursor := "  "
+		num := pad(truncate(valueOr(it.Number, "—"), numW), numW)
 		titleText := pad(truncate(valueOr(it.Title, it.TaskID), titleW), titleW)
 		if selected {
 			cursor = StyleFocusedArrow.Render("▶") + " "
+			num = StyleSelectedRow.Render(num)
 			titleText = StyleSelectedRow.Render(titleText)
+		} else {
+			num = StyleAccent.Render(num)
 		}
 		agent := pad(truncate(valueOr(it.Agent, "—"), agentW), agentW)
 		status := taskStatusBadge(it.Status) // already padded to width 8
 		when := StyleMuted.Render(taskWhen(it))
-		b.WriteString(cursor + " " + titleText + " " + agent + " " + status + " " + when + "\n")
+		b.WriteString(cursor + " " + num + " " + titleText + " " + agent + " " + status + " " + when + "\n")
 	}
 	return a.box("TASKS", b.String(), height)
 }
@@ -983,6 +1045,7 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	row := func(k, v string) {
 		b.WriteString("  " + StyleLabel.Render(pad(k+":", 14)) + " " + v + "\n")
 	}
+	row("Number", StyleAccent.Render(valueOr(d.Number, "—")))
 	row("Task ID", StyleValueStrong.Render(d.TaskID))
 	row("Title", valueOr(d.Title, "—"))
 	row("Status", taskStatusBadge(d.Status))
@@ -993,6 +1056,9 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	row("Started", started)
 	row("Completed", completed)
 	row("Duration", dur)
+	if d.URL != "" {
+		row("URL", StyleInfo.Render(d.URL))
+	}
 	if d.Error != "" {
 		b.WriteString("\n")
 		b.WriteString("  " + StyleError.Render("Error:") + "\n")
@@ -1217,18 +1283,19 @@ func (a *App) renderAgentActivity(ag *AgentsTab, height int) string {
 
 	const (
 		cursorW = 2
+		numW    = 10
 		statusW = 8
 		durW    = 8
 		whenW   = 11
 	)
 	inner := a.model.width - 2
-	titleW := inner - cursorW - statusW - durW - whenW - 4
+	titleW := inner - cursorW - numW - statusW - durW - whenW - 5
 	if titleW < 10 {
 		titleW = 10
 	}
 
 	var b strings.Builder
-	header := pad("", cursorW) + " " + pad("TASK", titleW) + " " + pad("STATUS", statusW) + " " + pad("DURATION", durW) + " " + "WHEN"
+	header := pad("", cursorW) + " " + pad("#", numW) + " " + pad("TASK", titleW) + " " + pad("STATUS", statusW) + " " + pad("DURATION", durW) + " " + "WHEN"
 	b.WriteString(StyleTableHeader.Render(header) + "\n")
 
 	rows := height - 3 // borders + header
@@ -1250,6 +1317,7 @@ func (a *App) renderAgentActivity(ag *AgentsTab, height int) string {
 	for i := start; i < end; i++ {
 		it := ag.Activity[i]
 		selected := i == ag.ActivityIdx
+		num := pad(truncate(valueOr(it.Number, "—"), numW), numW)
 		title := pad(truncate(valueOr(it.Title, it.TaskID), titleW), titleW)
 		status := taskStatusBadge(it.Status)
 		dur := "—"
@@ -1259,9 +1327,12 @@ func (a *App) renderAgentActivity(ag *AgentsTab, height int) string {
 		cursor := "  "
 		if selected {
 			cursor = StyleFocusedArrow.Render("▶") + " "
+			num = StyleSelectedRow.Render(num)
 			title = StyleSelectedRow.Render(title)
+		} else {
+			num = StyleAccent.Render(num)
 		}
-		b.WriteString(cursor + " " + title + " " + status + " " + pad(dur, durW) + " " + StyleMuted.Render(taskWhen(it)) + "\n")
+		b.WriteString(cursor + " " + num + " " + title + " " + status + " " + pad(dur, durW) + " " + StyleMuted.Render(taskWhen(it)) + "\n")
 	}
 	return a.box("AGENT ACTIVITY — "+name, b.String(), height)
 }
@@ -1434,21 +1505,21 @@ func (a *App) footerKeys() []fkey {
 		if t := a.model.tasksTab; t != nil {
 			switch t.View {
 			case TaskViewDetail:
-				return []fkey{{"esc", "back"}, {"l", "logs"}, {"r", "reload"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"l", "logs"}, {"o", "open"}, {"r", "reload"}, {"q", "quit"}}
 			case TaskViewLogs:
-				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"pgup/dn", "page"}, {"home/end", "ends"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"o", "open"}, {"q", "quit"}}
 			}
 		}
-		return []fkey{{"↑/↓", "select"}, {"enter/l", "logs"}, {"d", "details"}, {"tab", "switch"}, {"r", "refresh"}, {"q", "quit"}}
+		return []fkey{{"↑/↓", "select"}, {"enter/l", "logs"}, {"d", "details"}, {"o", "open"}, {"tab", "switch"}, {"q", "quit"}}
 	case "Agents":
 		if ag := a.model.agentsTab; ag != nil {
 			switch ag.View {
 			case AgentViewDetail:
 				return []fkey{{"esc", "back"}, {"l", "activity"}, {"q", "quit"}}
 			case AgentViewActivity:
-				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "logs"}, {"pgup/dn", "page"}, {"r", "reload"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "logs"}, {"o", "open"}, {"pgup/dn", "page"}, {"q", "quit"}}
 			case AgentViewTaskLogs:
-				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"pgup/dn", "page"}, {"home/end", "ends"}, {"r", "reload"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"o", "open"}, {"home/end", "ends"}, {"r", "reload"}, {"q", "quit"}}
 			}
 		}
 		return []fkey{{"↑/↓", "select"}, {"enter/l", "activity"}, {"d", "details"}, {"tab", "switch"}, {"r", "refresh"}, {"q", "quit"}}

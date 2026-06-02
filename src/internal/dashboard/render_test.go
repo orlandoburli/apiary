@@ -240,6 +240,42 @@ func TestAgentActivityDrillToLogs(t *testing.T) {
 	}
 }
 
+func TestTaskNumberAndOpenURL(t *testing.T) {
+	now := time.Now()
+	a := newTestApp(100, 24)
+	a.model.activeTab = 1 // Tasks
+	a.model.tasksTab.History = []TaskItem{
+		{TaskID: "uuid-1", Number: "ERP-42", Title: "do a thing", Agent: "engineer",
+			Status: "running", URL: "https://app.plane.so/ws/projects/p/work-items/42/", StartedAt: &now},
+		{TaskID: "uuid-2", Number: "ERP-7", Title: "another", Agent: "po", Status: "success", CompletedAt: &now},
+	}
+
+	// The human number is rendered in the list.
+	out := stripANSI(a.renderTaskList(a.model.tasksTab, 12))
+	if !strings.Contains(out, "ERP-42") {
+		t.Errorf("task list should show the number ERP-42; got:\n%s", out)
+	}
+	assertFramed(t, a.renderTaskList(a.model.tasksTab, 12), 100)
+
+	// Open resolves to the selected row's URL.
+	a.model.tasksTab.SelectedIdx = 0
+	if u, ok := a.focusedTaskURL(); !ok || u != a.model.tasksTab.History[0].URL {
+		t.Errorf("focusedTaskURL = %q (%v), want row-0 URL", u, ok)
+	}
+	// A row without a URL reports no link.
+	a.model.tasksTab.SelectedIdx = 1
+	if _, ok := a.focusedTaskURL(); ok {
+		t.Error("focusedTaskURL should be false for a row without a URL")
+	}
+
+	// Detail view prefers the open detail's URL.
+	a.model.tasksTab.View = TaskViewDetail
+	a.model.tasksTab.Detail = &a.model.tasksTab.History[0]
+	if u, ok := a.focusedTaskURL(); !ok || u != a.model.tasksTab.History[0].URL {
+		t.Errorf("focusedTaskURL in detail = %q (%v), want detail URL", u, ok)
+	}
+}
+
 func TestContextualFooter(t *testing.T) {
 	a := newTestApp(100, 24)
 

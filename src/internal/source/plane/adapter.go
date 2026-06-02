@@ -4,9 +4,11 @@ package plane
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -22,10 +24,15 @@ func init() {
 
 // Adapter implements source.Adapter for Plane.so.
 type Adapter struct {
-	id        string // source ID from config
-	client    *client
-	workspace string
-	project   string
+	id         string // source ID from config
+	client     *client
+	workspace  string
+	project    string
+	webBaseURL string // browser host for work-item links (derived from base_url)
+
+	// projectIdentifier is the project's short code (e.g. "ERP"), loaded with
+	// the rest of the metadata; used to render work-item numbers like "ERP-42".
+	projectIdentifier string
 
 	// lazily loaded on first Poll()
 	metaOnce       sync.Once
@@ -69,6 +76,7 @@ func (a *Adapter) Connect(_ context.Context, cfg map[string]any) error {
 	a.workspace = workspace
 	a.project = project
 	a.client = newClient(baseURL, apiKey)
+	a.webBaseURL = deriveWebBaseURL(baseURL)
 
 	host := baseURL
 	if host == "" {
@@ -99,9 +107,12 @@ func (a *Adapter) loadMetadata(ctx context.Context) error {
 			a.metaErr = err
 			return
 		}
+		// The project identifier (e.g. "ERP") is best-effort: a failure here
+		// only downgrades work-item numbers to "#<seq>", so we don't abort.
+		a.loadProject(ctx)
 		a.issuesPath = a.resolveIssuesPath(ctx)
-		aplog.Info("plane: ready  states=%d  labels=%d  started-state=%q  endpoint=%s",
-			len(a.stateIDToName), len(a.labelIDToName), a.stateIDToName[a.startedStateID], a.issuesPath)
+		aplog.Info("plane: ready  states=%d  labels=%d  identifier=%q  started-state=%q  endpoint=%s",
+			len(a.stateIDToName), len(a.labelIDToName), a.projectIdentifier, a.stateIDToName[a.startedStateID], a.issuesPath)
 	})
 	return a.metaErr
 }
@@ -156,6 +167,38 @@ func (a *Adapter) loadLabels(ctx context.Context) error {
 		a.labelNameToID[strings.ToLower(l.Name)] = l.ID
 	}
 	return nil
+}
+
+// loadProject fetches the project's identifier (best-effort). On any failure
+// the identifier stays empty and work-item numbers fall back to "#<seq>".
+func (a *Adapter) loadProject(ctx context.Context) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/", a.workspace, a.project)
+	data, err := a.client.get(ctx, path, nil)
+	if err != nil {
+		aplog.Debug("plane: project identifier unavailable: %v", err)
+		return
+	}
+	var p projectDetail
+	if err := json.Unmarshal(data, &p); err != nil {
+		aplog.Debug("plane: decoding project detail: %v", err)
+		return
+	}
+	a.projectIdentifier = strings.TrimSpace(p.Identifier)
+}
+
+// deriveWebBaseURL maps the API base URL to the browser host where work items
+// live. The hosted API (api.plane.so) is served from app.plane.so; for a
+// self-hosted instance the web app shares the API's scheme+host (the "/api"
+// path prefix, if any, is dropped).
+func deriveWebBaseURL(baseURL string) string {
+	if baseURL == "" || strings.Contains(baseURL, "api.plane.so") {
+		return "https://app.plane.so"
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		return "https://app.plane.so"
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // SetFilters stores the filter config passed from the source config.
@@ -338,15 +381,21 @@ func (a *Adapter) toCell(item workItem) model.Cell {
 	createdAt, _ := time.Parse(time.RFC3339, item.CreatedAt)
 	updatedAt, _ := time.Parse(time.RFC3339, item.UpdatedAt)
 
+	number := fmt.Sprintf("#%d", item.SequenceID)
+	if a.projectIdentifier != "" {
+		number = fmt.Sprintf("%s-%d", a.projectIdentifier, item.SequenceID)
+	}
+
 	cell := model.Cell{
 		ID:          item.ID,
 		SourceID:    a.ID(),
+		Number:      number,
 		Title:       item.Name,
 		Description: item.DescriptionStripped,
 		Labels:      labels,
 		Priority:    item.Priority,
 		State:       a.stateIDToName[item.State],
-		URL:         fmt.Sprintf("https://app.plane.so/%s/projects/%s/work-items/%d/", a.workspace, a.project, item.SequenceID),
+		URL:         fmt.Sprintf("%s/%s/projects/%s/work-items/%d/", a.webBaseURL, a.workspace, a.project, item.SequenceID),
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 	}

@@ -6,6 +6,7 @@ import "time"
 type Cell struct {
 	ID          string
 	SourceID    string
+	Number      string // human-facing reference, e.g. "ERP-42" or "#42"
 	Title       string
 	Description string
 	Labels      []string
