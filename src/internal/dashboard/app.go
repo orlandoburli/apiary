@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -259,7 +260,89 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (a *App) refreshData() tea.Cmd {
 	return func() tea.Msg {
-		// TODO: Fetch data from database
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		// Fetch overview stats
+		stats, err := a.dbConn.GetDashboardStats(ctx, time.Now().AddDate(0, 0, -1))
+		if err == nil && stats != nil {
+			a.model.overviewTab.Status = stats.DispatcherStatus
+			a.model.overviewTab.ActiveAgents = stats.ActiveAgents
+			a.model.overviewTab.ActiveRuns = stats.ActiveRuns
+			a.model.overviewTab.QueuedTasks = stats.QueuedTasks
+			a.model.overviewTab.CompletedToday = stats.CompletedToday
+			a.model.overviewTab.FailedToday = stats.FailedToday
+			a.model.overviewTab.AvgDuration = fmt.Sprintf("%.1fs", float64(stats.AvgDurationMs)/1000)
+			a.model.overviewTab.SuccessRate = fmt.Sprintf("%.1f%%", stats.SuccessRate*100)
+			if stats.CompletedToday > 0 {
+				a.model.overviewTab.ThroughputRatio = fmt.Sprintf("%.1f", float64(stats.CompletedToday)/24)
+			}
+		}
+
+		// Fetch recent tasks
+		tasks, err := a.dbConn.GetRecentTasks(ctx, 10)
+		if err == nil {
+			a.model.tasksTab.RecentTasks = make([]TaskSummary, 0)
+			for _, t := range tasks {
+				a.model.tasksTab.RecentTasks = append(a.model.tasksTab.RecentTasks, TaskSummary{
+					ID:       t.ID,
+					Title:    t.Title,
+					Agent:    t.AgentID,
+					Status:   t.Status,
+					Duration: time.Duration(t.Duration) * time.Millisecond,
+					Success:  t.Success,
+				})
+			}
+		}
+
+		// Fetch agent stats
+		agents, err := a.dbConn.GetAgentStats(ctx)
+		if err == nil {
+			a.model.agentsTab.Agents = make([]AgentStatus, 0)
+			for _, agent := range agents {
+				a.model.agentsTab.Agents = append(a.model.agentsTab.Agents, AgentStatus{
+					ID:            agent.ID,
+					Status:        agent.Status,
+					QueuedCount:   agent.QueuedCount,
+					CompletedCount: agent.CompletedCount,
+					AvgDurationMs: agent.AvgDurationMs,
+					SuccessRate:   agent.SuccessRate,
+					LastTaskEndedAt: agent.LastTaskEndedAt,
+				})
+			}
+		}
+
+		// Fetch logs
+		logs, err := a.dbConn.GetRecentLogs(ctx, 50)
+		if err == nil {
+			a.model.logsTab.Logs = make([]LogEntry, 0)
+			for _, log := range logs {
+				a.model.logsTab.Logs = append(a.model.logsTab.Logs, LogEntry{
+					Timestamp: log.Timestamp,
+					Level:     log.Level,
+					Component: log.Component,
+					Message:   log.Message,
+				})
+			}
+		}
+
+		// Fetch active runs
+		runs, err := a.dbConn.GetActiveRuns(ctx)
+		if err == nil {
+			a.model.tasksTab.ActiveRuns = make([]ActiveRun, 0)
+			for _, run := range runs {
+				a.model.tasksTab.ActiveRuns = append(a.model.tasksTab.ActiveRuns, ActiveRun{
+					ID:        run.CellID,
+					CellID:    run.CellID,
+					Title:     run.Title,
+					Agent:     run.AgentID,
+					StartedAt: time.Now().Add(-time.Duration(run.Duration) * time.Millisecond),
+					Duration:  time.Duration(run.Duration) * time.Millisecond,
+					Progress:  int((run.Duration % 10000) / 100), // Simple progress simulation
+				})
+			}
+		}
+
 		a.model.lastRefresh = time.Now()
 		return refreshMsg{}
 	}
