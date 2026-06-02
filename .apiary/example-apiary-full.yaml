@@ -28,13 +28,25 @@ runners:
       #   claude-opus-4-8: claude-4-20250514
       #   claude-sonnet-4-6: claude-3-5-sonnet-20241022
 
-  # OpenCode runner (alternative provider with DeepSeek and other models)
-  - id: opencode
-    type: api
+  # OpenCode CLI runner (invokes opencode as a subprocess)
+  # Requires opencode to be installed and authenticated on the host machine.
+  - id: my-opencode
+    type: opencode
     config:
-      provider: opencode-go
-      base_url: https://opencode.ai/zen/go/v1
-      api_key: ${OPENCODE_API_KEY}
+      # Path to the opencode binary (default: "opencode")
+      binary: opencode
+      # Which opencode agent profile to use (optional)
+      agent: backend-dev
+      # Flag to pass the model name (default: "--model")
+      model_flag: --model
+      # Flag to pass the prompt text (default: "--prompt")
+      prompt_flag: --prompt
+      # Flag for max turns (default: "--max-turns")
+      turns_flag: --max-turns
+      # Flag to select an agent (default: "--agent")
+      agent_flag: --agent
+      # Additional static arguments (optional)
+      extra_args: []
 
 # Default runner used by agents if not overridden
 default_runner: claude-cli
@@ -97,6 +109,14 @@ agents:
     runner: claude-cli
     preferred_models: [claude-sonnet-4-6, claude-haiku-4-5]
     skills: [e2e-before-pr, changelog-contexto]
+
+  # === OpenCode-based agent ===
+  - id: agent-opencode
+    description: "OpenCode agent — runs tasks via the opencode CLI"
+    soul_file: .apiary/souls/engineer.md
+    runner: my-opencode
+    preferred_models: [openai/gpt-4o, deepseek/deepseek-chat]
+    skills: [git-workflow, gitnexus-codebase]
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 routes:
