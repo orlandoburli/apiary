@@ -29,4 +29,7 @@ Most AI coding agents operate in isolation — you manually pick a task, paste c
 
 ## License
 
-Apache 2.0
+Apiary is dual-licensed:
+
+- **Open source** — [AGPLv3](LICENSE) for open-source and internal use.
+- **Commercial** — a commercial license is available for proprietary products and SaaS deployments. See [COMMERCIAL.md](COMMERCIAL.md) for details.
