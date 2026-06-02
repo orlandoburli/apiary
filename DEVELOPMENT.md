@@ -14,18 +14,24 @@
 ```sh
 git clone https://github.com/orlandoburli/apiary.git
 cd apiary/src
+```
 
+**Check that everything compiles** (no output file produced):
+
+```sh
 go build ./...
 ```
 
-Build the binary:
+`./...` is a Go path pattern meaning "this package and all sub-packages recursively." This command compiles the whole tree and reports any errors, but doesn't write a binary anywhere. Use it as a quick sanity check.
+
+**Build the runnable binary:**
 
 ```sh
 go build -o apiary ./cmd/apiary
 ./apiary --help
 ```
 
-Or install it to your `$GOPATH/bin`:
+**Install to `$GOPATH/bin`** (so `apiary` is on your PATH):
 
 ```sh
 go install ./cmd/apiary
@@ -150,6 +156,35 @@ apiary run --once && echo "all runs succeeded"
 cd src
 go test ./...
 ```
+
+To see per-test output:
+
+```sh
+go test -v ./...
+```
+
+To run a specific package:
+
+```sh
+go test ./internal/router/...
+```
+
+To run a specific test by name:
+
+```sh
+go test -run TestRoute_FirstMatchWins ./internal/router/...
+```
+
+### What is tested
+
+| Package | Coverage |
+|---|---|
+| `internal/router` | Rule matching — source, labels, type, priority, regex, ordering, fallthrough |
+| `internal/config` | Validation — missing fields, duplicate IDs, dangling references |
+| `internal/source/plane` | Comment formatting, HTML escaping, filter logic, cell mapping |
+| `internal/runner/script` | Real subprocess execution, env injection, failure detection, log streaming |
+
+Packages that talk to external systems (Plane API, agent CLIs) are not covered by unit tests — use `--dry-run` and `--once` for integration testing against a real environment.
 
 ## Adding a new source adapter
 
