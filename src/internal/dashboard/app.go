@@ -128,11 +128,17 @@ func (a *App) View() string {
 }
 
 func (a *App) renderHeader() string {
+	if a == nil {
+		return ""
+	}
 	title := " APIARY DISPATCHER DASHBOARD "
 	return StyleHeader.Render(title)
 }
 
 func (a *App) renderTabs() string {
+	if a == nil || a.model == nil {
+		return ""
+	}
 	var tabs []string
 	for i, tab := range a.model.tabs {
 		style := StyleTab
@@ -301,6 +307,9 @@ func (a *App) renderLogsTab(height int) string {
 }
 
 func (a *App) renderFooter() string {
+	if a == nil || a.model == nil {
+		return ""
+	}
 	lastUpdate := time.Since(a.model.lastRefresh).Round(time.Second)
 	footer := fmt.Sprintf("Last update: %s ago  | ← → Tab  | ↑ ↓ Navigate  | q Quit",
 		lastUpdate)
@@ -308,6 +317,16 @@ func (a *App) renderFooter() string {
 }
 
 func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a == nil || a.model == nil {
+		return a, nil
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			// Silently recover from panics during key handling
+		}
+	}()
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return a, tea.Quit
@@ -318,30 +337,30 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up":
 		switch a.model.ActiveTab() {
 		case "Tasks":
-			if a.model.tasksTab.SelectedIdx > 0 {
+			if a.model.tasksTab != nil && a.model.tasksTab.SelectedIdx > 0 {
 				a.model.tasksTab.SelectedIdx--
 			}
 		case "Agents":
-			if a.model.agentsTab.SelectedIdx > 0 {
+			if a.model.agentsTab != nil && a.model.agentsTab.SelectedIdx > 0 {
 				a.model.agentsTab.SelectedIdx--
 			}
 		case "Logs":
-			if a.model.logsTab.Scrolled > 0 {
+			if a.model.logsTab != nil && a.model.logsTab.Scrolled > 0 {
 				a.model.logsTab.Scrolled--
 			}
 		}
 	case "down":
 		switch a.model.ActiveTab() {
 		case "Tasks":
-			if a.model.tasksTab.SelectedIdx < len(a.model.tasksTab.ActiveRuns)-1 {
+			if a.model.tasksTab != nil && a.model.tasksTab.SelectedIdx < len(a.model.tasksTab.ActiveRuns)-1 {
 				a.model.tasksTab.SelectedIdx++
 			}
 		case "Agents":
-			if a.model.agentsTab.SelectedIdx < len(a.model.agentsTab.Agents)-1 {
+			if a.model.agentsTab != nil && a.model.agentsTab.SelectedIdx < len(a.model.agentsTab.Agents)-1 {
 				a.model.agentsTab.SelectedIdx++
 			}
 		case "Logs":
-			if a.model.logsTab.Scrolled < len(a.model.logsTab.Logs)-1 {
+			if a.model.logsTab != nil && a.model.logsTab.Scrolled < len(a.model.logsTab.Logs)-1 {
 				a.model.logsTab.Scrolled++
 			}
 		}
