@@ -5,8 +5,25 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// keyPress builds a tea.KeyMsg whose String() matches the dashboard's handlers.
+func keyPress(s string) tea.KeyMsg {
+	switch s {
+	case "home":
+		return tea.KeyMsg{Type: tea.KeyHome}
+	case "end":
+		return tea.KeyMsg{Type: tea.KeyEnd}
+	case "pgup":
+		return tea.KeyMsg{Type: tea.KeyPgUp}
+	case "pgdown":
+		return tea.KeyMsg{Type: tea.KeyPgDown}
+	default:
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	}
+}
 
 func newTestApp(w, h int) *App {
 	a := &App{model: NewModel()}
@@ -133,6 +150,46 @@ func TestAgentSubViewsFramed(t *testing.T) {
 
 	a.model.agentsTab.View = AgentViewActivity
 	assertFramed(t, a.renderAgentsTab(14), 90)
+}
+
+func TestLogsPagingKeys(t *testing.T) {
+	now := time.Now()
+	a := newTestApp(80, 20) // pageSize = height-5 = 15
+	a.model.activeTab = 3   // Logs
+	// 60 short messages → 60 visual lines when wrapped.
+	for i := 0; i < 60; i++ {
+		a.model.logsTab.Logs = append(a.model.logsTab.Logs, LogEntry{Timestamp: now, Level: "INFO", Message: "line"})
+	}
+	total := len(a.logVisualLines())
+	if total != 60 {
+		t.Fatalf("expected 60 visual lines, got %d", total)
+	}
+
+	send := func(key string) { a.handleKeyMsg(keyPress(key)) }
+
+	send("end")
+	if a.model.logsTab.Scrolled != total-1 {
+		t.Errorf("end → %d, want %d", a.model.logsTab.Scrolled, total-1)
+	}
+	send("home")
+	if a.model.logsTab.Scrolled != 0 {
+		t.Errorf("home → %d, want 0", a.model.logsTab.Scrolled)
+	}
+	send("pgdown")
+	if a.model.logsTab.Scrolled != a.pageSize() {
+		t.Errorf("pgdown → %d, want %d", a.model.logsTab.Scrolled, a.pageSize())
+	}
+	send("pgup")
+	if a.model.logsTab.Scrolled != 0 {
+		t.Errorf("pgup from one page → %d, want 0", a.model.logsTab.Scrolled)
+	}
+	// Paging never exceeds the last line.
+	for i := 0; i < 100; i++ {
+		send("pgdown")
+	}
+	if a.model.logsTab.Scrolled != total-1 {
+		t.Errorf("pgdown clamp → %d, want %d", a.model.logsTab.Scrolled, total-1)
+	}
 }
 
 func TestContextualFooter(t *testing.T) {

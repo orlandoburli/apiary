@@ -241,6 +241,22 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.model.logsTab.Scrolled++
 			}
 		}
+	case "home":
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
+			a.model.logsTab.Scrolled = 0
+		}
+	case "end":
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
+			a.model.logsTab.Scrolled = lastIndex(len(a.logVisualLines()))
+		}
+	case "pgup", "ctrl+u":
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
+			a.model.logsTab.Scrolled = clampScroll(a.model.logsTab.Scrolled-a.pageSize(), len(a.logVisualLines()))
+		}
+	case "pgdown", "ctrl+d", " ":
+		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
+			a.model.logsTab.Scrolled = clampScroll(a.model.logsTab.Scrolled+a.pageSize(), len(a.logVisualLines()))
+		}
 	case "enter", "l":
 		switch a.model.ActiveTab() {
 		case "Tasks":
@@ -367,12 +383,47 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 		}
 	case "G", "end":
 		if t.View == TaskViewLogs {
-			if n := len(a.taskLogLines()); n > 0 {
-				t.LogScroll = n - 1
-			}
+			t.LogScroll = lastIndex(len(a.taskLogLines()))
+		}
+	case "pgup", "ctrl+u":
+		if t.View == TaskViewLogs {
+			t.LogScroll = clampScroll(t.LogScroll-a.pageSize(), len(a.taskLogLines()))
+		}
+	case "pgdown", "ctrl+d", " ":
+		if t.View == TaskViewLogs {
+			t.LogScroll = clampScroll(t.LogScroll+a.pageSize(), len(a.taskLogLines()))
 		}
 	}
 	return a, nil
+}
+
+// pageSize approximates the number of visible body rows in a tab, used for
+// page-up/down scrolling. Mirrors the box body height in View.
+func (a *App) pageSize() int {
+	n := a.model.height - 5
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// clampScroll clamps a scroll offset to [0, total-1].
+func clampScroll(v, total int) int {
+	if v < 0 || total == 0 {
+		return 0
+	}
+	if v > total-1 {
+		return total - 1
+	}
+	return v
+}
+
+// lastIndex returns the index of the last line (0 when empty).
+func lastIndex(total int) int {
+	if total <= 0 {
+		return 0
+	}
+	return total - 1
 }
 
 // selectedTaskID returns the task id under the cursor in the Tasks list.
@@ -1217,7 +1268,7 @@ func (a *App) footerKeys() []fkey {
 			case TaskViewDetail:
 				return []fkey{{"esc", "back"}, {"l", "logs"}, {"r", "reload"}, {"q", "quit"}}
 			case TaskViewLogs:
-				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"g/G", "top/bottom"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"pgup/dn", "page"}, {"home/end", "ends"}, {"q", "quit"}}
 			}
 		}
 		return []fkey{{"↑/↓", "select"}, {"enter/l", "logs"}, {"d", "details"}, {"tab", "switch"}, {"r", "refresh"}, {"q", "quit"}}
@@ -1236,7 +1287,7 @@ func (a *App) footerKeys() []fkey {
 		if a.model.logsTab != nil && a.model.logsTab.Wrap {
 			wrap = "wrap on"
 		}
-		return []fkey{{"w", wrap}, {"←/→", "scroll"}, {"↑/↓", "lines"}, {"tab", "switch"}, {"q", "quit"}}
+		return []fkey{{"w", wrap}, {"←/→", "scroll"}, {"↑/↓", "lines"}, {"pgup/dn", "page"}, {"home/end", "ends"}, {"tab", "switch"}, {"q", "quit"}}
 	default: // Overview
 		return []fkey{{"tab", "next"}, {"⇧tab", "prev"}, {"r", "refresh"}, {"q", "quit"}}
 	}
