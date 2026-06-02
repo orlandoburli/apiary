@@ -120,7 +120,9 @@ func (c *Client) GetRecentTasks(ctx context.Context, limit int) ([]RecentTask, e
 // AgentStats holds agent performance information.
 type AgentStats struct {
 	ID              string
-	Status          string
+	Status          string // active (a claude run is in flight) or idle
+	RunningCount    int    // number of in-flight executions right now
+	CurrentTask     string // title of an in-flight task (if any)
 	QueuedCount     int
 	CompletedCount  int
 	AvgDurationMs   int64
@@ -128,7 +130,11 @@ type AgentStats struct {
 	LastTaskEndedAt *time.Time
 }
 
-// GetAgentStats retrieves statistics for all agents.
+// GetAgentStats retrieves statistics for all agents. An agent is "active" when
+// it has at least one execution still in the 'running' state — that row is
+// written immediately before the claude runner is invoked and flipped to
+// success/failed when it returns, so it mirrors a real in-flight process rather
+// than a guess.
 func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT
@@ -138,7 +144,9 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 			CAST(AVG(duration_ms) AS INTEGER),
 			CAST(COUNT(CASE WHEN status = 'success' THEN 1 END) AS FLOAT) /
 				NULLIF(COUNT(*), 0) as success_rate,
-			MAX(completed_at)
+			MAX(completed_at),
+			COUNT(CASE WHEN status = 'running' THEN 1 END) as running,
+			MAX(CASE WHEN status = 'running' THEN title END) as current_task
 		FROM task_executions
 		GROUP BY agent_id
 		ORDER BY agent_id
@@ -153,11 +161,14 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 		var s AgentStats
 		var avgMs sql.NullInt64
 		var successRate sql.NullFloat64
+		var running sql.NullInt64
+		var currentTask sql.NullString
 		// MAX(completed_at) is an aggregate, so SQLite drops its column type and
 		// go-sqlite3 hands it back as a string rather than a time.Time. Scan it
 		// as text and parse leniently.
 		var lastEnded sql.NullString
-		err := rows.Scan(&s.ID, &s.QueuedCount, &s.CompletedCount, &avgMs, &successRate, &lastEnded)
+		err := rows.Scan(&s.ID, &s.QueuedCount, &s.CompletedCount, &avgMs, &successRate,
+			&lastEnded, &running, &currentTask)
 		if err != nil {
 			continue
 		}
@@ -172,7 +183,15 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 				s.LastTaskEndedAt = &t
 			}
 		}
-		s.Status = "idle" // Would need active task tracking for "active"
+		if running.Valid {
+			s.RunningCount = int(running.Int64)
+		}
+		if s.RunningCount > 0 {
+			s.Status = "active"
+			s.CurrentTask = currentTask.String
+		} else {
+			s.Status = "idle"
+		}
 		stats = append(stats, s)
 	}
 	return stats, nil

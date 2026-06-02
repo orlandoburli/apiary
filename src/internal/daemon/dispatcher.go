@@ -183,6 +183,17 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 // Start launches one poll goroutine per source.
 // Cancel ctx to initiate a graceful shutdown; then call wg.Wait().
 func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
+	// A fresh process owns no in-flight runs: clear any executions left in the
+	// 'running' state by a previously-killed dispatcher so the dashboard's
+	// agent status reflects real, live claude processes rather than orphans.
+	if d.db != nil {
+		if n, err := d.db.ReconcileOrphanExecutions(ctx); err != nil {
+			aplog.Warn("reconcile orphan executions: %v", err)
+		} else if n > 0 {
+			aplog.Info("reconciled %d orphaned running execution(s) from a previous run", n)
+		}
+	}
+
 	for _, sc := range d.cfg.Sources {
 		sc := sc
 		adapter, ok := d.sources[sc.ID]

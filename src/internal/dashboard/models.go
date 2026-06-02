@@ -76,6 +76,7 @@ const (
 	AgentViewList AgentView = iota
 	AgentViewDetail
 	AgentViewActivity
+	AgentViewTaskLogs
 )
 
 // AgentsTab shows agent status and performance with detail/activity sub-views.
@@ -83,16 +84,22 @@ type AgentsTab struct {
 	Agents      []AgentStatus
 	SelectedIdx int
 
-	View           AgentView
-	Detail         *AgentStatus // populated when View == AgentViewDetail
-	Activity       []TaskItem   // populated when View == AgentViewActivity
-	ActivityScroll int
+	View        AgentView
+	Detail      *AgentStatus // populated when View == AgentViewDetail
+	Activity    []TaskItem   // populated when View == AgentViewActivity
+	ActivityIdx int          // cursor within Activity
+
+	// Drill-down: logs of the task selected in the activity list.
+	LogsTaskID string
+	TaskLogs   []LogEntry
+	TaskLogIdx int // vertical scroll within TaskLogs (visual lines)
 }
 
 type AgentStatus struct {
 	ID              string
 	Status          string // active, idle, error
-	CurrentTask     string
+	RunningCount    int    // in-flight executions right now
+	CurrentTask     string // title of an in-flight task (when active)
 	QueuedCount     int
 	CompletedCount  int
 	AvgDurationMs   int64

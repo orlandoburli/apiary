@@ -192,6 +192,54 @@ func TestLogsPagingKeys(t *testing.T) {
 	}
 }
 
+func TestAgentActivityDrillToLogs(t *testing.T) {
+	now := time.Now()
+	a := newTestApp(90, 20)
+	a.model.activeTab = 2 // Agents
+	a.model.agentsTab.Agents = []AgentStatus{
+		{ID: "engineer", Status: "active", RunningCount: 1, CurrentTask: "build X"},
+	}
+	a.model.agentsTab.View = AgentViewActivity
+	a.model.agentsTab.Activity = []TaskItem{
+		{TaskID: "T-1", Title: "first", Status: "running", StartedAt: &now},
+		{TaskID: "T-2", Title: "second", Status: "success", Duration: 3 * time.Second, CompletedAt: &now},
+		{TaskID: "T-3", Title: "third", Status: "failed", Duration: time.Second, CompletedAt: &now},
+	}
+
+	send := func(key string) { a.handleKeyMsg(keyPress(key)) }
+
+	// Cursor moves with ↓ and the selected task id tracks it.
+	send("down")
+	if a.model.agentsTab.ActivityIdx != 1 {
+		t.Fatalf("down → ActivityIdx %d, want 1", a.model.agentsTab.ActivityIdx)
+	}
+	if id, ok := a.selectedActivityTaskID(); !ok || id != "T-2" {
+		t.Fatalf("selectedActivityTaskID = %q (%v), want T-2", id, ok)
+	}
+	// end jumps to last.
+	send("end")
+	if a.model.agentsTab.ActivityIdx != 2 {
+		t.Fatalf("end → ActivityIdx %d, want 2", a.model.agentsTab.ActivityIdx)
+	}
+
+	// Activity view renders framed with a cursor.
+	assertFramed(t, a.renderAgentsTab(14), 90)
+
+	// Drill into the task-logs view and verify it is framed + back works.
+	a.model.agentsTab.View = AgentViewTaskLogs
+	a.model.agentsTab.LogsTaskID = "T-3"
+	a.model.agentsTab.TaskLogs = []LogEntry{
+		{Timestamp: now, Level: "INFO", Message: "starting"},
+		{Timestamp: now, Level: "ERROR", Message: "boom"},
+	}
+	assertFramed(t, a.renderAgentsTab(14), 90)
+
+	send("esc")
+	if a.model.agentsTab.View != AgentViewActivity {
+		t.Fatalf("esc from task logs → view %d, want AgentViewActivity", a.model.agentsTab.View)
+	}
+}
+
 func TestContextualFooter(t *testing.T) {
 	a := newTestApp(100, 24)
 

@@ -61,6 +61,10 @@ type agentActivityMsg struct {
 	agentID string
 	items   []TaskItem
 }
+type agentTaskLogsMsg struct {
+	taskID string
+	logs   []LogEntry
+}
 type logsDataMsg struct{ logs []LogEntry }
 
 // ── lifecycle ───────────────────────────────────────────────────────────────
@@ -137,8 +141,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentActivityMsg:
 		if a.model.agentsTab != nil {
 			a.model.agentsTab.Activity = msg.items
-			a.model.agentsTab.ActivityScroll = 0
+			a.model.agentsTab.ActivityIdx = 0
 			a.model.agentsTab.View = AgentViewActivity
+		}
+		a.model.loading = false
+
+	case agentTaskLogsMsg:
+		if a.model.agentsTab != nil {
+			a.model.agentsTab.LogsTaskID = msg.taskID
+			a.model.agentsTab.TaskLogs = msg.logs
+			a.model.agentsTab.TaskLogIdx = 0
+			a.model.agentsTab.View = AgentViewTaskLogs
 		}
 		a.model.loading = false
 
@@ -305,21 +318,66 @@ func (a *App) selectedAgentID() (string, bool) {
 	return "", false
 }
 
-// handleAgentSubViewKey handles keys while an agent detail/activity view is open.
+// handleAgentSubViewKey handles keys while an agent detail/activity/task-logs
+// view is open. The activity view mirrors the Tasks tab: ↑/↓ move a cursor and
+// enter/l drills into the selected task's logs.
 func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 	ag := a.model.agentsTab
+
+	// Task-logs drill-down has its own key map.
+	if ag.View == AgentViewTaskLogs {
+		switch key {
+		case "esc", "backspace", "h", "left":
+			ag.View = AgentViewActivity
+			ag.TaskLogs = nil
+			ag.LogsTaskID = ""
+			ag.TaskLogIdx = 0
+		case "up":
+			if ag.TaskLogIdx > 0 {
+				ag.TaskLogIdx--
+			}
+		case "down":
+			if ag.TaskLogIdx < lastIndex(len(a.agentTaskLogLines())) {
+				ag.TaskLogIdx++
+			}
+		case "g", "home":
+			ag.TaskLogIdx = 0
+		case "G", "end":
+			ag.TaskLogIdx = lastIndex(len(a.agentTaskLogLines()))
+		case "pgup", "ctrl+u":
+			ag.TaskLogIdx = clampScroll(ag.TaskLogIdx-a.pageSize(), len(a.agentTaskLogLines()))
+		case "pgdown", "ctrl+d", " ":
+			ag.TaskLogIdx = clampScroll(ag.TaskLogIdx+a.pageSize(), len(a.agentTaskLogLines()))
+		case "r":
+			if ag.LogsTaskID != "" {
+				a.model.loading = true
+				return a, a.fetchAgentTaskLogs(ag.LogsTaskID)
+			}
+		}
+		return a, nil
+	}
+
 	switch key {
 	case "esc", "backspace", "h", "left":
 		ag.View = AgentViewList
 		ag.Detail = nil
 		ag.Activity = nil
-		ag.ActivityScroll = 0
+		ag.ActivityIdx = 0
 	case "d":
 		if a2, ok := a.selectedAgent(); ok {
 			ag.Detail = a2
 			ag.View = AgentViewDetail
 		}
 	case "l", "enter":
+		// From the list/detail: open the agent's activity. From the activity
+		// list: drill into the selected task's logs.
+		if ag.View == AgentViewActivity {
+			if id, ok := a.selectedActivityTaskID(); ok {
+				a.model.loading = true
+				return a, a.fetchAgentTaskLogs(id)
+			}
+			return a, nil
+		}
 		if id, ok := a.selectedAgentID(); ok {
 			a.model.loading = true
 			return a, a.fetchAgentActivity(id)
@@ -330,15 +388,41 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 			return a, a.fetchAgentActivity(id)
 		}
 	case "up":
-		if ag.View == AgentViewActivity && ag.ActivityScroll > 0 {
-			ag.ActivityScroll--
+		if ag.View == AgentViewActivity && ag.ActivityIdx > 0 {
+			ag.ActivityIdx--
 		}
 	case "down":
-		if ag.View == AgentViewActivity && ag.ActivityScroll < len(ag.Activity)-1 {
-			ag.ActivityScroll++
+		if ag.View == AgentViewActivity && ag.ActivityIdx < lastIndex(len(ag.Activity)) {
+			ag.ActivityIdx++
+		}
+	case "g", "home":
+		if ag.View == AgentViewActivity {
+			ag.ActivityIdx = 0
+		}
+	case "G", "end":
+		if ag.View == AgentViewActivity {
+			ag.ActivityIdx = lastIndex(len(ag.Activity))
+		}
+	case "pgup", "ctrl+u":
+		if ag.View == AgentViewActivity {
+			ag.ActivityIdx = clampScroll(ag.ActivityIdx-a.pageSize(), len(ag.Activity))
+		}
+	case "pgdown", "ctrl+d", " ":
+		if ag.View == AgentViewActivity {
+			ag.ActivityIdx = clampScroll(ag.ActivityIdx+a.pageSize(), len(ag.Activity))
 		}
 	}
 	return a, nil
+}
+
+// selectedActivityTaskID returns the task id under the cursor in an agent's
+// activity list.
+func (a *App) selectedActivityTaskID() (string, bool) {
+	ag := a.model.agentsTab
+	if ag == nil || ag.ActivityIdx < 0 || ag.ActivityIdx >= len(ag.Activity) {
+		return "", false
+	}
+	return ag.Activity[ag.ActivityIdx].TaskID, true
 }
 
 // handleTaskSubViewKey handles keys while a task detail/logs sub-view is open.
@@ -553,6 +637,30 @@ func (a *App) fetchAgentActivity(agentID string) tea.Cmd {
 	}
 }
 
+// fetchAgentTaskLogs loads the per-task logs for a task selected in the agent
+// activity list (reuses the same source as the Tasks tab logs view).
+func (a *App) fetchAgentTaskLogs(taskID string) tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+
+		logs := make([]LogEntry, 0)
+		if dbConn != nil {
+			if rows, err := dbConn.GetTaskLogs(ctx, taskID, 5000); err == nil {
+				for _, l := range rows {
+					logs = append(logs, LogEntry{
+						Timestamp: l.Timestamp,
+						Level:     l.Level,
+						Message:   l.Message,
+					})
+				}
+			}
+		}
+		return agentTaskLogsMsg{taskID: taskID, logs: logs}
+	}
+}
+
 func (a *App) fetchTaskDetail(taskID string) tea.Cmd {
 	dbConn := a.dbConn
 	return func() tea.Msg {
@@ -616,6 +724,8 @@ func (a *App) fetchAgents() tea.Cmd {
 					agents = append(agents, AgentStatus{
 						ID:              ag.ID,
 						Status:          ag.Status,
+						RunningCount:    ag.RunningCount,
+						CurrentTask:     ag.CurrentTask,
 						QueuedCount:     ag.QueuedCount,
 						CompletedCount:  ag.CompletedCount,
 						AvgDurationMs:   ag.AvgDurationMs,
@@ -930,6 +1040,24 @@ func (a *App) taskLogLines() []string {
 	if t == nil {
 		return nil
 	}
+	return a.logEntryLines(t.Logs)
+}
+
+// agentTaskLogLines renders the drill-down logs of the task selected in an
+// agent's activity list.
+func (a *App) agentTaskLogLines() []string {
+	ag := a.model.agentsTab
+	if ag == nil {
+		return nil
+	}
+	return a.logEntryLines(ag.TaskLogs)
+}
+
+// logEntryLines expands per-task log entries into fully-wrapped, styled visual
+// lines: messages with embedded newlines (the prompt, the multi-line agent
+// conversation) are split, and long lines are wrapped to the box width, so the
+// whole log is viewable by scrolling rather than truncated to one line.
+func (a *App) logEntryLines(logs []LogEntry) []string {
 	const prefixWidth = 15                      // "15:04:05" + space + 5-char level + space
 	msgWidth := a.model.width - 2 - prefixWidth // inner minus the prefix column
 	if msgWidth < 20 {
@@ -938,7 +1066,7 @@ func (a *App) taskLogLines() []string {
 	indent := strings.Repeat(" ", prefixWidth)
 
 	var out []string
-	for _, entry := range t.Logs {
+	for _, entry := range logs {
 		ts := StyleMuted.Render(entry.Timestamp.Format("15:04:05"))
 		level := levelStyle(entry.Level).Render(fmt.Sprintf("%-5s", entry.Level))
 		wrapped := wrapPlain(entry.Message, msgWidth)
@@ -989,6 +1117,8 @@ func (a *App) renderAgentsTab(height int) string {
 		return a.renderAgentDetail(ag, height)
 	case AgentViewActivity:
 		return a.renderAgentActivity(ag, height)
+	case AgentViewTaskLogs:
+		return a.renderAgentTaskLogs(ag, height)
 	default:
 		return a.renderAgentList(ag, height)
 	}
@@ -1056,6 +1186,11 @@ func (a *App) renderAgentDetail(ag *AgentsTab, height int) string {
 	}
 	row("Agent", StyleValueStrong.Render(d.ID))
 	row("Status", StatusColor(d.Status)+" "+agentStatusText(d.Status))
+	running := "0"
+	if d.RunningCount > 0 {
+		running = StyleWarning.Render(fmt.Sprintf("%d ⟳", d.RunningCount))
+	}
+	row("Running now", running)
 	row("Current task", valueOr(d.CurrentTask, "—"))
 	b.WriteString("\n")
 	row("Completed", StyleSuccess.Render(fmt.Sprintf("%d", completed)))
@@ -1100,9 +1235,10 @@ func (a *App) renderAgentActivity(ag *AgentsTab, height int) string {
 	if rows < 1 {
 		rows = 1
 	}
-	start := ag.ActivityScroll
-	if start > len(ag.Activity)-1 {
-		start = len(ag.Activity) - 1
+	// Window the list so the cursor row stays visible.
+	start := ag.ActivityIdx - rows/2
+	if start > len(ag.Activity)-rows {
+		start = len(ag.Activity) - rows
 	}
 	if start < 0 {
 		start = 0
@@ -1113,15 +1249,47 @@ func (a *App) renderAgentActivity(ag *AgentsTab, height int) string {
 	}
 	for i := start; i < end; i++ {
 		it := ag.Activity[i]
+		selected := i == ag.ActivityIdx
 		title := pad(truncate(valueOr(it.Title, it.TaskID), titleW), titleW)
 		status := taskStatusBadge(it.Status)
 		dur := "—"
 		if it.Duration > 0 {
 			dur = it.Duration.Round(time.Second).String()
 		}
-		b.WriteString("   " + title + " " + status + " " + pad(dur, durW) + " " + StyleMuted.Render(taskWhen(it)) + "\n")
+		cursor := "  "
+		if selected {
+			cursor = StyleFocusedArrow.Render("▶") + " "
+			title = StyleSelectedRow.Render(title)
+		}
+		b.WriteString(cursor + " " + title + " " + status + " " + pad(dur, durW) + " " + StyleMuted.Render(taskWhen(it)) + "\n")
 	}
 	return a.box("AGENT ACTIVITY — "+name, b.String(), height)
+}
+
+// renderAgentTaskLogs shows the per-task logs of the task drilled into from an
+// agent's activity list — the same view the Tasks tab offers.
+func (a *App) renderAgentTaskLogs(ag *AgentsTab, height int) string {
+	title := "TASK LOGS — " + valueOr(ag.LogsTaskID, "")
+	if len(ag.TaskLogs) == 0 {
+		return a.box(title, StyleMuted.Render("No logs recorded for this task.")+"\n", height)
+	}
+
+	lines := a.agentTaskLogLines()
+	rows := height - 2 // top + bottom borders
+	if rows < 1 {
+		rows = 1
+	}
+	start := clampScroll(ag.TaskLogIdx, len(lines))
+	end := start + rows
+	if end > len(lines) {
+		end = len(lines)
+	}
+
+	var b strings.Builder
+	for i := start; i < end; i++ {
+		b.WriteString(lines[i] + "\n")
+	}
+	return a.box(title, b.String(), height)
 }
 
 // agentStatusText returns a readable label for an agent status.
@@ -1278,7 +1446,9 @@ func (a *App) footerKeys() []fkey {
 			case AgentViewDetail:
 				return []fkey{{"esc", "back"}, {"l", "activity"}, {"q", "quit"}}
 			case AgentViewActivity:
-				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"r", "reload"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "logs"}, {"pgup/dn", "page"}, {"r", "reload"}, {"q", "quit"}}
+			case AgentViewTaskLogs:
+				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"pgup/dn", "page"}, {"home/end", "ends"}, {"r", "reload"}, {"q", "quit"}}
 			}
 		}
 		return []fkey{{"↑/↓", "select"}, {"enter/l", "activity"}, {"d", "details"}, {"tab", "switch"}, {"r", "refresh"}, {"q", "quit"}}
@@ -1307,6 +1477,19 @@ func (a *App) footerStatus(updated string) string {
 		if a.model.logsTab != nil {
 			if n := len(a.logVisualLines()); n > 0 {
 				pos = fmt.Sprintf("line %d/%d   ", a.model.logsTab.Scrolled+1, n)
+			}
+		}
+	case "Agents":
+		if ag := a.model.agentsTab; ag != nil {
+			switch ag.View {
+			case AgentViewActivity:
+				if n := len(ag.Activity); n > 0 {
+					pos = fmt.Sprintf("task %d/%d   ", ag.ActivityIdx+1, n)
+				}
+			case AgentViewTaskLogs:
+				if n := len(a.agentTaskLogLines()); n > 0 {
+					pos = fmt.Sprintf("line %d/%d   ", ag.TaskLogIdx+1, n)
+				}
 			}
 		}
 	}
