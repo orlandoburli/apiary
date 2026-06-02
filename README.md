@@ -70,9 +70,28 @@ All specs live in [`openspec/`](openspec/):
 | [CLI](openspec/specs/cli/spec.md) | Commands, flags, exit codes |
 | [Roadmap](openspec/specs/roadmap/spec.md) | Milestone plan |
 
+## CLI Runner — Personal Use
+
+Apiary supports a `cli` runner adapter that invokes agent CLI tools (such as `opencode`, `gemini`, or similar) as subprocesses on your local machine.
+
+```yaml
+workers:
+  - id: my-worker
+    runner: cli
+    model: openai/gpt-4o
+    config:
+      command: opencode       # CLI binary on your PATH
+      model_flag: "--model"   # flag used to pass the model
+      working_dir: /my/repo
+```
+
+**Important:** Apiary never handles, stores, intercepts, or transmits authentication credentials of any kind. CLI tools manage their own authentication independently. The `cli` runner simply invokes the binary — it has no knowledge of how the tool authenticates.
+
+This runner is intended for **personal use on your own machine**, where you have already set up and authenticated the CLI tool yourself. For shared or team deployments, use an API-key-based runner instead (see roadmap).
+
 ## Status
 
-> Pre-alpha. Specification phase.
+> Pre-alpha. Implementation in progress.
 
 ## License
 

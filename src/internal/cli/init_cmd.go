@@ -23,9 +23,11 @@ sources:
 workers:
   - id: default-worker
     description: "Default worker"
-    runner: opencode
+    runner: cli
     model: openai/gpt-4o
     config:
+      command: opencode        # CLI binary to invoke (opencode, gemini, etc.)
+      model_flag: "--model"    # flag used to pass the model to the CLI
       working_dir: .
       max_turns: 10
 
