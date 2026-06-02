@@ -260,6 +260,66 @@ func (a *Adapter) SetState(ctx context.Context, cell model.Cell, stateName strin
 	return nil
 }
 
+// AddLabels implements source.LabelAdder. It merges the named labels onto the
+// work item's existing labels (Plane's PATCH replaces the set, so we must send
+// the full list) and auto-creates any label that doesn't yet exist in the
+// project. Names are matched case-insensitively.
+func (a *Adapter) AddLabels(ctx context.Context, cell model.Cell, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	if err := a.loadMetadata(ctx); err != nil {
+		return err
+	}
+
+	idSet := make(map[string]struct{})
+	// Preserve the labels the item already has (cell.Labels are lowercased names).
+	for _, n := range cell.Labels {
+		if id, ok := a.labelNameToID[strings.ToLower(n)]; ok {
+			idSet[id] = struct{}{}
+		}
+	}
+	// Add the requested labels, creating any that are missing.
+	for _, n := range names {
+		id, err := a.ensureLabelID(ctx, n)
+		if err != nil {
+			return err
+		}
+		idSet[id] = struct{}{}
+	}
+
+	ids := make([]string, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+
+	path := a.workItemsBase() + "/" + cell.ID + "/"
+	if _, err := a.client.patch(ctx, path, labelsPatchRequest{Labels: ids}); err != nil {
+		return fmt.Errorf("plane: adding labels %v to %s: %w", names, cell.ID, err)
+	}
+	return nil
+}
+
+// ensureLabelID returns the UUID for a label name, creating the label in the
+// project if it does not exist yet.
+func (a *Adapter) ensureLabelID(ctx context.Context, name string) (string, error) {
+	if id, ok := a.labelNameToID[strings.ToLower(name)]; ok {
+		return id, nil
+	}
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/labels/", a.workspace, a.project)
+	if _, err := a.client.post(ctx, path, labelCreateRequest{Name: name}); err != nil {
+		return "", fmt.Errorf("plane: creating label %q: %w", name, err)
+	}
+	// Refresh the label maps so the new label resolves.
+	if err := a.loadLabels(ctx); err != nil {
+		return "", err
+	}
+	if id, ok := a.labelNameToID[strings.ToLower(name)]; ok {
+		return id, nil
+	}
+	return "", fmt.Errorf("plane: label %q not found after create", name)
+}
+
 func (a *Adapter) workItemsBase() string {
 	path := a.issuesPath
 	if path == "" {

@@ -36,6 +36,13 @@ type StateSetter interface {
 	SetState(ctx context.Context, cell model.Cell, stateName string) error
 }
 
+// LabelAdder is an optional interface that sources may implement to add labels
+// to a task. The dispatcher uses it for on_complete.add_labels and for the
+// classifier handoff (e.g. a classifier agent assigns "agent:<chosen>").
+type LabelAdder interface {
+	AddLabels(ctx context.Context, cell model.Cell, labels []string) error
+}
+
 // Factory creates a new, unconfigured Adapter instance.
 type Factory func() Adapter
 

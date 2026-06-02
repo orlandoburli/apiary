@@ -43,6 +43,11 @@ func Debug(format string, args ...any) {
 	print("DEBUG", format, args...)
 }
 
+// Warn always prints to stderr.
+func Warn(format string, args ...any) {
+	print("WARN", format, args...)
+}
+
 // Error always prints to stderr.
 func Error(format string, args ...any) {
 	print("ERROR", format, args...)

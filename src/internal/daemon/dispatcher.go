@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -717,15 +719,93 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		}
 	}
 
-	if match.Route.OnComplete.SetState != "" {
+	// on_complete: apply labels (static add_labels + classifier assignment),
+	// then the state transition. Only on a successful run — we don't want to
+	// route a task based on a classification that failed.
+	oc := match.Route.OnComplete
+	if result.Success {
+		labels := append([]string(nil), oc.AddLabels...)
+
+		if oc.AssignFromOutput {
+			if agentID, ok := parseAssignDirective(result.Output); ok {
+				if d.agentExists(agentID) {
+					prefix := oc.AssignLabelPrefix
+					if prefix == "" {
+						prefix = "agent:"
+					}
+					label := prefix + agentID
+					labels = append(labels, label)
+					aplog.Info("cell %s: classifier assigned agent=%s → label %q", cell.ID, agentID, label)
+					if d.logger != nil {
+						d.logger.TaskInfo(ctx, cell.ID, fmt.Sprintf("assigned to agent %q (label %q)", agentID, label))
+					}
+				} else {
+					aplog.Error("cell %s: classifier chose unknown agent %q — not assigning", cell.ID, agentID)
+					if d.logger != nil {
+						d.logger.TaskError(ctx, cell.ID, fmt.Sprintf("classifier chose unknown agent %q", agentID))
+					}
+				}
+			} else {
+				aplog.Warn("cell %s: assign_from_output set but no 'APIARY-ASSIGN: <agent>' directive in output", cell.ID)
+				if d.logger != nil {
+					d.logger.TaskError(ctx, cell.ID, "no APIARY-ASSIGN directive found in output")
+				}
+			}
+		}
+
+		if len(labels) > 0 {
+			if la, ok := adapter.(source.LabelAdder); ok {
+				if err := la.AddLabels(ctx, cell, labels); err != nil {
+					aplog.Error("cell %s: add labels %v: %v", cell.ID, labels, err)
+				}
+			} else {
+				aplog.Error("cell %s: source does not support adding labels", cell.ID)
+			}
+		}
+	}
+
+	if oc.SetState != "" {
 		if ss, ok := adapter.(source.StateSetter); ok {
-			if err := ss.SetState(ctx, cell, match.Route.OnComplete.SetState); err != nil {
+			if err := ss.SetState(ctx, cell, oc.SetState); err != nil {
 				aplog.Error("cell %s: set_state: %v", cell.ID, err)
 			}
 		}
 	}
 
 	return result
+}
+
+// assignDirectiveRe matches a classifier's routing directive, e.g.
+//
+//	APIARY-ASSIGN: engineer
+//
+// anywhere in the agent's output (case-insensitive, one per line).
+var assignDirectiveRe = regexp.MustCompile(`(?im)^\s*APIARY-ASSIGN:\s*(.+?)\s*$`)
+
+// parseAssignDirective extracts the chosen agent id from an agent's output.
+// The last directive wins. A leading "agent:" on the value is tolerated and
+// stripped, so both `engineer` and `agent:engineer` resolve to "engineer".
+func parseAssignDirective(output string) (string, bool) {
+	matches := assignDirectiveRe.FindAllStringSubmatch(output, -1)
+	if len(matches) == 0 {
+		return "", false
+	}
+	val := strings.TrimSpace(matches[len(matches)-1][1])
+	val = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(val), "agent:"))
+	if val == "" {
+		return "", false
+	}
+	return val, true
+}
+
+// agentExists reports whether an agent id is defined in the config.
+func (d *Dispatcher) agentExists(id string) bool {
+	for i := range d.cfg.Agents {
+		if strings.EqualFold(d.cfg.Agents[i].ID, id) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Dispatcher) recordPoll(sourceID string, count int) {

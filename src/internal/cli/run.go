@@ -82,6 +82,8 @@ func newRunCmd() *cobra.Command {
 				switch level {
 				case "ERROR":
 					logger.Error(context.Background(), msg, "dispatcher")
+				case "WARN":
+					logger.Warn(context.Background(), msg, "dispatcher")
 				case "DEBUG":
 					logger.Debug(context.Background(), msg, "dispatcher")
 				default:

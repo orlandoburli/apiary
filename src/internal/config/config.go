@@ -127,6 +127,13 @@ type RouteMatch struct {
 type OnComplete struct {
 	SetState  string   `yaml:"set_state"`
 	AddLabels []string `yaml:"add_labels"`
+	// AssignFromOutput parses the agent's output for an `APIARY-ASSIGN: <agent>`
+	// directive and adds the corresponding `<prefix><agent>` label, so a
+	// classifier agent can route a task to the agent it picked.
+	AssignFromOutput bool `yaml:"assign_from_output"`
+	// AssignLabelPrefix is the label prefix used for AssignFromOutput. Defaults
+	// to "agent:" so the assigned label matches the agent:* route convention.
+	AssignLabelPrefix string `yaml:"assign_label_prefix"`
 }
 
 type RetryPolicy struct {

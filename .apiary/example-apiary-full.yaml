@@ -168,7 +168,10 @@ routes:
       exclude_label_prefix: "agent:"
     agent: investigator
     on_complete:
-      set_state: in review
+      # Apiary parses `APIARY-ASSIGN: <agent>` from the investigator's output and
+      # adds the `agent:<agent>` label. The task stays in Todo (no set_state), so
+      # the chosen agent's route matches it on the next poll.
+      assign_from_output: true
 
 
 # ── Settings ───────────────────────────────────────────────────────────────────
