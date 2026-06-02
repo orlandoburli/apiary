@@ -4,9 +4,14 @@
 
 | Concern | Choice | Rationale |
 |---|---|---|
-| Runtime | Go | Single static binary, cross-platform, easy OSS distribution, excellent subprocess management |
+| Runtime | **Go** | Single static binary, cross-platform, easy OSS distribution, excellent subprocess management |
+| TUI | **Bubble Tea** + Lip Gloss + Bubbles (Charmbracelet) | Elm-architecture TUI framework; composable, beautiful, purpose-built for this kind of tool |
+| CLI | **Cobra** + **Viper** | Industry standard; used by kubectl, gh, Hugo; pairs naturally with Viper for config |
+| Service install | **kardianos/service** | One API → systemd (Linux), launchd (macOS), Windows Service |
+| Job scheduler | **gocron v2** | Human-friendly DSL, built on robfig/cron v3 |
+| Daemon IPC | Unix domain socket + net/http | Simple, fast; gRPC if multi-language clients are needed later |
 | Config format | YAML | Familiar to DevOps users, rich tooling ecosystem |
-| Plugin system | Go interfaces (v1) + gRPC plugin protocol (v2) | Built-in adapters first; external plugin API in v2 |
+| Plugin system | Go interfaces (v1) + gRPC protocol (v2) | Built-in adapters first; external plugin API in v2 |
 | Observability | Structured JSON logs + optional OTLP traces | Pipes into any stack without vendor lock-in |
 | Run history | Embedded SQLite | Zero-dependency persistence for a local-first tool |
 | Distribution | GitHub Releases, Homebrew, Docker | Cover macOS/Linux dev + container deployments |
