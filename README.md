@@ -89,6 +89,19 @@ workers:
 
 This runner is intended for **personal use on your own machine**, where you have already set up and authenticated the CLI tool yourself. For shared or team deployments, use an API-key-based runner instead (see roadmap).
 
+## Dashboard
+
+Apiary ships a terminal dashboard for monitoring task execution, agent
+performance, and logs in real time:
+
+```sh
+apiary dashboard
+```
+
+See [`docs/dashboard.md`](docs/dashboard.md) for a per-tab data reference —
+what each tab shows, the source table and query behind every field, the
+refresh model, and current data gaps.
+
 ## Status
 
 > Pre-alpha. Implementation in progress.
