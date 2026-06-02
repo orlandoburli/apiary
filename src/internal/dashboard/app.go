@@ -65,11 +65,7 @@ func (a *App) View() string {
 		}
 	}()
 
-	// Header
-	header := a.renderHeader()
-	headerHeight := lipgloss.Height(header)
-
-	// Tabs
+	// Tabs (acts as header)
 	tabs := a.renderTabs()
 	tabsHeight := lipgloss.Height(tabs)
 
@@ -78,7 +74,7 @@ func (a *App) View() string {
 	footerHeight := lipgloss.Height(footer)
 
 	// Calculate available space for content
-	contentHeight := a.model.height - headerHeight - tabsHeight - footerHeight - 2 // 2 for padding
+	contentHeight := a.model.height - tabsHeight - footerHeight - 1
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
@@ -97,13 +93,12 @@ func (a *App) View() string {
 	case "Logs":
 		content = a.renderLogsTab(contentHeight)
 	default:
-		content = "┌─ ERROR ────────────────────────────────────────────┐\nUnknown tab\n└─────────────────────────────────────────────────────┘\n"
+		content = "Unknown tab"
 	}
 
 	// Combine all sections
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		header,
 		tabs,
 		content,
 		footer,
