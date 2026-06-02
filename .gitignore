@@ -1,5 +1,6 @@
 # binaries
 apiary
+src/apiary
 dist/
 
 # test output
