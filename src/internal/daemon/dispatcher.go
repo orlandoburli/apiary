@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/config"
+	"github.com/orlandoburli/apiary/internal/db"
 	aplog "github.com/orlandoburli/apiary/internal/log"
+	"github.com/orlandoburli/apiary/internal/logging"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/router"
 	"github.com/orlandoburli/apiary/internal/runner"
@@ -41,6 +43,10 @@ type Dispatcher struct {
 	sources map[string]source.Adapter // source id → connected adapter
 	runners map[string]runner.Adapter // worker id → configured runner
 
+	db          *db.Client       // SQLite database for state and logging
+	logger      *logging.Logger  // Structured logger (file + DB)
+	retryMgr    *RetryManager    // Retry logic and backoff
+
 	sem        chan struct{} // concurrency semaphore
 	active     atomic.Int32 // number of goroutines currently running
 	inFlight   sync.Map     // cell id → struct{}: prevents double-dispatch
@@ -54,7 +60,8 @@ type Dispatcher struct {
 }
 
 // New builds and connects a Dispatcher from the given config.
-func New(ctx context.Context, cfg *config.Config, configFile string) (*Dispatcher, error) {
+// Pass nil for db and logger to skip state persistence and logging to SQLite.
+func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *db.Client, logger *logging.Logger) (*Dispatcher, error) {
 	r, err := router.New(cfg)
 	if err != nil {
 		return nil, err
@@ -67,6 +74,9 @@ func New(ctx context.Context, cfg *config.Config, configFile string) (*Dispatche
 		router:     r,
 		sources:    make(map[string]source.Adapter),
 		runners:    make(map[string]runner.Adapter),
+		db:         dbClient,
+		logger:     logger,
+		retryMgr:   NewRetryManager(&cfg.Settings.RetryPolicy),
 		sem:        make(chan struct{}, max(cfg.Settings.Concurrency, 1)),
 		stats:      make(map[string]*sourceStat),
 	}
@@ -76,6 +86,14 @@ func New(ctx context.Context, cfg *config.Config, configFile string) (*Dispatche
 		if !ok {
 			return nil, fmt.Errorf("source %q: unknown type %q", sc.ID, sc.Type)
 		}
+
+		// Set the source ID on the adapter if it supports it
+		if si, ok := adapter.(interface {
+			SetID(id string)
+		}); ok {
+			si.SetID(sc.ID)
+		}
+
 		if err := adapter.Connect(ctx, sc.Config); err != nil {
 			return nil, fmt.Errorf("source %q: connect: %w", sc.ID, err)
 		}
@@ -88,6 +106,51 @@ func New(ctx context.Context, cfg *config.Config, configFile string) (*Dispatche
 		d.stats[sc.ID] = &sourceStat{}
 	}
 
+	// Build runner ID map for lookup
+	runnerMap := make(map[string]*config.RunnerConfig)
+	for i, rc := range cfg.Runners {
+		runnerMap[rc.ID] = &cfg.Runners[i]
+	}
+
+	// Instantiate runners from agents
+	for _, ac := range cfg.Agents {
+		if len(ac.PreferredModels) == 0 {
+			return nil, fmt.Errorf("agent %q: no preferred models", ac.ID)
+		}
+
+		// Determine which runner to use: agent-specific or default
+		runnerID := ac.Runner
+		if runnerID == "" {
+			runnerID = cfg.DefaultRunner
+		}
+		if runnerID == "" {
+			return nil, fmt.Errorf("agent %q: no runner specified and no default_runner configured", ac.ID)
+		}
+
+		rc, ok := runnerMap[runnerID]
+		if !ok {
+			return nil, fmt.Errorf("agent %q: runner %q not found", ac.ID, runnerID)
+		}
+
+		// Create pseudo-worker ID for this agent
+		pseudoWorkerID := fmt.Sprintf("agent-%s", ac.ID)
+
+		// Instantiate runner of the appropriate type
+		ra, ok := runner.New(rc.Type)
+		if !ok {
+			return nil, fmt.Errorf("agent %q: runner type %q not found", ac.ID, rc.Type)
+		}
+
+		if err := ra.Configure(rc.Config); err != nil {
+			return nil, fmt.Errorf("agent %q: configure runner: %w", ac.ID, err)
+		}
+
+		d.runners[pseudoWorkerID] = ra
+
+		aplog.Info("loaded agent %s: runner=%s type=%s preferred_models=%v", ac.ID, runnerID, rc.Type, ac.PreferredModels)
+	}
+
+	// Keep legacy worker support for backward compatibility during transition
 	for _, wc := range cfg.Workers {
 		ra, ok := runner.New(wc.Runner)
 		if !ok {
@@ -193,6 +256,7 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 			}
 			match, ok := d.router.Route(cell)
 			if !ok {
+				aplog.Debug("  %q: no route matched (source=%q labels=%v)", cell.Title, cell.SourceID, cell.Labels)
 				d.inFlight.Delete(cell.ID)
 				continue
 			}
@@ -397,7 +461,25 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 
 // dispatch acknowledges, runs, and writes the result for a single cell.
 func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter source.Adapter, match router.Match) model.RunResult {
-	wc := match.Worker
+	// Get the agent ID from the route
+	agentID := match.Route.Agent
+	if agentID == "" {
+		aplog.Error("cell %s: route %s has no agent", cell.ID, match.Route.ID)
+		return model.RunResult{Success: false}
+	}
+
+	// Find the agent config
+	var agent *config.AgentConfig
+	for i := range d.cfg.Agents {
+		if d.cfg.Agents[i].ID == agentID {
+			agent = &d.cfg.Agents[i]
+			break
+		}
+	}
+	if agent == nil {
+		aplog.Error("cell %s: agent %q not found", cell.ID, agentID)
+		return model.RunResult{Success: false}
+	}
 
 	if d.cfg.Settings.StateLock {
 		if err := adapter.Acknowledge(ctx, cell, model.AckActionInProgress); err != nil {
@@ -405,34 +487,105 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		}
 	}
 
-	ra, ok := d.runners[wc.ID]
+	// Use pseudo-worker ID for agent
+	pseudoWorkerID := fmt.Sprintf("agent-%s", agentID)
+	ra, ok := d.runners[pseudoWorkerID]
 	if !ok {
-		aplog.Error("cell %s: runner for worker %q not found", cell.ID, wc.ID)
-		return model.RunResult{WorkerID: wc.ID, Success: false}
+		aplog.Error("cell %s: runner for agent %q not found", cell.ID, agentID)
+		return model.RunResult{Success: false}
 	}
 
+	// Read soul file and append to system prompt
+	systemAppend := ""
+	if agent.SoulFile != "" {
+		soulContent, err := os.ReadFile(agent.SoulFile)
+		if err != nil {
+			aplog.Error("cell %s: reading soul file %q: %v", cell.ID, agent.SoulFile, err)
+		} else {
+			systemAppend = string(soulContent)
+			aplog.Debug("cell %s: loaded soul file (%d bytes)", cell.ID, len(soulContent))
+		}
+	}
+
+	// Use first preferred model
+	selectedModel := agent.PreferredModels[0]
+
+	aplog.Info("cell %s: dispatching to agent=%q model=%s", cell.ID, agentID, selectedModel)
+
+	// Create request with default values for agent-based dispatch
 	req := model.RunRequest{
 		Cell:         cell,
-		WorkerID:     wc.ID,
-		Model:        wc.Model,
-		MaxTurns:     wc.Config.MaxTurns,
-		SystemAppend: wc.Config.SystemAppend,
-		WorkingDir:   wc.Config.WorkingDir,
-		Env:          wc.Config.Env,
-		Timeout:      wc.Config.ParsedTimeout(),
+		WorkerID:     agentID,
+		Model:        selectedModel,
+		MaxTurns:     15,
+		SystemAppend: systemAppend,
+		WorkingDir:   "/",
+		Env:          map[string]string{},
+		Timeout:      45 * time.Minute,
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, req.Timeout)
 	defer cancel()
 
+	// Track execution attempt in database
+	var exec *db.Execution
+	lastExec, _ := d.db.GetLastExecution(ctx, cell.ID)
+	attempt := 1
+	if lastExec != nil {
+		attempt = lastExec.Attempt + 1
+	}
+
+	if d.db != nil {
+		var err error
+		exec, err = d.db.CreateExecution(ctx, cell.ID, agentID, attempt)
+		if err != nil {
+			aplog.Error("cell %s: create execution record: %v", cell.ID, err)
+		}
+	}
+
 	result, err := ra.Run(runCtx, req)
 	if err != nil && result.Error == nil {
 		result.Error = err
 	}
-	result.WorkerID = wc.ID
+	result.WorkerID = agentID
 
 	aplog.Info("cell %s: done success=%v duration=%s",
 		cell.ID, result.Success, result.Duration.Round(time.Second))
+
+	// Log agent output to console
+	if result.Output != "" {
+		aplog.Info("cell %s: agent output:\n%s", cell.ID, result.Output)
+	}
+	if result.Error != nil {
+		aplog.Error("cell %s: agent error: %v", cell.ID, result.Error)
+	}
+
+	// Update execution record with results
+	if exec != nil && d.db != nil {
+		exec.Status = "success"
+		exec.DurationMs = int64(result.Duration.Milliseconds())
+		now := time.Now()
+		exec.CompletedAt = &now
+		if !result.Success {
+			exec.Status = "failed"
+			if result.Error != nil {
+				exec.ErrorMsg = result.Error.Error()
+			}
+		}
+		_ = d.db.UpdateExecution(ctx, exec)
+
+		// Handle retry scheduling if enabled and applicable
+		if !result.Success && d.retryMgr.ShouldRetry(attempt) && d.retryMgr.IsRetriable(result.Error.Error()) {
+			backoff := d.retryMgr.GetBackoffDuration(attempt)
+			nextRetryAt := time.Now().Add(backoff)
+			aplog.Debug("cell %s: attempt %d failed (retriable), scheduling retry in %v: %v",
+				cell.ID, attempt, backoff, result.Error)
+			exec.Status = "failed"
+			exec.CanRetry = true
+			exec.NextRetryAt = &nextRetryAt
+			_ = d.db.UpdateExecution(ctx, exec)
+		}
+	}
 
 	if d.cfg.Settings.ResultComment {
 		if err := adapter.WriteResult(ctx, cell, result); err != nil {
