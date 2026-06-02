@@ -163,21 +163,26 @@ func (a *App) renderTasksTab(height int) string {
 func (a *App) renderAgentsTab(height int) string {
 	content := "No agents configured\n"
 
-	lines := 1
+	// Pad to fill height
+	lines := strings.Count(content, "\n") + 1
 	padding := height - lines
 	if padding > 0 {
 		content += strings.Repeat("\n", padding)
 	}
+
 	return "┌─ AGENTS ────────────────────────────────────────────┐\n" + content + "└─────────────────────────────────────────────────────┘\n"
 }
 
 func (a *App) renderLogsTab(height int) string {
 	content := "No logs yet\n"
-	lines := 1
+
+	// Pad to fill height
+	lines := strings.Count(content, "\n") + 1
 	padding := height - lines
 	if padding > 0 {
 		content += strings.Repeat("\n", padding)
 	}
+
 	return "┌─ LOGS ──────────────────────────────────────────────┐\n" + content + "└─────────────────────────────────────────────────────┘\n"
 }
 
