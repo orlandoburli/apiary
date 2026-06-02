@@ -2,9 +2,10 @@ package plane
 
 // page is the generic paginated response envelope from the Plane API.
 type page[T any] struct {
-	Results    []T     `json:"results"`
-	NextCursor *string `json:"next_cursor"`
-	TotalCount int     `json:"total_count"`
+	Results         []T    `json:"results"`
+	NextCursor      string `json:"next_cursor"`
+	NextPageResults bool   `json:"next_page_results"` // false = no more pages
+	TotalCount      int    `json:"total_count"`
 }
 
 // workItem represents a Plane work item (formerly "issue").
