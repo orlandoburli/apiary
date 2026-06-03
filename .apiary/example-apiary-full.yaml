@@ -28,25 +28,57 @@ runners:
       #   claude-opus-4-8: claude-4-20250514
       #   claude-sonnet-4-6: claude-3-5-sonnet-20241022
 
-  # OpenCode CLI runner (invokes opencode as a subprocess)
-  # Requires opencode to be installed and authenticated on the host machine.
-  - id: my-opencode
+  # ── OpenCode runners ────────────────────────────────────────────────────────
+  # OpenCode has two subscription tiers (Go and Zen), each available in two
+  # execution modes (CLI and API). Choose the combination that fits your setup.
+  #
+  #   CLI mode:   invokes the opencode binary as a subprocess.
+  #               Requires opencode installed on the host.
+  #
+  #   API mode:   calls the opencode HTTP API directly.
+  #               Requires an API key from the respective subscription.
+
+  # OpenCode Go — CLI mode (uses the local opencode binary with Go subscription)
+  - id: opencode-go-cli
     type: opencode
     config:
-      # Path to the opencode binary (default: "opencode")
+      mode: cli
+      subscription: go
       binary: opencode
-      # Which opencode agent profile to use (optional)
       agent: backend-dev
-      # Flag to pass the model name (default: "--model")
       model_flag: --model
-      # Flag to pass the prompt text (default: "--prompt")
       prompt_flag: --prompt
-      # Flag for max turns (default: "--max-turns")
       turns_flag: --max-turns
-      # Flag to select an agent (default: "--agent")
       agent_flag: --agent
-      # Additional static arguments (optional)
-      extra_args: []
+
+  # OpenCode Go — API mode (calls the Go API directly)
+  - id: opencode-go-api
+    type: opencode
+    config:
+      mode: api
+      subscription: go
+      api_key: ${OPENCODE_GO_API_KEY}
+
+  # OpenCode Zen — CLI mode (uses the local opencode binary with Zen subscription)
+  - id: opencode-zen-cli
+    type: opencode
+    config:
+      mode: cli
+      subscription: zen
+      binary: opencode
+      agent: backend-dev
+      model_flag: --model
+      prompt_flag: --prompt
+      turns_flag: --max-turns
+      agent_flag: --agent
+
+  # OpenCode Zen — API mode (calls the Zen API directly)
+  - id: opencode-zen-api
+    type: opencode
+    config:
+      mode: api
+      subscription: zen
+      api_key: ${OPENCODE_ZEN_API_KEY}
 
 # Default runner used by agents if not overridden
 default_runner: claude-cli
@@ -110,12 +142,33 @@ agents:
     preferred_models: [claude-sonnet-4-6, claude-haiku-4-5]
     skills: [e2e-before-pr, changelog-contexto]
 
-  # === OpenCode-based agent ===
-  - id: agent-opencode
-    description: "OpenCode agent — runs tasks via the opencode CLI"
+  # === OpenCode-based agents ===
+  - id: agent-go-cli
+    description: "OpenCode Go — runs tasks via the opencode CLI"
     soul_file: .apiary/souls/engineer.md
-    runner: my-opencode
-    preferred_models: [openai/gpt-4o, deepseek/deepseek-chat]
+    runner: opencode-go-cli
+    preferred_models: [opencode-go/deepseek-v4-flash, opencode-go/kimi-k2.5]
+    skills: [git-workflow, gitnexus-codebase]
+
+  - id: agent-go-api
+    description: "OpenCode Go — runs tasks via the Go API"
+    soul_file: .apiary/souls/engineer.md
+    runner: opencode-go-api
+    preferred_models: [opencode-go/deepseek-v4-pro, opencode-go/minimax-m3]
+    skills: [git-workflow, gitnexus-codebase]
+
+  - id: agent-zen-cli
+    description: "OpenCode Zen — runs tasks via the opencode CLI"
+    soul_file: .apiary/souls/engineer.md
+    runner: opencode-zen-cli
+    preferred_models: [opencode/gpt-5.5, opencode/claude-sonnet-4-6]
+    skills: [git-workflow, gitnexus-codebase]
+
+  - id: agent-zen-api
+    description: "OpenCode Zen — runs tasks via the Zen API"
+    soul_file: .apiary/souls/engineer.md
+    runner: opencode-zen-api
+    preferred_models: [opencode/gpt-5.4, opencode/claude-opus-4.8]
     skills: [git-workflow, gitnexus-codebase]
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
