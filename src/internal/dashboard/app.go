@@ -200,6 +200,14 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// Clear logs for the focused task.
+	if key == "C" {
+		if id, ok := a.focusedTaskID(); ok {
+			return a, a.clearLogsCmd(id)
+		}
+		return a, nil
+	}
+
 	// While a Tasks sub-view (detail/logs) is open, keys are scoped to it.
 	if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.View != TaskViewList {
 		return a.handleTaskSubViewKey(key)
@@ -616,6 +624,25 @@ func (a *App) restartTaskCmd(taskID string) tea.Cmd {
 		}
 		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 		url := fmt.Sprintf("http://apiary/restart/%s", taskID)
+		resp, err := client.Post(url, "application/json", nil)
+		if err != nil {
+			return nil
+		}
+		resp.Body.Close()
+		return nil
+	}
+}
+
+func (a *App) clearLogsCmd(taskID string) tea.Cmd {
+	return func() tea.Msg {
+		socketPath := a.socketPath
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+			},
+		}
+		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+		url := fmt.Sprintf("http://apiary/clearlogs/%s", taskID)
 		resp, err := client.Post(url, "application/json", nil)
 		if err != nil {
 			return nil
@@ -1633,9 +1660,9 @@ func (a *App) footerKeys() []fkey {
 		if t := a.model.tasksTab; t != nil {
 			switch t.View {
 			case TaskViewDetail:
-				return []fkey{{"esc", "back"}, {"l", "logs"}, {"o", "open"}, {"R", "restart"}, {"r", "reload"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"l", "logs"}, {"o", "open"}, {"R", "restart"}, {"C", "clear"}, {"r", "reload"}, {"q", "quit"}}
 			case TaskViewLogs:
-				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"o", "open"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"o", "open"}, {"C", "clear"}, {"q", "quit"}}
 			}
 		}
 		return []fkey{{"↑/↓", "select"}, {"enter/l", "logs"}, {"d", "details"}, {"o", "open"}, {"tab", "switch"}, {"q", "quit"}}

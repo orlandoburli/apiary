@@ -495,6 +495,20 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("/clearlogs/", func(w http.ResponseWriter, r *http.Request) {
+		cellID := strings.TrimPrefix(r.URL.Path, "/clearlogs/")
+		if cellID == "" {
+			http.Error(w, "missing cell id", http.StatusBadRequest)
+			return
+		}
+		if d.db != nil {
+			if err := d.db.ClearTaskLogs(r.Context(), cellID); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	})
 
 	srv := &http.Server{Handler: mux}
 

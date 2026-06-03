@@ -186,6 +186,16 @@ func (c *Client) ShouldRetry(ctx context.Context, taskID string) (bool, *time.Ti
 	return true, lastExec.NextRetryAt
 }
 
+// ClearTaskLogs removes all logs and execution records for a given task.
+func (c *Client) ClearTaskLogs(ctx context.Context, taskID string) error {
+	_, err := c.db.ExecContext(ctx, `DELETE FROM task_logs WHERE task_id = ?`, taskID)
+	if err != nil {
+		return err
+	}
+	_, err = c.db.ExecContext(ctx, `DELETE FROM task_executions WHERE task_id = ?`, taskID)
+	return err
+}
+
 // Logging
 
 func (c *Client) WriteTaskLog(ctx context.Context, taskID, level, message string) error {
