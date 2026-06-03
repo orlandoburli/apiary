@@ -1008,24 +1008,45 @@ func (d *Dispatcher) writeOpencodeAgent(ctx context.Context, ac config.AgentConf
 	return nil
 }
 
-// registerAgentInConfig adds or updates the agent entry in opencode.json so
-// opencode run --agent <id> can find it.
+// registerAgentInConfig adds or updates the agent entry in the global opencode
+// config (~/.config/opencode/opencode.json) so opencode run --agent <id> finds it.
 func (d *Dispatcher) registerAgentInConfig(workDir string, ac config.AgentConfig, agentPath string) error {
-	configPath := filepath.Join(workDir, "opencode.json")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("home dir: %w", err)
+	}
 
-	// Read existing config or start fresh
-	data, _ := os.ReadFile(configPath)
+	// Write the markdown agent file to the global agents directory
+	globalAgentDir := filepath.Join(home, ".config", "opencode", "agents")
+	if err := os.MkdirAll(globalAgentDir, 0755); err != nil {
+		return fmt.Errorf("create global agent dir: %w", err)
+	}
+
+	// Read the markdown content we wrote to the project file
+	mdData, err := os.ReadFile(agentPath)
+	if err != nil {
+		return fmt.Errorf("read agent file: %w", err)
+	}
+
+	globalAgentPath := filepath.Join(globalAgentDir, ac.ID+".md")
+	if err := os.WriteFile(globalAgentPath, mdData, 0644); err != nil {
+		return fmt.Errorf("write global agent file: %w", err)
+	}
+
+	// Update the global opencode.json with the agent entry
+	globalConfigPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+
+	data, _ := os.ReadFile(globalConfigPath)
 	cfg := make(map[string]any)
 	if len(data) > 0 {
 		_ = json.Unmarshal(data, &cfg)
 	}
 
-	// Build the agent entry with a relative reference to the markdown file
-	relPath, _ := filepath.Rel(workDir, agentPath)
+	// Use a relative reference from the global config directory
 	agentEntry := map[string]any{
 		"description": ac.Description,
 		"mode":        "primary",
-		"prompt":      "{file:./" + relPath + "}",
+		"prompt":      "{file:./agents/" + ac.ID + ".md}",
 		"permission": map[string]any{
 			"edit":  "allow",
 			"bash":  "allow",
@@ -1036,7 +1057,6 @@ func (d *Dispatcher) registerAgentInConfig(workDir string, ac config.AgentConfig
 		},
 	}
 
-	// Merge into the agents map
 	agents, _ := cfg["agent"].(map[string]any)
 	if agents == nil {
 		agents = make(map[string]any)
@@ -1044,12 +1064,11 @@ func (d *Dispatcher) registerAgentInConfig(workDir string, ac config.AgentConfig
 	agents[ac.ID] = agentEntry
 	cfg["agent"] = agents
 
-	// Write back with indentation
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath, raw, 0644)
+	return os.WriteFile(globalConfigPath, raw, 0644)
 }
 
 func workerRunConfig(wc config.WorkerConfig) map[string]any {
