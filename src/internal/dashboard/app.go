@@ -3,6 +3,8 @@ package dashboard
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -28,15 +30,17 @@ const queryTimeout = 2 * time.Second
 // event-loop goroutine) is allowed to mutate the model. This is what keeps
 // the data-fetching goroutines from racing with View.
 type App struct {
-	model  *Model
-	dbConn *db.Client
+	model      *Model
+	dbConn     *db.Client
+	socketPath string
 }
 
 // New creates a new dashboard app backed by the given database client.
-func New(dbConn *db.Client) *App {
+func New(dbConn *db.Client, socketPath string) *App {
 	return &App{
-		model:  NewModel(),
-		dbConn: dbConn,
+		model:      NewModel(),
+		dbConn:     dbConn,
+		socketPath: socketPath,
 	}
 }
 
@@ -184,6 +188,14 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key == "o" {
 		if u, ok := a.focusedTaskURL(); ok {
 			return a, openURLCmd(u)
+		}
+		return a, nil
+	}
+
+	// Force-restart the focused task: cancel and re-dispatch.
+	if key == "R" {
+		if id, ok := a.focusedTaskID(); ok {
+			return a, a.restartTaskCmd(id)
 		}
 		return a, nil
 	}
@@ -563,6 +575,54 @@ func (a *App) focusedTaskURL() (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// focusedTaskID returns the task ID the user is currently focused on.
+func (a *App) focusedTaskID() (string, bool) {
+	switch a.model.ActiveTab() {
+	case "Tasks":
+		t := a.model.tasksTab
+		if t == nil {
+			return "", false
+		}
+		if t.View == TaskViewDetail && t.Detail != nil {
+			return t.Detail.TaskID, true
+		}
+		if t.SelectedIdx >= 0 && t.SelectedIdx < len(t.History) {
+			return t.History[t.SelectedIdx].TaskID, true
+		}
+	case "Agents":
+		ag := a.model.agentsTab
+		if ag == nil {
+			return "", false
+		}
+		if ag.View == AgentViewActivity || ag.View == AgentViewTaskLogs {
+			if ag.ActivityIdx >= 0 && ag.ActivityIdx < len(ag.Activity) {
+				return ag.Activity[ag.ActivityIdx].TaskID, true
+			}
+		}
+	}
+	return "", false
+}
+
+// restartTaskCmd sends a force-restart request to the daemon via the IPC socket.
+func (a *App) restartTaskCmd(taskID string) tea.Cmd {
+	return func() tea.Msg {
+		socketPath := a.socketPath
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+			},
+		}
+		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+		url := fmt.Sprintf("http://apiary/restart/%s", taskID)
+		resp, err := client.Post(url, "application/json", nil)
+		if err != nil {
+			return nil
+		}
+		resp.Body.Close()
+		return nil
+	}
 }
 
 // openURLCmd opens a URL in the user's default browser without blocking the UI.
@@ -1573,7 +1633,7 @@ func (a *App) footerKeys() []fkey {
 		if t := a.model.tasksTab; t != nil {
 			switch t.View {
 			case TaskViewDetail:
-				return []fkey{{"esc", "back"}, {"l", "logs"}, {"o", "open"}, {"r", "reload"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"l", "logs"}, {"o", "open"}, {"R", "restart"}, {"r", "reload"}, {"q", "quit"}}
 			case TaskViewLogs:
 				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"o", "open"}, {"q", "quit"}}
 			}

@@ -63,6 +63,7 @@ type Dispatcher struct {
 	active     atomic.Int32  // number of goroutines currently running
 	inFlight   sync.Map      // cell id → struct{}: prevents double-dispatch
 	activeRuns sync.Map      // run id → model.ActiveRun
+	runCancel  sync.Map      // cell id → context.CancelFunc: cancel running dispatch
 	retryQueue sync.Map      // cell id → retryQueueEntry: cells pending retry
 
 	stats  map[string]*sourceStat // source id → stats
@@ -402,6 +403,63 @@ func (d *Dispatcher) Status() StatusResponse {
 	return resp
 }
 
+// ForceRestart cancels a running dispatch for the given cell, removes it from
+// tracking maps, marks the execution as interrupted in the DB, and resets the
+// source state so the cell can be picked up on the next poll.
+func (d *Dispatcher) ForceRestart(ctx context.Context, cellID string) error {
+	// Cancel the running dispatch, if any
+	if val, ok := d.runCancel.LoadAndDelete(cellID); ok {
+		cancel := val.(context.CancelFunc)
+		cancel()
+	}
+
+	// Remove from in-flight tracking so the cell can be re-dispatched
+	d.inFlight.Delete(cellID)
+
+	// Remove from active runs
+	d.activeRuns.Range(func(key, val any) bool {
+		run := val.(model.ActiveRun)
+		if run.Cell.ID == cellID {
+			d.activeRuns.Delete(key)
+		}
+		return true
+	})
+
+	// Release one semaphore slot if the task was running
+	select {
+	case <-d.sem:
+		d.active.Add(-1)
+	default:
+	}
+
+	// Mark the running execution as interrupted in DB
+	if d.db != nil {
+		lastExec, err := d.db.GetLastExecution(ctx, cellID)
+		if err == nil && lastExec != nil && lastExec.Status == "running" {
+			now := time.Now()
+			lastExec.Status = "interrupted"
+			lastExec.CompletedAt = &now
+			lastExec.ErrorMsg = "force-restarted by user"
+			_ = d.db.UpdateExecution(ctx, lastExec)
+		}
+
+		// Reset task state so it can be re-dispatched
+		_ = d.db.UpdateTaskState(ctx, cellID, "pending")
+	}
+
+	// Reset the source state (set back to todo) so the next poll picks it up
+	for _, sc := range d.cfg.Sources {
+		if adapter, ok := d.sources[sc.ID]; ok {
+			if ss, ok := adapter.(source.StateSetter); ok {
+				_ = ss.SetState(ctx, model.Cell{ID: cellID}, "todo")
+			}
+		}
+	}
+
+	aplog.Info("force-restarted cell %s", cellID)
+	return nil
+}
+
 // StartServer starts an HTTP server on the Unix socket for IPC.
 // It removes any stale socket file before binding.
 func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error {
@@ -423,6 +481,18 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		_ = json.NewEncoder(w).Encode(d.Status())
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/restart/", func(w http.ResponseWriter, r *http.Request) {
+		cellID := strings.TrimPrefix(r.URL.Path, "/restart/")
+		if cellID == "" {
+			http.Error(w, "missing cell id", http.StatusBadRequest)
+			return
+		}
+		if err := d.ForceRestart(ctx, cellID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -641,7 +711,11 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, req.Timeout)
-	defer cancel()
+	d.runCancel.Store(cell.ID, cancel)
+	defer func() {
+		cancel()
+		d.runCancel.Delete(cell.ID)
+	}()
 
 	// Track execution attempt in database
 	var exec *db.Execution
