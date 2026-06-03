@@ -41,14 +41,15 @@ type Runner struct {
 	subscription Subscription
 
 	// CLI mode fields
-	binary     string
-	agent      string
-	modelFlag  string
-	promptFlag string
-	turnsFlag  string
-	agentFlag  string
-	skillFlag  string
-	extraArgs  []string
+	binary      string
+	agent       string
+	modelFlag   string
+	promptFlag  string
+	turnsFlag   string
+	agentFlag   string
+	skillFlag   string
+	workingDir  string
+	extraArgs   []string
 
 	// API mode fields
 	apiKey     string
@@ -126,6 +127,10 @@ func (r *Runner) configureCLI(config map[string]any) error {
 		r.skillFlag = "--skill"
 	}
 
+	if v, ok := config["working_dir"].(string); ok {
+		r.workingDir = v
+	}
+
 	if raw, ok := config["extra_args"].([]any); ok {
 		for _, a := range raw {
 			if s, ok := a.(string); ok {
@@ -187,8 +192,15 @@ func (r *Runner) runCLI(ctx context.Context, req model.RunRequest) (model.RunRes
 		argv = append(argv, r.promptFlag, prompt)
 	}
 
+	// When no prompt flag is configured, append the prompt as a positional
+	// argument (for commands like `opencode run "task"` rather than stdin).
+	if r.promptFlag == "" {
+		argv = append(argv, prompt)
+	}
+
 	cmd := exec.CommandContext(ctx, r.binary, argv...)
 	cmd.Dir = req.WorkingDir
+
 	cmd.Env = os.Environ()
 	for k, v := range req.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
