@@ -999,8 +999,57 @@ func (d *Dispatcher) writeOpencodeAgent(ctx context.Context, ac config.AgentConf
 		return fmt.Errorf("write agent file: %w", err)
 	}
 
+	// Also register the agent in opencode.json so opencode run discovers it.
+	if err := d.registerAgentInConfig(workDir, ac, agentPath); err != nil {
+		aplog.Warn("agent %s: register in opencode.json: %v", ac.ID, err)
+	}
+
 	aplog.Debug("wrote opencode agent %s → %s", ac.ID, agentPath)
 	return nil
+}
+
+// registerAgentInConfig adds or updates the agent entry in opencode.json so
+// opencode run --agent <id> can find it.
+func (d *Dispatcher) registerAgentInConfig(workDir string, ac config.AgentConfig, agentPath string) error {
+	configPath := filepath.Join(workDir, "opencode.json")
+
+	// Read existing config or start fresh
+	data, _ := os.ReadFile(configPath)
+	cfg := make(map[string]any)
+	if len(data) > 0 {
+		_ = json.Unmarshal(data, &cfg)
+	}
+
+	// Build the agent entry with a relative reference to the markdown file
+	relPath, _ := filepath.Rel(workDir, agentPath)
+	agentEntry := map[string]any{
+		"description": ac.Description,
+		"mode":        "primary",
+		"prompt":      "{file:./" + relPath + "}",
+		"permission": map[string]any{
+			"edit":  "allow",
+			"bash":  "allow",
+			"read":  "allow",
+			"glob":  "allow",
+			"grep":  "allow",
+			"task":  "allow",
+		},
+	}
+
+	// Merge into the agents map
+	agents, _ := cfg["agent"].(map[string]any)
+	if agents == nil {
+		agents = make(map[string]any)
+	}
+	agents[ac.ID] = agentEntry
+	cfg["agent"] = agents
+
+	// Write back with indentation
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, raw, 0644)
 }
 
 func workerRunConfig(wc config.WorkerConfig) map[string]any {
