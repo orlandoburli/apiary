@@ -144,8 +144,8 @@ func TestToCell_MapsFields(t *testing.T) {
 	if len(cell.Labels) != 2 {
 		t.Errorf("Labels len = %d, want 2", len(cell.Labels))
 	}
-	if !strings.Contains(cell.URL, "42") {
-		t.Errorf("URL %q should contain sequence id 42", cell.URL)
+	if !strings.Contains(cell.URL, "item-uuid") {
+		t.Errorf("URL %q should contain issue uuid", cell.URL)
 	}
 	if cell.CreatedAt.IsZero() {
 		t.Error("CreatedAt should not be zero")
