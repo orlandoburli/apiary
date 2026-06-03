@@ -713,7 +713,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		SystemAppend: systemAppend,
 		WorkingDir:   "/",
 		Env:          map[string]string{},
-		Timeout:      45 * time.Minute,
+		Timeout:      d.cfg.Settings.TaskTimeoutDuration(),
 	}
 
 	// Stream the runner's live output (prompt, agent conversation, stderr)
