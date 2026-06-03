@@ -151,8 +151,20 @@ type Settings struct {
 	LogLevel      string      `yaml:"log_level"`
 	StateLock     bool        `yaml:"state_lock"`
 	ResultComment bool        `yaml:"result_comment"`
+	TaskTimeout   string      `yaml:"task_timeout"`
 	RetryPolicy   RetryPolicy `yaml:"retry_policy"`
 	Telemetry     Telemetry   `yaml:"telemetry"`
+}
+
+func (s *Settings) TaskTimeoutDuration() time.Duration {
+	if s.TaskTimeout == "" {
+		return 120 * time.Minute
+	}
+	d, err := time.ParseDuration(s.TaskTimeout)
+	if err != nil {
+		return 120 * time.Minute
+	}
+	return d
 }
 
 type Telemetry struct {
