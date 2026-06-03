@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -164,6 +165,14 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		d.agentRunner[ac.ID] = rc.Type
 
 		aplog.Info("loaded agent %s: runner=%s type=%s preferred_models=%v", ac.ID, runnerID, rc.Type, ac.PreferredModels)
+
+		// If this agent uses the opencode runner, write its agent config so
+		// opencode can load it with the right skills, soul, and permissions.
+		if rc.Type == "opencode" {
+			if err := d.writeOpencodeAgent(ctx, ac, rc); err != nil {
+				aplog.Warn("agent %s: write opencode agent config: %v", ac.ID, err)
+			}
+		}
 	}
 
 	// Keep legacy worker support for backward compatibility during transition
@@ -934,6 +943,64 @@ func (d *Dispatcher) nextRunID() string {
 	defer d.mu.Unlock()
 	d.runSeq++
 	return fmt.Sprintf("run-%04d", d.runSeq)
+}
+
+// writeOpencodeAgent writes a markdown agent file for opencode so it can load
+// the agent with the right skills, soul prompt, and permissions. The file is
+// written to <working_dir>/.opencode/agents/<agent-id>.md.
+func (d *Dispatcher) writeOpencodeAgent(ctx context.Context, ac config.AgentConfig, rc *config.RunnerConfig) error {
+	workDir, _ := rc.Config["working_dir"].(string)
+	if workDir == "" {
+		return nil
+	}
+
+	agentDir := filepath.Join(workDir, ".opencode", "agents")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		return fmt.Errorf("create agent dir: %w", err)
+	}
+
+	// Read the soul file for the agent prompt body
+	var promptBody string
+	if ac.SoulFile != "" {
+		fullPath := ac.SoulFile
+		if !filepath.IsAbs(fullPath) {
+			fullPath = filepath.Join(filepath.Dir(d.configFile), fullPath)
+		}
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			aplog.Warn("agent %s: read soul file %q: %v", ac.ID, ac.SoulFile, err)
+		} else {
+			promptBody = strings.TrimSpace(string(data))
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("---\n")
+	b.WriteString(fmt.Sprintf("description: %s\n", ac.Description))
+	b.WriteString("mode: primary\n")
+	b.WriteString("permission:\n")
+	b.WriteString("  edit: allow\n")
+	b.WriteString("  bash: allow\n")
+	b.WriteString("  read: allow\n")
+	b.WriteString("  glob: allow\n")
+	b.WriteString("  grep: allow\n")
+	b.WriteString("  webfetch: allow\n")
+	b.WriteString("  task: allow\n")
+	b.WriteString("---\n")
+
+	if promptBody != "" {
+		b.WriteString("\n")
+		b.WriteString(promptBody)
+		b.WriteString("\n")
+	}
+
+	agentPath := filepath.Join(agentDir, ac.ID+".md")
+	if err := os.WriteFile(agentPath, []byte(b.String()), 0644); err != nil {
+		return fmt.Errorf("write agent file: %w", err)
+	}
+
+	aplog.Debug("wrote opencode agent %s → %s", ac.ID, agentPath)
+	return nil
 }
 
 func workerRunConfig(wc config.WorkerConfig) map[string]any {
