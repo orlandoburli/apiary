@@ -57,6 +57,7 @@ type taskDetailMsg struct {
 type taskLogsMsg struct {
 	taskID string
 	logs   []LogEntry
+	detail *TaskItem
 }
 type agentsDataMsg struct{ agents []AgentStatus }
 type agentActivityMsg struct {
@@ -125,6 +126,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case taskLogsMsg:
 		if a.model.tasksTab != nil {
 			a.model.tasksTab.Logs = msg.logs
+			a.model.tasksTab.Detail = msg.detail
 			a.model.tasksTab.LogScroll = 0
 			a.model.tasksTab.View = TaskViewLogs
 		}
@@ -752,8 +754,26 @@ func (a *App) fetchTaskLogs(taskID string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 		defer cancel()
 
+		var detail *TaskItem
 		logs := make([]LogEntry, 0)
 		if dbConn != nil {
+			if r, err := dbConn.GetTaskDetail(ctx, taskID); err == nil && r != nil {
+				detail = &TaskItem{
+					TaskID:      r.TaskID,
+					Number:      r.Number,
+					URL:         r.URL,
+					Title:       r.Title,
+					Agent:       r.AgentID,
+					Model:       r.Model,
+					Runner:      r.Runner,
+					Status:      r.Status,
+					Attempt:     r.Attempt,
+					Duration:    time.Duration(r.DurationMs) * time.Millisecond,
+					StartedAt:   r.StartedAt,
+					CompletedAt: r.CompletedAt,
+					Error:       r.Error,
+				}
+			}
 			if rows, err := dbConn.GetTaskLogs(ctx, taskID, 5000); err == nil {
 				for _, l := range rows {
 					logs = append(logs, LogEntry{
@@ -764,7 +784,7 @@ func (a *App) fetchTaskLogs(taskID string) tea.Cmd {
 				}
 			}
 		}
-		return taskLogsMsg{taskID: taskID, logs: logs}
+		return taskLogsMsg{taskID: taskID, logs: logs, detail: detail}
 	}
 }
 
