@@ -180,8 +180,14 @@ func (r *Runner) runCLI(ctx context.Context, req model.RunRequest) (model.RunRes
 	argv := []string{}
 	argv = append(argv, r.extraArgs...)
 
-	if r.agentFlag != "" && r.agent != "" {
-		argv = append(argv, r.agentFlag, r.agent)
+	if r.agentFlag != "" {
+		agent := r.agent
+		if agent == "" {
+			agent = req.WorkerID
+		}
+		if agent != "" {
+			argv = append(argv, r.agentFlag, agent)
+		}
 	}
 	if r.modelFlag != "" && req.Model != "" {
 		argv = append(argv, r.modelFlag, req.Model)
