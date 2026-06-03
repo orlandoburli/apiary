@@ -67,6 +67,7 @@ type agentActivityMsg struct {
 type agentTaskLogsMsg struct {
 	taskID string
 	logs   []LogEntry
+	detail *TaskItem
 }
 type logsDataMsg struct{ logs []LogEntry }
 
@@ -153,6 +154,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentTaskLogsMsg:
 		if a.model.agentsTab != nil {
 			a.model.agentsTab.LogsTaskID = msg.taskID
+			a.model.agentsTab.LogsTask = msg.detail
 			a.model.agentsTab.TaskLogs = msg.logs
 			a.model.agentsTab.TaskLogIdx = 0
 			a.model.agentsTab.View = AgentViewTaskLogs
@@ -702,8 +704,26 @@ func (a *App) fetchAgentTaskLogs(taskID string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 		defer cancel()
 
+		var detail *TaskItem
 		logs := make([]LogEntry, 0)
 		if dbConn != nil {
+			if r, err := dbConn.GetTaskDetail(ctx, taskID); err == nil && r != nil {
+				detail = &TaskItem{
+					TaskID:      r.TaskID,
+					Number:      r.Number,
+					URL:         r.URL,
+					Title:       r.Title,
+					Agent:       r.AgentID,
+					Model:       r.Model,
+					Runner:      r.Runner,
+					Status:      r.Status,
+					Attempt:     r.Attempt,
+					Duration:    time.Duration(r.DurationMs) * time.Millisecond,
+					StartedAt:   r.StartedAt,
+					CompletedAt: r.CompletedAt,
+					Error:       r.Error,
+				}
+			}
 			if rows, err := dbConn.GetTaskLogs(ctx, taskID, 5000); err == nil {
 				for _, l := range rows {
 					logs = append(logs, LogEntry{
@@ -714,7 +734,7 @@ func (a *App) fetchAgentTaskLogs(taskID string) tea.Cmd {
 				}
 			}
 		}
-		return agentTaskLogsMsg{taskID: taskID, logs: logs}
+		return agentTaskLogsMsg{taskID: taskID, logs: logs, detail: detail}
 	}
 }
 
@@ -1386,6 +1406,9 @@ func (a *App) renderAgentActivity(ag *AgentsTab, height int) string {
 // agent's activity list — the same view the Tasks tab offers.
 func (a *App) renderAgentTaskLogs(ag *AgentsTab, height int) string {
 	title := "TASK LOGS — " + valueOr(ag.LogsTaskID, "")
+	if ag.LogsTask != nil {
+		title = taskDetailLabel(ag.LogsTask)
+	}
 	if len(ag.TaskLogs) == 0 {
 		return a.box(title, StyleMuted.Render("No logs recorded for this task.")+"\n", height)
 	}
