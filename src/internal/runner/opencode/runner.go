@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -192,14 +193,23 @@ func (r *Runner) runCLI(ctx context.Context, req model.RunRequest) (model.RunRes
 		argv = append(argv, r.promptFlag, prompt)
 	}
 
-	// When no prompt flag is configured, append the prompt as a positional
-	// argument (for commands like `opencode run "task"` rather than stdin).
+	// When no prompt flag is configured, write the prompt to a temp file and
+	// pass it via --file, then pass an empty message so the file is read.
 	if r.promptFlag == "" {
-		argv = append(argv, prompt)
+		tmpDir := filepath.Join(os.TempDir(), "apiary-opencode")
+		_ = os.MkdirAll(tmpDir, 0700)
+		tmpFile := filepath.Join(tmpDir, "prompt-"+req.Cell.ID+".md")
+		if err := os.WriteFile(tmpFile, []byte(prompt), 0600); err == nil {
+			argv = append(argv, "--file", tmpFile)
+		}
+		argv = append(argv, ".")
 	}
 
 	cmd := exec.CommandContext(ctx, r.binary, argv...)
-	cmd.Dir = req.WorkingDir
+	cmd.Dir = r.workingDir
+	if cmd.Dir == "" {
+		cmd.Dir = req.WorkingDir
+	}
 
 	cmd.Env = os.Environ()
 	for k, v := range req.Env {
