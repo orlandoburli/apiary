@@ -395,7 +395,7 @@ func (a *Adapter) toCell(item workItem) model.Cell {
 		Labels:      labels,
 		Priority:    item.Priority,
 		State:       a.stateIDToName[item.State],
-		URL:         fmt.Sprintf("%s/%s/projects/%s/work-items/%d/", a.webBaseURL, a.workspace, a.project, item.SequenceID),
+		URL:         fmt.Sprintf("%s/%s/projects/%s/issues/%s/", a.webBaseURL, a.workspace, a.project, item.ID),
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 	}
