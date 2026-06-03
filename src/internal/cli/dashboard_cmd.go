@@ -7,6 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/orlandoburli/apiary/internal/config"
+	"github.com/orlandoburli/apiary/internal/daemon"
 	"github.com/orlandoburli/apiary/internal/dashboard"
 	"github.com/orlandoburli/apiary/internal/db"
 )
@@ -37,7 +39,8 @@ func runDashboard(ctx context.Context) error {
 	}
 	defer dbConn.Close()
 
-	app := dashboard.New(dbConn)
+	socketPath := daemon.SocketPath(config.DataDir(configFile))
+	app := dashboard.New(dbConn, socketPath)
 	if err := app.Run(); err != nil {
 		return fmt.Errorf("dashboard error: %w", err)
 	}
