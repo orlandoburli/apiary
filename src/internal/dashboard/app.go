@@ -1007,7 +1007,47 @@ func (a *App) View() string {
 		content = a.box("UNKNOWN", "Unknown tab\n", contentHeight)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, tabs, content, footer)
+	view := lipgloss.JoinVertical(lipgloss.Left, tabs, content, footer)
+	if a.model.confirmAction != "" {
+		view = a.renderConfirmModal(view)
+	}
+	return view
+}
+
+func (a *App) renderConfirmModal(view string) string {
+	label := "Restart task"
+	msg := "Are you sure you want to restart this task?"
+	if a.model.confirmAction == "clear" {
+		label = "Clear logs"
+		msg = "Are you sure you want to clear all logs for this task?"
+	}
+
+	dialog := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorWarning).
+		Padding(1, 3).
+		Width(44).
+		Render(
+			lipgloss.JoinVertical(lipgloss.Center,
+				StyleBoxTitle.Render(" "+label+" "),
+				"",
+				msg,
+				"",
+				lipgloss.JoinHorizontal(lipgloss.Center,
+					StyleFooterKey.Render(" y ")+" "+StyleFooterLbl.Render("yes")+"  "+
+						StyleFooterKey.Render(" n ")+" "+StyleFooterLbl.Render("no"),
+				),
+			),
+		)
+
+	dialogHeight := lipgloss.Height(dialog)
+	topPad := (a.model.height - dialogHeight) / 2
+	if topPad < 0 {
+		topPad = 0
+	}
+
+	return strings.Repeat("\n", topPad) +
+		lipgloss.NewStyle().Width(a.model.width).Align(lipgloss.Center).Render(dialog)
 }
 
 func (a *App) renderTabs() string {
@@ -1679,15 +1719,7 @@ func (a *App) renderFooter() string {
 type fkey struct{ k, d string }
 
 // footerKeys returns the navigation hints for the current tab + sub-view.
-// When a confirmation is pending it returns a single confirm/deny hint instead.
 func (a *App) footerKeys() []fkey {
-	if a.model.confirmAction != "" {
-		label := "restart this task"
-		if a.model.confirmAction == "clear" {
-			label = "clear logs for this task"
-		}
-		return []fkey{{"y", label}, {"n", "cancel"}}
-	}
 	switch a.model.ActiveTab() {
 	case "Tasks":
 		if t := a.model.tasksTab; t != nil {
