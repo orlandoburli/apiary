@@ -200,15 +200,17 @@ func (r *Runner) runCLI(ctx context.Context, req model.RunRequest) (model.RunRes
 	}
 
 	// When no prompt flag is configured, write the prompt to a temp file and
-	// pass it via --file, then pass an empty message so the file is read.
+	// pass it via --file. The message comes before --file so it's not consumed
+	// by the array-type --file flag.
 	if r.promptFlag == "" {
 		tmpDir := filepath.Join(os.TempDir(), "apiary-opencode")
 		_ = os.MkdirAll(tmpDir, 0700)
 		tmpFile := filepath.Join(tmpDir, "prompt-"+req.Cell.ID+".md")
 		if err := os.WriteFile(tmpFile, []byte(prompt), 0600); err == nil {
-			argv = append(argv, "--file", tmpFile)
+			argv = append(argv, ".", "--file", tmpFile)
+		} else {
+			argv = append(argv, prompt)
 		}
-		argv = append(argv, ".")
 	}
 
 	cmd := exec.CommandContext(ctx, r.binary, argv...)
