@@ -1050,6 +1050,7 @@ func (d *Dispatcher) registerAgentInConfig(workDir string, ac config.AgentConfig
 		"description": ac.Description,
 		"mode":        "primary",
 		"prompt":      "{file:./agents/" + ac.ID + ".md}",
+		"skills":      ac.Skills,
 		"permission": map[string]any{
 			"edit":  "allow",
 			"bash":  "allow",
