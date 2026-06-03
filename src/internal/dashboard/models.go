@@ -17,6 +17,9 @@ type Model struct {
 	lastRefresh    time.Time
 	lastTabRefresh map[int]time.Time // Track refresh per tab
 	loading        bool              // Show loading state
+
+	confirmAction string // "restart" or "clear" when awaiting confirmation
+	confirmTaskID string
 }
 
 // OverviewTab shows dispatcher status and summary metrics.

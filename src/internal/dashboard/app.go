@@ -192,18 +192,43 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	// Force-restart the focused task: cancel and re-dispatch.
+	// Handle confirmation prompts.
+	if a.model.confirmAction != "" {
+		switch key {
+		case "y", "Y":
+			action := a.model.confirmAction
+			id := a.model.confirmTaskID
+			a.model.confirmAction = ""
+			a.model.confirmTaskID = ""
+			switch action {
+			case "restart":
+				return a, a.restartTaskCmd(id)
+			case "clear":
+				return a, a.clearLogsCmd(id)
+			}
+		default:
+			a.model.confirmAction = ""
+			a.model.confirmTaskID = ""
+		}
+		return a, nil
+	}
+
+	// Force-restart the focused task: cancel and re-dispatch (Shift+R).
 	if key == "R" {
 		if id, ok := a.focusedTaskID(); ok {
-			return a, a.restartTaskCmd(id)
+			a.model.confirmAction = "restart"
+			a.model.confirmTaskID = id
+			return a, nil
 		}
 		return a, nil
 	}
 
 	// Clear logs for the focused task.
-	if key == "C" {
+	if key == "c" || key == "C" {
 		if id, ok := a.focusedTaskID(); ok {
-			return a, a.clearLogsCmd(id)
+			a.model.confirmAction = "clear"
+			a.model.confirmTaskID = id
+			return a, nil
 		}
 		return a, nil
 	}
@@ -1654,7 +1679,15 @@ func (a *App) renderFooter() string {
 type fkey struct{ k, d string }
 
 // footerKeys returns the navigation hints for the current tab + sub-view.
+// When a confirmation is pending it returns a single confirm/deny hint instead.
 func (a *App) footerKeys() []fkey {
+	if a.model.confirmAction != "" {
+		label := "restart this task"
+		if a.model.confirmAction == "clear" {
+			label = "clear logs for this task"
+		}
+		return []fkey{{"y", label}, {"n", "cancel"}}
+	}
 	switch a.model.ActiveTab() {
 	case "Tasks":
 		if t := a.model.tasksTab; t != nil {
@@ -1665,7 +1698,7 @@ func (a *App) footerKeys() []fkey {
 				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"o", "open"}, {"C", "clear"}, {"q", "quit"}}
 			}
 		}
-		return []fkey{{"↑/↓", "select"}, {"enter/l", "logs"}, {"d", "details"}, {"o", "open"}, {"tab", "switch"}, {"q", "quit"}}
+		return []fkey{{"↑/↓", "select"}, {"enter/l", "logs"}, {"d", "details"}, {"o", "open"}, {"R", "restart"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
 	case "Agents":
 		if ag := a.model.agentsTab; ag != nil {
 			switch ag.View {
