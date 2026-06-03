@@ -1064,12 +1064,33 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 		b.WriteString("  " + StyleError.Render("Error:") + "\n")
 		b.WriteString("  " + StyleError.Render(truncate(d.Error, a.model.width-4)) + "\n")
 	}
-	return a.box("TASK DETAILS — "+valueOr(d.TaskID, ""), b.String(), height)
+	label := taskDetailLabel(d)
+	return a.box(label, b.String(), height)
+}
+
+func taskDetailLabel(d *TaskItem) string {
+	prefix := ""
+	if d.Number != "" {
+		prefix = d.Number + " "
+	}
+	title := strings.TrimSpace(d.Title)
+	const maxTitle = 60
+	if len(title) > maxTitle {
+		title = title[:maxTitle-1] + "…"
+	}
+	if title != "" {
+		return "TASK " + prefix + "— " + title
+	}
+	return "TASK " + prefix + "— " + d.TaskID
 }
 
 func (a *App) renderTaskLogs(t *TasksTab, height int) string {
 	if len(t.Logs) == 0 {
-		return a.box("TASK LOGS", StyleMuted.Render("No logs recorded for this task.")+"\n", height)
+		label := "TASK LOGS"
+		if t.Detail != nil {
+			label = taskDetailLabel(t.Detail)
+		}
+		return a.box(label, StyleMuted.Render("No logs recorded for this task.")+"\n", height)
 	}
 
 	lines := a.taskLogLines()
@@ -1094,7 +1115,11 @@ func (a *App) renderTaskLogs(t *TasksTab, height int) string {
 	for i := start; i < end; i++ {
 		b.WriteString(lines[i] + "\n")
 	}
-	return a.box("TASK LOGS", b.String(), height)
+	label := "TASK LOGS"
+	if t.Detail != nil {
+		label = taskDetailLabel(t.Detail)
+	}
+	return a.box(label, b.String(), height)
 }
 
 // taskLogLines expands the per-task log entries into fully-wrapped, styled
