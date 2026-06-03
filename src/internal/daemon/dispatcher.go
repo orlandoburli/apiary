@@ -716,12 +716,13 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		Timeout:      45 * time.Minute,
 	}
 
-	// Stream the runner's live output (prompt, claude conversation, stderr)
-	// into the per-task log so it shows up in the dashboard in real time.
-	// These are DEBUG entries — visible only when running with --debug.
+	// Stream the runner's live output (prompt, agent conversation, stderr)
+	// into the per-task log (dashboard) AND to the terminal so the user can
+	// watch the agent work in real time when running `apiary run`.
 	if d.logger != nil {
 		cellID := cell.ID
 		req.LogSink = func(e model.LogEntry) {
+			// Always write to DB for the dashboard
 			switch e.Level {
 			case "error":
 				d.logger.TaskError(ctx, cellID, e.Message)
@@ -730,6 +731,8 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 			default:
 				d.logger.TaskDebug(ctx, cellID, e.Message)
 			}
+			// Also print to terminal so the user sees live output
+			aplog.Info("[%s] %s", cellID, e.Message)
 		}
 	}
 
