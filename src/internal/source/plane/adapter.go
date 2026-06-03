@@ -9,6 +9,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -407,6 +408,8 @@ func (a *Adapter) toCell(item workItem) model.Cell {
 	return cell
 }
 
+var prURLRe = regexp.MustCompile(`https://github\.com/[^/\s]+/[^/\s]+/pull/\d+`)
+
 func formatComment(result model.RunResult) string {
 	var b strings.Builder
 	if result.Success {
@@ -416,6 +419,12 @@ func formatComment(result model.RunResult) string {
 	}
 	b.WriteString(fmt.Sprintf(" · worker: <code>%s</code>", html.EscapeString(result.WorkerID)))
 	b.WriteString(fmt.Sprintf(" · duration: %s</p>", result.Duration.Round(time.Second)))
+
+	if prURL := extractPRURL(result.Output); prURL != "" {
+		b.WriteString(fmt.Sprintf(`<p><strong>🔗 Pull Request:</strong> <a href="%s">%s</a></p>`,
+			html.EscapeString(prURL), html.EscapeString(prURL)))
+	}
+
 	if result.Output != "" {
 		b.WriteString("<pre>")
 		b.WriteString(html.EscapeString(result.Output))
@@ -427,6 +436,24 @@ func formatComment(result model.RunResult) string {
 		b.WriteString("</code></p>")
 	}
 	return b.String()
+}
+
+func extractPRURL(output string) string {
+	if output == "" {
+		return ""
+	}
+	match := prURLRe.FindString(output)
+	if match != "" {
+		return match
+	}
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "github.com") && strings.Contains(line, "/pull/") {
+			return line
+		}
+	}
+	return ""
 }
 
 func containsAny(haystack []string, needle string) bool {
