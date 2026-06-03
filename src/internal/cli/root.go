@@ -48,6 +48,7 @@ func init() {
 		newServiceCmd(),
 		newInitCmd(),
 		newVersionCmd(),
+		newRestartCmd(),
 	)
 }
 
