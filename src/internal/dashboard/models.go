@@ -93,6 +93,7 @@ type AgentsTab struct {
 
 	// Drill-down: logs of the task selected in the activity list.
 	LogsTaskID string
+	LogsTask   *TaskItem   // task detail for the logs header
 	TaskLogs   []LogEntry
 	TaskLogIdx int // vertical scroll within TaskLogs (visual lines)
 }
