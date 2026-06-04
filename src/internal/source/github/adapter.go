@@ -200,18 +200,6 @@ func (a *Adapter) ensureLabel(ctx context.Context, name string) error {
 	return nil
 }
 
-func (a *Adapter) SubmitReview(ctx context.Context, cell model.Cell, review source.PRReviewInput) error {
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%s/reviews", a.owner, a.repo, cell.ID)
-	_, err := a.client.post(ctx, path, reviewRequest{
-		Event: string(review.Event),
-		Body:  review.Body,
-	})
-	if err != nil {
-		return fmt.Errorf("github: submitting review on %s: %w", cell.ID, err)
-	}
-	return nil
-}
-
 func (a *Adapter) toCell(item issue) model.Cell {
 	labels := make([]string, 0, len(item.Labels))
 	for _, l := range item.Labels {
