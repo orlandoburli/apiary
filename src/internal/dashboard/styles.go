@@ -87,15 +87,12 @@ func StatusColor(status string) string {
 		return StyleSuccess.Render("●")
 	case "stale":
 		return StyleWarning.Render("◉")
-	case "zombie":
-		return "🧟"
-	case "failed", "error":
+	case "zombie", "failed", "error":
 		return StyleError.Render("●")
 	case "running":
 		return StyleWarning.Render("⟳")
-	case "idle":
-		return "💤"
-	case "pending":
+	case "idle", "pending":
+		return StyleMuted.Render("○")
 		return StyleMuted.Render("○")
 	default:
 		return StyleMuted.Render("?")
