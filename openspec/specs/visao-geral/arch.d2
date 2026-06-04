@@ -1,0 +1,43 @@
+vars: {
+  d2-config: {
+    sketch: true
+  }
+}
+
+direction: right
+
+title: Apiary Architecture
+
+sources: {
+  label: Source Adapters
+  shape: package
+  style.stroke: "#6366f1"
+
+  plane: Plane
+  jira: Jira
+  linear: Linear
+  gh: GitHub Issues
+}
+
+router: {
+  label: Router Engine
+  shape: diamond
+  style.stroke: "#8b5cf6"
+
+  rules: "Route Rules\n+ Priority Matching"
+  config: "Model Config\n(per worker)"
+
+  rules -> config: ""
+}
+
+runner: {
+  label: Runner Adapter
+  shape: hexagon
+  style.stroke: "#06b6d4"
+
+  opencode: opencode CLI
+  custom: Custom CLIs
+}
+
+sources -> router: "tasks (cells)"
+router -> runner: "matched worker + model"
