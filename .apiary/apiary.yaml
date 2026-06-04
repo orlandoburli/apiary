@@ -18,6 +18,9 @@ sources:
     type: github
     config:
       repo: orlandoburli-enterprise/project-erp
+      # Token permissions:
+      #   Classic PAT: scope `repo`
+      #   Fine-grained: `Issues` → Read & Write, `Metadata` → Read
       api_key: ${GITHUB_TOKEN}
     poll_interval: 60s
     filters:

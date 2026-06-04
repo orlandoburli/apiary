@@ -37,6 +37,13 @@ runners:
   #
   #   API mode:   calls the opencode HTTP API directly.
   #               Requires an API key from the respective subscription.
+  #
+  # ── Script runner ────────────────────────────────────────────────────────────
+  # Executes arbitrary shell commands. Injects APIARY_CELL_* env vars.
+  #   - id: my-script
+  #     type: script
+  #     config:
+  #       command: /bin/sh
 
   # OpenCode Go — CLI mode (uses the local opencode binary with Go subscription)
   - id: opencode-go-cli
@@ -100,10 +107,17 @@ sources:
     type: github
     config:
       repo: my-org/my-repo
+      # GitHub personal access token. Required for private repos.
+      #
+      # Classic PAT: scope `repo` (full control).
+      # Fine-grained PAT: `Issues` → Read & Write, `Metadata` → Read.
+      #
+      # Without a token: 60 req/h (public repos only).
       api_key: ${GITHUB_TOKEN}
       # base_url: https://api.github.com  # optional for GHES
     poll_interval: 120s
     filters:
+      states: [open]
       labels: [ai-ready]
 
 # ── Agents ─────────────────────────────────────────────────────────────────────
