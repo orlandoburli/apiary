@@ -122,6 +122,7 @@ type AgentStatus struct {
 	SoulFile        string
 	Description     string
 	Runners         []string // all available runner IDs for cycling
+	RunnerModels    []string // models declared on the current runner config
 }
 
 // LogsTab shows service logs with filtering.

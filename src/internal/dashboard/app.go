@@ -448,13 +448,24 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 			return a, a.fetchAgentActivity(id)
 		}
 	case "m":
-		// Rotate preferred models: next model becomes first (preferred).
-		if ag.View == AgentViewDetail && ag.Detail != nil && len(ag.Detail.PreferredModels) > 1 {
-			models := ag.Detail.PreferredModels
-			first := models[0]
-			copy(models, models[1:])
-			models[len(models)-1] = first
-			return a, a.updateAgentConfigCmd(ag.Detail.ID, models[0], "", 0)
+		// Cycle model: prefers runner.models list, falls back to preferred_models.
+		if ag.View == AgentViewDetail && ag.Detail != nil {
+			models := ag.Detail.RunnerModels
+			if len(models) < 2 {
+				models = ag.Detail.PreferredModels
+			}
+			if len(models) > 1 {
+				cur := ag.Detail.PreferredModels[0]
+				next := models[0]
+				for i, m := range models {
+					if m == cur && i+1 < len(models) {
+						next = models[i+1]
+						break
+					}
+				}
+				ag.Detail.PreferredModels = append([]string{next}, ag.Detail.PreferredModels...)
+				return a, a.updateAgentConfigCmd(ag.Detail.ID, next, "", 0)
+			}
 		}
 	case "w":
 		// Cycle max_workers in agent detail view: 1→2→3→4→5→1.
@@ -479,19 +490,36 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 					break
 				}
 			}
-			// Find a suitable model for the new runner: look for another agent
-			// that uses this runner and borrow its first preferred model.
+			// Find a suitable model for the new runner:
+			// 1. Use the runner's Models list if available
+			// 2. Fall back to another agent that uses this runner
 			newModel := ""
 			if a.cfg != nil {
-				for _, ac := range a.cfg.Agents {
-					if ac.Runner == next && len(ac.PreferredModels) > 0 {
-						newModel = ac.PreferredModels[0]
+				for _, rc := range a.cfg.Runners {
+					if rc.ID == next && len(rc.Models) > 0 {
+						newModel = rc.Models[0]
 						break
+					}
+				}
+				if newModel == "" {
+					for _, ac := range a.cfg.Agents {
+						if ac.Runner == next && len(ac.PreferredModels) > 0 {
+							newModel = ac.PreferredModels[0]
+							break
+						}
 					}
 				}
 			}
 			// Update the in-memory status for immediate display feedback.
 			ag.Detail.RunnerType = next
+			if a.cfg != nil {
+				for _, rc := range a.cfg.Runners {
+					if rc.ID == next {
+						ag.Detail.RunnerModels = rc.Models
+						break
+					}
+				}
+			}
 			if newModel != "" {
 				if len(ag.Detail.PreferredModels) == 0 || ag.Detail.PreferredModels[0] != newModel {
 					ag.Detail.PreferredModels = append([]string{newModel}, ag.Detail.PreferredModels...)
@@ -1078,10 +1106,13 @@ func (a *App) fetchAgents() tea.Cmd {
 						if s.MaxWorkers < 1 {
 							s.MaxWorkers = 1
 						}
-						// Collect all runner IDs for runtime switching
+						// Collect all runner IDs and models for the current runner
 						s.Runners = make([]string, 0, len(a.cfg.Runners))
 						for _, rc := range a.cfg.Runners {
 							s.Runners = append(s.Runners, rc.ID)
+							if rc.ID == s.RunnerType || (s.RunnerType == "" && rc.ID == a.cfg.DefaultRunner) {
+								s.RunnerModels = rc.Models
+							}
 						}
 					}
 					agents = append(agents, s)
