@@ -981,6 +981,27 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		}
 	}
 
+	// PR review: if the cell is a pull request and the agent output includes
+	// an APIARY-REVIEW directive, submit the review via the adapter.
+	if result.Success && cell.Type == "pull_request" {
+		if event, _, ok := parseReviewDirective(result.Output); ok {
+			if pr, ok := adapter.(source.PRReviewer); ok {
+				body := fmt.Sprintf("**Apiary review by %s:**\n\n%s", agentID, result.Output)
+				if err := pr.SubmitReview(ctx, cell, source.PRReviewInput{
+					Event: event,
+					Body:  body,
+				}); err != nil {
+					aplog.Error("cell %s: submit review: %v", cell.ID, err)
+				} else {
+					aplog.Info("cell %s: submitted review event=%s", cell.ID, event)
+					if d.logger != nil {
+						d.logger.TaskInfo(ctx, cell.ID, fmt.Sprintf("submitted PR review: %s", event))
+					}
+				}
+			}
+		}
+	}
+
 	return result
 }
 
@@ -990,6 +1011,15 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 //
 // anywhere in the agent's output (case-insensitive, one per line).
 var assignDirectiveRe = regexp.MustCompile(`(?im)^\s*APIARY-ASSIGN:\s*(.+?)\s*$`)
+
+// reviewDirectiveRe matches a PR review directive, e.g.
+//
+//	APIARY-REVIEW: approve
+//	APIARY-REVIEW: request-changes
+//	APIARY-REVIEW: comment
+//
+// The value must be one of: approve, request_changes, or comment.
+var reviewDirectiveRe = regexp.MustCompile(`(?im)^\s*APIARY-REVIEW:\s*(.+?)\s*$`)
 
 // parseAssignDirective extracts the chosen agent id from an agent's output.
 // The last directive wins. A leading "agent:" on the value is tolerated and
@@ -1005,6 +1035,25 @@ func parseAssignDirective(output string) (string, bool) {
 		return "", false
 	}
 	return val, true
+}
+
+// parseReviewDirective extracts the PR review decision from an agent's output.
+// The last directive wins. Valid values: approve, request_changes, comment.
+func parseReviewDirective(output string) (source.PRReviewEvent, string, bool) {
+	matches := reviewDirectiveRe.FindAllStringSubmatch(output, -1)
+	if len(matches) == 0 {
+		return "", "", false
+	}
+	val := strings.TrimSpace(strings.ToLower(matches[len(matches)-1][1]))
+	switch val {
+	case "approve":
+		return source.ReviewApprove, val, true
+	case "request-changes", "request_changes":
+		return source.ReviewRequestChanges, val, true
+	case "comment":
+		return source.ReviewComment, val, true
+	}
+	return "", "", false
 }
 
 // agentExists reports whether an agent id is defined in the config.

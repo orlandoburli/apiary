@@ -38,3 +38,8 @@ type labelListRequest struct {
 type labelCreateRequest struct {
 	Name string `json:"name"`
 }
+
+type reviewRequest struct {
+	Event string `json:"event"`
+	Body  string `json:"body"`
+}

@@ -94,9 +94,6 @@ func (a *Adapter) Poll(ctx context.Context, _ time.Time) ([]model.Cell, error) {
 
 	var cells []model.Cell
 	for _, item := range issues {
-		if item.PullRequest != nil {
-			continue
-		}
 		if !a.matchesFilters(item) {
 			continue
 		}
@@ -203,6 +200,18 @@ func (a *Adapter) ensureLabel(ctx context.Context, name string) error {
 	return nil
 }
 
+func (a *Adapter) SubmitReview(ctx context.Context, cell model.Cell, review source.PRReviewInput) error {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%s/reviews", a.owner, a.repo, cell.ID)
+	_, err := a.client.post(ctx, path, reviewRequest{
+		Event: string(review.Event),
+		Body:  review.Body,
+	})
+	if err != nil {
+		return fmt.Errorf("github: submitting review on %s: %w", cell.ID, err)
+	}
+	return nil
+}
+
 func (a *Adapter) toCell(item issue) model.Cell {
 	labels := make([]string, 0, len(item.Labels))
 	for _, l := range item.Labels {
@@ -211,6 +220,11 @@ func (a *Adapter) toCell(item issue) model.Cell {
 	createdAt, _ := time.Parse(time.RFC3339, item.CreatedAt)
 	updatedAt, _ := time.Parse(time.RFC3339, item.UpdatedAt)
 
+	cellType := "issue"
+	if item.PullRequest != nil {
+		cellType = "pull_request"
+	}
+
 	return model.Cell{
 		ID:          fmt.Sprintf("%d", item.Number),
 		SourceID:    a.ID(),
@@ -218,6 +232,7 @@ func (a *Adapter) toCell(item issue) model.Cell {
 		Title:       item.Title,
 		Description: item.Body,
 		Labels:      labels,
+		Type:        cellType,
 		State:       item.State,
 		URL:         item.HTMLURL,
 		CreatedAt:   createdAt,
