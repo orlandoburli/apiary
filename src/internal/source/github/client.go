@@ -14,6 +14,7 @@ import (
 	"time"
 
 	aplog "github.com/orlandoburli/apiary/internal/log"
+	"github.com/orlandoburli/apiary/internal/source"
 )
 
 const (
@@ -48,8 +49,12 @@ func (c *client) newRequest(ctx context.Context, method, path string, body []byt
 	if err != nil {
 		return nil, err
 	}
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	token := c.apiKey
+	if t, ok := ctx.Value(source.SourceTokenCtxKey).(string); ok && t != "" {
+		token = t
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	if body != nil {

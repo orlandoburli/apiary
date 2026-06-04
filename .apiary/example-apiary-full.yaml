@@ -142,6 +142,12 @@ agents:
     runner: claude-cli
     model: claude-sonnet-4-6
     skills: [git-workflow, gitnexus-codebase, e2e-before-pr]
+    # Per-agent source token and git identity. When set, write operations
+    # (comments, labels, state changes) use this GitHub account, and commits
+    # use these author details — each agent acts as its own identity.
+    source_token: ${GITHUB_TOKEN_REVIEWER}
+    source_email: reviewer@company.com
+    source_name: Reviewer Bot
 
   - id: qa
     description: "QA — validates implementation against acceptance criteria"
@@ -149,6 +155,8 @@ agents:
     runner: claude-cli
     model: claude-sonnet-4-6
     skills: [e2e-before-pr, changelog-contexto]
+    source_token: ${GITHUB_TOKEN_QA}
+    source_email: qa@company.com
 
   # === OpenCode-based agents ===
   - id: agent-go-cli

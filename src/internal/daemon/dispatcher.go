@@ -706,6 +706,13 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		return model.RunResult{Success: false}
 	}
 
+	// Inject per-agent source token so the adapter (e.g. GitHub) uses the
+	// agent's credentials for write operations (Acknowledge, WriteResult, etc).
+	// Poll still uses the source-level token.
+	if agent.SourceToken != "" {
+		ctx = context.WithValue(ctx, source.SourceTokenCtxKey, agent.SourceToken)
+	}
+
 	// Log the routing decision tree: why this cell landed on this agent, and
 	// which other routes were evaluated and rejected (DEBUG, per-task).
 	if d.logger != nil {
@@ -778,6 +785,17 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		WorkingDir:   "/",
 		Env:          map[string]string{},
 		Timeout:      d.cfg.Settings.TaskTimeoutDuration(),
+	}
+
+	// Set git author identity from agent config so commits use the agent's
+	// GitHub identity rather than a shared system user.
+	if agent.SourceName != "" {
+		req.Env["GIT_AUTHOR_NAME"] = agent.SourceName
+		req.Env["GIT_COMMITTER_NAME"] = agent.SourceName
+	}
+	if agent.SourceEmail != "" {
+		req.Env["GIT_AUTHOR_EMAIL"] = agent.SourceEmail
+		req.Env["GIT_COMMITTER_EMAIL"] = agent.SourceEmail
 	}
 
 	// Stream the runner's live output (prompt, agent conversation, stderr)
