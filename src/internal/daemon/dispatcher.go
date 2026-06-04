@@ -928,7 +928,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		}
 	}
 
-	if oc.SetState != "" {
+	if result.Success && oc.SetState != "" {
 		if ss, ok := adapter.(source.StateSetter); ok {
 			if err := ss.SetState(ctx, cell, oc.SetState); err != nil {
 				aplog.Error("cell %s: set_state: %v", cell.ID, err)
