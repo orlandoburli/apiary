@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -718,40 +719,64 @@ func (a *App) clearLogsCmd(taskID string) tea.Cmd {
 
 // updateAgentConfigCmd sends a PATCH /api/config/agent/{id} request to the
 // daemon via the IPC socket to hot-reload model, runner, or max_workers.
+// Falls back to direct file modification if the socket is unreachable.
 func (a *App) updateAgentConfigCmd(agentID, model, runner string, maxWorkers int) tea.Cmd {
 	return func() tea.Msg {
-		transport := &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", a.socketPath)
-			},
-		}
-		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-
-		body := map[string]any{}
-		if model != "" {
-			body["model"] = model
-		}
-		if runner != "" {
-			body["runner"] = runner
-		}
-		if maxWorkers > 0 {
-			body["max_workers"] = maxWorkers
-		}
-		payload, _ := json.Marshal(body)
-		url := fmt.Sprintf("http://apiary/api/config/agent/%s", agentID)
-
-		req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader(payload))
-		if err != nil {
+		// 1. Try socket
+		if err := a.patchAgentViaSocket(agentID, model, runner, maxWorkers); err == nil {
 			return nil
 		}
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil
+		// 2. Socket failed — try direct file modification
+		if a.cfg != nil {
+			diff := config.AgentDiff{ID: agentID, Model: model, Runner: runner, MaxWorkers: maxWorkers}
+			paths := []string{"apiary.yaml", ".apiary/apiary.yaml"}
+			for _, p := range paths {
+				if _, err := os.Stat(p); err == nil {
+					if applyErr := a.cfg.ApplyAgentDiff(p, diff); applyErr == nil {
+						return nil
+					}
+				}
+			}
 		}
-		resp.Body.Close()
 		return nil
 	}
+}
+
+func (a *App) patchAgentViaSocket(agentID, model, runner string, maxWorkers int) error {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", a.socketPath)
+		},
+	}
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+
+	body := map[string]any{}
+	if model != "" {
+		body["model"] = model
+	}
+	if runner != "" {
+		body["runner"] = runner
+	}
+	if maxWorkers > 0 {
+		body["max_workers"] = maxWorkers
+	}
+	payload, _ := json.Marshal(body)
+	url := fmt.Sprintf("http://apiary/api/config/agent/%s", agentID)
+
+	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("socket returned %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // openURLCmd opens a URL in the user's default browser without blocking the UI.
