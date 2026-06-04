@@ -1432,8 +1432,19 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 			num = StyleAccent.Render(num)
 		}
 		agent := pad(truncate(valueOr(it.Agent, "—"), agentW), agentW)
-		status := taskStatusBadge(it.Status) // already padded to width 8
-		when := StyleMuted.Render(taskWhen(it))
+		if selected {
+			agent = StyleSelectedRow.Render(agent)
+		}
+		status := taskStatusBadge(it.Status)
+		if selected {
+			status = StyleSelectedRow.Render(status)
+		}
+		when := taskWhen(it)
+		if selected {
+			when = StyleSelectedRow.Render(when)
+		} else {
+			when = StyleMuted.Render(when)
+		}
 		b.WriteString(cursor + " " + num + " " + titleText + " " + agent + " " + status + " " + when + "\n")
 	}
 	return a.box("TASKS", b.String(), height)
