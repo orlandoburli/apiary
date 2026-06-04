@@ -448,7 +448,7 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 			return a, a.fetchAgentActivity(id)
 		}
 	case "m":
-		// Cycle model: prefers runner.models list, falls back to preferred_models.
+		// Cycle single model: rotate through runner.models one at a time.
 		if ag.View == AgentViewDetail && ag.Detail != nil {
 			models := ag.Detail.RunnerModels
 			if len(models) < 2 {
@@ -463,8 +463,8 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 						break
 					}
 				}
-				ag.Detail.PreferredModels = append([]string{next}, ag.Detail.PreferredModels...)
-				return a, a.updateAgentConfigCmd(ag.Detail.ID, next, "", 0)
+				ag.Detail.PreferredModels = []string{next}
+				return a, a.updateAgentConfigCmd(ag.Detail.ID, "", "", 0, []string{next})
 			}
 		}
 	case "w":
@@ -476,7 +476,7 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 			}
 			next := current%5 + 1
 			ag.Detail.MaxWorkers = next
-			return a, a.updateAgentConfigCmd(ag.Detail.ID, "", "", next)
+			return a, a.updateAgentConfigCmd(ag.Detail.ID, "", "", next, nil)
 		}
 	case "r":
 		// Detail view: cycle runner (and auto-select matching model).
@@ -510,22 +510,21 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-			// Update the in-memory status for immediate display feedback.
-			ag.Detail.RunnerType = next
+			// Replace models with the new runner's models (don't mix runners).
+			runnerModels := []string{}
 			if a.cfg != nil {
 				for _, rc := range a.cfg.Runners {
 					if rc.ID == next {
+						runnerModels = rc.Models
 						ag.Detail.RunnerModels = rc.Models
 						break
 					}
 				}
 			}
 			if newModel != "" {
-				if len(ag.Detail.PreferredModels) == 0 || ag.Detail.PreferredModels[0] != newModel {
-					ag.Detail.PreferredModels = append([]string{newModel}, ag.Detail.PreferredModels...)
-				}
+				ag.Detail.PreferredModels = append([]string{newModel}, runnerModels...)
 			}
-			return a, a.updateAgentConfigCmd(ag.Detail.ID, newModel, next, 0)
+			return a, a.updateAgentConfigCmd(ag.Detail.ID, newModel, next, 0, nil)
 		}
 		if id, ok := a.selectedAgentID(); ok && ag.View == AgentViewActivity {
 			a.model.loading = true
@@ -765,22 +764,28 @@ func (a *App) clearLogsCmd(taskID string) tea.Cmd {
 // updateAgentConfigCmd sends a PATCH /api/config/agent/{id} request to the
 // daemon via the IPC socket to hot-reload model, runner, or max_workers.
 // Falls back to direct file modification if the socket is unreachable.
-func (a *App) updateAgentConfigCmd(agentID, model, runner string, maxWorkers int) tea.Cmd {
+// Always updates the local in-memory config so re-fetches reflect the change.
+func (a *App) updateAgentConfigCmd(agentID, model, runner string, maxWorkers int, replaceModels []string) tea.Cmd {
 	return func() tea.Msg {
-		// 1. Try socket
-		if err := a.patchAgentViaSocket(agentID, model, runner, maxWorkers); err == nil {
-			return nil
-		}
-		// 2. Socket failed — try direct file modification
+		diff := config.AgentDiff{ID: agentID, Model: model, Runner: runner, MaxWorkers: maxWorkers, ReplaceModels: replaceModels}
+
+		// 1. Try socket (dispatcher running)
+		socketOK := a.patchAgentViaSocket(agentID, model, runner, maxWorkers) == nil
+
+		// 2. Update local in-memory config (so re-fetches show the change)
 		if a.cfg != nil {
-			diff := config.AgentDiff{ID: agentID, Model: model, Runner: runner, MaxWorkers: maxWorkers}
-			paths := []string{"apiary.yaml", ".apiary/apiary.yaml"}
-			for _, p := range paths {
-				if _, err := os.Stat(p); err == nil {
-					if applyErr := a.cfg.ApplyAgentDiff(p, diff); applyErr == nil {
-						return nil
+			if !socketOK {
+				// Socket failed — persist directly to file
+				paths := []string{"apiary.yaml", ".apiary/apiary.yaml"}
+				for _, p := range paths {
+					if _, err := os.Stat(p); err == nil {
+						_ = a.cfg.ApplyAgentDiff(p, diff)
+						break
 					}
 				}
+			} else {
+				// Socket succeeded — still update local config in memory
+				a.cfg.ApplyAgentDiff("", diff)
 			}
 		}
 		return nil
