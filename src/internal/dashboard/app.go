@@ -148,6 +148,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.model.agentsTab.SelectedIdx >= len(msg.agents) {
 				a.model.agentsTab.SelectedIdx = 0
 			}
+			// Re-point detail pointer after refresh so changes persist.
+			if a.model.agentsTab.Detail != nil {
+				for i := range msg.agents {
+					if msg.agents[i].ID == a.model.agentsTab.Detail.ID {
+						a.model.agentsTab.Detail = &msg.agents[i]
+						break
+					}
+				}
+			}
 		}
 		a.model.loading = false
 		a.model.lastRefresh = time.Now()
