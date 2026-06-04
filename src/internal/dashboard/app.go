@@ -1422,19 +1422,23 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 	for i, it := range t.History {
 		selected := i == t.SelectedIdx
 		cursor := "  "
-		if selected {
-			cursor = StyleFocusedArrow.Render("▶") + " "
-		}
-		num := StyleAccent.Render(pad(truncate(valueOr(it.Number, "—"), numW), numW))
+		num := pad(truncate(valueOr(it.Number, "—"), numW), numW)
 		titleText := pad(truncate(valueOr(it.Title, it.TaskID), titleW), titleW)
 		agent := pad(truncate(valueOr(it.Agent, "—"), agentW), agentW)
 		status := taskStatusBadge(it.Status)
-		when := StyleMuted.Render(taskWhen(it))
-		line := cursor + " " + num + " " + titleText + " " + agent + " " + status + " " + when
+		when := taskWhen(it)
 		if selected {
-			line = StyleSelectedRow.Render(line)
+			cursor = StyleFocusedArrow.Render("▶") + " "
+			num = StyleSelectedRow.Render(num)
+			titleText = StyleSelectedRow.Render(titleText)
+			agent = StyleSelectedRow.Render(agent)
+			status = StyleSelectedRow.Render(status)
+			when = StyleSelectedRow.Render(when)
+		} else {
+			num = StyleAccent.Render(num)
+			when = StyleMuted.Render(when)
 		}
-		b.WriteString(line + "\n")
+		b.WriteString(cursor + " " + num + " " + titleText + " " + agent + " " + status + " " + when + "\n")
 	}
 	return a.box("TASKS", b.String(), height)
 }
@@ -1655,9 +1659,6 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 	for i, agent := range ag.Agents {
 		selected := i == ag.SelectedIdx
 		cursor := "  "
-		if selected {
-			cursor = StyleFocusedArrow.Render("▶") + " "
-		}
 		name := pad(truncate(valueOr(agent.ID, "—"), agentW), agentW)
 		workers := fmt.Sprintf("%d/%d", agent.RunningCount, agent.MaxWorkers)
 		if agent.MaxWorkers > 0 {
@@ -1673,11 +1674,16 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 		completed := padLeft(fmt.Sprintf("%d", agent.CompletedCount), completedW)
 		avg := padLeft(fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000), avgW)
 		success := padLeft(successRateStyled(agent.SuccessRate), successW)
-		line := cursor + " " + name + "    " + padLeft(workers, workersW) + " " + status + "  " + completed + avg + "  " + success
 		if selected {
-			line = StyleSelectedRow.Render(line)
+			cursor = StyleFocusedArrow.Render("▶") + " "
+			name = StyleSelectedRow.Render(name)
+			workers = StyleSelectedRow.Render(workers)
+			status = StyleSelectedRow.Render(status)
+			completed = StyleSelectedRow.Render(completed)
+			avg = StyleSelectedRow.Render(avg)
+			success = StyleSelectedRow.Render(success)
 		}
-		b.WriteString(line + "\n")
+		b.WriteString(cursor + " " + name + "    " + padLeft(workers, workersW) + " " + status + "  " + completed + avg + "  " + success + "\n")
 	}
 	return a.box("AGENTS", b.String(), height)
 }
@@ -1809,15 +1815,21 @@ func (a *App) renderAgentActivity(ag *AgentsTab, height int) string {
 		if it.Duration > 0 {
 			dur = it.Duration.Round(time.Second).String()
 		}
+		durStr := pad(dur, durW)
+		when := taskWhen(it)
 		cursor := "  "
 		if selected {
 			cursor = StyleFocusedArrow.Render("▶") + " "
 			num = StyleSelectedRow.Render(num)
 			title = StyleSelectedRow.Render(title)
+			status = StyleSelectedRow.Render(status)
+			durStr = StyleSelectedRow.Render(durStr)
+			when = StyleSelectedRow.Render(when)
 		} else {
 			num = StyleAccent.Render(num)
+			when = StyleMuted.Render(when)
 		}
-		b.WriteString(cursor + " " + num + " " + title + " " + status + " " + pad(dur, durW) + " " + StyleMuted.Render(taskWhen(it)) + "\n")
+		b.WriteString(cursor + " " + num + " " + title + " " + status + " " + durStr + " " + when + "\n")
 	}
 	return a.box("AGENT ACTIVITY — "+name, b.String(), height)
 }
