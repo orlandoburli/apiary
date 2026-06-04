@@ -1638,19 +1638,19 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 	const (
 		cursorW    = 2
 		workersW   = 8
-		statusW    = 9
-		completedW = 10
-		avgW       = 9
-		successW   = 7
+		statusW    = 11
+		completedW = 11
+		avgW       = 10
+		successW   = 8
 	)
 	inner := a.model.width - 2
-	agentW := inner - cursorW - workersW - statusW - completedW - avgW - successW - 6
+	agentW := inner - cursorW - workersW - statusW - completedW - avgW - successW - 7
 	if agentW < 12 {
 		agentW = 12
 	}
 
 	var b strings.Builder
-	header := pad("", cursorW) + " " + pad("AGENT", agentW) + " " + padLeft("WORKERS", workersW) + " " + pad("STATUS", statusW) + " " + padLeft("COMPLETED", completedW) + " " + padLeft("AVG", avgW) + " " + padLeft("SUCCESS", successW)
+	header := pad("", cursorW) + " " + pad("AGENT", agentW) + "  " + padLeft("WORKERS", workersW) + " " + pad("STATUS", statusW) + "  " + padLeft("COMPLETED", completedW) + " " + padLeft("AVG", avgW) + " " + padLeft("SUCCESS", successW)
 	b.WriteString(StyleTableHeader.Render(header) + "\n")
 	for i, agent := range ag.Agents {
 		selected := i == ag.SelectedIdx
@@ -1674,7 +1674,7 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 		completed := padLeft(fmt.Sprintf("%d", agent.CompletedCount), completedW)
 		avg := padLeft(fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000), avgW)
 		success := padLeft(successRateStyled(agent.SuccessRate), successW)
-		b.WriteString(cursor + " " + name + " " + padLeft(workers, workersW) + " " + status + " " + completed + " " + avg + " " + success + "\n")
+		b.WriteString(cursor + " " + name + "  " + padLeft(workers, workersW) + " " + status + "  " + completed + " " + avg + " " + success + "\n")
 	}
 	return a.box("AGENTS", b.String(), height)
 }
