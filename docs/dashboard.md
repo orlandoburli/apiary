@@ -42,16 +42,21 @@ like without affecting running tasks.
 
 The dashboard has four tabs along the top. Use the keyboard to move:
 
-| Key       | Action                          |
-|-----------|---------------------------------|
-| `←` / `→` | Switch between tabs             |
-| `Tab`     | Next tab                        |
-| `↑` / `↓` | Move the selection within a tab |
-| `r`       | Refresh now                     |
-| `q`       | Quit                            |
+| Key                          | Action                                            |
+|------------------------------|---------------------------------------------------|
+| `←` / `→`                   | Switch between tabs                               |
+| `Tab` / `Shift+Tab`         | Next / previous tab                               |
+| `↑` / `↓`                   | Move the selection or scroll within a tab         |
+| `Home` / `End`              | Jump to top / bottom                              |
+| `PgUp` / `PgDn`             | Page up / down                                    |
+| `Ctrl+U` / `Ctrl+D` / `Space` | Alternative page up / down                      |
+| `r`                          | Refresh now                                       |
+| `q` / `Ctrl+C`              | Quit                                              |
 
 The active tab refreshes on its own every couple of seconds. The footer shows
 how long ago the data was last loaded, so you always know how fresh it is.
+Contextual help in the footer shows which keys are available in the current
+view.
 
 ## The tabs
 
@@ -59,6 +64,10 @@ how long ago the data was last loaded, so you always know how fresh it is.
 
 Your at-a-glance health check. Use this tab to answer "is everything moving?"
 
+- **Status** — dispatcher health indicator (Healthy / Degraded / Unknown) with a live glyph.
+- **Uptime** — how long the dispatcher has been running.
+- **Concurrency** — worker pool size (configured in `apiary.yaml`).
+- **Active Agents** — agents that have processed work in the last hour.
 - **Running** — how many tasks are being worked on this instant.
 - **Queued** — tasks that failed and are waiting to be retried automatically.
 - **Completed / Failed** — how much work finished today, and how much didn't.
@@ -71,6 +80,8 @@ Counts like Completed, Failed, Success Rate and Avg Duration cover **today**
 (since midnight) and reset each day. Running and Queued are live right-now
 numbers.
 
+![Overview tab](screenshots/overview.png)
+
 ### Tasks
 
 A list of recent tasks — both running and already finished — newest first. Each
@@ -79,22 +90,41 @@ success / failed), and when it ran. Use `↑` / `↓` to move the `▶` marker.
 
 From the list you can drill into the selected task:
 
-| Key             | Opens                                              |
-|-----------------|----------------------------------------------------|
-| `d`             | **Details** — agent, model, runner, attempts, start/finish times, total duration, and the error message if it failed |
-| `Enter` or `l`  | **Logs** — the per-task log lines for that run     |
-| `o`             | **Open** the task in your browser (its source URL) |
-| `Esc`           | Back to the list                                   |
+| Key                    | Opens                                              |
+|------------------------|----------------------------------------------------|
+| `d`                    | **Details** — agent, model, runner, attempts, start/finish times, total duration, and the error message if it failed |
+| `Enter` or `l`         | **Logs** — the per-task log lines for that run     |
+| `o`                    | **Open** the task in your browser (its source URL) |
+| `R` (Shift+R)          | **Force restart** — cancel and re-dispatch the task (with confirmation) |
+| `C`                    | **Clear logs** — delete all logs for the task (with confirmation) |
+| `Esc` / `Backspace` / `h` / `←` | Back to the list                          |
 
 The `#` column shows each task's human reference (e.g. `ERP-42`) so you can
 match a row to the work item in Plane. Press `o` on any task — in the list, in
 Details, or drilled into from an agent — to open it directly in the browser.
 
-In the **Logs** view, `↑` / `↓` scroll through the lines. From either sub-view
-you can jump straight to the other (`d` ↔ `l`) or press `r` to reload it.
+In the **Logs** view, `↑` / `↓` scroll through the lines, `Home` / `End` jump
+to the top / bottom, and `PgUp` / `PgDn` (or `Ctrl+U` / `Ctrl+D` / `Space`)
+scroll a page at a time. From either sub-view you can jump straight to the
+other (`d` ↔ `l`) or press `r` to reload it.
 
 Running tasks show how long they've been going; finished tasks show when they
 completed. A task that was retried shows its attempt count in the Details view.
+
+![Tasks list](screenshots/tasks.png)
+![Task detail view](screenshots/tasks-detail.png)
+![Task logs view](screenshots/tasks-logs.png)
+
+#### Force restart and clear logs
+
+Pressing **`R`** (Shift+R) on a selected task shows a centered confirmation
+modal with a rounded border. Press `y` / `Y` to confirm or any other key to
+cancel. This sends a restart request to the daemon via Unix socket —
+the task's running dispatch is cancelled and its state is reset to `todo` for
+re-dispatch on the next cycle.
+
+Pressing **`C`** on a selected task works the same way — confirm with `y` / `Y`
+to delete the task's logs and execution records, or any other key to cancel.
 
 #### Watching the live conversation (debug mode)
 
@@ -141,13 +171,27 @@ Claude without those args) still streams — you just see its raw output instead
 
 ### Agents
 
-How each of your agents is performing over time. For every agent you'll see how
-many tasks it has completed, its average run time, and its overall success rate.
+How each of your agents is performing over time. For every agent you'll see its
+status (active / idle), completed task count, average run time, and overall
+success rate (color-coded).
 
 Use this tab to compare agents — to spot one that's failing more often than the
 others, or one that's much slower — so you can adjust which work you route to it.
 
 An agent shows up here once it has actually run at least one task.
+
+The Agents tab supports three levels of drill-down:
+
+| Key                    | Action                                                             |
+|------------------------|--------------------------------------------------------------------|
+| `d`                    | **Detail** — full per-agent stats: status, running count, current task, completed / succeeded / failed counts, queued count, success rate, average duration, last task timestamp |
+| `Enter` / `l`          | **Activity list** — all tasks handled by this agent (from activity: press `Enter` / `l` again to drill into that task's logs) |
+| `o`                    | **Open** the task's source URL in your browser (from activity or task logs) |
+| `Esc` / `Backspace` / `h` / `←` | Back one level (agent list → detail → activity → task logs)|
+| `Home` / `End`         | Jump to top / bottom in activity list or task logs                 |
+| `PgUp` / `PgDn`        | Page up / down in activity list or task logs                       |
+
+![Agents tab](screenshots/agents.png)
 
 ### Logs
 
@@ -159,8 +203,21 @@ bottom. Lines are color-coded so problems stand out:
 - **Blue** — informational
 - **Grey** — debug / verbose
 
-Use `↑` / `↓` to scroll back through recent activity. This is the first place to
-look when the Overview tab shows failures.
+Use `↑` / `↓` to scroll back through recent activity. `Home` / `End` jump to
+the start / end, and `PgUp` / `PgDn` (or `Ctrl+U` / `Ctrl+D` / `Space`) scroll
+a page at a time.
+
+| Key | Action                                              |
+|-----|-----------------------------------------------------|
+| `w` | **Toggle word wrap** — when on (default), long messages wrap. When off, `←` / `→` scroll horizontally by 8 columns |
+| `←` / `→` | **Horizontal scroll** — only when wrap is off  |
+| `r` | Refresh now                                         |
+
+The footer shows your scroll position (e.g. `line 42/150`) so you always know
+where you are. This is the first place to look when the Overview tab shows
+failures.
+
+![Logs tab](screenshots/logs.png)
 
 ## Troubleshooting
 
