@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -429,6 +430,10 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
 
+	// Auto-load .env from the config directory so env vars like
+	// ${GITHUB_TOKEN_ENGINEER} resolve without manual sourcing.
+	loadDotEnv(path)
+
 	raw := string(data)
 	expanded := expandEnv(raw)
 
@@ -465,4 +470,33 @@ func expandEnv(s string) string {
 	return os.Expand(s, func(key string) string {
 		return os.Getenv(strings.TrimSpace(key))
 	})
+}
+
+// loadDotEnv reads .env from the same directory as the config file and calls
+// os.Setenv for each entry. Lines starting with # are skipped.
+func loadDotEnv(configPath string) {
+	dir := filepath.Dir(configPath)
+	envPath := filepath.Join(dir, ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		if key != "" {
+			// Don't override already-set env vars (e.g. from shell export)
+			if os.Getenv(key) == "" {
+				_ = os.Setenv(key, val)
+			}
+		}
+	}
 }
