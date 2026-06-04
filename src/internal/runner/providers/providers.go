@@ -22,13 +22,8 @@ func init() {
 	}
 
 	runner.Register("claude-cli", cliFactory("claude", nil))
-	runner.Register("claude", cliFactory("claude", nil)) // backward compat
 
 	runner.Register("opencode-cli", cliFactory("opencode", map[string]any{
-		"prompt_flag": "--prompt",
-		"turns_flag":  "--max-turns",
-	}))
-	runner.Register("opencode", cliFactory("opencode", map[string]any{ // backward compat
 		"prompt_flag": "--prompt",
 		"turns_flag":  "--max-turns",
 	}))
