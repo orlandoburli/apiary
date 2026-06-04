@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
 )
 
@@ -33,14 +34,15 @@ type App struct {
 	model      *Model
 	dbConn     *db.Client
 	socketPath string
+	cfg        *config.Config
 }
 
-// New creates a new dashboard app backed by the given database client.
-func New(dbConn *db.Client, socketPath string) *App {
+func New(dbConn *db.Client, socketPath string, cfg *config.Config) *App {
 	return &App{
 		model:      NewModel(),
 		dbConn:     dbConn,
 		socketPath: socketPath,
+		cfg:        cfg,
 	}
 }
 
@@ -930,7 +932,7 @@ func (a *App) fetchAgents() tea.Cmd {
 		if dbConn != nil {
 			if rows, err := dbConn.GetAgentStats(ctx); err == nil {
 				for _, ag := range rows {
-					agents = append(agents, AgentStatus{
+					s := AgentStatus{
 						ID:              ag.ID,
 						Status:          ag.Status,
 						RunningCount:    ag.RunningCount,
@@ -943,7 +945,24 @@ func (a *App) fetchAgents() tea.Cmd {
 						PID:             ag.PID,
 						HeartbeatAt:     ag.HeartbeatAt,
 						HeartbeatCount:  ag.HeartbeatCount,
-					})
+					}
+					// Enrich from config
+					if a.cfg != nil {
+						for _, ac := range a.cfg.Agents {
+							if ac.ID == s.ID {
+								s.MaxWorkers = ac.MaxWorkers
+								s.RunnerType = ac.Runner
+								s.PreferredModels = ac.PreferredModels
+								s.SoulFile = ac.SoulFile
+								s.Description = ac.Description
+								break
+							}
+						}
+						if s.MaxWorkers < 1 {
+							s.MaxWorkers = 1
+						}
+					}
+					agents = append(agents, s)
 				}
 			}
 		}
@@ -1471,13 +1490,44 @@ func (a *App) renderAgentDetail(ag *AgentsTab, height int) string {
 		b.WriteString("  " + StyleLabel.Render(pad(k+":", 16)) + " " + v + "\n")
 	}
 	row("Agent", StyleValueStrong.Render(d.ID))
+	if d.Description != "" {
+		row("Description", d.Description)
+	}
 	row("Status", agentStatusText(d.Status))
+
+	busy := d.RunningCount
+	avail := d.MaxWorkers - busy
+	if avail < 0 {
+		avail = 0
+	}
+	row("Workers", fmt.Sprintf("%d/%d busy  (%d available)", busy, d.MaxWorkers, avail))
+
 	running := "0"
 	if d.RunningCount > 0 {
 		running = StyleWarning.Render(fmt.Sprintf("%d ⟳", d.RunningCount))
 	}
 	row("Running now", running)
 	row("Current task", valueOr(d.CurrentTask, "—"))
+
+	if d.RunnerType != "" {
+		row("Runner", d.RunnerType)
+	}
+	if len(d.PreferredModels) > 0 {
+		row("Models", strings.Join(d.PreferredModels, ", "))
+	}
+	if d.SoulFile != "" {
+		row("Soul file", d.SoulFile)
+	}
+	if d.PID > 0 {
+		row("PID", fmt.Sprintf("%d", d.PID))
+		hb := "—"
+		if d.HeartbeatAt != nil {
+			ago := time.Since(*d.HeartbeatAt).Round(time.Second)
+			hb = fmt.Sprintf("%s ago", ago)
+		}
+		row("Heartbeat", hb)
+	}
+
 	b.WriteString("\n")
 	row("Completed", StyleSuccess.Render(fmt.Sprintf("%d", completed)))
 	row("Succeeded", StyleSuccess.Render(fmt.Sprintf("%d ✓", succeeded)))

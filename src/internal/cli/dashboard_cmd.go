@@ -39,8 +39,13 @@ func runDashboard(ctx context.Context) error {
 	}
 	defer dbConn.Close()
 
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
 	socketPath := daemon.SocketPath(config.DataDir(configFile))
-	app := dashboard.New(dbConn, socketPath)
+	app := dashboard.New(dbConn, socketPath, cfg)
 	if err := app.Run(); err != nil {
 		return fmt.Errorf("dashboard error: %w", err)
 	}
