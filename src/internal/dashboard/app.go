@@ -1671,10 +1671,10 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 			}
 		}
 		status := pad(agentStatusText(agent.Status), statusW)
-		completed := pad(fmt.Sprintf("%d", agent.CompletedCount), completedW)
-		avg := pad(fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000), avgW)
-		success := successRateStyled(agent.SuccessRate)
-		b.WriteString(cursor + " " + name + " " + pad(workers, workersW) + " " + status + " " + completed + " " + avg + " " + success + "\n")
+		completed := padLeft(fmt.Sprintf("%d", agent.CompletedCount), completedW)
+		avg := padLeft(fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000), avgW)
+		success := padLeft(successRateStyled(agent.SuccessRate), successW)
+		b.WriteString(cursor + " " + name + " " + padLeft(workers, workersW) + " " + status + " " + completed + " " + avg + " " + success + "\n")
 	}
 	return a.box("AGENTS", b.String(), height)
 }
@@ -2083,6 +2083,14 @@ func pad(s string, width int) string {
 	gap := width - lipgloss.Width(s)
 	if gap > 0 {
 		return s + strings.Repeat(" ", gap)
+	}
+	return s
+}
+
+func padLeft(s string, width int) string {
+	gap := width - lipgloss.Width(s)
+	if gap > 0 {
+		return strings.Repeat(" ", gap) + s
 	}
 	return s
 }
