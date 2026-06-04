@@ -112,42 +112,42 @@ agents:
     description: "Investigator — analyzes and classifies tasks by complexity"
     soul_file: .apiary/souls/investigator.md
     runner: claude-cli
-    preferred_models: [claude-opus-4-8, claude-sonnet-4-6]
+    model: claude-opus-4-8
     skills: [gitnexus-codebase, changelog-contexto]
 
   - id: po
     description: "Product Owner — transforms business demands into specifications"
     soul_file: .apiary/souls/po.md
     runner: claude-cli
-    preferred_models: [claude-opus-4-8]
+    model: claude-opus-4-8
     skills: [gitnexus-codebase, changelog-contexto, delegate-to-agent]
 
   - id: staff
     description: "Staff Engineer — designs complex solutions and decomposes tasks"
     soul_file: .apiary/souls/staff.md
     runner: claude-cli
-    preferred_models: [claude-opus-4-8]
+    model: claude-opus-4-8
     skills: [gitnexus-codebase, git-workflow, changelog-contexto]
 
   - id: engineer
     description: "Engineer — implements tasks following project conventions"
     soul_file: .apiary/souls/engineer.md
     runner: claude-cli
-    preferred_models: [claude-sonnet-4-6, claude-haiku-4-5]
+    model: claude-sonnet-4-6
     skills: [git-workflow, e2e-before-pr, gitnexus-codebase, handler-error-logging, changelog-contexto]
 
   - id: reviewer
     description: "Reviewer — performs code review and quality checks"
     soul_file: .apiary/souls/reviewer.md
     runner: claude-cli
-    preferred_models: [claude-sonnet-4-6]
+    model: claude-sonnet-4-6
     skills: [git-workflow, gitnexus-codebase, e2e-before-pr]
 
   - id: qa
     description: "QA — validates implementation against acceptance criteria"
     soul_file: .apiary/souls/qa.md
     runner: claude-cli
-    preferred_models: [claude-sonnet-4-6, claude-haiku-4-5]
+    model: claude-sonnet-4-6
     skills: [e2e-before-pr, changelog-contexto]
 
   # === OpenCode-based agents ===
@@ -155,28 +155,28 @@ agents:
     description: "OpenCode Go — runs tasks via the opencode CLI"
     soul_file: .apiary/souls/engineer.md
     runner: opencode-go-cli
-    preferred_models: [opencode-go/deepseek-v4-flash, opencode-go/kimi-k2.5]
+    model: opencode-go/deepseek-v4-flash
     skills: [git-workflow, gitnexus-codebase]
 
   - id: agent-go-api
     description: "OpenCode Go — runs tasks via the Go API"
     soul_file: .apiary/souls/engineer.md
     runner: opencode-go-api
-    preferred_models: [opencode-go/deepseek-v4-pro, opencode-go/minimax-m3]
+    model: opencode-go/deepseek-v4-pro
     skills: [git-workflow, gitnexus-codebase]
 
   - id: agent-zen-cli
     description: "OpenCode Zen — runs tasks via the opencode CLI"
     soul_file: .apiary/souls/engineer.md
     runner: opencode-zen-cli
-    preferred_models: [opencode/gpt-5.5, opencode/claude-sonnet-4-6]
+    model: opencode/gpt-5.5
     skills: [git-workflow, gitnexus-codebase]
 
   - id: agent-zen-api
     description: "OpenCode Zen — runs tasks via the Zen API"
     soul_file: .apiary/souls/engineer.md
     runner: opencode-zen-api
-    preferred_models: [opencode/gpt-5.4, opencode/claude-opus-4.8]
+    model: opencode/gpt-5.4
     skills: [git-workflow, gitnexus-codebase]
 
 # ── Routes ─────────────────────────────────────────────────────────────────────

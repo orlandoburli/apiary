@@ -13,10 +13,7 @@ func TestValidate_Valid(t *testing.T) {
 			{ID: "src-1", Type: "plane"},
 		},
 		Agents: []config.AgentConfig{
-			{ID: "a-1", PreferredModels: []string{"claude-sonnet-4-6"}},
-		},
-		Workers: []config.WorkerConfig{
-			{ID: "w-1", Runner: "cli", Model: "openai/gpt-4o"},
+			{ID: "a-1", Model: "claude-sonnet-4-6"},
 		},
 		Routes: []config.RouteConfig{
 			{ID: "r-1", Priority: 1, Agent: "a-1",
@@ -92,7 +89,7 @@ func TestValidate_RouteReferencesUnknownAgent(t *testing.T) {
 		Version: "1",
 		Sources: []config.SourceConfig{{ID: "src-1", Type: "plane"}},
 		Agents: []config.AgentConfig{
-			{ID: "a-1", PreferredModels: []string{"claude-sonnet-4-6"}},
+			{ID: "a-1", Model: "claude-sonnet-4-6"},
 		},
 		Routes: []config.RouteConfig{
 			{ID: "r-1", Priority: 1, Agent: "nonexistent",

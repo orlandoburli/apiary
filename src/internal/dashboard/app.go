@@ -452,10 +452,10 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 		if ag.View == AgentViewDetail && ag.Detail != nil {
 			models := ag.Detail.RunnerModels
 			if len(models) < 2 {
-				models = ag.Detail.PreferredModels
+				models = []string{ag.Detail.Model}
 			}
 			if len(models) > 1 {
-				cur := ag.Detail.PreferredModels[0]
+				cur := ag.Detail.Model
 				next := models[0]
 				for i, m := range models {
 					if m == cur && i+1 < len(models) {
@@ -463,8 +463,8 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 						break
 					}
 				}
-				ag.Detail.PreferredModels = []string{next}
-				return a, a.updateAgentConfigCmd(ag.Detail.ID, "", "", 0, []string{next})
+				ag.Detail.Model = next
+				return a, a.updateAgentConfigCmd(ag.Detail.ID, next, "", 0)
 			}
 		}
 	case "w":
@@ -476,7 +476,7 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 			}
 			next := current%5 + 1
 			ag.Detail.MaxWorkers = next
-			return a, a.updateAgentConfigCmd(ag.Detail.ID, "", "", next, nil)
+			return a, a.updateAgentConfigCmd(ag.Detail.ID, "", "", next)
 		}
 	case "r":
 		// Detail view: cycle runner (and auto-select matching model).
@@ -503,28 +503,25 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 				}
 				if newModel == "" {
 					for _, ac := range a.cfg.Agents {
-						if ac.Runner == next && len(ac.PreferredModels) > 0 {
-							newModel = ac.PreferredModels[0]
+						if ac.Runner == next && ac.Model != "" {
+							newModel = ac.Model
 							break
 						}
 					}
 				}
 			}
-			// Replace models with the new runner's models (don't mix runners).
-			runnerModels := []string{}
 			if a.cfg != nil {
 				for _, rc := range a.cfg.Runners {
 					if rc.ID == next {
-						runnerModels = rc.Models
 						ag.Detail.RunnerModels = rc.Models
 						break
 					}
 				}
 			}
 			if newModel != "" {
-				ag.Detail.PreferredModels = append([]string{newModel}, runnerModels...)
+				ag.Detail.Model = newModel
 			}
-			return a, a.updateAgentConfigCmd(ag.Detail.ID, newModel, next, 0, nil)
+			return a, a.updateAgentConfigCmd(ag.Detail.ID, newModel, next, 0)
 		}
 		if id, ok := a.selectedAgentID(); ok && ag.View == AgentViewActivity {
 			a.model.loading = true
@@ -765,9 +762,9 @@ func (a *App) clearLogsCmd(taskID string) tea.Cmd {
 // daemon via the IPC socket to hot-reload model, runner, or max_workers.
 // Falls back to direct file modification if the socket is unreachable.
 // Always updates the local in-memory config so re-fetches reflect the change.
-func (a *App) updateAgentConfigCmd(agentID, model, runner string, maxWorkers int, replaceModels []string) tea.Cmd {
+func (a *App) updateAgentConfigCmd(agentID, model, runner string, maxWorkers int) tea.Cmd {
 	return func() tea.Msg {
-		diff := config.AgentDiff{ID: agentID, Model: model, Runner: runner, MaxWorkers: maxWorkers, ReplaceModels: replaceModels}
+		diff := config.AgentDiff{ID: agentID, Model: model, Runner: runner, MaxWorkers: maxWorkers}
 
 		// 1. Try socket (dispatcher running)
 		socketOK := a.patchAgentViaSocket(agentID, model, runner, maxWorkers) == nil
@@ -1102,7 +1099,7 @@ func (a *App) fetchAgents() tea.Cmd {
 							if ac.ID == s.ID {
 								s.MaxWorkers = ac.MaxWorkers
 								s.RunnerType = ac.Runner
-								s.PreferredModels = ac.PreferredModels
+								s.Model = ac.Model
 								s.SoulFile = ac.SoulFile
 								s.Description = ac.Description
 								break
@@ -1670,8 +1667,8 @@ func (a *App) renderAgentDetail(ag *AgentsTab, height int) string {
 	if d.RunnerType != "" {
 		row("Runner", d.RunnerType)
 	}
-	if len(d.PreferredModels) > 0 {
-		row("Models", strings.Join(d.PreferredModels, ", "))
+	if d.Model != "" {
+		row("Model", d.Model)
 	}
 	if d.SoulFile != "" {
 		row("Soul file", d.SoulFile)
