@@ -8,32 +8,38 @@ import (
 )
 
 func init() {
-	runner.Register("claude", func() runner.Runner {
-		r := &execution.CliRunner{}
-		_ = r.Configure(map[string]any{
-			"command":     "claude",
-			"model_flag":  "--model",
-			"prompt_flag": "-p",
-		})
-		return r
-	})
+	// ── CLI providers ──────────────────────────────────────────────────────────
+	cliFactory := func(cmd string, extra map[string]any) func() runner.Runner {
+		return func() runner.Runner {
+			cfg := map[string]any{"command": cmd, "model_flag": "--model", "prompt_flag": "-p"}
+			for k, v := range extra {
+				cfg[k] = v
+			}
+			r := &execution.CliRunner{}
+			_ = r.Configure(cfg)
+			return r
+		}
+	}
 
-	runner.Register("opencode", func() runner.Runner {
-		r := &execution.CliRunner{}
-		_ = r.Configure(map[string]any{
-			"command":     "opencode",
-			"model_flag":  "--model",
-			"prompt_flag": "--prompt",
-			"turns_flag":  "--max-turns",
-		})
-		return r
-	})
+	runner.Register("claude-cli", cliFactory("claude", nil))
+	runner.Register("claude", cliFactory("claude", nil)) // backward compat
 
+	runner.Register("opencode-cli", cliFactory("opencode", map[string]any{
+		"prompt_flag": "--prompt",
+		"turns_flag":  "--max-turns",
+	}))
+	runner.Register("opencode", cliFactory("opencode", map[string]any{ // backward compat
+		"prompt_flag": "--prompt",
+		"turns_flag":  "--max-turns",
+	}))
+
+	// ── API providers ──────────────────────────────────────────────────────────
+	// O ApiRunner usa BuildBody e ParseResponse padrão (formato OpenAI).
+	// Providers com schema diferente devem passar funções customizadas.
 	runner.Register("opencode-api", func() runner.Runner {
-		// Defaults for opencode API — provider config in YAML overrides via Configure().
 		return &execution.ApiRunner{
 			Endpoint:   "https://api.opencode.ai/v1/chat/completions",
-			AuthHeader: "Bearer ${OPENCODE_API_KEY}", // expanded at runtime
+			AuthHeader: "Bearer ${OPENCODE_API_KEY}",
 		}
 	})
 }

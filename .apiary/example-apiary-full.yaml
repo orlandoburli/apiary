@@ -5,7 +5,7 @@ version: "1"
 runners:
   # Claude CLI runner (local development, no API keys needed)
   - id: claude-cli
-    type: claude
+    type: claude-cli
     config:
       args: ["--output-format", "stream-json", "--verbose"]
 
