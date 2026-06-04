@@ -128,6 +128,8 @@ type AgentStatus struct {
 	Model          string
 	SoulFile       string
 	Description    string
+	SourceName     string // git author name from agent config
+	SourceEmail    string // git author email from agent config
 	Runners        []string // all available runner IDs for cycling
 	RunnerModels   []string // models declared on the current runner config
 }

@@ -1133,6 +1133,8 @@ func (a *App) fetchAgents() tea.Cmd {
 								s.Model = ac.Model
 								s.SoulFile = ac.SoulFile
 								s.Description = ac.Description
+								s.SourceName = ac.SourceName
+								s.SourceEmail = ac.SourceEmail
 								break
 							}
 						}
@@ -1738,6 +1740,17 @@ func (a *App) renderAgentDetail(ag *AgentsTab, height int) string {
 	}
 	if d.SoulFile != "" {
 		row("Soul file", d.SoulFile)
+	}
+	if d.SourceName != "" || d.SourceEmail != "" {
+		id := d.SourceName
+		if d.SourceEmail != "" {
+			if id != "" {
+				id += " <" + d.SourceEmail + ">"
+			} else {
+				id = d.SourceEmail
+			}
+		}
+		row("Git identity", id)
 	}
 	if d.PID > 0 {
 		row("PID", fmt.Sprintf("%d", d.PID))
