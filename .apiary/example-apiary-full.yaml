@@ -10,10 +10,6 @@ runners:
       command: claude
       model_flag: --model
       prompt_flag: -p
-      # Emit the full conversation as newline-delimited JSON events. Apiary
-      # streams every event (assistant text, tool calls, results) into the
-      # per-task DEBUG log in real time — run `apiary run --debug` and watch
-      # the Tasks tab. Remove these args for plain text output.
       args: ["--output-format", "stream-json", "--verbose"]
 
   # Claude API runner (Anthropic API with full model access)
@@ -47,7 +43,8 @@ runners:
 
   # OpenCode Go — CLI mode (uses the local opencode binary with Go subscription)
   - id: opencode-go-cli
-    type: opencode
+    type: cli
+    provider: opencode
     config:
       mode: cli
       subscription: go
@@ -60,7 +57,8 @@ runners:
 
   # OpenCode Go — API mode (calls the Go API directly)
   - id: opencode-go-api
-    type: opencode
+    type: api
+    provider: opencode
     config:
       mode: api
       subscription: go
@@ -68,7 +66,8 @@ runners:
 
   # OpenCode Zen — CLI mode (uses the local opencode binary with Zen subscription)
   - id: opencode-zen-cli
-    type: opencode
+    type: cli
+    provider: opencode
     config:
       mode: cli
       subscription: zen
@@ -81,7 +80,8 @@ runners:
 
   # OpenCode Zen — API mode (calls the Zen API directly)
   - id: opencode-zen-api
-    type: opencode
+    type: api
+    provider: opencode
     config:
       mode: api
       subscription: zen

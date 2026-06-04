@@ -3,11 +3,8 @@ version: "1"
 # ── Runners ────────────────────────────────────────────────────────────────────
 runners:
   - id: claude-cli
-    type: cli
+    type: claude
     config:
-      command: claude
-      model_flag: --model
-      prompt_flag: -p
       args: ["--output-format", "stream-json", "--verbose"]
     models:
       - claude-opus-4-8

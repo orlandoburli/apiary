@@ -6,9 +6,9 @@ import (
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
-// Adapter executes an agent runner for a given Cell.
-type Adapter interface {
-	// ID returns the adapter type key (e.g. "cli", "script").
+// Runner executes an agent runner for a given Cell.
+type Runner interface {
+	// ID returns the runner type key (e.g. "cli", "script").
 	ID() string
 
 	// Configure sets runner-level options from the worker config block.
@@ -18,18 +18,18 @@ type Adapter interface {
 	Run(ctx context.Context, req model.RunRequest) (model.RunResult, error)
 }
 
-// Factory creates a new, unconfigured Adapter instance.
-type Factory func() Adapter
+// Factory creates a new, unconfigured Runner instance.
+type Factory func() Runner
 
 var factories = map[string]Factory{}
 
-// Register stores a factory for the given adapter type key.
+// Register stores a factory for the given runner type key.
 func Register(id string, f Factory) {
 	factories[id] = f
 }
 
-// New returns a fresh, unconfigured Adapter instance for the given type key.
-func New(id string) (Adapter, bool) {
+// New returns a fresh, unconfigured Runner instance for the given type key.
+func New(id string) (Runner, bool) {
 	f, ok := factories[id]
 	if !ok {
 		return nil, false
@@ -37,7 +37,7 @@ func New(id string) (Adapter, bool) {
 	return f(), true
 }
 
-// Types returns all registered adapter type keys.
+// Types returns all registered runner type keys.
 func Types() []string {
 	keys := make([]string, 0, len(factories))
 	for k := range factories {
