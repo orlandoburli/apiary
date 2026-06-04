@@ -50,6 +50,28 @@ type LabelAdder interface {
 	AddLabels(ctx context.Context, cell model.Cell, labels []string) error
 }
 
+// PRReviewEvent is the type of review to submit on a pull request.
+type PRReviewEvent string
+
+const (
+	ReviewApprove        PRReviewEvent = "approve"
+	ReviewRequestChanges PRReviewEvent = "request_changes"
+	ReviewComment        PRReviewEvent = "comment"
+)
+
+// PRReviewInput describes a pull request review to submit.
+type PRReviewInput struct {
+	PRNumber string
+	Event    PRReviewEvent
+	Body     string
+}
+
+// PRReviewer is an optional interface that source adapters may implement to
+// submit pull request reviews (approve, request changes, comment).
+type PRReviewer interface {
+	SubmitReview(ctx context.Context, cell model.Cell, review PRReviewInput) error
+}
+
 // Factory creates a new, unconfigured Adapter instance.
 type Factory func() Adapter
 
