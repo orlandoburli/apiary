@@ -27,7 +27,6 @@ func init() {
 		"args":              []any{"run"},
 		"prompt_flag":       "",
 		"prompt_positional": true,
-		"turns_flag":        "--max-turns",
 	}))
 
 	// ── API providers ──────────────────────────────────────────────────────────
