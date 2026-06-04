@@ -453,7 +453,7 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 			first := models[0]
 			copy(models, models[1:])
 			models[len(models)-1] = first
-			return a, a.updateAgentConfigCmd(ag.Detail.ID, models[0], 0)
+			return a, a.updateAgentConfigCmd(ag.Detail.ID, models[0], "", 0)
 		}
 	case "w":
 		// Cycle max_workers in agent detail view: 1→2→3→4→5→1.
@@ -464,9 +464,23 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 			}
 			next := current%5 + 1
 			ag.Detail.MaxWorkers = next
-			return a, a.updateAgentConfigCmd(ag.Detail.ID, "", next)
+			return a, a.updateAgentConfigCmd(ag.Detail.ID, "", "", next)
 		}
 	case "r":
+		// Detail view: cycle runner. Activity view: reload.
+		if ag.View == AgentViewDetail && ag.Detail != nil && len(ag.Detail.Runners) > 1 {
+			runners := ag.Detail.Runners
+			current := ag.Detail.RunnerType
+			next := runners[0]
+			for i, r := range runners {
+				if r == current && i+1 < len(runners) {
+					next = runners[i+1]
+					break
+				}
+			}
+			ag.Detail.RunnerType = next
+			return a, a.updateAgentConfigCmd(ag.Detail.ID, "", next, 0)
+		}
 		if id, ok := a.selectedAgentID(); ok && ag.View == AgentViewActivity {
 			a.model.loading = true
 			return a, a.fetchAgentActivity(id)
@@ -703,8 +717,8 @@ func (a *App) clearLogsCmd(taskID string) tea.Cmd {
 }
 
 // updateAgentConfigCmd sends a PATCH /api/config/agent/{id} request to the
-// daemon via the IPC socket to hot-reload model or max_workers at runtime.
-func (a *App) updateAgentConfigCmd(agentID, model string, maxWorkers int) tea.Cmd {
+// daemon via the IPC socket to hot-reload model, runner, or max_workers.
+func (a *App) updateAgentConfigCmd(agentID, model, runner string, maxWorkers int) tea.Cmd {
 	return func() tea.Msg {
 		transport := &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -716,6 +730,9 @@ func (a *App) updateAgentConfigCmd(agentID, model string, maxWorkers int) tea.Cm
 		body := map[string]any{}
 		if model != "" {
 			body["model"] = model
+		}
+		if runner != "" {
+			body["runner"] = runner
 		}
 		if maxWorkers > 0 {
 			body["max_workers"] = maxWorkers
@@ -1018,6 +1035,11 @@ func (a *App) fetchAgents() tea.Cmd {
 						}
 						if s.MaxWorkers < 1 {
 							s.MaxWorkers = 1
+						}
+						// Collect all runner IDs for runtime switching
+						s.Runners = make([]string, 0, len(a.cfg.Runners))
+						for _, rc := range a.cfg.Runners {
+							s.Runners = append(s.Runners, rc.ID)
 						}
 					}
 					agents = append(agents, s)
@@ -1850,7 +1872,7 @@ func (a *App) footerKeys() []fkey {
 		if ag := a.model.agentsTab; ag != nil {
 			switch ag.View {
 		case AgentViewDetail:
-			return []fkey{{"esc", "back"}, {"l", "activity"}, {"m", "model"}, {"w", "workers"}, {"q", "quit"}}
+			return []fkey{{"esc", "back"}, {"l", "activity"}, {"m", "model"}, {"r", "runner"}, {"w", "workers"}, {"q", "quit"}}
 			case AgentViewActivity:
 				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "logs"}, {"o", "open"}, {"pgup/dn", "page"}, {"q", "quit"}}
 			case AgentViewTaskLogs:

@@ -22,7 +22,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/logging"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/router"
-	"github.com/orlandoburli/apiary/internal/runner"
+	runnerimpl "github.com/orlandoburli/apiary/internal/runner"
 	"github.com/orlandoburli/apiary/internal/source"
 	"github.com/orlandoburli/apiary/internal/version"
 )
@@ -53,7 +53,7 @@ type Dispatcher struct {
 
 	router      *router.Router
 	sources     map[string]source.Adapter
-	runners     map[string]runner.Adapter
+	runners     map[string]runnerimpl.Adapter
 	agentRunner map[string]string
 
 	db       *db.Client
@@ -89,7 +89,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		startedAt:   time.Now(),
 		router:      r,
 		sources:     make(map[string]source.Adapter),
-		runners:     make(map[string]runner.Adapter),
+		runners:     make(map[string]runnerimpl.Adapter),
 		agentRunner: make(map[string]string),
 		db:          dbClient,
 		logger:      logger,
@@ -164,7 +164,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		pseudoWorkerID := fmt.Sprintf("agent-%s", ac.ID)
 
 		// Instantiate runner of the appropriate type
-		ra, ok := runner.New(rc.Type)
+		ra, ok := runnerimpl.New(rc.Type)
 		if !ok {
 			return nil, fmt.Errorf("agent %q: runner type %q not found", ac.ID, rc.Type)
 		}
@@ -178,8 +178,6 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 
 		aplog.Info("loaded agent %s: runner=%s type=%s preferred_models=%v", ac.ID, runnerID, rc.Type, ac.PreferredModels)
 
-		// If this agent uses the opencode runner, write its agent config so
-		// opencode can load it with the right skills, soul, and permissions.
 		if rc.Type == "opencode" {
 			if err := d.writeOpencodeAgent(ctx, ac, rc); err != nil {
 				aplog.Warn("agent %s: write opencode agent config: %v", ac.ID, err)
@@ -189,7 +187,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 
 	// Keep legacy worker support for backward compatibility during transition
 	for _, wc := range cfg.Workers {
-		ra, ok := runner.New(wc.Runner)
+		ra, ok := runnerimpl.New(wc.Runner)
 		if !ok {
 			return nil, fmt.Errorf("worker %q: unknown runner type %q", wc.ID, wc.Runner)
 		}
@@ -548,6 +546,7 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 
 		var req struct {
 			Model      string `json:"model,omitempty"`
+			Runner     string `json:"runner,omitempty"`
 			MaxWorkers int    `json:"max_workers,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -555,7 +554,7 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 			return
 		}
 
-		if err := d.UpdateAgentConfig(agentID, req.Model, req.MaxWorkers); err != nil {
+		if err := d.UpdateAgentConfig(r.Context(), agentID, req.Model, req.Runner, req.MaxWorkers); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1166,10 +1165,10 @@ func workerRunConfig(wc config.WorkerConfig) map[string]any {
 }
 
 // UpdateAgentConfig applies a runtime change to an agent's configuration. It
-// updates the in-memory Config (so future dispatches use the new values), resizes
-// the per-agent semaphore if max_workers changed, and persists the YAML file.
-// Supported fields: model, max_workers.
-func (d *Dispatcher) UpdateAgentConfig(agentID, model string, maxWorkers int) error {
+// updates the in-memory Config, re-instantiates the runner if needed, resizes
+// the per-agent semaphore, and persists the YAML file.
+// Supported fields: model, max_workers, runner.
+func (d *Dispatcher) UpdateAgentConfig(ctx context.Context, agentID, newModel, newRunner string, maxWorkers int) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -1184,24 +1183,55 @@ func (d *Dispatcher) UpdateAgentConfig(agentID, model string, maxWorkers int) er
 		return fmt.Errorf("agent %q not found", agentID)
 	}
 
+	if newRunner != "" && newRunner != agent.Runner {
+		// Look up the runner config
+		var rc *config.RunnerConfig
+		for i := range d.cfg.Runners {
+			if d.cfg.Runners[i].ID == newRunner {
+				rc = &d.cfg.Runners[i]
+				break
+			}
+		}
+		if rc == nil {
+			return fmt.Errorf("runner %q not found in config runners section", newRunner)
+		}
+
+		ra, ok := runnerimpl.New(rc.Type)
+		if !ok {
+			return fmt.Errorf("runner type %q not registered", rc.Type)
+		}
+		if err := ra.Configure(rc.Config); err != nil {
+			return fmt.Errorf("configure runner %q: %w", newRunner, err)
+		}
+
+		agent.Runner = newRunner
+		pseudoWorkerID := fmt.Sprintf("agent-%s", agentID)
+		d.runners[pseudoWorkerID] = ra
+		d.agentRunner[agentID] = rc.Type
+
+		if rc.Type == "opencode" {
+			if err := d.writeOpencodeAgent(ctx, *agent, rc); err != nil {
+				aplog.Warn("agent %s: write opencode agent config: %v", agentID, err)
+			}
+		}
+
+		aplog.Info("agent %s: runner changed to %s (type=%s)", agentID, newRunner, rc.Type)
+	}
+
 	if maxWorkers > 0 {
 		agent.MaxWorkers = maxWorkers
-		// Resize the per-agent semaphore. We replace it entirely; in-flight
-		// goroutines that already acquired the old channel will release into the
-		// old channel, which is harmless (the channel will eventually be GC'd).
 		d.agentSem[agentID] = make(chan struct{}, maxWorkers)
 	}
 
-	if model != "" {
-		// Prepend so it takes priority; deduplicate to avoid duplicates.
+	if newModel != "" {
 		seen := map[string]bool{}
 		var updated []string
 		for _, m := range agent.PreferredModels {
 			seen[m] = true
 			updated = append(updated, m)
 		}
-		if !seen[model] {
-			updated = append([]string{model}, updated...)
+		if !seen[newModel] {
+			updated = append([]string{newModel}, updated...)
 		}
 		agent.PreferredModels = updated
 	}
