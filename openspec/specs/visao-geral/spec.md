@@ -39,24 +39,7 @@ AI coding agents are powerful but require a human operator to manually select ta
 
 ## Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Apiary                              │
-│                                                             │
-│  ┌──────────┐    ┌───────────┐    ┌───────────────────┐    │
-│  │  Source  │───►│  Router   │───►│  Runner Adapter   │    │
-│  │ Adapters │    │  Engine   │    │                   │    │
-│  └──────────┘    └───────────┘    └───────────────────┘    │
-│                       │                    │               │
-│  Plane, Jira,    Route rules +         opencode,           │
-│  Linear, GH      priority matching     custom CLIs         │
-│  Issues                │                                   │
-│               ┌────────────────┐                           │
-│               │  Model Config  │                           │
-│               │  (per worker)  │                           │
-│               └────────────────┘                           │
-└─────────────────────────────────────────────────────────────┘
-```
+![Apiary Architecture Diagram](architecture.png)
 
 ## Workflow
 
