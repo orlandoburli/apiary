@@ -1650,7 +1650,7 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 	}
 
 	var b strings.Builder
-	header := pad("", cursorW) + " " + pad("AGENT", agentW) + " " + pad("WORKERS", workersW) + " " + pad("STATUS", statusW) + " " + pad("COMPLETED", completedW) + " " + pad("AVG", avgW) + " " + "SUCCESS"
+	header := pad("", cursorW) + " " + pad("AGENT", agentW) + " " + padLeft("WORKERS", workersW) + " " + pad("STATUS", statusW) + " " + padLeft("COMPLETED", completedW) + " " + padLeft("AVG", avgW) + " " + padLeft("SUCCESS", successW)
 	b.WriteString(StyleTableHeader.Render(header) + "\n")
 	for i, agent := range ag.Agents {
 		selected := i == ag.SelectedIdx
