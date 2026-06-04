@@ -29,6 +29,8 @@ type ProcessRunner struct {
 	turnsFlag  string
 }
 
+func (r *ProcessRunner) ID() string { return "cli" }
+
 func (r *ProcessRunner) Configure(config map[string]any) error {
 	if cmd, ok := config["command"].(string); ok && cmd != "" {
 		r.command = cmd

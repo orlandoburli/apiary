@@ -16,7 +16,7 @@ import (
 )
 
 func init() {
-	runner.Register("opencode", func() runner.Runner { return &Runner{} })
+	runner.Register("opencode", func() runner.Runner { return &OpenCodeRunner{} })
 }
 
 type Mode string
@@ -33,7 +33,7 @@ const (
 	SubZen Subscription = "zen"
 )
 
-type Runner struct {
+type OpenCodeRunner struct {
 	mode Mode
 
 	// CLI mode: delegates to cli.ProcessRunner
@@ -45,9 +45,9 @@ type Runner struct {
 	apiBaseURL   string
 }
 
-func (r *Runner) ID() string { return "opencode" }
+func (r *OpenCodeRunner) ID() string { return "opencode" }
 
-func (r *Runner) Configure(config map[string]any) error {
+func (r *OpenCodeRunner) Configure(config map[string]any) error {
 	mode, _ := config["mode"].(string)
 	switch mode {
 	case "api":
@@ -61,7 +61,7 @@ func (r *Runner) Configure(config map[string]any) error {
 	}
 }
 
-func (r *Runner) configureCLI(config map[string]any) error {
+func (r *OpenCodeRunner) configureCLI(config map[string]any) error {
 	r.proc = &cli.ProcessRunner{}
 	cfg := map[string]any{
 		"command":     "opencode",
@@ -88,7 +88,7 @@ func (r *Runner) configureCLI(config map[string]any) error {
 	return r.proc.Configure(cfg)
 }
 
-func (r *Runner) configureAPI(config map[string]any) error {
+func (r *OpenCodeRunner) configureAPI(config map[string]any) error {
 	sub, _ := config["subscription"].(string)
 	switch sub {
 	case "go":
@@ -110,7 +110,7 @@ func (r *Runner) configureAPI(config map[string]any) error {
 	return nil
 }
 
-func (r *Runner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
+func (r *OpenCodeRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
 	if r.mode == ModeCLI {
 		return r.proc.Run(ctx, req)
 	}
@@ -151,7 +151,7 @@ type chatError struct {
 	Type    string `json:"type"`
 }
 
-func (r *Runner) runAPI(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
+func (r *OpenCodeRunner) runAPI(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
 	start := time.Now()
 	prompt := buildPrompt(req)
 
@@ -240,7 +240,7 @@ func (r *Runner) runAPI(ctx context.Context, req model.RunRequest) (model.RunRes
 	return result, nil
 }
 
-func (r *Runner) resolveModelID(model string) string {
+func (r *OpenCodeRunner) resolveModelID(model string) string {
 	if model == "" {
 		return "default"
 	}
