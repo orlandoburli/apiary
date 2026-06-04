@@ -76,8 +76,13 @@ func (a *Adapter) SetFilters(states, labels []string) {
 
 func (a *Adapter) Poll(ctx context.Context, since time.Time) ([]model.Cell, error) {
 	path := fmt.Sprintf("/repos/%s/%s/issues", a.owner, a.repo)
+
+	state := "open"
+	if len(a.filterStates) > 0 {
+		state = a.filterStates[0]
+	}
 	params := url.Values{
-		"state":     {"all"},
+		"state":     {state},
 		"sort":      {"updated"},
 		"direction": {"desc"},
 	}
