@@ -1644,7 +1644,7 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 		successW   = 8
 	)
 	inner := a.model.width - 2
-	agentW := inner - cursorW - workersW - statusW - completedW - avgW - successW - 7
+	agentW := inner - cursorW - workersW - statusW - completedW - avgW - successW - 10
 	if agentW < 12 {
 		agentW = 12
 	}
