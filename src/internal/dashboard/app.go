@@ -1445,7 +1445,11 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 		if t.FilterText != "" {
 			msg = "No tasks match filter"
 		}
-		return a.box("TASKS", StyleMuted.Render(msg)+"\n", height)
+		title := "TASKS"
+		if t.FilterText != "" {
+			title += " [/" + t.FilterText + "]"
+		}
+		return a.box(title, StyleMuted.Render(msg)+"\n", height)
 	}
 
 	const (
@@ -1463,28 +1467,23 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 
 	var b strings.Builder
 
-	// Filter bar — shown only when active
-	if t.FilterActive {
-		filterBar := pad("", cursorW) + " " + StyleLabel.Render("filter:") + " " + t.FilterText + "█"
-		b.WriteString(StyleSelectedRow.Render(filterBar) + "\n")
+	// Box title with sort/filter indicators
+	title := "TASKS"
+	parts := []string{}
+	if t.FilterText != "" {
+		parts = append(parts, "/"+t.FilterText)
+	}
+	if t.SortField != "" {
+		parts = append(parts, "sort:"+t.SortField)
+	}
+	if len(parts) > 0 {
+		title += " [" + strings.Join(parts, " ") + "]"
 	}
 
-	// Header with sort indicator
-	sortIndicator := ""
-	switch t.SortField {
-	case "status":
-		sortIndicator = " sort:status"
-	case "agent":
-		sortIndicator = " sort:agent"
-	}
-	header := pad("", cursorW) + " " + pad("#", numW) + " " + pad("TASK", titleW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + "WHEN" + sortIndicator
+	header := pad("", cursorW) + " " + pad("#", numW) + " " + pad("TASK", titleW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + "WHEN"
 	b.WriteString(StyleTableHeader.Render(header) + "\n")
 
-	// Available rows after header + filter bar
 	rowsAvail := height - 3 // borders + header
-	if t.FilterActive {
-		rowsAvail-- // filter bar
-	}
 	if rowsAvail < 1 {
 		rowsAvail = 1
 	}
@@ -1525,12 +1524,7 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 		b.WriteString(cursor + " " + num + " " + titleText + " " + agent + " " + status + " " + when + "\n")
 	}
 
-	// Scroll indicator
-	if start > 0 || end < len(items) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  %d of %d tasks", t.SelectedIdx+1, len(items))) + "\n")
-	}
-
-	return a.box("TASKS", b.String(), height)
+	return a.box(title, b.String(), height)
 }
 
 // filteredTasks returns the task list after applying filter and sort.
