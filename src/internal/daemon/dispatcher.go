@@ -937,10 +937,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 					}
 				}
 			} else {
-				aplog.Warn("cell %s: assign_from_output set but no 'APIARY-ASSIGN: <agent>' directive in output", cell.ID)
-				if d.logger != nil {
-					d.logger.TaskError(ctx, cell.ID, "no APIARY-ASSIGN directive found in output")
-				}
+			aplog.Debug("cell %s: assign_from_output set but no 'APIARY-ASSIGN: <agent>' directive in output", cell.ID)
+			if d.logger != nil {
+				d.logger.TaskInfo(ctx, cell.ID, "no APIARY-ASSIGN directive found in output")
+			}
 			}
 		}
 
