@@ -5,16 +5,14 @@ version: "1"
 runners:
   # Claude CLI runner (local development, no API keys needed)
   - id: claude-cli
-    type: cli
+    type: claude
     config:
-      command: claude
-      model_flag: --model
-      prompt_flag: -p
       args: ["--output-format", "stream-json", "--verbose"]
 
-  # Claude API runner (Anthropic API with full model access)
+  # Claude API runner (Anthropic API with full model access) — requires provider
   - id: claude-api
-    type: api
+    type: cli
+    provider: anthropic
     config:
       provider: anthropic
       base_url: https://api.anthropic.com/v1
@@ -34,13 +32,6 @@ runners:
   #   API mode:   calls the opencode HTTP API directly.
   #               Requires an API key from the respective subscription.
   #
-  # ── Script runner ────────────────────────────────────────────────────────────
-  # Executes arbitrary shell commands. Injects APIARY_CELL_* env vars.
-  #   - id: my-script
-  #     type: script
-  #     config:
-  #       command: /bin/sh
-
   # OpenCode Go — CLI mode (uses the local opencode binary with Go subscription)
   - id: opencode-go-cli
     type: cli
