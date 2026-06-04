@@ -220,17 +220,20 @@ func (c *Config) Save(path string) error {
 
 // AgentDiff describes a set of changes to apply to an agent in the raw YAML.
 type AgentDiff struct {
-	ID         string
-	Model      string // "" = no change
-	Runner     string // "" = no change
-	MaxWorkers int    // 0 = no change
+	ID            string
+	Model         string   // "" = no change
+	Runner        string   // "" = no change
+	MaxWorkers    int      // 0 = no change
+	ReplaceModels []string // nil = no change; non-nil replaces preferred_models entirely
 }
 
 // ApplyAgentDiff applies the diff to the in-memory struct and persists via Save.
 func (c *Config) ApplyAgentDiff(path string, diff AgentDiff) error {
 	for i := range c.Agents {
 		if c.Agents[i].ID == diff.ID {
-			if diff.Model != "" {
+			if diff.ReplaceModels != nil {
+				c.Agents[i].PreferredModels = diff.ReplaceModels
+			} else if diff.Model != "" {
 				seen := map[string]bool{}
 				var updated []string
 				for _, m := range c.Agents[i].PreferredModels {
@@ -270,16 +273,32 @@ func (c *Config) mergeRawChanges() (string, error) {
 	changed := false
 
 	for _, memAgent := range c.Agents {
-		if memAgent.Runner == "" && memAgent.MaxWorkers == 0 {
-			continue
-		}
 		idx := findAgentBlock(lines, memAgent.ID)
 		if idx < 0 {
 			continue
 		}
 
-		// Determine indentation from the agent's "- id:" line
 		indent := leadingSpaces(lines[idx])
+
+		// Always persist the current preferred_models list, replacing the YAML
+		// block in-place so runner changes don't leave stale models behind.
+		if len(memAgent.PreferredModels) > 0 {
+			listLine, found := findKeyInBlock(lines, idx+1, indent, "preferred_models")
+			if found {
+				listIndent := listItemIndent(lines, listLine)
+				end := listLine + 1
+				for end < len(lines) && isListItem(lines[end], listIndent) {
+					end++
+				}
+				var newBlock []string
+				newBlock = append(newBlock, lines[listLine])
+				for _, m := range memAgent.PreferredModels {
+					newBlock = append(newBlock, fmt.Sprintf("%s- %s", strings.Repeat(" ", listIndent), m))
+				}
+				lines = append(lines[:listLine], append(newBlock, lines[end:]...)...)
+				changed = true
+			}
+		}
 
 		if memAgent.Runner != "" {
 			idx2, found := findKeyInBlock(lines, idx+1, indent, "runner")
@@ -291,7 +310,6 @@ func (c *Config) mergeRawChanges() (string, error) {
 					changed = true
 				}
 			} else {
-				// Insert after the first key-value pair (id or description)
 				insertAt := idx + 1
 				for insertAt < len(lines) && leadingSpaces(lines[insertAt]) > indent {
 					insertAt++
@@ -364,6 +382,31 @@ func setYAMLValue(line, newValue string) string {
 		return line
 	}
 	return line[:idx+1] + " " + newValue
+}
+
+// listItemIndent returns the indentation of the first list item after a key line,
+// or keyIndent+2 as a sensible default.
+func listItemIndent(lines []string, keyLine int) int {
+	for i := keyLine + 1; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "-") {
+			return leadingSpaces(lines[i])
+		}
+		break
+	}
+	return leadingSpaces(lines[keyLine]) + 2
+}
+
+// isListItem checks if a line is a YAML list item at the given indentation.
+func isListItem(line string, indent int) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	return leadingSpaces(line) >= indent && (strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "-"))
 }
 
 // leadingSpaces returns the number of leading space characters.
