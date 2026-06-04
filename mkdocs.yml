@@ -1,0 +1,39 @@
+site_name: Apiary
+site_description: Task-driven agent orchestration harness
+repo_url: https://github.com/orlandoburli/apiary
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  logo: logo.svg
+  favicon: logo.png
+  palette:
+    scheme: slate
+    primary: indigo
+    accent: teal
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - navigation.tracking
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - attr_list
+  - md_in_html
+
+nav:
+  - Home: index.md
+  - Dashboard: dashboard.md
+  - Development: development.md
+
+extra:
+  generator: false
