@@ -12,6 +12,7 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/runner"
+	"github.com/orlandoburli/apiary/internal/runner/cli"
 )
 
 func init() {
@@ -35,8 +36,8 @@ const (
 type Runner struct {
 	mode Mode
 
-	// CLI mode: delegates to the generic cli runner
-	cliRunner runner.Runner
+	// CLI mode: delegates to cli.ProcessRunner
+	proc *cli.ProcessRunner
 
 	// API mode fields
 	subscription Subscription
@@ -61,13 +62,8 @@ func (r *Runner) Configure(config map[string]any) error {
 }
 
 func (r *Runner) configureCLI(config map[string]any) error {
-	var ok bool
-	r.cliRunner, ok = runner.New("cli")
-	if !ok {
-		return fmt.Errorf("opencode: cli runner not available")
-	}
-
-	cliCfg := map[string]any{
+	r.proc = &cli.ProcessRunner{}
+	cfg := map[string]any{
 		"command":     "opencode",
 		"model_flag":  "--model",
 		"prompt_flag": "--prompt",
@@ -75,21 +71,21 @@ func (r *Runner) configureCLI(config map[string]any) error {
 		"agent_flag":  "--agent",
 	}
 	if v, ok := config["binary"].(string); ok && v != "" {
-		cliCfg["command"] = v
+		cfg["command"] = v
 	}
 	if v, ok := config["model_flag"].(string); ok && v != "" {
-		cliCfg["model_flag"] = v
+		cfg["model_flag"] = v
 	}
 	if v, ok := config["prompt_flag"].(string); ok && v != "" {
-		cliCfg["prompt_flag"] = v
+		cfg["prompt_flag"] = v
 	}
 	if v, ok := config["turns_flag"].(string); ok && v != "" {
-		cliCfg["turns_flag"] = v
+		cfg["turns_flag"] = v
 	}
 	if v, ok := config["args"].([]any); ok {
-		cliCfg["args"] = v
+		cfg["args"] = v
 	}
-	return r.cliRunner.Configure(cliCfg)
+	return r.proc.Configure(cfg)
 }
 
 func (r *Runner) configureAPI(config map[string]any) error {
@@ -116,7 +112,7 @@ func (r *Runner) configureAPI(config map[string]any) error {
 
 func (r *Runner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
 	if r.mode == ModeCLI {
-		return r.cliRunner.Run(ctx, req)
+		return r.proc.Run(ctx, req)
 	}
 	return r.runAPI(ctx, req)
 }
@@ -129,9 +125,9 @@ type chatMessage struct {
 }
 
 type chatRequest struct {
-	Model     string         `json:"model"`
-	Messages  []chatMessage  `json:"messages"`
-	MaxTokens int            `json:"max_tokens,omitempty"`
+	Model     string        `json:"model"`
+	Messages  []chatMessage `json:"messages"`
+	MaxTokens int           `json:"max_tokens,omitempty"`
 }
 
 type chatResponse struct {
@@ -162,7 +158,7 @@ func (r *Runner) runAPI(ctx context.Context, req model.RunRequest) (model.RunRes
 	modelID := r.resolveModelID(req.Model)
 
 	messages := []chatMessage{
-		{Role: "system", Content: "You are an AI coding agent. Complete the following task based on the instructions provided."},
+		{Role: "system", Content: "You are an AI coding agent."},
 		{Role: "user", Content: prompt},
 	}
 	if req.SystemAppend != "" {

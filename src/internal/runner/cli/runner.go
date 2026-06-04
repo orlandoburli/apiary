@@ -1,6 +1,8 @@
-// Package cli provides a runner adapter that invokes any agent CLI tool
-// (e.g. opencode, gemini) as a subprocess. The tool manages its own
-// authentication — Apiary never handles or stores credentials.
+// Package cli provides the core process-management engine used by
+// provider-specific runners (claude, opencode, etc.). It handles subprocess
+// spawning, stdout/stderr streaming, PID tracking, and heartbeats.
+//
+// This package does NOT register a runner type — it is an internal utility.
 package cli
 
 import (
@@ -16,16 +18,10 @@ import (
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/model"
-	"github.com/orlandoburli/apiary/internal/runner"
 )
 
-func init() {
-	runner.Register("cli", func() runner.Runner { return &Runner{} })
-}
-
-// Runner invokes an agent CLI tool as a subprocess, passing the task
-// prompt via stdin (default) or a configurable flag.
-type Runner struct {
+// ProcessRunner manages a CLI subprocess with streaming, PID tracking, and heartbeats.
+type ProcessRunner struct {
 	command    string
 	args       []string
 	modelFlag  string
@@ -33,14 +29,12 @@ type Runner struct {
 	turnsFlag  string
 }
 
-func (r *Runner) ID() string { return "cli" }
-
-func (r *Runner) Configure(config map[string]any) error {
-	cmd, ok := config["command"].(string)
-	if !ok || cmd == "" {
+func (r *ProcessRunner) Configure(config map[string]any) error {
+	if cmd, ok := config["command"].(string); ok && cmd != "" {
+		r.command = cmd
+	} else if r.command == "" {
 		return fmt.Errorf("cli runner: config.command is required")
 	}
-	r.command = cmd
 
 	if v, ok := config["model_flag"].(string); ok {
 		r.modelFlag = v
@@ -61,7 +55,7 @@ func (r *Runner) Configure(config map[string]any) error {
 	return nil
 }
 
-func (r *Runner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
+func (r *ProcessRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
 	start := time.Now()
 
 	prompt := buildPrompt(req)
