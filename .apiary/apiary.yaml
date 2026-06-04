@@ -2,8 +2,9 @@ version: "1"
 
 # ── Runners ────────────────────────────────────────────────────────────────────
 runners:
-  - id: claude-cli
-    type: claude-cli
+  - id: claude
+    type: cli
+    provider: claude
     config:
       args: ["--output-format", "stream-json", "--verbose"]
     models:
