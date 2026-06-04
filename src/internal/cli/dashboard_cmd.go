@@ -37,7 +37,7 @@ func runDashboard(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
-	defer dbConn.Close()
+	defer func() { _ = dbConn.Close() }()
 
 	cfg, err := config.Load(configFile)
 	if err != nil {

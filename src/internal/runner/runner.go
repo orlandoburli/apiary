@@ -37,11 +37,3 @@ func New(id string) (Runner, bool) {
 	return f(), true
 }
 
-// Types returns all registered runner type keys.
-func Types() []string {
-	keys := make([]string, 0, len(factories))
-	for k := range factories {
-		keys = append(keys, k)
-	}
-	return keys
-}

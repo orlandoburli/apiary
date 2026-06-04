@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-// Cell is a normalised, source-system-agnostic task unit.
+// Cell is a normalized, source-system-agnostic task unit.
 type Cell struct {
 	ID          string
 	SourceID    string

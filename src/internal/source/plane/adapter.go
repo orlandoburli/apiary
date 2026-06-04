@@ -417,12 +417,12 @@ func formatComment(result model.RunResult) string {
 	} else {
 		b.WriteString("<p>✗ <strong>Apiary run failed</strong>")
 	}
-	b.WriteString(fmt.Sprintf(" · worker: <code>%s</code>", html.EscapeString(result.WorkerID)))
-	b.WriteString(fmt.Sprintf(" · duration: %s</p>", result.Duration.Round(time.Second)))
+	fmt.Fprintf(&b, " · worker: <code>%s</code>", html.EscapeString(result.WorkerID))
+	fmt.Fprintf(&b, " · duration: %s</p>", result.Duration.Round(time.Second))
 
 	if prURL := extractPRURL(result.Output); prURL != "" {
-		b.WriteString(fmt.Sprintf(`<p><strong>🔗 Pull Request:</strong> <a href="%s">%s</a></p>`,
-			html.EscapeString(prURL), html.EscapeString(prURL)))
+		fmt.Fprintf(&b, `<p><strong>🔗 Pull Request:</strong> <a href="%s">%s</a></p>`,
+			html.EscapeString(prURL), html.EscapeString(prURL))
 	}
 
 	if result.Output != "" {
