@@ -32,41 +32,49 @@ agents:
     description: "Analyzes and classifies new issues by complexity"
     soul_file: .apiary/souls/investigator.md
     preferred_models: [claude-opus-4-8, claude-sonnet-4-6]
+    max_workers: 2
 
   - id: po
     description: "Transforms business demands into specifications"
     soul_file: .apiary/souls/po.md
     preferred_models: [claude-opus-4-8]
+    max_workers: 2
 
   - id: staff
     description: "Designs complex solutions and decomposes tasks"
     soul_file: .apiary/souls/staff.md
     preferred_models: [claude-opus-4-8]
+    max_workers: 2
 
   - id: engineer
     description: "Implements tasks following project conventions"
     soul_file: .apiary/souls/engineer.md
     preferred_models: [claude-sonnet-4-6, claude-haiku-4-5]
+    max_workers: 2
 
   - id: backend
     description: "Implements backend tasks"
     soul_file: .apiary/souls/backend.md
     preferred_models: [claude-sonnet-4-6]
+    max_workers: 2
 
   - id: frontend
     description: "Implements frontend tasks"
     soul_file: .apiary/souls/frontend.md
     preferred_models: [claude-sonnet-4-6]
+    max_workers: 2
 
   - id: reviewer
     description: "Performs code review and quality checks"
     soul_file: .apiary/souls/reviewer.md
     preferred_models: [claude-sonnet-4-6]
+    max_workers: 2
 
   - id: qa
     description: "Validates implementation against acceptance criteria"
     soul_file: .apiary/souls/qa.md
     preferred_models: [claude-sonnet-4-6, claude-haiku-4-5]
+    max_workers: 2
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 routes:
