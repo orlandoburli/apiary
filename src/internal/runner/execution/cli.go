@@ -1,9 +1,7 @@
-// Package cli provides the core process-management engine used by
-// provider-specific runners (claude, opencode, etc.). It handles subprocess
-// spawning, stdout/stderr streaming, PID tracking, and heartbeats.
-//
-// This package does NOT register a runner type — it is an internal utility.
-package cli
+// Package execution provides generic process-execution engines used by
+// provider-specific runners (claude, opencode, etc.). These engines handle
+// subprocess management (cli) and HTTP API calls (api).
+package execution
 
 import (
 	"bufio"
@@ -20,8 +18,9 @@ import (
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
-// ProcessRunner manages a CLI subprocess with streaming, PID tracking, and heartbeats.
-type ProcessRunner struct {
+// CliRunner manages a CLI subprocess with stdout/stderr streaming, PID tracking,
+// and heartbeats. Used by claude, opencode-cli, and similar providers.
+type CliRunner struct {
 	command    string
 	args       []string
 	modelFlag  string
@@ -29,15 +28,14 @@ type ProcessRunner struct {
 	turnsFlag  string
 }
 
-func (r *ProcessRunner) ID() string { return "cli" }
+func (r *CliRunner) ID() string { return "cli" }
 
-func (r *ProcessRunner) Configure(config map[string]any) error {
+func (r *CliRunner) Configure(config map[string]any) error {
 	if cmd, ok := config["command"].(string); ok && cmd != "" {
 		r.command = cmd
 	} else if r.command == "" {
 		return fmt.Errorf("cli runner: config.command is required")
 	}
-
 	if v, ok := config["model_flag"].(string); ok {
 		r.modelFlag = v
 	}
@@ -57,14 +55,11 @@ func (r *ProcessRunner) Configure(config map[string]any) error {
 	return nil
 }
 
-func (r *ProcessRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
+func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
 	start := time.Now()
-
 	prompt := buildPrompt(req)
 
-	argv := []string{}
-	argv = append(argv, r.args...)
-
+	argv := append([]string{}, r.args...)
 	if r.modelFlag != "" && req.Model != "" {
 		argv = append(argv, r.modelFlag, req.Model)
 	}
@@ -77,12 +72,10 @@ func (r *ProcessRunner) Run(ctx context.Context, req model.RunRequest) (model.Ru
 
 	cmd := exec.CommandContext(ctx, r.command, argv...)
 	cmd.Dir = req.WorkingDir
-
 	cmd.Env = os.Environ()
 	for k, v := range req.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-
 	if r.promptFlag == "" {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
@@ -92,12 +85,9 @@ func (r *ProcessRunner) Run(ctx context.Context, req model.RunRequest) (model.Ru
 		outBuf      bytes.Buffer
 		errBuf      bytes.Buffer
 		logs        []model.LogEntry
-		finalResult string // last stream-json "result" event text, if any
+		finalResult string
 	)
 
-	// emit records a log entry: it appends to the batched result logs and, when
-	// a sink is configured, streams it in real time (e.g. to the per-task DEBUG
-	// log so the dashboard shows the live conversation). Safe for concurrent use.
 	emit := func(level, msg string) {
 		entry := model.LogEntry{Level: level, Message: msg, Timestamp: time.Now()}
 		mu.Lock()
@@ -108,7 +98,6 @@ func (r *ProcessRunner) Run(ctx context.Context, req model.RunRequest) (model.Ru
 		}
 	}
 
-	// Record the exact input handed to the agent: the invocation and the prompt.
 	emit("debug", fmt.Sprintf("$ %s %s", r.command, strings.Join(argv, " ")))
 	emit("debug", "prompt sent to agent:\n"+prompt)
 
@@ -125,7 +114,7 @@ func (r *ProcessRunner) Run(ctx context.Context, req model.RunRequest) (model.Ru
 		return model.RunResult{}, fmt.Errorf("cli runner: starting %q: %w", r.command, err)
 	}
 
-	// Track PID and send heartbeats while the process runs.
+	// PID tracking
 	if req.SetPID != nil {
 		req.SetPID(cmd.Process.Pid)
 	}
@@ -145,9 +134,6 @@ func (r *ProcessRunner) Run(ctx context.Context, req model.RunRequest) (model.Ru
 		}()
 	}
 
-	// Stream stdout and stderr concurrently so the dashboard sees output as it
-	// happens. NOTE: never write to os.Stdout/os.Stderr here — `apiary run` may
-	// share the terminal; everything goes through emit() instead.
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -160,15 +146,11 @@ func (r *ProcessRunner) Run(ctx context.Context, req model.RunRequest) (model.Ru
 			mu.Lock()
 			outBuf.WriteString(line + "\n")
 			mu.Unlock()
-			// Capture the final result text from a stream-json result event so
-			// the consolidated Output stays clean (not the raw JSON stream).
 			if res, ok := finalResultText(line); ok {
 				mu.Lock()
 				finalResult = res
 				mu.Unlock()
 			}
-			// Pretty-print claude --output-format stream-json events; fall back
-			// to the raw line for any other CLI or non-JSON output.
 			if pretty, ok := formatStreamLine(line); ok {
 				emit("debug", pretty)
 			} else {
@@ -180,7 +162,6 @@ func (r *ProcessRunner) Run(ctx context.Context, req model.RunRequest) (model.Ru
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stderrPipe)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
 			mu.Lock()
@@ -206,7 +187,6 @@ func (r *ProcessRunner) Run(ctx context.Context, req model.RunRequest) (model.Ru
 		Logs:     logs,
 		Duration: time.Since(start),
 	}
-
 	if runErr != nil {
 		stderr := strings.TrimSpace(errBuf.String())
 		if stderr != "" {
@@ -215,12 +195,10 @@ func (r *ProcessRunner) Run(ctx context.Context, req model.RunRequest) (model.Ru
 			result.Error = runErr
 		}
 	}
-
 	return result, nil
 }
 
-// streamEvent is a tolerant view of a claude `--output-format stream-json`
-// event. Unknown fields are ignored; only what we render is declared.
+// stream-json event types (Claude output format)
 type streamEvent struct {
 	Type    string `json:"type"`
 	Subtype string `json:"subtype"`
@@ -228,11 +206,10 @@ type streamEvent struct {
 	Result  string `json:"result"`
 	Message struct {
 		Content []struct {
-			Type  string          `json:"type"`
-			Text  string          `json:"text"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
-			// tool_result content can be a string or an array of blocks.
+			Type    string          `json:"type"`
+			Text    string          `json:"text"`
+			Name    string          `json:"name"`
+			Input   json.RawMessage `json:"input"`
 			Content json.RawMessage `json:"content"`
 		} `json:"content"`
 	} `json:"message"`
@@ -242,9 +219,6 @@ type streamEvent struct {
 	IsError      bool    `json:"is_error"`
 }
 
-// formatStreamLine renders a claude stream-json event as one or more readable
-// lines. It returns ok=false when the line is not a recognised JSON event, so
-// the caller can fall back to logging the raw line.
 func formatStreamLine(line string) (string, bool) {
 	trimmed := strings.TrimSpace(line)
 	if !strings.HasPrefix(trimmed, "{") {
@@ -254,7 +228,6 @@ func formatStreamLine(line string) (string, bool) {
 	if err := json.Unmarshal([]byte(trimmed), &ev); err != nil || ev.Type == "" {
 		return "", false
 	}
-
 	switch ev.Type {
 	case "system":
 		label := ev.Subtype
@@ -265,7 +238,6 @@ func formatStreamLine(line string) (string, bool) {
 			return fmt.Sprintf("[system:%s] model=%s", label, ev.Model), true
 		}
 		return fmt.Sprintf("[system:%s]", label), true
-
 	case "assistant":
 		var parts []string
 		for _, c := range ev.Message.Content {
@@ -282,7 +254,6 @@ func formatStreamLine(line string) (string, bool) {
 			return "[assistant]", true
 		}
 		return strings.Join(parts, "\n"), true
-
 	case "user":
 		var parts []string
 		for _, c := range ev.Message.Content {
@@ -294,7 +265,6 @@ func formatStreamLine(line string) (string, bool) {
 			return "", false
 		}
 		return strings.Join(parts, "\n"), true
-
 	case "result":
 		status := ev.Subtype
 		if status == "" {
@@ -305,7 +275,7 @@ func formatStreamLine(line string) (string, bool) {
 			}
 		}
 		out := fmt.Sprintf("[result:%s] turns=%d duration=%s", status, ev.NumTurns,
-			(time.Duration(ev.DurationMs) * time.Millisecond).Round(time.Millisecond))
+			(time.Duration(ev.DurationMs)*time.Millisecond).Round(time.Millisecond))
 		if ev.TotalCostUSD > 0 {
 			out += fmt.Sprintf(" cost=$%.4f", ev.TotalCostUSD)
 		}
@@ -314,12 +284,9 @@ func formatStreamLine(line string) (string, bool) {
 		}
 		return out, true
 	}
-
 	return "", false
 }
 
-// finalResultText extracts the final answer from a stream-json "result" event,
-// so the runner can report a clean consolidated Output instead of raw JSON.
 func finalResultText(line string) (string, bool) {
 	if !strings.Contains(line, `"type":"result"`) {
 		return "", false
@@ -334,14 +301,11 @@ func finalResultText(line string) (string, bool) {
 	return ev.Result, true
 }
 
-// truncateInput renders a JSON value compactly, capped so a giant tool input
-// (e.g. a full file write) doesn't flood the log.
 func truncateInput(raw json.RawMessage) string {
 	s := strings.TrimSpace(string(raw))
 	if s == "" || s == "null" {
 		return ""
 	}
-	// Collapse interior whitespace/newlines for a one-glance summary.
 	s = strings.Join(strings.Fields(s), " ")
 	const max = 240
 	if len(s) > max {
@@ -350,12 +314,9 @@ func truncateInput(raw json.RawMessage) string {
 	return s
 }
 
-// buildPrompt formats a Cell into a plain-text prompt for the agent CLI.
 func buildPrompt(req model.RunRequest) string {
 	var b strings.Builder
-
 	b.WriteString(fmt.Sprintf("Task: %s\n", req.Cell.Title))
-
 	if req.Cell.Type != "" {
 		b.WriteString(fmt.Sprintf("Type: %s\n", req.Cell.Type))
 	}
@@ -368,18 +329,15 @@ func buildPrompt(req model.RunRequest) string {
 	if req.Cell.URL != "" {
 		b.WriteString(fmt.Sprintf("URL: %s\n", req.Cell.URL))
 	}
-
 	if req.Cell.Description != "" {
 		b.WriteString("\n")
 		b.WriteString(req.Cell.Description)
 		b.WriteString("\n")
 	}
-
 	if req.SystemAppend != "" {
 		b.WriteString("\n")
 		b.WriteString(req.SystemAppend)
 		b.WriteString("\n")
 	}
-
 	return b.String()
 }

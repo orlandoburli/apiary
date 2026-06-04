@@ -1,0 +1,168 @@
+package execution
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/orlandoburli/apiary/internal/model"
+)
+
+// ApiRunner invokes an LLM API via HTTP POST. Provider-specific details like
+// URL path, auth header, and request/response schemas are configured at creation
+// time by the provider factory.
+type ApiRunner struct {
+	// Endpoint is the full URL (e.g. "https://api.opencode.ai/v1/chat/completions").
+	Endpoint string
+
+	// AuthHeader is the Authorization header value (e.g. "Bearer sk-...").
+	AuthHeader string
+
+	// BuildBody builds the JSON request body from the task prompt and model.
+	// If nil, the default builds a simple chat-completion request.
+	BuildBody func(prompt, model string, maxTokens int) ([]byte, error)
+
+	// ParseResponse extracts the output text from the HTTP response body.
+	// Returns the output text and an optional error message.
+	// If nil, the default reads the "choices[0].message.content" field.
+	ParseResponse func(body []byte) (output, errMsg string, isError bool)
+}
+
+func (r *ApiRunner) ID() string { return "api" }
+
+func (r *ApiRunner) Configure(config map[string]any) error {
+	if v, ok := config["endpoint"].(string); ok && v != "" {
+		r.Endpoint = v
+	}
+	if v, ok := config["api_key"].(string); ok && v != "" {
+		r.AuthHeader = "Bearer " + v
+	}
+	if v, ok := config["base_url"].(string); ok && v != "" && r.Endpoint == "" {
+		r.Endpoint = v + "/chat/completions"
+	}
+	return nil
+}
+
+func (r *ApiRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
+	start := time.Now()
+	prompt := buildPrompt(req)
+
+	buildBody := r.BuildBody
+	if buildBody == nil {
+		buildBody = defaultBuildBody
+	}
+
+	parseResp := r.ParseResponse
+	if parseResp == nil {
+		parseResp = defaultParseResponse
+	}
+
+	raw, err := buildBody(prompt, req.Model, req.MaxTurns*4096)
+	if err != nil {
+		return model.RunResult{}, fmt.Errorf("api runner: build body: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, r.Endpoint, bytes.NewReader(raw))
+	if err != nil {
+		return model.RunResult{}, fmt.Errorf("api runner: create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if r.AuthHeader != "" {
+		httpReq.Header.Set("Authorization", r.AuthHeader)
+	}
+
+	httpResp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return model.RunResult{}, fmt.Errorf("api runner: request: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	respRaw, _ := io.ReadAll(httpResp.Body)
+
+	var logs []model.LogEntry
+	emit := func(level, msg string) {
+		logs = append(logs, model.LogEntry{Level: level, Message: msg, Timestamp: time.Now()})
+		if req.LogSink != nil {
+			req.LogSink(model.LogEntry{Level: level, Message: msg, Timestamp: time.Now()})
+		}
+	}
+
+	emit("debug", fmt.Sprintf("POST %s", r.Endpoint))
+
+	output, errMsg, isError := parseResp(respRaw)
+	if isError {
+		return model.RunResult{
+			WorkerID: req.WorkerID,
+			Success:  false,
+			Output:   errMsg,
+			Logs:     logs,
+			Duration: time.Since(start),
+			Error:    fmt.Errorf("api error: %s", errMsg),
+		}, nil
+	}
+
+	if httpResp.StatusCode >= 400 {
+		return model.RunResult{
+			WorkerID: req.WorkerID,
+			Success:  false,
+			Output:   output,
+			Logs:     logs,
+			Duration: time.Since(start),
+			Error:    fmt.Errorf("api: HTTP %d", httpResp.StatusCode),
+		}, nil
+	}
+
+	emit("debug", output)
+	return model.RunResult{
+		WorkerID: req.WorkerID,
+		Success:  true,
+		Output:   strings.TrimSpace(output),
+		Logs:     logs,
+		Duration: time.Since(start),
+	}, nil
+}
+
+func defaultBuildBody(prompt, model string, maxTokens int) ([]byte, error) {
+	body := map[string]any{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "system", "content": "You are an AI coding agent."},
+			{"role": "user", "content": prompt},
+		},
+		"max_tokens": maxTokens,
+	}
+	return json.Marshal(body)
+}
+
+type chatResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error,omitempty"`
+}
+
+func defaultParseResponse(body []byte) (output, errMsg string, isError bool) {
+	var resp chatResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Sprintf("parse error: %v", err), true
+	}
+	if resp.Error != nil {
+		return "", fmt.Sprintf("%s (%s)", resp.Error.Message, resp.Error.Type), true
+	}
+	for _, c := range resp.Choices {
+		if c.Message.Content != "" {
+			output += c.Message.Content
+		}
+	}
+	return output, "", false
+}
