@@ -31,8 +31,9 @@ type ActiveRunStatus struct {
 }
 
 type ConcurrencyStatus struct {
-	Max    int `json:"max"`
-	Active int `json:"active"`
+	Max         int            `json:"max"`
+	Active      int            `json:"active"`
+	AgentActive map[string]int `json:"agent_active,omitempty"`
 }
 
 func humanDuration(d time.Duration) string {

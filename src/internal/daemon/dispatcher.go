@@ -52,22 +52,23 @@ type Dispatcher struct {
 	startedAt  time.Time
 
 	router      *router.Router
-	sources     map[string]source.Adapter // source id → connected adapter
-	runners     map[string]runner.Adapter // worker id → configured runner
-	agentRunner map[string]string         // agent id → runner type (cli, script, …)
+	sources     map[string]source.Adapter
+	runners     map[string]runner.Adapter
+	agentRunner map[string]string
 
-	db       *db.Client      // SQLite database for state and logging
-	logger   *logging.Logger // Structured logger (file + DB)
-	retryMgr *RetryManager   // Retry logic and backoff
+	db       *db.Client
+	logger   *logging.Logger
+	retryMgr *RetryManager
 
-	sem        chan struct{} // concurrency semaphore
-	active     atomic.Int32  // number of goroutines currently running
-	inFlight   sync.Map      // cell id → struct{}: prevents double-dispatch
-	activeRuns sync.Map      // run id → model.ActiveRun
-	runCancel  sync.Map      // cell id → context.CancelFunc: cancel running dispatch
-	retryQueue sync.Map      // cell id → retryQueueEntry: cells pending retry
+	sem       chan struct{}             // poll concurrency (size 1)
+	agentSem  map[string]chan struct{} // per-agent dispatch concurrency
+	active    atomic.Int32
+	inFlight  sync.Map
+	activeRuns sync.Map
+	runCancel  sync.Map
+	retryQueue sync.Map
 
-	stats  map[string]*sourceStat // source id → stats
+	stats  map[string]*sourceStat
 	statMu sync.RWMutex
 
 	mu     sync.Mutex
@@ -93,8 +94,19 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		db:          dbClient,
 		logger:      logger,
 		retryMgr:    NewRetryManager(&cfg.Settings.RetryPolicy),
-		sem:         make(chan struct{}, max(cfg.Settings.Concurrency, 1)),
+		sem:         make(chan struct{}, 1), // poll: one at a time
+		agentSem:    make(map[string]chan struct{}),
 		stats:       make(map[string]*sourceStat),
+	}
+
+	// Per-agent concurrency: each agent gets its own semaphore so that
+	// e.g. 2 long-running engineers don't starve the reviewer.
+	for _, ac := range cfg.Agents {
+		maxW := ac.MaxWorkers
+		if maxW < 1 {
+			maxW = 1
+		}
+		d.agentSem[ac.ID] = make(chan struct{}, maxW)
 	}
 
 	for _, sc := range cfg.Sources {
@@ -286,19 +298,23 @@ func (d *Dispatcher) processPendingRetries(ctx context.Context) {
 		// Remove from queue first
 		d.retryQueue.Delete(entry.cell.ID)
 
-		aplog.Info("retrying cell %s (attempt %d)", entry.cell.ID, entry.attempt)
-
-		d.sem <- struct{}{}
+		agentID := entry.match.Route.Agent
+		sem := d.agentSem[agentID]
+		if sem != nil {
+			sem <- struct{}{}
+		}
 		d.active.Add(1)
 
-		go func(e retryQueueEntry) {
+		go func(e retryQueueEntry, sem chan struct{}) {
 			defer func() {
-				<-d.sem
+				if sem != nil {
+					<-sem
+				}
 				d.active.Add(-1)
 				d.inFlight.Delete(e.cell.ID)
 			}()
 			_ = d.dispatch(ctx, e.cell, e.adapter, e.match)
-		}(entry)
+		}(entry, sem)
 	}
 }
 
@@ -339,24 +355,30 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 				continue
 			}
 
-			d.sem <- struct{}{}
+			agentID := match.Route.Agent
+			sem := d.agentSem[agentID]
+			if sem != nil {
+				sem <- struct{}{}
+			}
 			d.active.Add(1)
 			wg.Add(1)
 
-			go func() {
+			go func(id string, sem chan struct{}) {
 				defer func() {
-					<-d.sem
+					if sem != nil {
+						<-sem
+					}
 					d.active.Add(-1)
-					d.inFlight.Delete(cell.ID)
+					d.inFlight.Delete(id)
 					wg.Done()
 				}()
 				result := d.dispatch(ctx, cell, adapter, match)
 				if !result.Success {
 					mu.Lock()
-					failedIDs = append(failedIDs, cell.ID)
+					failedIDs = append(failedIDs, id)
 					mu.Unlock()
 				}
-			}()
+			}(cell.ID, sem)
 		}
 	}
 
@@ -370,13 +392,25 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 
 // Status returns a snapshot for the IPC status endpoint.
 func (d *Dispatcher) Status() StatusResponse {
+	// Build per-agent concurrency status
+	agentStatus := make(map[string]int)
+	for _, ac := range d.cfg.Agents {
+		ch := d.agentSem[ac.ID]
+		used := 0
+		if ch != nil {
+			used = len(ch)
+		}
+		agentStatus[ac.ID] = used
+	}
+
 	resp := StatusResponse{
 		Version:    version.Version,
 		ConfigFile: d.configFile,
 		Uptime:     humanDuration(time.Since(d.startedAt)),
 		Concurrency: ConcurrencyStatus{
-			Max:    d.cfg.Settings.Concurrency,
-			Active: int(d.active.Load()),
+			Max:         d.cfg.Settings.Concurrency,
+			Active:      int(d.active.Load()),
+			AgentActive: agentStatus,
 		},
 	}
 
@@ -434,12 +468,9 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, cellID string) error {
 		return true
 	})
 
-	// Release one semaphore slot if the task was running
-	select {
-	case <-d.sem:
-		d.active.Add(-1)
-	default:
-	}
+	// Remove from in-flight so it can be re-dispatched; the agent semaphore
+	// slot is released by the running goroutine's defer when the cancelled
+	// context makes dispatch return.
 
 	// Mark the running execution as interrupted in DB
 	if d.db != nil {
@@ -595,7 +626,11 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 		aplog.Info("dispatching cell %s (%q) → worker %s [%s]",
 			cell.ID, cell.Title, match.Worker.ID, match.Worker.Model)
 
-		d.sem <- struct{}{}
+		agentID := match.Route.Agent
+		agentCh := d.agentSem[agentID]
+		if agentCh != nil {
+			agentCh <- struct{}{}
+		}
 		d.active.Add(1)
 
 		runID := d.nextRunID()
@@ -610,7 +645,9 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 
 		go func() {
 			defer func() {
-				<-d.sem
+				if agentCh != nil {
+					<-agentCh
+				}
 				d.active.Add(-1)
 				d.inFlight.Delete(cell.ID)
 				d.activeRuns.Delete(runID)

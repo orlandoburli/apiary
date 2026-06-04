@@ -65,6 +65,7 @@ type AgentConfig struct {
 	PreferredModels []string `yaml:"preferred_models"`
 	Skills          []string `yaml:"skills"`
 	Runner          string   `yaml:"runner"`
+	MaxWorkers      int      `yaml:"max_workers"` // max concurrent tasks; 0 = default (1)
 }
 
 type WorkerConfig struct {
