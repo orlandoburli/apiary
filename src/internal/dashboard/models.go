@@ -23,6 +23,12 @@ type Model struct {
 }
 
 // OverviewTab shows dispatcher status and summary metrics.
+type AgentCount struct {
+	ID          string
+	Running     int
+	MaxWorkers  int
+}
+
 type OverviewTab struct {
 	Status          string
 	Uptime          string
@@ -35,6 +41,7 @@ type OverviewTab struct {
 	ThroughputRatio string
 	AvgDuration     string
 	SuccessRate     string
+	AgentBreakdown  []AgentCount
 }
 
 // TaskView is which sub-screen the Tasks tab is showing.
