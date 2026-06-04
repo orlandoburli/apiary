@@ -889,6 +889,18 @@ func (a *App) fetchOverview() tea.Cmd {
 		defer cancel()
 
 		data := OverviewTab{Status: "Unknown", Concurrency: 4}
+
+		// Enrich agent breakdown from config + running stats
+		if a.cfg != nil {
+			for _, ac := range a.cfg.Agents {
+				mw := ac.MaxWorkers
+				if mw < 1 {
+					mw = 1
+				}
+				data.AgentBreakdown = append(data.AgentBreakdown, AgentCount{ID: ac.ID, MaxWorkers: mw})
+			}
+		}
+
 		if dbConn != nil {
 			if stats, err := dbConn.GetDashboardStats(ctx, time.Now().AddDate(0, 0, -1)); err == nil && stats != nil {
 				data.Status = stats.DispatcherStatus
@@ -903,6 +915,16 @@ func (a *App) fetchOverview() tea.Cmd {
 					data.ThroughputRatio = fmt.Sprintf("%.1f", float64(stats.CompletedToday)/24)
 				} else {
 					data.ThroughputRatio = "0.0"
+				}
+			}
+			// Fill agent running counts from agent stats
+			if agentRows, err := dbConn.GetAgentStats(ctx); err == nil {
+				runMap := map[string]int{}
+				for _, ag := range agentRows {
+					runMap[ag.ID] = ag.RunningCount
+				}
+				for i := range data.AgentBreakdown {
+					data.AgentBreakdown[i].Running = runMap[data.AgentBreakdown[i].ID]
 				}
 			}
 		}
@@ -1316,12 +1338,30 @@ func (a *App) renderOverviewTab(height int) string {
 		status = StyleWarning.Render("⟳")
 	}
 
-	content := fmt.Sprintf(
+	var b strings.Builder
+	fmt.Fprintf(&b,
 		"Status:       %s %s\n"+
 			"Concurrency:  %d workers\n"+
 			"Agents:       %d active\n"+
 			"\n"+
-			"Tasks (24h):\n"+
+			"Agents:\n",
+		status, valueOr(o.Status, "Unknown"),
+		o.Concurrency,
+		o.ActiveAgents)
+
+	for _, ac := range o.AgentBreakdown {
+		label := fmt.Sprintf("  %-16s", ac.ID)
+		runStr := fmt.Sprintf("%d/%d", ac.Running, ac.MaxWorkers)
+		if ac.Running >= ac.MaxWorkers {
+			runStr = StyleWarning.Render(runStr)
+		} else if ac.Running > 0 {
+			runStr = StyleSuccess.Render(runStr)
+		}
+		b.WriteString(label + runStr + "\n")
+	}
+
+	fmt.Fprintf(&b,
+		"\nTasks (24h):\n"+
 			"  Running:    %d\n"+
 			"  Queued:     %d\n"+
 			"  Completed:  %s\n"+
@@ -1331,9 +1371,6 @@ func (a *App) renderOverviewTab(height int) string {
 			"  Throughput:   %s tasks/min\n"+
 			"  Avg Duration: %s\n"+
 			"  Success Rate: %s\n",
-		status, valueOr(o.Status, "Unknown"),
-		o.Concurrency,
-		o.ActiveAgents,
 		o.ActiveRuns,
 		o.QueuedTasks,
 		StyleSuccess.Render(fmt.Sprintf("%d ✓", o.CompletedToday)),
@@ -1342,7 +1379,7 @@ func (a *App) renderOverviewTab(height int) string {
 		valueOr(o.AvgDuration, "0.0s"),
 		valueOr(o.SuccessRate, "0.0%"),
 	)
-	return a.box("OVERVIEW", content, height)
+	return a.box("OVERVIEW", b.String(), height)
 }
 
 func (a *App) renderTasksTab(height int) string {
@@ -1600,19 +1637,20 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 
 	const (
 		cursorW    = 2
+		workersW   = 8
 		statusW    = 9
 		completedW = 10
 		avgW       = 9
 		successW   = 7
 	)
 	inner := a.model.width - 2
-	agentW := inner - cursorW - statusW - completedW - avgW - successW - 5 // 5 separators
+	agentW := inner - cursorW - workersW - statusW - completedW - avgW - successW - 6
 	if agentW < 12 {
 		agentW = 12
 	}
 
 	var b strings.Builder
-	header := pad("", cursorW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + pad("COMPLETED", completedW) + " " + pad("AVG", avgW) + " " + "SUCCESS"
+	header := pad("", cursorW) + " " + pad("AGENT", agentW) + " " + pad("WORKERS", workersW) + " " + pad("STATUS", statusW) + " " + pad("COMPLETED", completedW) + " " + pad("AVG", avgW) + " " + "SUCCESS"
 	b.WriteString(StyleTableHeader.Render(header) + "\n")
 	for i, agent := range ag.Agents {
 		selected := i == ag.SelectedIdx
@@ -1622,11 +1660,21 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 			cursor = StyleFocusedArrow.Render("▶") + " "
 			name = StyleSelectedRow.Render(name)
 		}
+		workers := fmt.Sprintf("%d/%d", agent.RunningCount, agent.MaxWorkers)
+		if agent.MaxWorkers > 0 {
+			if agent.RunningCount >= agent.MaxWorkers {
+				workers = StyleWarning.Render(workers)
+			} else if agent.RunningCount > 0 {
+				workers = StyleSuccess.Render(workers)
+			} else {
+				workers = StyleMuted.Render(workers)
+			}
+		}
 		status := pad(agentStatusText(agent.Status), statusW)
 		completed := pad(fmt.Sprintf("%d", agent.CompletedCount), completedW)
 		avg := pad(fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000), avgW)
 		success := successRateStyled(agent.SuccessRate)
-		b.WriteString(cursor + " " + name + " " + status + " " + completed + " " + avg + " " + success + "\n")
+		b.WriteString(cursor + " " + name + " " + pad(workers, workersW) + " " + status + " " + completed + " " + avg + " " + success + "\n")
 	}
 	return a.box("AGENTS", b.String(), height)
 }
