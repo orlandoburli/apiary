@@ -1439,7 +1439,7 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 			cursor = StyleFocusedArrow.Render("▶") + " "
 			name = StyleSelectedRow.Render(name)
 		}
-		status := pad(StatusColor(agent.Status)+" "+agentStatusText(agent.Status), statusW)
+		status := pad(agentStatusText(agent.Status), statusW)
 		completed := pad(fmt.Sprintf("%d", agent.CompletedCount), completedW)
 		avg := pad(fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000), avgW)
 		success := successRateStyled(agent.SuccessRate)
@@ -1471,7 +1471,7 @@ func (a *App) renderAgentDetail(ag *AgentsTab, height int) string {
 		b.WriteString("  " + StyleLabel.Render(pad(k+":", 16)) + " " + v + "\n")
 	}
 	row("Agent", StyleValueStrong.Render(d.ID))
-	row("Status", StatusColor(d.Status)+" "+agentStatusText(d.Status))
+	row("Status", agentStatusText(d.Status))
 	running := "0"
 	if d.RunningCount > 0 {
 		running = StyleWarning.Render(fmt.Sprintf("%d ⟳", d.RunningCount))
@@ -1590,15 +1590,15 @@ func (a *App) renderAgentTaskLogs(ag *AgentsTab, height int) string {
 func agentStatusText(s string) string {
 	switch s {
 	case "active":
-		return StyleSuccess.Render("🟢 running")
+		return StyleSuccess.Render("●") + " running"
 	case "stale":
-		return StyleWarning.Render("🟡 stale")
+		return StyleWarning.Render("◉") + " stale"
 	case "zombie":
-		return StyleError.Render("🔴 zombie")
+		return StyleError.Render("●") + " zombie"
 	case "error":
-		return StyleError.Render("error")
+		return StyleError.Render("●") + " error"
 	case "idle":
-		return StyleMuted.Render("○ idle")
+		return StyleMuted.Render("○") + " idle"
 	default:
 		return valueOr(s, "—")
 	}

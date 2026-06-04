@@ -96,6 +96,30 @@ runners:
 
 See `apiary.yaml` schema docs for full runner options.
 
+## Per-agent concurrency (`max_workers`)
+
+Each agent runs independently — one agent's long-running tasks don't starve
+another. Set `max_workers` to control how many tasks an agent can handle at
+once:
+
+```yaml
+agents:
+  - id: engineer
+    description: "Implements tasks"
+    soul_file: .apiary/agents/engineer.md
+    preferred_models: [claude-sonnet-4-6]
+    max_workers: 3       # up to 3 engineers in parallel
+
+  - id: reviewer
+    description: "Reviews code"
+    soul_file: .apiary/agents/reviewer.md
+    preferred_models: [claude-sonnet-4-6]
+    max_workers: 2       # reviewers don't block on engineers
+```
+
+Default is 1 if not set. The global `settings.concurrency` now only limits
+concurrent polls (one source at a time).
+
 ## Routing with `agent:*` labels
 
 A common pattern is to label GitHub issues with `agent:<role>` and configure routes matching that label:
