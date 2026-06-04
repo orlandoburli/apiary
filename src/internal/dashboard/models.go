@@ -114,6 +114,13 @@ type AgentStatus struct {
 	PID             int
 	HeartbeatAt     *time.Time
 	HeartbeatCount  int
+
+	// Config fields (enriched from apiary.yaml)
+	MaxWorkers      int
+	RunnerType      string
+	PreferredModels []string
+	SoulFile        string
+	Description     string
 }
 
 // LogsTab shows service logs with filtering.

@@ -535,6 +535,33 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("/api/config/agent/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		agentID := strings.TrimPrefix(r.URL.Path, "/api/config/agent/")
+		if agentID == "" {
+			http.Error(w, "missing agent id", http.StatusBadRequest)
+			return
+		}
+
+		var req struct {
+			Model      string `json:"model,omitempty"`
+			MaxWorkers int    `json:"max_workers,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if err := d.UpdateAgentConfig(agentID, req.Model, req.MaxWorkers); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"updated": agentID, "model": req.Model, "max_workers": req.MaxWorkers})
+	})
 	mux.HandleFunc("/clearlogs/", func(w http.ResponseWriter, r *http.Request) {
 		cellID := strings.TrimPrefix(r.URL.Path, "/clearlogs/")
 		if cellID == "" {
@@ -1136,6 +1163,57 @@ func workerRunConfig(wc config.WorkerConfig) map[string]any {
 		}
 	}
 	return m
+}
+
+// UpdateAgentConfig applies a runtime change to an agent's configuration. It
+// updates the in-memory Config (so future dispatches use the new values), resizes
+// the per-agent semaphore if max_workers changed, and persists the YAML file.
+// Supported fields: model, max_workers.
+func (d *Dispatcher) UpdateAgentConfig(agentID, model string, maxWorkers int) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var agent *config.AgentConfig
+	for i := range d.cfg.Agents {
+		if d.cfg.Agents[i].ID == agentID {
+			agent = &d.cfg.Agents[i]
+			break
+		}
+	}
+	if agent == nil {
+		return fmt.Errorf("agent %q not found", agentID)
+	}
+
+	if maxWorkers > 0 {
+		agent.MaxWorkers = maxWorkers
+		// Resize the per-agent semaphore. We replace it entirely; in-flight
+		// goroutines that already acquired the old channel will release into the
+		// old channel, which is harmless (the channel will eventually be GC'd).
+		d.agentSem[agentID] = make(chan struct{}, maxWorkers)
+	}
+
+	if model != "" {
+		// Prepend so it takes priority; deduplicate to avoid duplicates.
+		seen := map[string]bool{}
+		var updated []string
+		for _, m := range agent.PreferredModels {
+			seen[m] = true
+			updated = append(updated, m)
+		}
+		if !seen[model] {
+			updated = append([]string{model}, updated...)
+		}
+		agent.PreferredModels = updated
+	}
+
+	// Persist to YAML
+	if d.configFile != "" {
+		if err := d.cfg.Save(d.configFile); err != nil {
+			return fmt.Errorf("persisting config: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func max(a, b int) int {
