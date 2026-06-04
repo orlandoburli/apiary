@@ -103,14 +103,17 @@ type AgentsTab struct {
 
 type AgentStatus struct {
 	ID              string
-	Status          string // active, idle, error
-	RunningCount    int    // in-flight executions right now
-	CurrentTask     string // title of an in-flight task (when active)
+	Status          string // active, stale, zombie, idle
+	RunningCount    int
+	CurrentTask     string
 	QueuedCount     int
 	CompletedCount  int
 	AvgDurationMs   int64
 	SuccessRate     float64
 	LastTaskEndedAt *time.Time
+	PID             int
+	HeartbeatAt     *time.Time
+	HeartbeatCount  int
 }
 
 // LogsTab shows service logs with filtering.
