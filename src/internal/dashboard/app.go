@@ -1598,7 +1598,7 @@ func agentStatusText(s string) string {
 	case "error":
 		return "🔴 error"
 	case "idle":
-		return "⚪ idle"
+		return "💤 idle"
 	default:
 		return valueOr(s, "—")
 	}
