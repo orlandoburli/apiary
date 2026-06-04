@@ -134,9 +134,9 @@ func (c *Client) UpdateExecution(ctx context.Context, exec *Execution) error {
 // SetPID stores the OS PID for a running execution.
 func (c *Client) SetPID(ctx context.Context, execID int64, pid int) error {
 	_, err := c.db.ExecContext(ctx, `
-		UPDATE task_executions SET pid = ?, heartbeat_at = ?, heartbeat_count = 1, updated_at = ?
+		UPDATE task_executions SET pid = ?, heartbeat_at = ?, heartbeat_count = 1
 		WHERE id = ?
-	`, pid, time.Now(), time.Now(), execID)
+	`, pid, time.Now(), execID)
 	return err
 }
 
