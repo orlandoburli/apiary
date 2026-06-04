@@ -1594,7 +1594,7 @@ func agentStatusText(s string) string {
 	case "stale":
 		return "🟡 stale"
 	case "zombie":
-		return "🔴 zombie"
+		return "🧟 zombie"
 	case "error":
 		return "🔴 error"
 	case "idle":
