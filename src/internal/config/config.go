@@ -58,6 +58,7 @@ type RunnerConfig struct {
 	ID     string         `yaml:"id"`
 	Type   string         `yaml:"type"`
 	Config map[string]any `yaml:"config"`
+	Models []string       `yaml:"models,omitempty"` // models this runner supports
 }
 
 type AgentConfig struct {
