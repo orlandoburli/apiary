@@ -5,7 +5,7 @@ edit_uri: edit/main/docs/
 
 theme:
   name: material
-  logo: icon.svg
+  logo: logo.svg
   favicon: icon.svg
   palette:
     scheme: default
