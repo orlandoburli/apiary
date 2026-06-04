@@ -31,6 +31,10 @@ type commentRequest struct {
 	Body string `json:"body"`
 }
 
+type labelListRequest struct {
+	Labels []string `json:"labels"`
+}
+
 type labelCreateRequest struct {
 	Name string `json:"name"`
 }
