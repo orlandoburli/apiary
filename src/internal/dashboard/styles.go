@@ -49,7 +49,7 @@ var (
 	StyleTableHeader = lipgloss.NewStyle().Bold(true).Foreground(ColorAccent)
 
 	// Selected list row (highlight bar) and its cursor arrow.
-	StyleSelectedRow  = lipgloss.NewStyle().Background(ColorSelBg).Foreground(lipgloss.Color("231"))
+	StyleSelectedRow  = lipgloss.NewStyle().Background(ColorSelBg)
 	StyleFocusedArrow = lipgloss.NewStyle().Bold(true).Foreground(ColorFocused)
 
 	// Detail view label / strong value.
