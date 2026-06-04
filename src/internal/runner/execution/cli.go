@@ -82,7 +82,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	for k, v := range req.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	if r.promptFlag == "" {
+	if r.promptFlag == "" && !r.promptPositional {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
 
