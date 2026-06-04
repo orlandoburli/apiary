@@ -255,10 +255,10 @@ func (c *Config) ApplyAgentDiff(path string, diff AgentDiff) error {
 }
 
 // mergeRawChanges surgically applies in-memory agent changes to the raw YAML
-// content, preserving comments, formatting, and ${VAR} references.
+// content using line-based manipulation, preserving original formatting,
+// indentation, comments, key ordering, and ${VAR} references.
 func (c *Config) mergeRawChanges() (string, error) {
 	if c.rawContent == "" {
-		// No raw content available — fall back to plain marshal.
 		data, err := yaml.Marshal(c)
 		if err != nil {
 			return "", fmt.Errorf("marshalling config: %w", err)
@@ -266,102 +266,114 @@ func (c *Config) mergeRawChanges() (string, error) {
 		return string(data), nil
 	}
 
-	var doc yaml.Node
-	if err := yaml.Unmarshal([]byte(c.rawContent), &doc); err != nil {
-		return "", fmt.Errorf("parsing raw config: %w", err)
-	}
+	lines := strings.Split(c.rawContent, "\n")
+	changed := false
 
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return c.rawContent, nil
-	}
-
-	root := doc.Content[0] // the mapping node
-	if root.Kind != yaml.MappingNode {
-		return c.rawContent, nil
-	}
-
-	// Find the agents key in the root mapping
-	var agentsNode *yaml.Node
-	for i := 0; i < len(root.Content)-1; i += 2 {
-		if root.Content[i].Value == "agents" {
-			agentsNode = root.Content[i+1]
-			break
-		}
-	}
-	if agentsNode == nil || agentsNode.Kind != yaml.SequenceNode {
-		// No agents section — fall back to plain marshal
-		data, err := yaml.Marshal(c)
-		if err != nil {
-			return "", fmt.Errorf("marshalling config: %w", err)
-		}
-		return string(data), nil
-	}
-
-	// For each agent in memory, find the matching node in the YAML tree
-	// and update its scalar values.
 	for _, memAgent := range c.Agents {
-		node := findAgentNode(agentsNode, memAgent.ID)
-		if node == nil {
+		if memAgent.Runner == "" && memAgent.MaxWorkers == 0 {
 			continue
 		}
-		updateAgentNode(node, memAgent)
-	}
-
-	data, err := yaml.Marshal(&doc)
-	if err != nil {
-		return "", fmt.Errorf("marshalling updated config: %w", err)
-	}
-	return string(data), nil
-}
-
-// findAgentNode searches a YAML sequence of agent mappings for one with
-// matching id. Returns the mapping node or nil.
-func findAgentNode(seq *yaml.Node, id string) *yaml.Node {
-	for _, item := range seq.Content {
-		if item.Kind != yaml.MappingNode {
+		idx := findAgentBlock(lines, memAgent.ID)
+		if idx < 0 {
 			continue
 		}
-		for j := 0; j < len(item.Content)-1; j += 2 {
-			if item.Content[j].Value == "id" && item.Content[j+1].Value == id {
-				return item
+
+		// Determine indentation from the agent's "- id:" line
+		indent := leadingSpaces(lines[idx])
+
+		if memAgent.Runner != "" {
+			idx2, found := findKeyInBlock(lines, idx+1, indent, "runner")
+			if found {
+				old := lines[idx2]
+				new := setYAMLValue(old, memAgent.Runner)
+				if new != old {
+					lines[idx2] = new
+					changed = true
+				}
+			} else {
+				// Insert after the first key-value pair (id or description)
+				insertAt := idx + 1
+				for insertAt < len(lines) && leadingSpaces(lines[insertAt]) > indent {
+					insertAt++
+				}
+				kv := fmt.Sprintf("%s  runner: %s", strings.Repeat(" ", indent), memAgent.Runner)
+				lines = append(lines[:insertAt], append([]string{kv}, lines[insertAt:]...)...)
+				changed = true
+			}
+		}
+		if memAgent.MaxWorkers > 0 {
+			idx2, found := findKeyInBlock(lines, idx+1, indent, "max_workers")
+			if found {
+				old := lines[idx2]
+				new := setYAMLValue(old, fmt.Sprintf("%d", memAgent.MaxWorkers))
+				if new != old {
+					lines[idx2] = new
+					changed = true
+				}
+			} else {
+				insertAt := idx + 1
+				for insertAt < len(lines) && leadingSpaces(lines[insertAt]) > indent {
+					insertAt++
+				}
+				kv := fmt.Sprintf("%s  max_workers: %d", strings.Repeat(" ", indent), memAgent.MaxWorkers)
+				lines = append(lines[:insertAt], append([]string{kv}, lines[insertAt:]...)...)
+				changed = true
 			}
 		}
 	}
-	return nil
-}
 
-// updateAgentNode sets scalar fields in the YAML mapping node to match the
-// in-memory agent config. Non-scalar fields (preferred_models, skills) are
-// skipped — the raw content preserves them unchanged from Load().
-func updateAgentNode(node *yaml.Node, agent AgentConfig) {
-	setScalar(node, "runner", agent.Runner)
-	setScalar(node, "max_workers", intOrString(agent.MaxWorkers))
-}
-
-// setScalar sets the value of a key in a mapping node. If the key doesn't
-// exist it is appended. Value is set only if non-empty / non-zero.
-func setScalar(node *yaml.Node, key, value string) {
-	if value == "" || value == "0" {
-		return
+	if !changed {
+		return c.rawContent, nil
 	}
-	for i := 0; i < len(node.Content)-1; i += 2 {
-		if node.Content[i].Value == key {
-			node.Content[i+1].Value = value
-			return
+	return strings.Join(lines, "\n"), nil
+}
+
+// findAgentBlock finds the line index of "- id: <agentID>" in the YAML.
+// Returns -1 if not found.
+func findAgentBlock(lines []string, agentID string) int {
+	target := "- id: " + agentID
+	for i, line := range lines {
+		if strings.TrimSpace(line) == target {
+			return i
 		}
 	}
-	// Key not found — append it.
-	node.Content = append(node.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Value: key},
-		&yaml.Node{Kind: yaml.ScalarNode, Value: value},
-	)
+	return -1
 }
 
-func intOrString(n int) string {
-	if n == 0 {
-		return ""
+// findKeyInBlock finds a line with the given key within a YAML block indented
+// at blockIndent or deeper. Returns -1, false if not found.
+func findKeyInBlock(lines []string, start int, blockIndent int, key string) (int, bool) {
+	prefix := key + ":"
+	for i := start; i < len(lines); i++ {
+		sp := leadingSpaces(lines[i])
+		if sp <= blockIndent && strings.TrimSpace(lines[i]) != "" {
+			break // left the block
+		}
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, prefix) && !strings.HasPrefix(trimmed, "#") {
+			return i, true
+		}
 	}
-	return fmt.Sprintf("%d", n)
+	return -1, false
+}
+
+// setYAMLValue replaces the value part of a "key: value" YAML line.
+func setYAMLValue(line, newValue string) string {
+	idx := strings.Index(line, ":")
+	if idx < 0 {
+		return line
+	}
+	return line[:idx+1] + " " + newValue
+}
+
+// leadingSpaces returns the number of leading space characters.
+func leadingSpaces(s string) int {
+	for i, r := range s {
+		if r != ' ' {
+			return i
+		}
+	}
+	return len(s)
 }
 
 func Load(path string) (*Config, error) {
