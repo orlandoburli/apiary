@@ -9,6 +9,10 @@ runners:
       model_flag: --model
       prompt_flag: -p
       args: ["--output-format", "stream-json", "--verbose"]
+    models:
+      - claude-opus-4-8
+      - claude-sonnet-4-6
+      - claude-haiku-4-5
 
 default_runner: claude-cli
 
