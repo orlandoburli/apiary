@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -297,6 +298,34 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		a.model.loading = true
 		return a, a.fetchActiveTab()
+	case "/":
+		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.View == TaskViewList {
+			a.model.tasksTab.FilterActive = true
+			a.model.tasksTab.FilterText = ""
+		}
+	case "s":
+		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.View == TaskViewList {
+			t := a.model.tasksTab
+			switch t.SortField {
+			case "", "time":
+				t.SortField = "status"
+			case "status":
+				t.SortField = "agent"
+			case "agent":
+				t.SortField = ""
+			}
+		}
+	case "esc":
+		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.FilterActive {
+			a.model.tasksTab.FilterActive = false
+			a.model.tasksTab.FilterText = ""
+			a.model.tasksTab.SelectedIdx = 0
+		}
+	case "backspace":
+		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.FilterActive && len(a.model.tasksTab.FilterText) > 0 {
+			a.model.tasksTab.FilterText = a.model.tasksTab.FilterText[:len(a.model.tasksTab.FilterText)-1]
+			a.model.tasksTab.SelectedIdx = 0
+		}
 	case "up":
 		switch a.model.ActiveTab() {
 		case "Tasks":
@@ -315,8 +344,11 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down":
 		switch a.model.ActiveTab() {
 		case "Tasks":
-			if a.model.tasksTab != nil && a.model.tasksTab.SelectedIdx < len(a.model.tasksTab.History)-1 {
-				a.model.tasksTab.SelectedIdx++
+			if a.model.tasksTab != nil {
+				maxIdx := len(a.filteredTasks(a.model.tasksTab)) - 1
+				if a.model.tasksTab.SelectedIdx < maxIdx {
+					a.model.tasksTab.SelectedIdx++
+				}
 			}
 		case "Agents":
 			if a.model.agentsTab != nil && a.model.agentsTab.SelectedIdx < len(a.model.agentsTab.Agents)-1 {
@@ -368,6 +400,13 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if ag, ok := a.selectedAgent(); ok {
 				a.model.agentsTab.Detail = ag
 				a.model.agentsTab.View = AgentViewDetail
+			}
+		default:
+			// If task filter is active, any printable char appends to filter text
+			if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.FilterActive && len(key) == 1 && key >= " " && key <= "~" {
+				a.model.tasksTab.FilterText += key
+				a.model.tasksTab.SelectedIdx = 0
+				return a, nil
 			}
 		}
 	}
@@ -1400,9 +1439,13 @@ func (a *App) renderTasksTab(height int) string {
 }
 
 func (a *App) renderTaskList(t *TasksTab, height int) string {
-	if len(t.History) == 0 {
-		body := StyleMuted.Render("No tasks yet — start the dispatcher and give it work.") + "\n"
-		return a.box("TASKS", body, height)
+	items := a.filteredTasks(t)
+	if len(items) == 0 {
+		msg := "No tasks yet — start the dispatcher and give it work."
+		if t.FilterText != "" {
+			msg = "No tasks match filter"
+		}
+		return a.box("TASKS", StyleMuted.Render(msg)+"\n", height)
 	}
 
 	const (
@@ -1413,15 +1456,54 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 		whenW   = 11
 	)
 	inner := a.model.width - 2
-	titleW := inner - cursorW - numW - agentW - statusW - whenW - 5 // 5 single-space separators
+	titleW := inner - cursorW - numW - agentW - statusW - whenW - 5
 	if titleW < 10 {
 		titleW = 10
 	}
 
 	var b strings.Builder
-	header := pad("", cursorW) + " " + pad("#", numW) + " " + pad("TASK", titleW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + "WHEN"
+
+	// Filter bar — shown only when active
+	if t.FilterActive {
+		filterBar := pad("", cursorW) + " " + StyleLabel.Render("filter:") + " " + t.FilterText + "█"
+		b.WriteString(StyleSelectedRow.Render(filterBar) + "\n")
+	}
+
+	// Header with sort indicator
+	sortIndicator := ""
+	switch t.SortField {
+	case "status":
+		sortIndicator = " sort:status"
+	case "agent":
+		sortIndicator = " sort:agent"
+	}
+	header := pad("", cursorW) + " " + pad("#", numW) + " " + pad("TASK", titleW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + "WHEN" + sortIndicator
 	b.WriteString(StyleTableHeader.Render(header) + "\n")
-	for i, it := range t.History {
+
+	// Available rows after header + filter bar
+	rowsAvail := height - 3 // borders + header
+	if t.FilterActive {
+		rowsAvail-- // filter bar
+	}
+	if rowsAvail < 1 {
+		rowsAvail = 1
+	}
+
+	// Window the list so the cursor row stays visible
+	start := t.SelectedIdx - rowsAvail/2
+	if start > len(items)-rowsAvail {
+		start = len(items) - rowsAvail
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := start + rowsAvail
+	if end > len(items) {
+		end = len(items)
+	}
+
+	for i := start; i < end; i++ {
+		it := items[i]
 		selected := i == t.SelectedIdx
 		cursor := "  "
 		num := pad(truncate(valueOr(it.Number, "—"), numW), numW)
@@ -1442,7 +1524,69 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 		}
 		b.WriteString(cursor + " " + num + " " + titleText + " " + agent + " " + status + " " + when + "\n")
 	}
+
+	// Scroll indicator
+	if start > 0 || end < len(items) {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  %d of %d tasks", t.SelectedIdx+1, len(items))) + "\n")
+	}
+
 	return a.box("TASKS", b.String(), height)
+}
+
+// filteredTasks returns the task list after applying filter and sort.
+func (a *App) filteredTasks(t *TasksTab) []TaskItem {
+	out := t.History
+	if t.FilterText != "" {
+		filter := strings.ToLower(t.FilterText)
+		var filtered []TaskItem
+		for _, it := range out {
+			if strings.Contains(strings.ToLower(it.Title), filter) ||
+				strings.Contains(strings.ToLower(it.TaskID), filter) ||
+				strings.Contains(strings.ToLower(it.Agent), filter) ||
+				strings.Contains(strings.ToLower(it.Number), filter) ||
+				strings.Contains(strings.ToLower(it.Status), filter) {
+				filtered = append(filtered, it)
+			}
+		}
+		out = filtered
+	}
+
+	sortField := t.SortField
+	if sortField == "" {
+		sortField = "time"
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		switch sortField {
+		case "status":
+			if t.SortAsc {
+				return out[i].Status < out[j].Status
+			}
+			return out[i].Status > out[j].Status
+		case "agent":
+			if t.SortAsc {
+				return out[i].Agent < out[j].Agent
+			}
+			return out[i].Agent > out[j].Agent
+		default:
+			ti := out[i].StartedAt
+			tj := out[j].StartedAt
+			if ti == nil && tj == nil {
+				return false
+			}
+			if ti == nil {
+				return t.SortAsc
+			}
+			if tj == nil {
+				return !t.SortAsc
+			}
+			if t.SortAsc {
+				return ti.Before(*tj)
+			}
+			return ti.After(*tj)
+		}
+	})
+
+	return out
 }
 
 func (a *App) renderTaskDetail(t *TasksTab, height int) string {
