@@ -1,14 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 110 110" width="110" height="110">
+  <defs>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F5A623"/>
+      <stop offset="100%" stop-color="#D4841A"/>
+    </linearGradient>
+  </defs>
   <!-- Outer hexagon -->
   <polygon points="55,5 97.5,30 97.5,80 55,105 12.5,80 12.5,30"
-           fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linejoin="round" opacity="0.9"/>
+           fill="none" stroke="url(#gold)" stroke-width="6" stroke-linejoin="round"/>
   <!-- Top cell -->
   <polygon points="55,28 62,34 62,46 55,52 48,46 48,34"
-           fill="#FFFFFF" opacity="0.85"/>
+           fill="url(#gold)" opacity="0.85"/>
   <!-- Bottom-left cell -->
   <polygon points="35,56 42,62 42,74 35,80 28,74 28,62"
-           fill="#FFFFFF" opacity="0.85"/>
+           fill="url(#gold)" opacity="0.85"/>
   <!-- Bottom-right cell -->
   <polygon points="75,56 82,62 82,74 75,80 68,74 68,62"
-           fill="#FFFFFF" opacity="0.85"/>
+           fill="url(#gold)" opacity="0.85"/>
 </svg>
