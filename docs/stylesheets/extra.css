@@ -1,17 +1,17 @@
 /* Bigger header logo */
 .md-header__button.md-logo {
-  padding: 0.2rem;
+  padding: 0.1rem;
 }
 .md-header__button.md-logo img,
 .md-header__button.md-logo svg {
-  height: 3rem;
+  height: 4rem;
   width: auto;
 }
 
 /* Bigger sidebar logo */
 .md-nav--primary .md-nav__title .md-nav__button.md-logo img,
 .md-nav--primary .md-nav__title .md-nav__button.md-logo svg {
-  height: 3rem;
+  height: 3.5rem;
   width: auto;
 }
 
@@ -21,17 +21,20 @@
   color: #1d1d1f;
 }
 
-/* Hide header title text (logo already has the name) */
+/* Hide header title text but keep it in flex flow to push search right */
 .md-header__title {
-  display: none;
+  visibility: hidden;
+  flex: 1;
+  min-width: 0;
 }
 
-/* Push search to the right */
-.md-header__inner {
-  justify-content: space-between;
-}
+/* Keep search at the far right */
 .md-header__source {
-  margin-left: 0;
+  margin-left: auto;
+}
+
+.md-search__form {
+  margin-left: auto;
 }
 
 /* Header navigation link color */
