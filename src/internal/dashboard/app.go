@@ -370,20 +370,78 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "home":
-		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
-			a.model.logsTab.Scrolled = 0
+		switch a.model.ActiveTab() {
+		case "Tasks":
+			if a.model.tasksTab != nil {
+				a.model.tasksTab.SelectedIdx = 0
+			}
+		case "Agents":
+			if a.model.agentsTab != nil {
+				a.model.agentsTab.SelectedIdx = 0
+			}
+		case "Logs":
+			if a.model.logsTab != nil {
+				a.model.logsTab.Scrolled = 0
+			}
 		}
 	case "end":
-		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
-			a.model.logsTab.Scrolled = lastIndex(len(a.logVisualLines()))
+		switch a.model.ActiveTab() {
+		case "Tasks":
+			if a.model.tasksTab != nil {
+				a.model.tasksTab.SelectedIdx = len(a.filteredTasks(a.model.tasksTab)) - 1
+			}
+		case "Agents":
+			if a.model.agentsTab != nil {
+				a.model.agentsTab.SelectedIdx = len(a.model.agentsTab.Agents) - 1
+			}
+		case "Logs":
+			if a.model.logsTab != nil {
+				a.model.logsTab.Scrolled = lastIndex(len(a.logVisualLines()))
+			}
 		}
 	case "pgup", "ctrl+u":
-		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
-			a.model.logsTab.Scrolled = clampScroll(a.model.logsTab.Scrolled-a.pageSize(), len(a.logVisualLines()))
+		switch a.model.ActiveTab() {
+		case "Tasks":
+			if a.model.tasksTab != nil {
+				a.model.tasksTab.SelectedIdx -= a.pageSize()
+				if a.model.tasksTab.SelectedIdx < 0 {
+					a.model.tasksTab.SelectedIdx = 0
+				}
+			}
+		case "Agents":
+			if a.model.agentsTab != nil {
+				a.model.agentsTab.SelectedIdx -= a.pageSize()
+				if a.model.agentsTab.SelectedIdx < 0 {
+					a.model.agentsTab.SelectedIdx = 0
+				}
+			}
+		case "Logs":
+			if a.model.logsTab != nil {
+				a.model.logsTab.Scrolled = clampScroll(a.model.logsTab.Scrolled-a.pageSize(), len(a.logVisualLines()))
+			}
 		}
 	case "pgdown", "ctrl+d", " ":
-		if a.model.ActiveTab() == "Logs" && a.model.logsTab != nil {
-			a.model.logsTab.Scrolled = clampScroll(a.model.logsTab.Scrolled+a.pageSize(), len(a.logVisualLines()))
+		switch a.model.ActiveTab() {
+		case "Tasks":
+			if a.model.tasksTab != nil {
+				a.model.tasksTab.SelectedIdx += a.pageSize()
+				maxIdx := len(a.filteredTasks(a.model.tasksTab)) - 1
+				if a.model.tasksTab.SelectedIdx > maxIdx {
+					a.model.tasksTab.SelectedIdx = maxIdx
+				}
+			}
+		case "Agents":
+			if a.model.agentsTab != nil {
+				a.model.agentsTab.SelectedIdx += a.pageSize()
+				maxIdx := len(a.model.agentsTab.Agents) - 1
+				if a.model.agentsTab.SelectedIdx > maxIdx {
+					a.model.agentsTab.SelectedIdx = maxIdx
+				}
+			}
+		case "Logs":
+			if a.model.logsTab != nil {
+				a.model.logsTab.Scrolled = clampScroll(a.model.logsTab.Scrolled+a.pageSize(), len(a.logVisualLines()))
+			}
 		}
 	case "enter", "l":
 		switch a.model.ActiveTab() {
@@ -411,13 +469,13 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.model.agentsTab.Detail = ag
 				a.model.agentsTab.View = AgentViewDetail
 			}
-		default:
-			// If task filter is active, any printable char appends to filter text
-			if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.FilterActive && len(key) == 1 && key >= " " && key <= "~" {
-				a.model.tasksTab.FilterText += key
-				a.model.tasksTab.SelectedIdx = 0
-				return a, nil
-			}
+		}
+	default:
+		// If task filter is active, any printable char appends to filter text
+		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.FilterActive && len(key) == 1 && key >= " " && key <= "~" {
+			a.model.tasksTab.FilterText += key
+			a.model.tasksTab.SelectedIdx = 0
+			return a, nil
 		}
 	}
 	return a, nil
