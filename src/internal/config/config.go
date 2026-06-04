@@ -79,6 +79,9 @@ type AgentConfig struct {
 	Skills      []string `yaml:"skills,omitempty"`
 	Runner      string   `yaml:"runner,omitempty"`
 	MaxWorkers  int      `yaml:"max_workers,omitempty"`
+	SourceToken string   `yaml:"source_token,omitempty"`
+	SourceEmail string   `yaml:"source_email,omitempty"`
+	SourceName  string   `yaml:"source_name,omitempty"`
 }
 
 type WorkerConfig struct {
