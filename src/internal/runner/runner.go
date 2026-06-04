@@ -8,7 +8,7 @@ import (
 
 // Runner executes an agent runner for a given Cell.
 type Runner interface {
-	// ID returns the runner type key (e.g. "cli", "script").
+	// ID returns the runner type key (e.g. "claude", "opencode").
 	ID() string
 
 	// Configure sets runner-level options from the worker config block.
