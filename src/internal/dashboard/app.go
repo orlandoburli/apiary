@@ -468,7 +468,7 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 			return a, a.updateAgentConfigCmd(ag.Detail.ID, "", "", next)
 		}
 	case "r":
-		// Detail view: cycle runner. Activity view: reload.
+		// Detail view: cycle runner (and auto-select matching model).
 		if ag.View == AgentViewDetail && ag.Detail != nil && len(ag.Detail.Runners) > 1 {
 			runners := ag.Detail.Runners
 			current := ag.Detail.RunnerType
@@ -479,8 +479,25 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 					break
 				}
 			}
+			// Find a suitable model for the new runner: look for another agent
+			// that uses this runner and borrow its first preferred model.
+			newModel := ""
+			if a.cfg != nil {
+				for _, ac := range a.cfg.Agents {
+					if ac.Runner == next && len(ac.PreferredModels) > 0 {
+						newModel = ac.PreferredModels[0]
+						break
+					}
+				}
+			}
+			// Update the in-memory status for immediate display feedback.
 			ag.Detail.RunnerType = next
-			return a, a.updateAgentConfigCmd(ag.Detail.ID, "", next, 0)
+			if newModel != "" {
+				if len(ag.Detail.PreferredModels) == 0 || ag.Detail.PreferredModels[0] != newModel {
+					ag.Detail.PreferredModels = append([]string{newModel}, ag.Detail.PreferredModels...)
+				}
+			}
+			return a, a.updateAgentConfigCmd(ag.Detail.ID, newModel, next, 0)
 		}
 		if id, ok := a.selectedAgentID(); ok && ag.View == AgentViewActivity {
 			a.model.loading = true
