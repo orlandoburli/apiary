@@ -65,36 +65,43 @@ Pull requests are automatically filtered out (the GitHub Issues API returns both
 
 ## Runners
 
-The `cli` runner type is commonly used with the GitHub source to execute AI agents (Claude, OpenCode, etc.).
+Providers are configured via `type` (execution mode) + `provider` (AI provider):
 
 ```yaml
 runners:
-  - id: claude-cli
+  # Claude CLI — type=cli, provider=claude
+  - id: claude
     type: cli
+    provider: claude
     config:
-      command: claude
-      model_flag: --model
-      prompt_flag: -p
       args: ["--output-format", "stream-json", "--verbose"]
+    models:
+      - claude-opus-4-8
+      - claude-sonnet-4-6
+      - claude-haiku-4-5
 
-  - id: opencode-cli
-    type: opencode
+  # OpenCode CLI — type=cli, provider=opencode
+  - id: opencode
+    type: cli
+    provider: opencode
+    models:
+      - opencode-go/deepseek-v4-pro
+      - opencode-go/deepseek-v4-flash
+
+  # OpenCode API — type=api, provider=opencode
+  - id: opencode-api
+    type: api
+    provider: opencode
     config:
-      mode: cli
       subscription: go
-      binary: opencode
-      agent: backend-dev
-      model_flag: --model
-      prompt_flag: --prompt
-      turns_flag: --max-turns
-
-  - id: script-runner
-    type: script
-    config:
-      command: /bin/sh
+      api_key: ${OPENCODE_API_KEY}
 ```
 
-See `apiary.yaml` schema docs for full runner options.
+The `type` field determines the execution engine (`cli` = subprocess, `api` = HTTP).
+The `provider` field selects the AI provider defaults (command, flags, endpoint).
+The internal adapter name is resolved as `{provider}-{type}` (e.g. `claude-cli`).
+
+Each runner can declare a `models` list used by the dashboard for model cycling.
 
 ## Per-agent concurrency (`max_workers`)
 

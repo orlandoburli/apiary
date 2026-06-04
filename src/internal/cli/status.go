@@ -106,8 +106,8 @@ func renderStatus(r *daemon.StatusResponse) string {
 			if s.InFlight > 0 {
 				extra = "  " + statusSuccess.Render(fmt.Sprintf("%d in-flight", s.InFlight))
 			}
-			b.WriteString(fmt.Sprintf("  %-18s %-8s  last: %-14s  found: %d%s\n",
-				s.ID, s.Type, s.LastPoll, s.LastCount, extra))
+			fmt.Fprintf(&b, "  %-18s %-8s  last: %-14s  found: %d%s\n",
+				s.ID, s.Type, s.LastPoll, s.LastCount, extra)
 		}
 	}
 	b.WriteString("\n")
@@ -119,13 +119,13 @@ func renderStatus(r *daemon.StatusResponse) string {
 		b.WriteString(statusMuted.Render("  no active runs") + "\n")
 	} else {
 		for _, run := range r.ActiveRuns {
-			b.WriteString(fmt.Sprintf("  %-10s  %-38s  %-16s  %-22s  %s\n",
+			fmt.Fprintf(&b, "  %-10s  %-38s  %-16s  %-22s  %s\n",
 				run.ID,
 				truncate(run.Title, 38),
 				run.WorkerID,
 				truncate(run.Model, 22),
 				statusSuccess.Render(run.Elapsed),
-			))
+			)
 		}
 	}
 	b.WriteString("\n")

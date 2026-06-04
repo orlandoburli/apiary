@@ -234,8 +234,8 @@ func formatComment(result model.RunResult) string {
 	} else {
 		b.WriteString("✗ **Apiary run failed**")
 	}
-	b.WriteString(fmt.Sprintf(" · worker: `%s`", result.WorkerID))
-	b.WriteString(fmt.Sprintf(" · duration: %s", result.Duration.Round(time.Second)))
+	fmt.Fprintf(&b, " · worker: `%s`", result.WorkerID)
+	fmt.Fprintf(&b, " · duration: %s", result.Duration.Round(time.Second))
 
 	if result.Output != "" {
 		b.WriteString("\n\n```\n")
@@ -243,7 +243,7 @@ func formatComment(result model.RunResult) string {
 		b.WriteString("\n```")
 	}
 	if result.Error != nil {
-		b.WriteString(fmt.Sprintf("\n\n**Error:** `%s`", result.Error.Error()))
+		fmt.Fprintf(&b, "\n\n**Error:** `%s`", result.Error.Error())
 	}
 	return b.String()
 }

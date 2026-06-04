@@ -238,6 +238,7 @@ type AgentDiff struct {
 }
 
 // ApplyAgentDiff applies the diff to the in-memory struct and persists via Save.
+// If path is empty, only the in-memory struct is updated (no file write).
 func (c *Config) ApplyAgentDiff(path string, diff AgentDiff) error {
 	for i := range c.Agents {
 		if c.Agents[i].ID == diff.ID {
@@ -263,6 +264,9 @@ func (c *Config) ApplyAgentDiff(path string, diff AgentDiff) error {
 			}
 			break
 		}
+	}
+	if path == "" {
+		return nil // memory-only update
 	}
 	return c.Save(path)
 }

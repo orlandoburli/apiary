@@ -80,7 +80,7 @@ func (r *ApiRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	if err != nil {
 		return model.RunResult{}, fmt.Errorf("api runner: request: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	respRaw, _ := io.ReadAll(httpResp.Body)
 

@@ -316,18 +316,18 @@ func truncateInput(raw json.RawMessage) string {
 
 func buildPrompt(req model.RunRequest) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Task: %s\n", req.Cell.Title))
+	fmt.Fprintf(&b, "Task: %s\n", req.Cell.Title)
 	if req.Cell.Type != "" {
-		b.WriteString(fmt.Sprintf("Type: %s\n", req.Cell.Type))
+		fmt.Fprintf(&b, "Type: %s\n", req.Cell.Type)
 	}
 	if req.Cell.Priority != "" {
-		b.WriteString(fmt.Sprintf("Priority: %s\n", req.Cell.Priority))
+		fmt.Fprintf(&b, "Priority: %s\n", req.Cell.Priority)
 	}
 	if len(req.Cell.Labels) > 0 {
-		b.WriteString(fmt.Sprintf("Labels: %s\n", strings.Join(req.Cell.Labels, ", ")))
+		fmt.Fprintf(&b, "Labels: %s\n", strings.Join(req.Cell.Labels, ", "))
 	}
 	if req.Cell.URL != "" {
-		b.WriteString(fmt.Sprintf("URL: %s\n", req.Cell.URL))
+		fmt.Fprintf(&b, "URL: %s\n", req.Cell.URL)
 	}
 	if req.Cell.Description != "" {
 		b.WriteString("\n")

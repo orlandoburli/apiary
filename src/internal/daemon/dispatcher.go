@@ -1016,7 +1016,7 @@ func (d *Dispatcher) getStat(sourceID string) sourceStat {
 	if st, ok := d.stats[sourceID]; ok {
 		st.mu.Lock()
 		defer st.mu.Unlock()
-		return *st
+		return sourceStat{lastPoll: st.lastPoll, lastCount: st.lastCount, inFlight: st.inFlight}
 	}
 	return sourceStat{}
 }
@@ -1059,7 +1059,7 @@ func (d *Dispatcher) writeOpencodeAgent(ctx context.Context, ac config.AgentConf
 
 	var b strings.Builder
 	b.WriteString("---\n")
-	b.WriteString(fmt.Sprintf("description: %s\n", ac.Description))
+	fmt.Fprintf(&b, "description: %s\n", ac.Description)
 	b.WriteString("mode: primary\n")
 	b.WriteString("permission:\n")
 	b.WriteString("  edit: allow\n")
@@ -1248,9 +1248,4 @@ func (d *Dispatcher) UpdateAgentConfig(ctx context.Context, agentID, newModel, n
 	return nil
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
+
