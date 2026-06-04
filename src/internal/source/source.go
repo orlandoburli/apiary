@@ -8,6 +8,13 @@ import (
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
+// SourceTokenCtxKey is the context key for per-agent source token overrides.
+// When set, the adapter uses this token instead of the source config's api_key
+// for write operations (Acknowledge, WriteResult, SetState, AddLabels).
+type sourceTokenCtxKey struct{}
+
+var SourceTokenCtxKey sourceTokenCtxKey
+
 // Adapter connects Apiary to a task management system.
 type Adapter interface {
 	// ID returns the adapter type key (e.g. "plane", "jira").

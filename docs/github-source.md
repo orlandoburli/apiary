@@ -103,6 +103,52 @@ The internal adapter name is resolved as `{provider}-{type}` (e.g. `claude-cli`)
 
 Each runner can declare a `models` list used by the dashboard for model cycling.
 
+## Per-agent source identity (`source_token`, `source_email`, `source_name`)
+
+Each agent can use its own GitHub account for write operations and git commits
+by setting source identity fields:
+
+```yaml
+agents:
+  - id: engineer
+    description: "Implements tasks"
+    model: claude-sonnet-4-6
+    source_token: ${GITHUB_TOKEN_ENGINEER}    # issue comments/labels as engineer-bot
+    source_email: engineer@company.com
+    source_name: Engineer Bot
+
+  - id: reviewer
+    description: "Reviews code"
+    model: claude-sonnet-4-6
+    source_token: ${GITHUB_TOKEN_REVIEWER}    # issue comments/labels as reviewer-bot
+    source_email: reviewer@company.com
+    source_name: Reviewer Bot
+```
+
+### `source_token`
+
+When set, the adapter's **write operations** use this GitHub token instead
+of the source-level `api_key`:
+- **Acknowledge** (adds `in-progress` label)
+- **WriteResult** (posts run output as comment)
+- **SetState** (closes/re-opens issue via `on_complete.set_state`)
+- **AddLabels** (adds labels via `on_complete.add_labels` or `assign_from_output`)
+
+**Poll** always uses the source-level `api_key` — one account reads all issues.
+
+Token permissions are the same as the source-level token (see above).
+
+### `source_email` / `source_name`
+
+When set, these are passed to the runner as git environment variables:
+- `GIT_AUTHOR_NAME` / `GIT_COMMITTER_NAME`
+- `GIT_AUTHOR_EMAIL` / `GIT_COMMITTER_EMAIL`
+
+This ensures commits made by the agent use the correct author identity
+instead of a shared system user. `source_name` defaults to the token's
+GitHub username if not set; `source_email` is required for proper commit
+attribution.
+
 ## Per-agent concurrency (`max_workers`)
 
 Each agent runs independently — one agent's long-running tasks don't starve
