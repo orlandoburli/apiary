@@ -1,0 +1,147 @@
+version: "1"
+
+# ── Runners ────────────────────────────────────────────────────────────────────
+runners:
+  - id: claude-cli
+    type: cli
+    config:
+      command: claude
+      model_flag: --model
+      prompt_flag: -p
+      args: ["--output-format", "stream-json", "--verbose"]
+
+default_runner: claude-cli
+
+# ── Sources ────────────────────────────────────────────────────────────────────
+sources:
+  - id: project-erp
+    type: github
+    config:
+      repo: orlandoburli-enterprise/project-erp
+      api_key: ${GITHUB_TOKEN}
+    poll_interval: 60s
+    filters:
+      states: [open]
+
+# ── Agents ─────────────────────────────────────────────────────────────────────
+agents:
+  - id: investigator
+    description: "Analyzes and classifies new issues by complexity"
+    soul_file: .apiary/souls/investigator.md
+    preferred_models: [claude-opus-4-8, claude-sonnet-4-6]
+
+  - id: po
+    description: "Transforms business demands into specifications"
+    soul_file: .apiary/souls/po.md
+    preferred_models: [claude-opus-4-8]
+
+  - id: staff
+    description: "Designs complex solutions and decomposes tasks"
+    soul_file: .apiary/souls/staff.md
+    preferred_models: [claude-opus-4-8]
+
+  - id: engineer
+    description: "Implements tasks following project conventions"
+    soul_file: .apiary/souls/engineer.md
+    preferred_models: [claude-sonnet-4-6, claude-haiku-4-5]
+
+  - id: backend
+    description: "Implements backend tasks"
+    soul_file: .apiary/souls/backend.md
+    preferred_models: [claude-sonnet-4-6]
+
+  - id: frontend
+    description: "Implements frontend tasks"
+    soul_file: .apiary/souls/frontend.md
+    preferred_models: [claude-sonnet-4-6]
+
+  - id: reviewer
+    description: "Performs code review and quality checks"
+    soul_file: .apiary/souls/reviewer.md
+    preferred_models: [claude-sonnet-4-6]
+
+  - id: qa
+    description: "Validates implementation against acceptance criteria"
+    soul_file: .apiary/souls/qa.md
+    preferred_models: [claude-sonnet-4-6, claude-haiku-4-5]
+
+# ── Routes ─────────────────────────────────────────────────────────────────────
+routes:
+  - id: staff-design
+    priority: 10
+    match:
+      source: project-erp
+      labels: [agent:staff]
+    agent: staff
+    on_complete:
+      set_state: closed
+
+  - id: po-spec
+    priority: 15
+    match:
+      source: project-erp
+      labels: [agent:po]
+    agent: po
+    on_complete:
+      set_state: closed
+
+  - id: backend-implement
+    priority: 20
+    match:
+      source: project-erp
+      labels: [agent:backend]
+    agent: backend
+    on_complete:
+      set_state: closed
+
+  - id: frontend-implement
+    priority: 21
+    match:
+      source: project-erp
+      labels: [agent:frontend]
+    agent: frontend
+    on_complete:
+      set_state: closed
+
+  - id: engineer-implement
+    priority: 22
+    match:
+      source: project-erp
+      labels: [agent:engineer]
+    agent: engineer
+    on_complete:
+      set_state: closed
+
+  - id: code-review
+    priority: 25
+    match:
+      source: project-erp
+      labels: [agent:reviewer]
+    agent: reviewer
+    on_complete:
+      set_state: closed
+
+  - id: qa-validate
+    priority: 30
+    match:
+      source: project-erp
+      labels: [agent:qa]
+    agent: qa
+    on_complete:
+      set_state: closed
+
+  - id: new-issue-classify
+    priority: 100
+    match:
+      source: project-erp
+      exclude_label_prefix: "agent:"
+    agent: investigator
+    on_complete:
+      assign_from_output: true
+
+# ── Settings ───────────────────────────────────────────────────────────────────
+settings:
+  concurrency: 2
+  log_level: info
+  state_lock: true
+  result_comment: true
