@@ -33,10 +33,28 @@ The dashboard only ever *reads* — you can open and close it as often as you
 like without affecting running tasks.
 
 > **Where the data lives.** Apiary is project-scoped: its state sits in a
-> `.apiary/` folder next to your config file (`apiary.yaml`) — the database at
-> `.apiary/apiary.db` and logs under `.apiary/logs/`. Run `apiary dashboard`
-> from the same directory as `apiary run` (or point both at the same config
-> with `--config`) so they share the same project data.
+> `.apiary/` folder next to your config file — the database at
+> `.apiary/apiary.db`, logs under `.apiary/logs/`, and IPC socket at
+> `.apiary/apiary.sock`.
+>
+> **Config file lookup order.** `apiary` looks for the config file in two
+> places (in order):
+> 1. `apiary.yaml` in the current directory
+> 2. `.apiary/apiary.yaml` in the current directory
+>
+> This lets you keep everything tidy inside `.apiary/`:
+> ```
+> .apiary/
+>   apiary.yaml        ← your config (optional here)
+>   apiary.db          ← SQLite database (auto-created)
+>   apiary.sock        ← IPC socket (auto-created)
+>   logs/              ← log files (auto-created)
+> apiary.yaml          ← your config (default location)
+> ```
+>
+> Run `apiary dashboard` from the same directory as `apiary run` (or point
+> both at the same config with `--config`) so they share the same project
+> data.
 
 ## Getting around
 

@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
@@ -22,6 +23,7 @@ var rootCmd = &cobra.Command{
 		v, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 		aplog.Enable(v)
 		loadDotEnv(cmd)
+		configFile = resolveConfigFile()
 	},
 }
 
@@ -60,6 +62,35 @@ func newVersionCmd() *cobra.Command {
 			fmt.Printf("apiary %s\n", version.Version)
 		},
 	}
+}
+
+// resolveConfigFile resolves the config file path by trying the default
+// location first, then falling back to .apiary/apiary.yaml in the same
+// directory. If --config was explicitly provided, it is used as-is.
+func resolveConfigFile() string {
+	// Detect whether the user passed an explicit --config flag. We compare
+	// against the flag default rather than inspect Changed() because the
+	// flag may not have been parsed yet for some subcommands.
+	const defaultConfig = "apiary.yaml"
+
+	// The user provided a custom path — trust it.
+	if configFile != defaultConfig {
+		return configFile
+	}
+
+	// Try the default location (apiary.yaml in CWD).
+	if _, err := os.Stat(configFile); err == nil {
+		return configFile
+	}
+
+	// Fall back to .apiary/apiary.yaml.
+	fallback := filepath.Join(".apiary", defaultConfig)
+	if _, err := os.Stat(fallback); err == nil {
+		return fallback
+	}
+
+	// Nothing found — return the default so the caller produces a clear error.
+	return configFile
 }
 
 // loadDotEnv loads the .env file if it exists. Already-set environment
