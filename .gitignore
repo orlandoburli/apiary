@@ -1,6 +1,7 @@
 # binaries
-apiary
+/apiary
 src/apiary
+bin/
 dist/
 
 # test output
