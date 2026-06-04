@@ -1650,7 +1650,7 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 	}
 
 	var b strings.Builder
-	header := pad("", cursorW) + " " + pad("AGENT", agentW) + "  " + padLeft("WORKERS", workersW) + " " + pad("STATUS", statusW) + "  " + padLeft("COMPLETED", completedW) + " " + padLeft("AVG", avgW) + " " + padLeft("SUCCESS", successW)
+	header := pad("", cursorW) + " " + pad("AGENT", agentW) + "   " + padLeft("WORKERS", workersW) + " " + pad("STATUS", statusW) + "  " + padLeft("COMPLETED", completedW) + "" + padLeft("AVG", avgW) + " " + padLeft("SUCCESS", successW)
 	b.WriteString(StyleTableHeader.Render(header) + "\n")
 	for i, agent := range ag.Agents {
 		selected := i == ag.SelectedIdx
@@ -1674,7 +1674,7 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 		completed := padLeft(fmt.Sprintf("%d", agent.CompletedCount), completedW)
 		avg := padLeft(fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000), avgW)
 		success := padLeft(successRateStyled(agent.SuccessRate), successW)
-		b.WriteString(cursor + " " + name + "  " + padLeft(workers, workersW) + " " + status + "  " + completed + " " + avg + " " + success + "\n")
+		b.WriteString(cursor + " " + name + "   " + padLeft(workers, workersW) + " " + status + "  " + completed + avg + " " + success + "\n")
 	}
 	return a.box("AGENTS", b.String(), height)
 }
