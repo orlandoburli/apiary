@@ -5,12 +5,12 @@ edit_uri: edit/main/docs/
 
 theme:
   name: material
-  logo: logo.svg
+  logo: icon.svg
   favicon: icon.svg
   palette:
     scheme: default
-    primary: indigo
-    accent: teal
+    primary: white
+    accent: indigo
   features:
     - navigation.instant
     - navigation.tabs
