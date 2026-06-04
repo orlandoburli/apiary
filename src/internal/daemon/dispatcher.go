@@ -3,11 +3,14 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -982,15 +985,18 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 	}
 
 	// PR review: if the cell is a pull request and the agent output includes
-	// an APIARY-REVIEW directive, submit the review via the adapter.
+	// an APIARY-REVIEW directive, submit the review via the GitHub API directly.
+	// This is independent of the source adapter — PR review is about code, not
+	// issue tracking. The repo is parsed from the cell URL.
 	if result.Success && cell.Type == "pull_request" {
 		if event, _, ok := parseReviewDirective(result.Output); ok {
-			if pr, ok := adapter.(source.PRReviewer); ok {
+			token := agent.SourceToken
+			if token == "" {
+				token = d.sourceTokenForCell(cell)
+			}
+			if token != "" {
 				body := fmt.Sprintf("**Apiary review by %s:**\n\n%s", agentID, result.Output)
-				if err := pr.SubmitReview(ctx, cell, source.PRReviewInput{
-					Event: event,
-					Body:  body,
-				}); err != nil {
+				if err := submitPRReview(ctx, token, cell.URL, cell.ID, string(event), body); err != nil {
 					aplog.Error("cell %s: submit review: %v", cell.ID, err)
 				} else {
 					aplog.Info("cell %s: submitted review event=%s", cell.ID, event)
@@ -1038,22 +1044,14 @@ func parseAssignDirective(output string) (string, bool) {
 }
 
 // parseReviewDirective extracts the PR review decision from an agent's output.
-// The last directive wins. Valid values: approve, request_changes, comment.
-func parseReviewDirective(output string) (source.PRReviewEvent, string, bool) {
+// The last directive wins. Valid values: approve, request-changes, comment.
+func parseReviewDirective(output string) (string, string, bool) {
 	matches := reviewDirectiveRe.FindAllStringSubmatch(output, -1)
 	if len(matches) == 0 {
 		return "", "", false
 	}
 	val := strings.TrimSpace(strings.ToLower(matches[len(matches)-1][1]))
-	switch val {
-	case "approve":
-		return source.ReviewApprove, val, true
-	case "request-changes", "request_changes":
-		return source.ReviewRequestChanges, val, true
-	case "comment":
-		return source.ReviewComment, val, true
-	}
-	return "", "", false
+	return val, val, true
 }
 
 // agentExists reports whether an agent id is defined in the config.
@@ -1109,7 +1107,6 @@ func (d *Dispatcher) writeOpencodeAgent(ctx context.Context, ac config.AgentConf
 		return fmt.Errorf("create agent dir: %w", err)
 	}
 
-	// Read the soul file for the agent prompt body
 	var promptBody string
 	if ac.SoulFile != "" {
 		fullPath := ac.SoulFile
@@ -1137,7 +1134,6 @@ func (d *Dispatcher) writeOpencodeAgent(ctx context.Context, ac config.AgentConf
 	b.WriteString("  webfetch: allow\n")
 	b.WriteString("  task: allow\n")
 	b.WriteString("---\n")
-
 	if promptBody != "" {
 		b.WriteString("\n")
 		b.WriteString(promptBody)
@@ -1148,13 +1144,65 @@ func (d *Dispatcher) writeOpencodeAgent(ctx context.Context, ac config.AgentConf
 	if err := os.WriteFile(agentPath, []byte(b.String()), 0644); err != nil {
 		return fmt.Errorf("write agent file: %w", err)
 	}
-
-	// Also register the agent in opencode.json so opencode run discovers it.
 	if err := d.registerAgentInConfig(workDir, ac, agentPath); err != nil {
 		aplog.Warn("agent %s: register in opencode.json: %v", ac.ID, err)
 	}
-
 	aplog.Debug("wrote opencode agent %s → %s", ac.ID, agentPath)
+	return nil
+}
+
+// sourceTokenForCell returns the source-level token for the source that
+// produced this cell. Used as fallback when the agent has no source_token set.
+func (d *Dispatcher) sourceTokenForCell(cell model.Cell) string {
+	for _, sc := range d.cfg.Sources {
+		if sc.ID == cell.SourceID {
+			if t, ok := sc.Config["api_key"].(string); ok {
+				return t
+			}
+		}
+	}
+	return ""
+}
+
+// submitPRReview submits a pull request review via the GitHub API.
+// The repo is parsed from the cell's GitHub URL (e.g.
+// https://github.com/owner/repo/pull/123).
+// This is independent of the source adapter — PR reviews are about code, not
+// issue tracking, and may use a different token/account than the source.
+func submitPRReview(ctx context.Context, token, cellURL, prNumber, event, body string) error {
+	u, err := url.Parse(cellURL)
+	if err != nil {
+		return fmt.Errorf("parse cell URL %q: %w", cellURL, err)
+	}
+	parts := strings.SplitN(strings.Trim(u.Path, "/"), "/", 4)
+	if len(parts) < 3 {
+		return fmt.Errorf("unexpected URL path %q, expected owner/repo/pull/123", u.Path)
+	}
+
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%s/reviews", parts[0], parts[1], prNumber)
+	payload := map[string]string{"event": event, "body": body}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal review payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("create review request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("github API call: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("github API: %s: %s", resp.Status, respBody)
+	}
 	return nil
 }
 
