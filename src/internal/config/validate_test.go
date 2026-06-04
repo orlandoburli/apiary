@@ -12,11 +12,14 @@ func TestValidate_Valid(t *testing.T) {
 		Sources: []config.SourceConfig{
 			{ID: "src-1", Type: "plane"},
 		},
+		Agents: []config.AgentConfig{
+			{ID: "a-1", PreferredModels: []string{"claude-sonnet-4-6"}},
+		},
 		Workers: []config.WorkerConfig{
 			{ID: "w-1", Runner: "cli", Model: "openai/gpt-4o"},
 		},
 		Routes: []config.RouteConfig{
-			{ID: "r-1", Priority: 1, Worker: "w-1",
+			{ID: "r-1", Priority: 1, Agent: "a-1",
 				Match: config.RouteMatch{Source: "src-1"}},
 		},
 	}
@@ -84,12 +87,16 @@ func TestValidate_DuplicateWorkerID(t *testing.T) {
 	assertError(t, cfg, "duplicate id")
 }
 
-func TestValidate_RouteReferencesUnknownWorker(t *testing.T) {
+func TestValidate_RouteReferencesUnknownAgent(t *testing.T) {
 	cfg := &config.Config{
 		Version: "1",
-		Workers: []config.WorkerConfig{{ID: "w-1", Runner: "cli", Model: "x"}},
+		Sources: []config.SourceConfig{{ID: "src-1", Type: "plane"}},
+		Agents: []config.AgentConfig{
+			{ID: "a-1", PreferredModels: []string{"claude-sonnet-4-6"}},
+		},
 		Routes: []config.RouteConfig{
-			{ID: "r-1", Priority: 1, Worker: "nonexistent"},
+			{ID: "r-1", Priority: 1, Agent: "nonexistent",
+				Match: config.RouteMatch{Source: "src-1"}},
 		},
 	}
 	assertError(t, cfg, "not defined")
