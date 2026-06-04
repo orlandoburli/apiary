@@ -69,23 +69,26 @@ func (c *Client) UpdateTaskOutput(ctx context.Context, taskID, output string, su
 // Execution tracking (for crash recovery)
 
 type Execution struct {
-	ID          int64
-	TaskID      string
-	AgentID     string
-	Title       string
-	Number      string
-	URL         string
-	Model       string
-	Runner      string
-	Attempt     int
-	Status      string
-	StartedAt   *time.Time
-	CompletedAt *time.Time
-	DurationMs  int64
-	ErrorMsg    string
-	CanRetry    bool
-	NextRetryAt *time.Time
-	CreatedAt   time.Time
+	ID             int64
+	TaskID         string
+	AgentID        string
+	Title          string
+	Number         string
+	URL            string
+	Model          string
+	Runner         string
+	Attempt        int
+	Status         string
+	PID            int
+	HeartbeatAt    *time.Time
+	HeartbeatCount int
+	StartedAt      *time.Time
+	CompletedAt    *time.Time
+	DurationMs     int64
+	ErrorMsg       string
+	CanRetry       bool
+	NextRetryAt    *time.Time
+	CreatedAt      time.Time
 }
 
 func (c *Client) CreateExecution(ctx context.Context, taskID, agentID, title, number, taskURL, model, runner string, attempt int) (*Execution, error) {
@@ -125,6 +128,25 @@ func (c *Client) UpdateExecution(ctx context.Context, exec *Execution) error {
 		SET status = ?, completed_at = ?, duration_ms = ?, error_message = ?, can_retry = ?, next_retry_at = ?
 		WHERE id = ?
 	`, exec.Status, exec.CompletedAt, exec.DurationMs, exec.ErrorMsg, exec.CanRetry, exec.NextRetryAt, exec.ID)
+	return err
+}
+
+// SetPID stores the OS PID for a running execution.
+func (c *Client) SetPID(ctx context.Context, execID int64, pid int) error {
+	_, err := c.db.ExecContext(ctx, `
+		UPDATE task_executions SET pid = ?, heartbeat_at = ?, heartbeat_count = 1, updated_at = ?
+		WHERE id = ?
+	`, pid, time.Now(), time.Now(), execID)
+	return err
+}
+
+// SendHeartbeat updates the heartbeat timestamp and counter for a running execution.
+func (c *Client) SendHeartbeat(ctx context.Context, execID int64) error {
+	_, err := c.db.ExecContext(ctx, `
+		UPDATE task_executions
+		SET heartbeat_at = ?, heartbeat_count = COALESCE(heartbeat_count, 0) + 1
+		WHERE id = ?
+	`, time.Now(), execID)
 	return err
 }
 

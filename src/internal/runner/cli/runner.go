@@ -129,6 +129,26 @@ func (r *Runner) Run(ctx context.Context, req model.RunRequest) (model.RunResult
 		return model.RunResult{}, fmt.Errorf("cli runner: starting %q: %w", r.command, err)
 	}
 
+	// Track PID and send heartbeats while the process runs.
+	if req.SetPID != nil {
+		req.SetPID(cmd.Process.Pid)
+	}
+	heartbeatDone := make(chan struct{})
+	if req.Heartbeat != nil {
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					req.Heartbeat()
+				case <-heartbeatDone:
+					return
+				}
+			}
+		}()
+	}
+
 	// Stream stdout and stderr concurrently so the dashboard sees output as it
 	// happens. NOTE: never write to os.Stdout/os.Stderr here — `apiary run` may
 	// share the terminal; everything goes through emit() instead.
@@ -176,6 +196,7 @@ func (r *Runner) Run(ctx context.Context, req model.RunRequest) (model.RunResult
 
 	wg.Wait()
 	runErr := cmd.Wait()
+	close(heartbeatDone)
 
 	output := strings.TrimSpace(outBuf.String())
 	if strings.TrimSpace(finalResult) != "" {

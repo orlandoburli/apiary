@@ -940,6 +940,9 @@ func (a *App) fetchAgents() tea.Cmd {
 						AvgDurationMs:   ag.AvgDurationMs,
 						SuccessRate:     ag.SuccessRate,
 						LastTaskEndedAt: ag.LastTaskEndedAt,
+						PID:             ag.PID,
+						HeartbeatAt:     ag.HeartbeatAt,
+						HeartbeatCount:  ag.HeartbeatCount,
 					})
 				}
 			}
@@ -1587,11 +1590,15 @@ func (a *App) renderAgentTaskLogs(ag *AgentsTab, height int) string {
 func agentStatusText(s string) string {
 	switch s {
 	case "active":
-		return StyleSuccess.Render("active")
+		return StyleSuccess.Render("🟢 running")
+	case "stale":
+		return StyleWarning.Render("🟡 stale")
+	case "zombie":
+		return StyleError.Render("🔴 zombie")
 	case "error":
 		return StyleError.Render("error")
 	case "idle":
-		return StyleMuted.Render("idle")
+		return StyleMuted.Render("○ idle")
 	default:
 		return valueOr(s, "—")
 	}

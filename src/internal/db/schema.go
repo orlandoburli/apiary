@@ -123,6 +123,9 @@ var migrations = []string{
 	`ALTER TABLE task_executions ADD COLUMN runner TEXT`,
 	`ALTER TABLE task_executions ADD COLUMN task_number TEXT`,
 	`ALTER TABLE task_executions ADD COLUMN task_url TEXT`,
+	`ALTER TABLE task_executions ADD COLUMN pid INTEGER`,
+	`ALTER TABLE task_executions ADD COLUMN heartbeat_at TIMESTAMP`,
+	`ALTER TABLE task_executions ADD COLUMN heartbeat_count INTEGER DEFAULT 0`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).
