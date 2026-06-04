@@ -1236,9 +1236,10 @@ func (d *Dispatcher) UpdateAgentConfig(ctx context.Context, agentID, newModel, n
 		agent.PreferredModels = updated
 	}
 
-	// Persist to YAML
+	// Persist to YAML (surgical update preserving env vars)
 	if d.configFile != "" {
-		if err := d.cfg.Save(d.configFile); err != nil {
+		diff := config.AgentDiff{ID: agentID, Model: newModel, Runner: newRunner, MaxWorkers: maxWorkers}
+		if err := d.cfg.ApplyAgentDiff(d.configFile, diff); err != nil {
 			return fmt.Errorf("persisting config: %w", err)
 		}
 	}

@@ -18,6 +18,8 @@ type Config struct {
 	Workers       []WorkerConfig `yaml:"workers"`
 	Routes        []RouteConfig  `yaml:"routes"`
 	Settings      Settings       `yaml:"settings"`
+
+	rawContent string // original YAML text before env expansion; used by Save()
 }
 
 type SourceConfig struct {
@@ -201,16 +203,164 @@ func LoadDefaults() *Config {
 	}
 }
 
-// Save writes the config back to its YAML file.
+// Save writes the config back to its YAML file, preserving original formatting,
+// comments, and ${VAR} env references. It uses the raw content stored during
+// Load() and surgically updates only the fields that changed in memory.
 func (c *Config) Save(path string) error {
-	data, err := yaml.Marshal(c)
+	out, err := c.mergeRawChanges()
 	if err != nil {
-		return fmt.Errorf("marshalling config: %w", err)
+		return err
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, []byte(out), 0644); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
 	return nil
+}
+
+// AgentDiff describes a set of changes to apply to an agent in the raw YAML.
+type AgentDiff struct {
+	ID         string
+	Model      string // "" = no change
+	Runner     string // "" = no change
+	MaxWorkers int    // 0 = no change
+}
+
+// ApplyAgentDiff applies the diff to the in-memory struct and persists via Save.
+func (c *Config) ApplyAgentDiff(path string, diff AgentDiff) error {
+	for i := range c.Agents {
+		if c.Agents[i].ID == diff.ID {
+			if diff.Model != "" {
+				seen := map[string]bool{}
+				var updated []string
+				for _, m := range c.Agents[i].PreferredModels {
+					seen[m] = true
+					updated = append(updated, m)
+				}
+				if !seen[diff.Model] {
+					updated = append([]string{diff.Model}, updated...)
+				}
+				c.Agents[i].PreferredModels = updated
+			}
+			if diff.Runner != "" {
+				c.Agents[i].Runner = diff.Runner
+			}
+			if diff.MaxWorkers > 0 {
+				c.Agents[i].MaxWorkers = diff.MaxWorkers
+			}
+			break
+		}
+	}
+	return c.Save(path)
+}
+
+// mergeRawChanges surgically applies in-memory agent changes to the raw YAML
+// content, preserving comments, formatting, and ${VAR} references.
+func (c *Config) mergeRawChanges() (string, error) {
+	if c.rawContent == "" {
+		// No raw content available — fall back to plain marshal.
+		data, err := yaml.Marshal(c)
+		if err != nil {
+			return "", fmt.Errorf("marshalling config: %w", err)
+		}
+		return string(data), nil
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(c.rawContent), &doc); err != nil {
+		return "", fmt.Errorf("parsing raw config: %w", err)
+	}
+
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return c.rawContent, nil
+	}
+
+	root := doc.Content[0] // the mapping node
+	if root.Kind != yaml.MappingNode {
+		return c.rawContent, nil
+	}
+
+	// Find the agents key in the root mapping
+	var agentsNode *yaml.Node
+	for i := 0; i < len(root.Content)-1; i += 2 {
+		if root.Content[i].Value == "agents" {
+			agentsNode = root.Content[i+1]
+			break
+		}
+	}
+	if agentsNode == nil || agentsNode.Kind != yaml.SequenceNode {
+		// No agents section — fall back to plain marshal
+		data, err := yaml.Marshal(c)
+		if err != nil {
+			return "", fmt.Errorf("marshalling config: %w", err)
+		}
+		return string(data), nil
+	}
+
+	// For each agent in memory, find the matching node in the YAML tree
+	// and update its scalar values.
+	for _, memAgent := range c.Agents {
+		node := findAgentNode(agentsNode, memAgent.ID)
+		if node == nil {
+			continue
+		}
+		updateAgentNode(node, memAgent)
+	}
+
+	data, err := yaml.Marshal(&doc)
+	if err != nil {
+		return "", fmt.Errorf("marshalling updated config: %w", err)
+	}
+	return string(data), nil
+}
+
+// findAgentNode searches a YAML sequence of agent mappings for one with
+// matching id. Returns the mapping node or nil.
+func findAgentNode(seq *yaml.Node, id string) *yaml.Node {
+	for _, item := range seq.Content {
+		if item.Kind != yaml.MappingNode {
+			continue
+		}
+		for j := 0; j < len(item.Content)-1; j += 2 {
+			if item.Content[j].Value == "id" && item.Content[j+1].Value == id {
+				return item
+			}
+		}
+	}
+	return nil
+}
+
+// updateAgentNode sets scalar fields in the YAML mapping node to match the
+// in-memory agent config. Non-scalar fields (preferred_models, skills) are
+// skipped — the raw content preserves them unchanged from Load().
+func updateAgentNode(node *yaml.Node, agent AgentConfig) {
+	setScalar(node, "runner", agent.Runner)
+	setScalar(node, "max_workers", intOrString(agent.MaxWorkers))
+}
+
+// setScalar sets the value of a key in a mapping node. If the key doesn't
+// exist it is appended. Value is set only if non-empty / non-zero.
+func setScalar(node *yaml.Node, key, value string) {
+	if value == "" || value == "0" {
+		return
+	}
+	for i := 0; i < len(node.Content)-1; i += 2 {
+		if node.Content[i].Value == key {
+			node.Content[i+1].Value = value
+			return
+		}
+	}
+	// Key not found — append it.
+	node.Content = append(node.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Value: value},
+	)
+}
+
+func intOrString(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 func Load(path string) (*Config, error) {
@@ -219,12 +369,14 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
 
-	expanded := expandEnv(string(data))
+	raw := string(data)
+	expanded := expandEnv(raw)
 
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+	cfg.rawContent = raw
 
 	if cfg.Settings.Concurrency == 0 {
 		cfg.Settings.Concurrency = 2
