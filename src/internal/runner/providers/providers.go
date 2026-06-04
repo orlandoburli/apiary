@@ -1,4 +1,4 @@
-// Package providers registers concrete runner types by pre-configuring generic
+// Package providers register concrete runner types by pre-configuring generic
 // execution engines (cli, api) with provider-specific defaults.
 package providers
 
@@ -29,8 +29,8 @@ func init() {
 	}))
 
 	// ── API providers ──────────────────────────────────────────────────────────
-	// O ApiRunner usa BuildBody e ParseResponse padrão (formato OpenAI).
-	// Providers com schema diferente devem passar funções customizadas.
+	// ApiRunner uses default BuildBody and ParseResponse (OpenAI-compatible format).
+	// Providers with a different schema should pass custom functions.
 	runner.Register("opencode-api", func() runner.Runner {
 		return &execution.ApiRunner{
 			Endpoint:   "https://api.opencode.ai/v1/chat/completions",

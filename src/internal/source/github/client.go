@@ -104,10 +104,8 @@ func (c *client) getAllIssues(ctx context.Context, path string, params url.Value
 
 	for {
 		p := url.Values{}
-		if params != nil {
-			for k, v := range params {
-				p[k] = v
-			}
+		for k, v := range params {
+			p[k] = v
 		}
 		p.Set("per_page", "100")
 		p.Set("page", strconv.Itoa(page))
