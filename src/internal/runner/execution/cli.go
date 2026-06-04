@@ -26,7 +26,6 @@ type CliRunner struct {
 	modelFlag        string
 	promptFlag       string
 	turnsFlag        string
-	promptPositional bool // when true, prompt is appended as a positional arg instead of a flag
 }
 
 func (r *CliRunner) ID() string { return "cli" }
@@ -45,9 +44,6 @@ func (r *CliRunner) Configure(config map[string]any) error {
 	}
 	if v, ok := config["turns_flag"].(string); ok {
 		r.turnsFlag = v
-	}
-	if v, ok := config["prompt_positional"].(bool); ok {
-		r.promptPositional = v
 	}
 	if raw, ok := config["args"].([]any); ok {
 		for _, a := range raw {
@@ -70,9 +66,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	if r.turnsFlag != "" && req.MaxTurns > 0 {
 		argv = append(argv, r.turnsFlag, fmt.Sprintf("%d", req.MaxTurns))
 	}
-	if r.promptPositional {
-		argv = append(argv, prompt)
-	} else if r.promptFlag != "" {
+	if r.promptFlag != "" {
 		argv = append(argv, r.promptFlag, prompt)
 	}
 
@@ -82,7 +76,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	for k, v := range req.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	if r.promptFlag == "" && !r.promptPositional {
+	if r.promptFlag == "" {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
 

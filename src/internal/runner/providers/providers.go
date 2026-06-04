@@ -24,10 +24,9 @@ func init() {
 	runner.Register("claude-cli", cliFactory("claude", nil))
 
 	runner.Register("opencode-cli", cliFactory("opencode", map[string]any{
-		"args":              []any{"run"},
-		"prompt_flag":       "",
-		"prompt_positional": true,
-		"turns_flag":        "--max-turns",
+		"args":        []any{"run"},
+		"prompt_flag": "",
+		"turns_flag":  "--max-turns",
 	}))
 
 	// ── API providers ──────────────────────────────────────────────────────────
