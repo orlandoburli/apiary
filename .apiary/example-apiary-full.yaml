@@ -96,6 +96,16 @@ sources:
     filters:
       states: [backlog, todo, in progress]
 
+  - id: my-repo
+    type: github
+    config:
+      repo: my-org/my-repo
+      api_key: ${GITHUB_TOKEN}
+      # base_url: https://api.github.com  # optional for GHES
+    poll_interval: 120s
+    filters:
+      labels: [ai-ready]
+
 # ── Agents ─────────────────────────────────────────────────────────────────────
 agents:
   # === Claude-based agents (original design) ===
