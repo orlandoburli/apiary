@@ -74,7 +74,7 @@ func (a *Adapter) SetFilters(states, labels []string) {
 	}
 }
 
-func (a *Adapter) Poll(ctx context.Context, since time.Time) ([]model.Cell, error) {
+func (a *Adapter) Poll(ctx context.Context, _ time.Time) ([]model.Cell, error) {
 	path := fmt.Sprintf("/repos/%s/%s/issues", a.owner, a.repo)
 
 	state := "open"
@@ -85,9 +85,6 @@ func (a *Adapter) Poll(ctx context.Context, since time.Time) ([]model.Cell, erro
 		"state":     {state},
 		"sort":      {"updated"},
 		"direction": {"desc"},
-	}
-	if !since.IsZero() {
-		params.Set("since", since.Format(time.RFC3339))
 	}
 
 	issues, err := a.client.getAllIssues(ctx, path, params)
@@ -101,10 +98,6 @@ func (a *Adapter) Poll(ctx context.Context, since time.Time) ([]model.Cell, erro
 			continue
 		}
 		if !a.matchesFilters(item) {
-			continue
-		}
-		updatedAt, _ := time.Parse(time.RFC3339, item.UpdatedAt)
-		if !since.IsZero() && !updatedAt.After(since) {
 			continue
 		}
 		cells = append(cells, a.toCell(item))
@@ -140,8 +133,8 @@ func (a *Adapter) Acknowledge(ctx context.Context, cell model.Cell, action model
 		return nil
 	}
 	issueNo := cell.ID
-	path := fmt.Sprintf("/repos/%s/%s/issues/%s", a.owner, a.repo, issueNo)
-	_, err := a.client.patch(ctx, path, issueRequest{Labels: []string{"in-progress"}})
+	path := fmt.Sprintf("/repos/%s/%s/issues/%s/labels", a.owner, a.repo, issueNo)
+	_, err := a.client.post(ctx, path, labelListRequest{Labels: []string{"in-progress"}})
 	if err != nil {
 		return fmt.Errorf("github: acknowledging %s: %w", cell.ID, err)
 	}
