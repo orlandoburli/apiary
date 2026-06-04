@@ -62,6 +62,13 @@ type TasksTab struct {
 	Detail    *TaskItem  // populated when View == TaskViewDetail
 	Logs      []LogEntry // populated when View == TaskViewLogs
 	LogScroll int
+
+	// Scroll / filter / sort
+	ScrollOffset int    // first visible row index
+	FilterText   string // current filter query
+	FilterActive bool   // true while typing a filter
+	SortField    string // "time" | "status" | "agent"  (default "time")
+	SortAsc      bool
 }
 
 // TaskItem is one task row (its latest execution attempt).
