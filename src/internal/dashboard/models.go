@@ -116,13 +116,13 @@ type AgentStatus struct {
 	HeartbeatCount  int
 
 	// Config fields (enriched from apiary.yaml)
-	MaxWorkers      int
-	RunnerType      string
-	PreferredModels []string
-	SoulFile        string
-	Description     string
-	Runners         []string // all available runner IDs for cycling
-	RunnerModels    []string // models declared on the current runner config
+	MaxWorkers     int
+	RunnerType     string
+	Model          string
+	SoulFile       string
+	Description    string
+	Runners        []string // all available runner IDs for cycling
+	RunnerModels   []string // models declared on the current runner config
 }
 
 // LogsTab shows service logs with filtering.

@@ -50,8 +50,8 @@ func (c *Config) Validate() []error {
 		if a.ID == "" {
 			errs = append(errs, fmt.Errorf("agents[%d]: id is required", i))
 		}
-		if len(a.PreferredModels) == 0 {
-			errs = append(errs, fmt.Errorf("agents[%d] %q: preferred_models is required and must not be empty", i, a.ID))
+		if a.Model == "" {
+			errs = append(errs, fmt.Errorf("agents[%d] %q: model is required", i, a.ID))
 		}
 		if a.SoulFile != "" {
 			if _, err := os.Stat(a.SoulFile); err != nil {

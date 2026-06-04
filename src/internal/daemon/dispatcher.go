@@ -142,8 +142,8 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 
 	// Instantiate runners from agents
 	for _, ac := range cfg.Agents {
-		if len(ac.PreferredModels) == 0 {
-			return nil, fmt.Errorf("agent %q: no preferred models", ac.ID)
+		if ac.Model == "" {
+			return nil, fmt.Errorf("agent %q: model is required", ac.ID)
 		}
 
 		// Determine which runner to use: agent-specific or default
@@ -177,7 +177,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		d.runners[pseudoWorkerID] = ra
 		d.agentRunner[ac.ID] = adapterName
 
-		aplog.Info("loaded agent %s: runner=%s type=%s provider=%s preferred_models=%v", ac.ID, runnerID, rc.Type, adapterName, ac.PreferredModels)
+		aplog.Info("loaded agent %s: runner=%s type=%s provider=%s model=%s", ac.ID, runnerID, rc.Type, adapterName, ac.Model)
 
 		if adapterName == "opencode" {
 			if err := d.writeOpencodeAgent(ctx, ac, rc); err != nil {
@@ -760,7 +760,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 	}
 
 	// Use first preferred model
-	selectedModel := agent.PreferredModels[0]
+	selectedModel := agent.Model
 	runnerType := d.agentRunner[agentID]
 
 	aplog.Info("cell %s: dispatching to agent=%q model=%s", cell.ID, agentID, selectedModel)
@@ -1225,16 +1225,7 @@ func (d *Dispatcher) UpdateAgentConfig(ctx context.Context, agentID, newModel, n
 	}
 
 	if newModel != "" {
-		seen := map[string]bool{}
-		var updated []string
-		for _, m := range agent.PreferredModels {
-			seen[m] = true
-			updated = append(updated, m)
-		}
-		if !seen[newModel] {
-			updated = append([]string{newModel}, updated...)
-		}
-		agent.PreferredModels = updated
+		agent.Model = newModel
 	}
 
 	// Persist to YAML (surgical update preserving env vars)
