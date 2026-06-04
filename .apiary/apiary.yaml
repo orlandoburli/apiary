@@ -149,6 +149,7 @@ routes:
     agent: investigator
     on_complete:
       assign_from_output: true
+      # No set_state — the investigator only labels; the matching agent closes it.
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 settings:
