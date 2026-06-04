@@ -72,13 +72,13 @@ func (r *RunnerConfig) AdapterName() string {
 }
 
 type AgentConfig struct {
-	ID              string   `yaml:"id"`
-	Description     string   `yaml:"description"`
-	SoulFile        string   `yaml:"soul_file"`
-	PreferredModels []string `yaml:"preferred_models"`
-	Skills          []string `yaml:"skills"`
-	Runner          string   `yaml:"runner"`
-	MaxWorkers      int      `yaml:"max_workers"` // max concurrent tasks; 0 = default (1)
+	ID          string   `yaml:"id"`
+	Description string   `yaml:"description,omitempty"`
+	SoulFile    string   `yaml:"soul_file,omitempty"`
+	Model       string   `yaml:"model"`
+	Skills      []string `yaml:"skills,omitempty"`
+	Runner      string   `yaml:"runner,omitempty"`
+	MaxWorkers  int      `yaml:"max_workers,omitempty"`
 }
 
 type WorkerConfig struct {
@@ -230,11 +230,10 @@ func (c *Config) Save(path string) error {
 
 // AgentDiff describes a set of changes to apply to an agent in the raw YAML.
 type AgentDiff struct {
-	ID            string
-	Model         string   // "" = no change
-	Runner        string   // "" = no change
-	MaxWorkers    int      // 0 = no change
-	ReplaceModels []string // nil = no change; non-nil replaces preferred_models entirely
+	ID         string
+	Model      string // "" = no change
+	Runner     string // "" = no change
+	MaxWorkers int    // 0 = no change
 }
 
 // ApplyAgentDiff applies the diff to the in-memory struct and persists via Save.
@@ -242,19 +241,8 @@ type AgentDiff struct {
 func (c *Config) ApplyAgentDiff(path string, diff AgentDiff) error {
 	for i := range c.Agents {
 		if c.Agents[i].ID == diff.ID {
-			if diff.ReplaceModels != nil {
-				c.Agents[i].PreferredModels = diff.ReplaceModels
-			} else if diff.Model != "" {
-				seen := map[string]bool{}
-				var updated []string
-				for _, m := range c.Agents[i].PreferredModels {
-					seen[m] = true
-					updated = append(updated, m)
-				}
-				if !seen[diff.Model] {
-					updated = append([]string{diff.Model}, updated...)
-				}
-				c.Agents[i].PreferredModels = updated
+			if diff.Model != "" {
+				c.Agents[i].Model = diff.Model
 			}
 			if diff.Runner != "" {
 				c.Agents[i].Runner = diff.Runner
@@ -266,7 +254,7 @@ func (c *Config) ApplyAgentDiff(path string, diff AgentDiff) error {
 		}
 	}
 	if path == "" {
-		return nil // memory-only update
+		return nil
 	}
 	return c.Save(path)
 }
@@ -294,22 +282,21 @@ func (c *Config) mergeRawChanges() (string, error) {
 
 		indent := leadingSpaces(lines[idx])
 
-		// Always persist the current preferred_models list, replacing the YAML
-		// block in-place so runner changes don't leave stale models behind.
-		if len(memAgent.PreferredModels) > 0 {
-			listLine, found := findKeyInBlock(lines, idx+1, indent, "preferred_models")
-			if found {
-				listIndent := listItemIndent(lines, listLine)
-				end := listLine + 1
-				for end < len(lines) && isListItem(lines[end], listIndent) {
-					end++
+		if memAgent.Model != "" {
+			if lineIdx, found := findKeyInBlock(lines, idx+1, indent, "model"); found {
+				old := lines[lineIdx]
+				updated := setYAMLValue(old, memAgent.Model)
+				if updated != old {
+					lines[lineIdx] = updated
+					changed = true
 				}
-				var newBlock []string
-				newBlock = append(newBlock, lines[listLine])
-				for _, m := range memAgent.PreferredModels {
-					newBlock = append(newBlock, fmt.Sprintf("%s- %s", strings.Repeat(" ", listIndent), m))
+			} else {
+				insertAt := idx + 1
+				for insertAt < len(lines) && leadingSpaces(lines[insertAt]) > indent {
+					insertAt++
 				}
-				lines = append(lines[:listLine], append(newBlock, lines[end:]...)...)
+				kv := fmt.Sprintf("%s  model: %s", strings.Repeat(" ", indent), memAgent.Model)
+				lines = append(lines[:insertAt], append([]string{kv}, lines[insertAt:]...)...)
 				changed = true
 			}
 		}
