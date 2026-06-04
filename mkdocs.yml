@@ -36,6 +36,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Dashboard: dashboard.md
+  - GitHub Source: github-source.md
   - Development: development.md
 
 extra:
