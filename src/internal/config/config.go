@@ -55,10 +55,19 @@ type SourceFilters struct {
 }
 
 type RunnerConfig struct {
-	ID     string         `yaml:"id"`
-	Type   string         `yaml:"type"`
-	Config map[string]any `yaml:"config"`
-	Models []string       `yaml:"models,omitempty"` // models this runner supports
+	ID       string         `yaml:"id"`
+	Type     string         `yaml:"type"`               // cli | api — execution mode
+	Provider string         `yaml:"provider,omitempty"` // adapter name: cli, opencode, script, claude, etc.
+	Config   map[string]any `yaml:"config"`
+	Models   []string       `yaml:"models,omitempty"`
+}
+
+// AdapterName returns the runner adapter name: Provider if set, else Type (backward compat).
+func (r *RunnerConfig) AdapterName() string {
+	if r.Provider != "" {
+		return r.Provider
+	}
+	return r.Type
 }
 
 type AgentConfig struct {
@@ -78,7 +87,7 @@ type WorkerConfig struct {
 	Model       string          `yaml:"model"`
 	Config      WorkerRunConfig `yaml:"config"`
 	// RunnerConfig holds runner-specific keys (e.g. command, model_flag for the
-	// cli runner). These are passed directly to runner.Adapter.Configure().
+	// cli runner). These are passed directly to runner.Runner.Configure().
 	RunnerConfig map[string]any `yaml:"runner_config"`
 }
 

@@ -13,7 +13,7 @@ type Adapter interface {
 	// ID returns the adapter type key (e.g. "plane", "jira").
 	ID() string
 
-	// Connect initialises the connection using the raw config map from apiary.yaml.
+	// Connect initializes the connection using the raw config map from apiary.yaml.
 	Connect(ctx context.Context, config map[string]any) error
 
 	// Poll returns tasks matching the source filters since the given time.
