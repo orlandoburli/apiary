@@ -312,8 +312,18 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "status":
 				t.SortField = "agent"
 			case "agent":
+				t.SortField = "number"
+			case "number":
+				t.SortField = "title"
+			case "title":
+				t.SortField = "updated"
+			case "updated":
 				t.SortField = ""
 			}
+		}
+	case "S":
+		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.View == TaskViewList {
+			a.model.tasksTab.SortAsc = !a.model.tasksTab.SortAsc
 		}
 	case "esc":
 		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.FilterActive {
@@ -1474,7 +1484,11 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 		parts = append(parts, "/"+t.FilterText)
 	}
 	if t.SortField != "" {
-		parts = append(parts, "sort:"+t.SortField)
+		dir := "↓"
+		if t.SortAsc {
+			dir = "↑"
+		}
+		parts = append(parts, "sort:"+t.SortField+dir)
 	}
 	if len(parts) > 0 {
 		title += " [" + strings.Join(parts, " ") + "]"
@@ -1550,18 +1564,31 @@ func (a *App) filteredTasks(t *TasksTab) []TaskItem {
 		sortField = "time"
 	}
 	sort.SliceStable(out, func(i, j int) bool {
+		var less bool
 		switch sortField {
 		case "status":
-			if t.SortAsc {
-				return out[i].Status < out[j].Status
-			}
-			return out[i].Status > out[j].Status
+			less = out[i].Status < out[j].Status
 		case "agent":
-			if t.SortAsc {
-				return out[i].Agent < out[j].Agent
+			less = out[i].Agent < out[j].Agent
+		case "number":
+			less = out[i].Number < out[j].Number
+		case "title":
+			less = out[i].Title < out[j].Title
+		case "updated":
+			ti := lastUpdate(out[i])
+			tj := lastUpdate(out[j])
+			if ti == nil && tj == nil {
+				return false
 			}
-			return out[i].Agent > out[j].Agent
+			if ti == nil {
+				return t.SortAsc
+			}
+			if tj == nil {
+				return !t.SortAsc
+			}
+			less = ti.Before(*tj)
 		default:
+			// time: newest first by default (StartedAt desc)
 			ti := out[i].StartedAt
 			tj := out[j].StartedAt
 			if ti == nil && tj == nil {
@@ -1573,11 +1600,12 @@ func (a *App) filteredTasks(t *TasksTab) []TaskItem {
 			if tj == nil {
 				return !t.SortAsc
 			}
-			if t.SortAsc {
-				return ti.Before(*tj)
-			}
-			return ti.After(*tj)
+			less = ti.Before(*tj)
 		}
+		if t.SortAsc {
+			return less
+		}
+		return !less
 	})
 
 	return out
@@ -2277,6 +2305,15 @@ func taskStatusBadge(status string) string {
 }
 
 // taskWhen returns a short "when" description for a task list row.
+// lastUpdate returns the most recent timestamp for a task — CompletedAt if
+// set, otherwise StartedAt. Used for "updated" sort.
+func lastUpdate(it TaskItem) *time.Time {
+	if it.CompletedAt != nil {
+		return it.CompletedAt
+	}
+	return it.StartedAt
+}
+
 func taskWhen(it TaskItem) string {
 	if it.Status == "running" && it.StartedAt != nil {
 		return time.Since(*it.StartedAt).Round(time.Second).String() + " ago"
