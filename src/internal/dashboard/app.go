@@ -1590,15 +1590,15 @@ func (a *App) renderAgentTaskLogs(ag *AgentsTab, height int) string {
 func agentStatusText(s string) string {
 	switch s {
 	case "active":
-		return StyleSuccess.Render("●") + " running"
+		return "🟢 running"
 	case "stale":
-		return StyleWarning.Render("◉") + " stale"
+		return "🟡 stale"
 	case "zombie":
-		return StyleError.Render("●") + " zombie"
+		return "🔴 zombie"
 	case "error":
-		return StyleError.Render("●") + " error"
+		return "🔴 error"
 	case "idle":
-		return StyleMuted.Render("○") + " idle"
+		return "⚪ idle"
 	default:
 		return valueOr(s, "—")
 	}
