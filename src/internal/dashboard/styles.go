@@ -93,7 +93,9 @@ func StatusColor(status string) string {
 		return StyleError.Render("●")
 	case "running":
 		return StyleWarning.Render("⟳")
-	case "idle", "pending":
+	case "idle":
+		return "💤"
+	case "pending":
 		return StyleMuted.Render("○")
 	default:
 		return StyleMuted.Render("?")
