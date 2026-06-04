@@ -16,7 +16,7 @@
 
 - [ ] Jira Cloud source adapter
 - [ ] Linear source adapter
-- [ ] GitHub Issues source adapter
+- [x] GitHub Issues source adapter
 - [ ] Webhook server (receive push events from sources)
 - [~] `apiary cells` command (CLI registered, but stub — returns nothing)
 - [~] `apiary dispatch` command (CLI registered, but stub — "not yet implemented")
