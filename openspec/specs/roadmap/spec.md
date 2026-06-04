@@ -1,16 +1,16 @@
 # Apiary — Roadmap
 
-## v0.1 — Foundation
+## v0.1 — Foundation ✅
 
-- [ ] Project structure and Go module scaffold
-- [ ] `apiary.yaml` schema + validation
-- [ ] Core interfaces: `SourceAdapter`, `RunnerAdapter`, `Cell`, `RunResult`
-- [ ] Router engine (priority-based rule matching)
-- [ ] CLI skeleton: `run`, `validate`, `status`, `init`
-- [ ] Plane source adapter (poll mode)
-- [ ] OpenCode runner adapter
-- [ ] Shell script runner adapter
-- [ ] Structured JSON logging
+- [x] Project structure and Go module scaffold
+- [x] `apiary.yaml` schema + validation
+- [x] Core interfaces: `SourceAdapter`, `RunnerAdapter`, `Cell`, `RunResult`
+- [x] Router engine (priority-based rule matching)
+- [x] CLI skeleton: `run`, `validate`, `status`, `init`
+- [x] Plane source adapter (poll mode)
+- [x] OpenCode runner adapter (CLI + API modes)
+- [x] Shell script runner adapter (`script` runner)
+- [x] Structured JSON logging
 
 ## v0.2 — More Sources & Runners
 
@@ -18,27 +18,27 @@
 - [ ] Linear source adapter
 - [ ] GitHub Issues source adapter
 - [ ] Webhook server (receive push events from sources)
-- [ ] `apiary cells` command
-- [ ] `apiary dispatch` command
+- [~] `apiary cells` command (CLI registered, but stub — returns nothing)
+- [~] `apiary dispatch` command (CLI registered, but stub — "not yet implemented")
 
 ## v0.3 — Observability & Reliability
 
-- [ ] State locking (mark task "in progress" before run)
-- [ ] Result write-back (post runner output as task comment)
-- [ ] Run history store (SQLite)
-- [ ] `apiary logs` command with run-id filtering
-- [ ] OTLP trace export (opt-in)
-- [ ] Retry logic with configurable backoff
-- [ ] `--dry-run` mode
-- [ ] Watch mode (`apiary status --watch`)
+- [x] State locking (mark task "in progress" before run)
+- [x] Result write-back (post runner output as task comment)
+- [x] Run history store (SQLite)
+- [ ] `apiary logs` command with run-id filtering (not implemented)
+- [~] OTLP trace export (opt-in) (config parsed, no actual exporter)
+- [x] Retry logic with configurable backoff
+- [x] `--dry-run` mode
+- [x] Watch mode (`apiary status --watch`)
 
 ## v0.4 — Developer Experience
 
-- [ ] `apiary init` interactive scaffolding
-- [ ] `apiary validate --connectivity`
+- [x] `apiary init` interactive scaffolding
+- [~] `apiary validate --connectivity` (flag exists, but stub — "not yet implemented")
 - [ ] Homebrew tap
 - [ ] Docker image (`ghcr.io/orlandoburli/apiary`)
-- [ ] Documentation site
+- [x] Documentation site (mkdocs-material + GitHub Pages)
 
 ## v1.0 — Stable & Extensible
 
