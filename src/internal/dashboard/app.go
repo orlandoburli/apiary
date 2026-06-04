@@ -1,7 +1,9 @@
 package dashboard
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -382,6 +384,7 @@ func (a *App) selectedAgentID() (string, bool) {
 // handleAgentSubViewKey handles keys while an agent detail/activity/task-logs
 // view is open. The activity view mirrors the Tasks tab: ↑/↓ move a cursor and
 // enter/l drills into the selected task's logs.
+// In detail view: m cycles model, w cycles max_workers, both persist via IPC.
 func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 	ag := a.model.agentsTab
 
@@ -442,6 +445,26 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 		if id, ok := a.selectedAgentID(); ok {
 			a.model.loading = true
 			return a, a.fetchAgentActivity(id)
+		}
+	case "m":
+		// Rotate preferred models: next model becomes first (preferred).
+		if ag.View == AgentViewDetail && ag.Detail != nil && len(ag.Detail.PreferredModels) > 1 {
+			models := ag.Detail.PreferredModels
+			first := models[0]
+			copy(models, models[1:])
+			models[len(models)-1] = first
+			return a, a.updateAgentConfigCmd(ag.Detail.ID, models[0], 0)
+		}
+	case "w":
+		// Cycle max_workers in agent detail view: 1→2→3→4→5→1.
+		if ag.View == AgentViewDetail && ag.Detail != nil {
+			current := ag.Detail.MaxWorkers
+			if current < 1 {
+				current = 1
+			}
+			next := current%5 + 1
+			ag.Detail.MaxWorkers = next
+			return a, a.updateAgentConfigCmd(ag.Detail.ID, "", next)
 		}
 	case "r":
 		if id, ok := a.selectedAgentID(); ok && ag.View == AgentViewActivity {
@@ -671,6 +694,41 @@ func (a *App) clearLogsCmd(taskID string) tea.Cmd {
 		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 		url := fmt.Sprintf("http://apiary/clearlogs/%s", taskID)
 		resp, err := client.Post(url, "application/json", nil)
+		if err != nil {
+			return nil
+		}
+		resp.Body.Close()
+		return nil
+	}
+}
+
+// updateAgentConfigCmd sends a PATCH /api/config/agent/{id} request to the
+// daemon via the IPC socket to hot-reload model or max_workers at runtime.
+func (a *App) updateAgentConfigCmd(agentID, model string, maxWorkers int) tea.Cmd {
+	return func() tea.Msg {
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", a.socketPath)
+			},
+		}
+		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+
+		body := map[string]any{}
+		if model != "" {
+			body["model"] = model
+		}
+		if maxWorkers > 0 {
+			body["max_workers"] = maxWorkers
+		}
+		payload, _ := json.Marshal(body)
+		url := fmt.Sprintf("http://apiary/api/config/agent/%s", agentID)
+
+		req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader(payload))
+		if err != nil {
+			return nil
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
 		if err != nil {
 			return nil
 		}
@@ -1791,8 +1849,8 @@ func (a *App) footerKeys() []fkey {
 	case "Agents":
 		if ag := a.model.agentsTab; ag != nil {
 			switch ag.View {
-			case AgentViewDetail:
-				return []fkey{{"esc", "back"}, {"l", "activity"}, {"q", "quit"}}
+		case AgentViewDetail:
+			return []fkey{{"esc", "back"}, {"l", "activity"}, {"m", "model"}, {"w", "workers"}, {"q", "quit"}}
 			case AgentViewActivity:
 				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "logs"}, {"o", "open"}, {"pgup/dn", "page"}, {"q", "quit"}}
 			case AgentViewTaskLogs:
