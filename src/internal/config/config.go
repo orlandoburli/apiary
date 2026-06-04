@@ -62,10 +62,11 @@ type RunnerConfig struct {
 	Models   []string       `yaml:"models,omitempty"`
 }
 
-// AdapterName returns the runner adapter name: Provider if set, else Type (backward compat).
+// AdapterName returns the runner adapter name as "{provider}-{type}" when both
+// are set, or falls back to Type alone (backward compat for bare names like "claude-cli").
 func (r *RunnerConfig) AdapterName() string {
 	if r.Provider != "" {
-		return r.Provider
+		return r.Provider + "-" + r.Type
 	}
 	return r.Type
 }
