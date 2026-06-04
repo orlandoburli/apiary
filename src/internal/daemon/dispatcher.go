@@ -759,6 +759,22 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 		}
 	}
 
+	// Wire PID tracking and heartbeat into the run request so the runner can
+	// report the child process PID and send periodic liveness signals.
+	if exec != nil && d.db != nil {
+		execID := exec.ID
+		req.SetPID = func(pid int) {
+			if err := d.db.SetPID(ctx, execID, pid); err != nil {
+				aplog.Error("cell %s: set pid: %v", cell.ID, err)
+			}
+		}
+		req.Heartbeat = func() {
+			if err := d.db.SendHeartbeat(ctx, execID); err != nil {
+				aplog.Error("cell %s: heartbeat: %v", cell.ID, err)
+			}
+		}
+	}
+
 	result, err := ra.Run(runCtx, req)
 	if err != nil && result.Error == nil {
 		result.Error = err

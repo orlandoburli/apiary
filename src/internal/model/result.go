@@ -11,14 +11,19 @@ type RunRequest struct {
 	WorkingDir    string
 	Env           map[string]string
 	Timeout       time.Duration
-	AgentMetadata map[string]any // optional: for future use with agent-specific features
+	AgentMetadata map[string]any
 
-	// LogSink, if set, receives log entries in real time as the runner
-	// produces them (the prompt sent to the agent, each line of the agent's
-	// output, stderr, etc.). It must be safe to call from multiple goroutines.
-	// The dispatcher wires this to the per-task DEBUG log so users can watch
-	// the live conversation in the dashboard.
+	// LogSink receives log entries in real time as the runner produces them.
+	// Must be safe to call from multiple goroutines.
 	LogSink func(LogEntry) `json:"-"`
+
+	// SetPID is called after the child process starts with its OS PID.
+	SetPID func(pid int) `json:"-"`
+
+	// Heartbeat is called periodically (~every 15s) while the child runs.
+	// The dispatcher uses it to update last_heartbeat_at in the DB so the
+	// dashboard can detect stale/zombie processes.
+	Heartbeat func() `json:"-"`
 }
 
 type RunResult struct {

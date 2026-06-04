@@ -95,7 +95,7 @@ func TestTabsRenderFramedAndAligned(t *testing.T) {
 	assertFramed(t, a.renderTaskList(a.model.tasksTab, 12), 100)
 
 	a.model.agentsTab.Agents = []AgentStatus{
-		{ID: "engineer", Status: "active", CompletedCount: 12, AvgDurationMs: 64000, SuccessRate: 0.91},
+		{ID: "engineer", Status: "active", PID: 12345, CompletedCount: 12, AvgDurationMs: 64000, SuccessRate: 0.91},
 		{ID: "investigator", Status: "idle", CompletedCount: 3, AvgDurationMs: 1200, SuccessRate: 1.0},
 	}
 	assertFramed(t, a.renderAgentsTab(12), 100)
@@ -137,7 +137,7 @@ func TestAgentSubViewsFramed(t *testing.T) {
 	now := time.Now()
 	a := newTestApp(90, 20)
 	a.model.agentsTab.Agents = []AgentStatus{
-		{ID: "engineer", Status: "active", CompletedCount: 10, AvgDurationMs: 64000, SuccessRate: 0.9, LastTaskEndedAt: &now},
+		{ID: "engineer", Status: "active", PID: 12345, CompletedCount: 10, AvgDurationMs: 64000, SuccessRate: 0.9, LastTaskEndedAt: &now},
 	}
 	a.model.agentsTab.Detail = &a.model.agentsTab.Agents[0]
 	a.model.agentsTab.Activity = []TaskItem{
@@ -197,7 +197,7 @@ func TestAgentActivityDrillToLogs(t *testing.T) {
 	a := newTestApp(90, 20)
 	a.model.activeTab = 2 // Agents
 	a.model.agentsTab.Agents = []AgentStatus{
-		{ID: "engineer", Status: "active", RunningCount: 1, CurrentTask: "build X"},
+		{ID: "engineer", Status: "active", PID: 12345, RunningCount: 1, CurrentTask: "build X"},
 	}
 	a.model.agentsTab.View = AgentViewActivity
 	a.model.agentsTab.Activity = []TaskItem{

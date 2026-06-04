@@ -85,7 +85,9 @@ func StatusColor(status string) string {
 	switch status {
 	case "success", "completed", "active":
 		return StyleSuccess.Render("●")
-	case "failed", "error":
+	case "stale":
+		return StyleWarning.Render("◉")
+	case "zombie", "failed", "error":
 		return StyleError.Render("●")
 	case "running":
 		return StyleWarning.Render("⟳")

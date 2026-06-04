@@ -117,17 +117,20 @@ func (c *Client) GetRecentTasks(ctx context.Context, limit int) ([]RecentTask, e
 	return tasks, nil
 }
 
-// AgentStats holds agent performance information.
+// AgentStats holds agent performance and health information.
 type AgentStats struct {
 	ID              string
-	Status          string // active (a claude run is in flight) or idle
-	RunningCount    int    // number of in-flight executions right now
-	CurrentTask     string // title of an in-flight task (if any)
+	Status          string // active, stale, zombie, idle
+	RunningCount    int
+	CurrentTask     string
 	QueuedCount     int
 	CompletedCount  int
 	AvgDurationMs   int64
 	SuccessRate     float64
 	LastTaskEndedAt *time.Time
+	PID             int
+	HeartbeatAt     *time.Time
+	HeartbeatCount  int
 }
 
 // GetAgentStats retrieves statistics for all agents. An agent is "active" when
@@ -138,24 +141,28 @@ type AgentStats struct {
 func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT
-			agent_id,
+			e.agent_id,
 			COUNT(*) as total,
-			COUNT(CASE WHEN status = 'success' THEN 1 END) as completed,
-			CAST(AVG(duration_ms) AS INTEGER),
-			CAST(COUNT(CASE WHEN status = 'success' THEN 1 END) AS FLOAT) /
+			COUNT(CASE WHEN e.status = 'success' THEN 1 END) as completed,
+			CAST(AVG(e.duration_ms) AS INTEGER),
+			CAST(COUNT(CASE WHEN e.status = 'success' THEN 1 END) AS FLOAT) /
 				NULLIF(COUNT(*), 0) as success_rate,
-			MAX(completed_at),
-			COUNT(CASE WHEN status = 'running' THEN 1 END) as running,
-			MAX(CASE WHEN status = 'running' THEN title END) as current_task
-		FROM task_executions
-		GROUP BY agent_id
-		ORDER BY agent_id
+			MAX(e.completed_at),
+			COUNT(CASE WHEN e.status = 'running' THEN 1 END) as running,
+			MAX(CASE WHEN e.status = 'running' THEN e.title END) as current_task,
+			MAX(CASE WHEN e.status = 'running' THEN e.pid END) as current_pid,
+			MAX(CASE WHEN e.status = 'running' THEN e.heartbeat_at END) as current_heartbeat,
+			MAX(CASE WHEN e.status = 'running' THEN e.heartbeat_count END) as current_hb_count
+		FROM task_executions e
+		GROUP BY e.agent_id
+		ORDER BY e.agent_id
 	`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
+	now := time.Now()
 	var stats []AgentStats
 	for rows.Next() {
 		var s AgentStats
@@ -163,12 +170,12 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 		var successRate sql.NullFloat64
 		var running sql.NullInt64
 		var currentTask sql.NullString
-		// MAX(completed_at) is an aggregate, so SQLite drops its column type and
-		// go-sqlite3 hands it back as a string rather than a time.Time. Scan it
-		// as text and parse leniently.
+		var pid sql.NullInt64
+		var hbStr sql.NullString
+		var hbCount sql.NullInt64
 		var lastEnded sql.NullString
 		err := rows.Scan(&s.ID, &s.QueuedCount, &s.CompletedCount, &avgMs, &successRate,
-			&lastEnded, &running, &currentTask)
+			&lastEnded, &running, &currentTask, &pid, &hbStr, &hbCount)
 		if err != nil {
 			continue
 		}
@@ -186,9 +193,29 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 		if running.Valid {
 			s.RunningCount = int(running.Int64)
 		}
+		if pid.Valid {
+			s.PID = int(pid.Int64)
+		}
+		if hbStr.Valid {
+			if t, ok := parseSQLiteTime(hbStr.String); ok {
+				s.HeartbeatAt = &t
+			}
+		}
+		if hbCount.Valid {
+			s.HeartbeatCount = int(hbCount.Int64)
+		}
+
 		if s.RunningCount > 0 {
-			s.Status = "active"
 			s.CurrentTask = currentTask.String
+			if s.PID > 0 && s.HeartbeatAt != nil && now.Sub(*s.HeartbeatAt) <= 60*time.Second {
+				s.Status = "active" // 🟢
+			} else if s.PID > 0 && s.HeartbeatAt != nil && now.Sub(*s.HeartbeatAt) > 60*time.Second {
+				s.Status = "stale" // 🟡
+			} else if s.PID > 0 && s.HeartbeatAt == nil {
+				s.Status = "stale" // 🟡 — started, never heartbeated
+			} else {
+				s.Status = "zombie" // 🔴 — running in DB but no PID tracked
+			}
 		} else {
 			s.Status = "idle"
 		}
