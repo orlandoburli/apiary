@@ -10,7 +10,7 @@ import (
 	_ "github.com/orlandoburli/apiary/internal/runner/script" // register adapter
 )
 
-func newRunner(t *testing.T, command string) runner.Adapter {
+func newRunner(t *testing.T, command string) runner.Runner {
 	t.Helper()
 	r, ok := runner.New("script")
 	if !ok {

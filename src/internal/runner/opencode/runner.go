@@ -20,7 +20,7 @@ import (
 )
 
 func init() {
-	runner.Register("opencode", func() runner.Adapter { return &Runner{} })
+	runner.Register("opencode", func() runner.Runner { return &Runner{} })
 }
 
 type Mode string

@@ -53,7 +53,7 @@ type Dispatcher struct {
 
 	router      *router.Router
 	sources     map[string]source.Adapter
-	runners     map[string]runnerimpl.Adapter
+	runners     map[string]runnerimpl.Runner
 	agentRunner map[string]string
 
 	db       *db.Client
@@ -89,7 +89,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		startedAt:   time.Now(),
 		router:      r,
 		sources:     make(map[string]source.Adapter),
-		runners:     make(map[string]runnerimpl.Adapter),
+		runners:     make(map[string]runnerimpl.Runner),
 		agentRunner: make(map[string]string),
 		db:          dbClient,
 		logger:      logger,
@@ -164,7 +164,8 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		pseudoWorkerID := fmt.Sprintf("agent-%s", ac.ID)
 
 		// Instantiate runner of the appropriate type
-		ra, ok := runnerimpl.New(rc.Type)
+		adapterName := rc.AdapterName()
+		ra, ok := runnerimpl.New(adapterName)
 		if !ok {
 			return nil, fmt.Errorf("agent %q: runner type %q not found", ac.ID, rc.Type)
 		}
@@ -174,11 +175,11 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		}
 
 		d.runners[pseudoWorkerID] = ra
-		d.agentRunner[ac.ID] = rc.Type
+		d.agentRunner[ac.ID] = adapterName
 
-		aplog.Info("loaded agent %s: runner=%s type=%s preferred_models=%v", ac.ID, runnerID, rc.Type, ac.PreferredModels)
+		aplog.Info("loaded agent %s: runner=%s type=%s provider=%s preferred_models=%v", ac.ID, runnerID, rc.Type, adapterName, ac.PreferredModels)
 
-		if rc.Type == "opencode" {
+		if adapterName == "opencode" {
 			if err := d.writeOpencodeAgent(ctx, ac, rc); err != nil {
 				aplog.Warn("agent %s: write opencode agent config: %v", ac.ID, err)
 			}
