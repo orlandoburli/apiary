@@ -18,9 +18,9 @@
   color: #1d1d1f;
 }
 
-/* Header title text color */
+/* Hide header title text (logo already has the name) */
 .md-header__title {
-  color: #1d1d1f;
+  display: none;
 }
 
 /* Header navigation link color */
