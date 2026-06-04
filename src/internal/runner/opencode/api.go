@@ -12,19 +12,11 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/runner"
-	"github.com/orlandoburli/apiary/internal/runner/cli"
 )
 
 func init() {
-	runner.Register("opencode", func() runner.Runner { return &OpenCodeRunner{} })
+	runner.Register("opencode-api", func() runner.Runner { return &APIRunner{} })
 }
-
-type Mode string
-
-const (
-	ModeCLI Mode = "cli"
-	ModeAPI Mode = "api"
-)
 
 type Subscription string
 
@@ -33,62 +25,15 @@ const (
 	SubZen Subscription = "zen"
 )
 
-type OpenCodeRunner struct {
-	mode Mode
-
-	// CLI mode: delegates to cli.ProcessRunner
-	proc *cli.ProcessRunner
-
-	// API mode fields
+type APIRunner struct {
 	subscription Subscription
 	apiKey       string
 	apiBaseURL   string
 }
 
-func (r *OpenCodeRunner) ID() string { return "opencode" }
+func (r *APIRunner) ID() string { return "opencode-api" }
 
-func (r *OpenCodeRunner) Configure(config map[string]any) error {
-	mode, _ := config["mode"].(string)
-	switch mode {
-	case "api":
-		r.mode = ModeAPI
-		return r.configureAPI(config)
-	case "", "cli":
-		r.mode = ModeCLI
-		return r.configureCLI(config)
-	default:
-		return fmt.Errorf("opencode runner: invalid mode %q (expected cli or api)", mode)
-	}
-}
-
-func (r *OpenCodeRunner) configureCLI(config map[string]any) error {
-	r.proc = &cli.ProcessRunner{}
-	cfg := map[string]any{
-		"command":     "opencode",
-		"model_flag":  "--model",
-		"prompt_flag": "--prompt",
-		"turns_flag":  "--max-turns",
-		"agent_flag":  "--agent",
-	}
-	if v, ok := config["binary"].(string); ok && v != "" {
-		cfg["command"] = v
-	}
-	if v, ok := config["model_flag"].(string); ok && v != "" {
-		cfg["model_flag"] = v
-	}
-	if v, ok := config["prompt_flag"].(string); ok && v != "" {
-		cfg["prompt_flag"] = v
-	}
-	if v, ok := config["turns_flag"].(string); ok && v != "" {
-		cfg["turns_flag"] = v
-	}
-	if v, ok := config["args"].([]any); ok {
-		cfg["args"] = v
-	}
-	return r.proc.Configure(cfg)
-}
-
-func (r *OpenCodeRunner) configureAPI(config map[string]any) error {
+func (r *APIRunner) Configure(config map[string]any) error {
 	sub, _ := config["subscription"].(string)
 	switch sub {
 	case "go":
@@ -96,7 +41,7 @@ func (r *OpenCodeRunner) configureAPI(config map[string]any) error {
 	case "zen":
 		r.subscription = SubZen
 	default:
-		return fmt.Errorf("opencode runner: invalid subscription %q (expected go or zen)", sub)
+		return fmt.Errorf("opencode-api runner: invalid subscription %q (expected go or zen)", sub)
 	}
 	if v, ok := config["api_key"].(string); ok {
 		r.apiKey = v
@@ -105,53 +50,12 @@ func (r *OpenCodeRunner) configureAPI(config map[string]any) error {
 		r.apiBaseURL = v
 	}
 	if r.apiKey == "" {
-		return fmt.Errorf("opencode runner: api_key is required in api mode")
+		return fmt.Errorf("opencode-api runner: api_key is required")
 	}
 	return nil
 }
 
-func (r *OpenCodeRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
-	if r.mode == ModeCLI {
-		return r.proc.Run(ctx, req)
-	}
-	return r.runAPI(ctx, req)
-}
-
-// ── API mode ──────────────────────────────────────────────────────────────────
-
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type chatRequest struct {
-	Model     string        `json:"model"`
-	Messages  []chatMessage `json:"messages"`
-	MaxTokens int           `json:"max_tokens,omitempty"`
-}
-
-type chatResponse struct {
-	Choices []chatChoice `json:"choices"`
-	Usage   *chatUsage   `json:"usage,omitempty"`
-	Error   *chatError   `json:"error,omitempty"`
-}
-
-type chatChoice struct {
-	Message chatMessage `json:"message"`
-}
-
-type chatUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
-}
-
-type chatError struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-}
-
-func (r *OpenCodeRunner) runAPI(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
+func (r *APIRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
 	start := time.Now()
 	prompt := buildPrompt(req)
 
@@ -176,14 +80,14 @@ func (r *OpenCodeRunner) runAPI(ctx context.Context, req model.RunRequest) (mode
 	apiURL := r.apiBaseURL + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(raw))
 	if err != nil {
-		return model.RunResult{}, fmt.Errorf("opencode runner: create request: %w", err)
+		return model.RunResult{}, fmt.Errorf("opencode-api: create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+r.apiKey)
 
 	httpResp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
-		return model.RunResult{}, fmt.Errorf("opencode runner: api request: %w", err)
+		return model.RunResult{}, fmt.Errorf("opencode-api: api request: %w", err)
 	}
 	defer httpResp.Body.Close()
 
@@ -191,7 +95,7 @@ func (r *OpenCodeRunner) runAPI(ctx context.Context, req model.RunRequest) (mode
 
 	var resp chatResponse
 	if err := json.Unmarshal(respRaw, &resp); err != nil {
-		return model.RunResult{}, fmt.Errorf("opencode runner: parse response: %w", err)
+		return model.RunResult{}, fmt.Errorf("opencode-api: parse response: %w", err)
 	}
 
 	if resp.Error != nil {
@@ -240,7 +144,7 @@ func (r *OpenCodeRunner) runAPI(ctx context.Context, req model.RunRequest) (mode
 	return result, nil
 }
 
-func (r *OpenCodeRunner) resolveModelID(model string) string {
+func (r *APIRunner) resolveModelID(model string) string {
 	if model == "" {
 		return "default"
 	}
@@ -249,6 +153,38 @@ func (r *OpenCodeRunner) resolveModelID(model string) string {
 		return parts[1]
 	}
 	return model
+}
+
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type chatRequest struct {
+	Model     string        `json:"model"`
+	Messages  []chatMessage `json:"messages"`
+	MaxTokens int           `json:"max_tokens,omitempty"`
+}
+
+type chatResponse struct {
+	Choices []chatChoice `json:"choices"`
+	Usage   *chatUsage   `json:"usage,omitempty"`
+	Error   *chatError   `json:"error,omitempty"`
+}
+
+type chatChoice struct {
+	Message chatMessage `json:"message"`
+}
+
+type chatUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+type chatError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
 }
 
 func buildPrompt(req model.RunRequest) string {
