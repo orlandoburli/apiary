@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -16,6 +17,14 @@ import (
 func init() {
 	source.Register("github", func() source.Adapter { return &Adapter{} })
 }
+
+// Compile-time checks: the GitHub adapter supports the optional source
+// capabilities used by the dispatcher and the workflow engine.
+var (
+	_ source.StateSetter = (*Adapter)(nil)
+	_ source.LabelAdder  = (*Adapter)(nil)
+	_ source.TaskPoller  = (*Adapter)(nil)
+)
 
 type Adapter struct {
 	id         string
@@ -150,6 +159,49 @@ func (a *Adapter) WriteResult(ctx context.Context, cell model.Cell, result model
 }
 
 func (a *Adapter) WebhookHandler() http.Handler { return nil }
+
+// PollTask fetches the current state of a single issue plus its comments, for
+// the workflow engine to evaluate approval-step conditions. Implements
+// source.TaskPoller.
+func (a *Adapter) PollTask(ctx context.Context, cellID string) (model.Cell, error) {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%s", a.owner, a.repo, cellID)
+	body, err := a.client.get(ctx, path)
+	if err != nil {
+		return model.Cell{}, fmt.Errorf("github: poll task %s: %w", cellID, err)
+	}
+	var item issue
+	if err := json.Unmarshal(body, &item); err != nil {
+		return model.Cell{}, fmt.Errorf("github: decoding issue %s: %w", cellID, err)
+	}
+
+	cell := a.toCell(item)
+	comments, err := a.fetchComments(ctx, cellID)
+	if err != nil {
+		aplog.Debug("github: fetch comments for %s: %v", cellID, err)
+	} else {
+		cell.Comments = comments
+	}
+	return cell, nil
+}
+
+// fetchComments retrieves an issue's comments as model.Comment values.
+func (a *Adapter) fetchComments(ctx context.Context, issueNo string) ([]model.Comment, error) {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%s/comments", a.owner, a.repo, issueNo)
+	body, err := a.client.get(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	var raw []comment
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("github: decoding comments for %s: %w", issueNo, err)
+	}
+	out := make([]model.Comment, 0, len(raw))
+	for _, c := range raw {
+		created, _ := time.Parse(time.RFC3339, c.CreatedAt)
+		out = append(out, model.Comment{ID: fmt.Sprintf("%d", c.ID), Body: c.Body, CreatedAt: created})
+	}
+	return out, nil
+}
 
 func (a *Adapter) SetState(ctx context.Context, cell model.Cell, stateName string) error {
 	issueNo := cell.ID

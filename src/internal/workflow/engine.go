@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -72,6 +73,9 @@ type Engine struct {
 
 	now   func() time.Time
 	newID func(prefix string) string
+
+	mu     sync.Mutex         // guards parked
+	parked map[string]*dagRun // instances suspended at an approval step, by id
 }
 
 // Option customizes an Engine.
@@ -92,10 +96,11 @@ func WithMemoryBuilder(b MemoryBuilder) Option { return func(e *Engine) { e.mem 
 // NewEngine builds an Engine. cfg, store, and exec are required.
 func NewEngine(cfg *config.Config, store Store, exec StepExecutor, opts ...Option) *Engine {
 	e := &Engine{
-		cfg:   cfg,
-		store: store,
-		exec:  exec,
-		now:   time.Now,
+		cfg:    cfg,
+		store:  store,
+		exec:   exec,
+		now:    time.Now,
+		parked: map[string]*dagRun{},
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -106,9 +111,11 @@ func NewEngine(cfg *config.Config, store Store, exec StepExecutor, opts ...Optio
 	return e
 }
 
-// RunInstance executes a workflow for a cell from start to finish. It returns the
-// created instance ID and whether the instance completed successfully. Errors
-// creating the instance are returned; per-step failures are recorded and
+// RunInstance executes a workflow for a cell. It returns the created instance ID
+// and whether the instance completed successfully. An instance that suspends at
+// an approval step returns success=false with no error — it is parked in state
+// approval_waiting until ResolveApproval (driven by the polling loop) resumes it.
+// Errors creating the instance are returned; per-step failures are recorded and
 // reflected in the final instance state and the success flag, not returned.
 func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, cell model.Cell) (instanceID string, success bool, err error) {
 	instID := e.newID("wf")
@@ -129,18 +136,34 @@ func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, cell
 		_ = e.side.StateLock(ctx, cell)
 	}
 
-	// Execute the step graph: depends_on ordering, split routing, on_fail.goto
-	// loops, and skip propagation are all handled by the DAG scheduler.
-	failed, memSteps := e.runDAG(ctx, instID, wf, cell, nil, 0)
+	r := e.initDAG(instID, wf, cell, nil, 0)
+	outcome := e.driveDAG(ctx, r)
+	return instID, e.settle(ctx, r, outcome), nil
+}
 
+// settle persists the terminal state of a run and applies completion hooks, or
+// parks the run when it suspended at an approval step. It returns whether the
+// instance completed successfully (false for failed or waiting).
+func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool {
+	if outcome == outcomeWaiting {
+		_ = e.store.UpdateWorkflowInstanceState(ctx, r.instID, db.InstanceStateApprovalWaiting)
+		e.mu.Lock()
+		e.parked[r.instID] = r
+		e.mu.Unlock()
+		return false
+	}
+
+	failed := outcome == outcomeFailed
 	finalState := db.InstanceStateDone
 	if failed {
 		finalState = db.InstanceStateFailed
 	}
-	_ = e.store.UpdateWorkflowInstanceState(ctx, instID, finalState)
-
-	e.applyCompletion(ctx, wf, cell, failed, memSteps)
-	return instID, !failed, nil
+	_ = e.store.UpdateWorkflowInstanceState(ctx, r.instID, finalState)
+	e.mu.Lock()
+	delete(e.parked, r.instID)
+	e.mu.Unlock()
+	e.applyCompletion(ctx, r.wf, r.cell, failed, r.memSteps())
+	return !failed
 }
 
 // runStep executes one agent step, persisting its step run, and returns the result.
