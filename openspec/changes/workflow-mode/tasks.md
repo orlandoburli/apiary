@@ -168,9 +168,9 @@ Approval steps that suspend a workflow instance until a human responds, driven b
 
 ### 4.3 Resume Command
 
-- [ ] 4.3.1 Implement `apiary resume <instance-id>` CLI command — see [CLI spec](../../specs/cli/spec.md) (PR-4c)
+- [x] 4.3.1 Implement `apiary resume <instance-id>` CLI command (and `apiary resume --workflow <id>` to target the most recent failed/interrupted instance) — engine `ResumeInstance` replays already-passed steps from cache (no re-execution, no re-fired side effects), re-evaluates splits, and continues from the failure point; daemon IPC `GET /resume/{id}` (preview) + `POST /resume/{id}` (execute on the daemon-lifetime ctx). Exit codes 2/3/4 for not-found/not-resumable/workflow-changed (PR-4c)
 - [x] 4.3.2 Implement `apiary instances` CLI command — list (filters: `--workflow`/`--state`/`--limit`/`--json`) and `apiary instances <id>` step-level detail, served by daemon IPC (`GET /instances`, `GET /instances/{id}`) reading `workflow_instances` + `step_runs` (PR-4b)
-- [ ] 4.3.3 Show resume confirmation prompt listing skipped steps and their side effects (PR-4c)
+- [x] 4.3.3 Show resume confirmation prompt listing skipped steps and their side effects — `ResumePreview` returns skip (already passed) / run lists; CLI prints them and prompts `[y/N]` unless `--yes` (PR-4c)
 
 ### 4.4 TUI Updates
 
@@ -182,7 +182,7 @@ Approval steps that suspend a workflow instance until a human responds, driven b
 
 - [ ] 4.5.1 Integration test: approval step posts comment, workflow pauses, resumes on matching comment
 - [ ] 4.5.2 Integration test: approval timeout aborts workflow
-- [ ] 4.5.3 Integration test: `apiary resume` replays cached steps, continues from failure point
+- [~] 4.5.3 `apiary resume` replays cached steps, continues from failure point — covered by engine unit tests (`resume_test.go`: skips-cached-and-continues, cached-memory-available-downstream, marks-prior-step-cached, re-evaluates-split) rather than a full daemon integration test (PR-4c)
 - [ ] 4.5.4 Run full test suite: `go test ./...`
 
 ---

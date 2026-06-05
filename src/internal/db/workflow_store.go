@@ -125,6 +125,23 @@ func (c *Client) ListWorkflowInstances(ctx context.Context, limit int) ([]Workfl
 	return scanInstances(rows)
 }
 
+// LatestResumableInstance returns the most recent failed or interrupted
+// instance of a workflow, or (nil, nil) when none exists.
+func (c *Client) LatestResumableInstance(ctx context.Context, workflowID string) (*WorkflowInstance, error) {
+	row := c.db.QueryRowContext(ctx, `
+		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
+		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at
+		FROM workflow_instances
+		WHERE workflow_id = ? AND state IN ('failed','interrupted')
+		ORDER BY created_at DESC LIMIT 1
+	`, workflowID)
+	inst, err := scanInstance(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return inst, err
+}
+
 // WorkflowInstanceView is a WorkflowInstance enriched with the cell's title,
 // used by the `apiary instances` listing.
 type WorkflowInstanceView struct {
