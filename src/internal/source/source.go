@@ -50,6 +50,14 @@ type LabelAdder interface {
 	AddLabels(ctx context.Context, cell model.Cell, labels []string) error
 }
 
+// LabelRemover is an optional interface that sources may implement to remove
+// labels from a task. The dispatcher uses it on force-restart to strip a cell's
+// control labels — a stale lock (e.g. "in-progress") and the stage marker
+// (e.g. "agent:engineer") — so the task re-enters routing from the start.
+type LabelRemover interface {
+	RemoveLabels(ctx context.Context, cell model.Cell, labels []string) error
+}
+
 // TaskPoller is an optional interface that sources may implement to fetch the
 // current state of a single task by ID, including its comments. The workflow
 // engine uses it to evaluate approval-step resume/abort conditions against the
