@@ -111,6 +111,14 @@ func (c *client) post(ctx context.Context, path string, payload any) ([]byte, er
 	return c.do(ctx, req)
 }
 
+func (c *client) delete(ctx context.Context, path string) ([]byte, error) {
+	req, err := c.newRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.do(ctx, req)
+}
+
 func (c *client) getAllIssues(ctx context.Context, path string, params url.Values) ([]issue, error) {
 	var all []issue
 	page := 1
