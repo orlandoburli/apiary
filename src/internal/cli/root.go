@@ -48,6 +48,7 @@ func init() {
 		newCellsCmd(),
 		newInstancesCmd(),
 		newResumeCmd(),
+		newClearCmd(),
 		newDispatchCmd(),
 		newServiceCmd(),
 		newInitCmd(),
