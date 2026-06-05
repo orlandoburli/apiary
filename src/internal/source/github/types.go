@@ -1,16 +1,16 @@
 package github
 
 type issue struct {
-	Number    int        `json:"number"`
-	Title     string     `json:"title"`
-	Body      string     `json:"body"`
-	State     string     `json:"state"`
-	Labels    []label    `json:"labels"`
-	HTMLURL   string     `json:"html_url"`
-	CreatedAt string     `json:"created_at"`
-	UpdatedAt string     `json:"updated_at"`
+	Number      int       `json:"number"`
+	Title       string    `json:"title"`
+	Body        string    `json:"body"`
+	State       string    `json:"state"`
+	Labels      []label   `json:"labels"`
+	HTMLURL     string    `json:"html_url"`
+	CreatedAt   string    `json:"created_at"`
+	UpdatedAt   string    `json:"updated_at"`
 	PullRequest *struct{} `json:"pull_request,omitempty"`
-	User      user       `json:"user"`
+	User        user      `json:"user"`
 }
 
 type user struct {
@@ -29,6 +29,13 @@ type issueRequest struct {
 
 type commentRequest struct {
 	Body string `json:"body"`
+}
+
+// comment is a GitHub issue comment, fetched by PollTask for approval steps.
+type comment struct {
+	ID        int64  `json:"id"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
 }
 
 type labelListRequest struct {

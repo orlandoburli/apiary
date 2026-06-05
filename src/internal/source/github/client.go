@@ -79,6 +79,14 @@ func (c *client) do(ctx context.Context, req *http.Request) ([]byte, error) {
 	return body, nil
 }
 
+func (c *client) get(ctx context.Context, path string) ([]byte, error) {
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.do(ctx, req)
+}
+
 func (c *client) patch(ctx context.Context, path string, payload any) ([]byte, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {

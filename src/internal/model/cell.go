@@ -17,6 +17,18 @@ type Cell struct {
 	Metadata    map[string]any
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	// Comments is populated only by a TaskPoller (per-task fetch used for
+	// approval steps), not by Poll. It holds comments relevant to evaluating an
+	// approval condition.
+	Comments []Comment
+}
+
+// Comment is a single comment on a source task, used to evaluate approval-step
+// resume/abort conditions (comment_contains).
+type Comment struct {
+	ID        string
+	Body      string
+	CreatedAt time.Time
 }
 
 type AckAction string
