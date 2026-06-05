@@ -45,8 +45,24 @@ func New(cfg *config.Config) (*Router, error) {
 		workers[w.ID] = w
 	}
 
-	routes := make([]config.RouteConfig, len(cfg.Routes))
-	copy(routes, cfg.Routes)
+	routes := make([]config.RouteConfig, 0, len(cfg.Routes)+len(cfg.Workflows))
+	routes = append(routes, cfg.Routes...)
+	// A workflow's trigger acts as a route whose id equals the workflow id, so the
+	// dispatcher (resolveWorkflow) can upgrade the match to the full multi-step
+	// definition. Plain routes still synthesize a single-step workflow. The agent
+	// is the workflow's first agent step — representative for semaphore admission
+	// and logging; routing itself only needs a non-empty agent and the id.
+	for _, wf := range cfg.Workflows {
+		if wf.Trigger == nil {
+			continue
+		}
+		routes = append(routes, config.RouteConfig{
+			ID:       wf.ID,
+			Priority: wf.Trigger.Priority,
+			Match:    wf.Trigger.Match,
+			Agent:    firstAgentStep(wf),
+		})
+	}
 	sort.Slice(routes, func(i, j int) bool {
 		return routes[i].Priority < routes[j].Priority
 	})
@@ -63,6 +79,26 @@ func New(cfg *config.Config) (*Router, error) {
 	}
 
 	return &Router{routes: routes, workers: workers, regexes: regexes}, nil
+}
+
+// firstAgentStep returns a representative agent id for a workflow's trigger
+// route — the first agent the workflow will run. It falls back to the workflow
+// id so the synthetic route always has a non-empty agent (Router.Route skips a
+// matched route that has neither an agent nor a resolvable worker).
+func firstAgentStep(wf config.WorkflowConfig) string {
+	for _, s := range wf.Steps {
+		switch s.StepType() {
+		case config.StepTypeAgent:
+			if s.Agent != "" {
+				return s.Agent
+			}
+		case config.StepTypeForeach:
+			if s.Step != nil && s.Step.Agent != "" {
+				return s.Step.Agent
+			}
+		}
+	}
+	return wf.ID
 }
 
 // Route evaluates all rules against the Cell and returns the first match.
