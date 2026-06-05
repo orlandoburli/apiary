@@ -213,6 +213,7 @@ func (a *Adapter) toCell(item issue) model.Cell {
 		cellType = "pull_request"
 	}
 
+	url := strings.Replace(item.HTMLURL, "/pull/", "/issues/", 1)
 	return model.Cell{
 		ID:          fmt.Sprintf("%d", item.Number),
 		SourceID:    a.ID(),
@@ -222,7 +223,7 @@ func (a *Adapter) toCell(item issue) model.Cell {
 		Labels:      labels,
 		Type:        cellType,
 		State:       item.State,
-		URL:         item.HTMLURL,
+		URL:         url,
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 	}
