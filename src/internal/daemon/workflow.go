@@ -65,7 +65,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		Model:              req.Model,
 		MaxTurns:           15,
 		SystemPrepend:      req.MemoryDoc,
-		SystemAppend:       readSoulFile(req.Agent, req.Cell.ID),
+		SystemAppend:       composeSystemAppend(req.Prompt, readSoulFile(req.Agent, req.Cell.ID)),
 		SummaryPrompt:      req.Step.SummaryPrompt,
 		StepID:             req.Step.ID,
 		WorkflowInstanceID: req.InstanceID,
@@ -135,6 +135,20 @@ func (s *wfSideEffects) ApplyHook(ctx context.Context, cell model.Cell, hook con
 		}
 	}
 	return nil
+}
+
+// composeSystemAppend combines a step-level prompt with the agent's soul file.
+// The step prompt comes first so per-step (and foreach per-item) instructions
+// lead, followed by the agent's standing guidance.
+func composeSystemAppend(stepPrompt, soul string) string {
+	switch {
+	case stepPrompt == "":
+		return soul
+	case soul == "":
+		return stepPrompt
+	default:
+		return stepPrompt + "\n\n" + soul
+	}
 }
 
 // readSoulFile loads an agent's soul file, returning "" (and logging) on error.
