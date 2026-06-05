@@ -180,8 +180,8 @@ Approval steps that suspend a workflow instance until a human responds, driven b
 
 ### 4.5 Tests
 
-- [ ] 4.5.1 Integration test: approval step posts comment, workflow pauses, resumes on matching comment
-- [ ] 4.5.2 Integration test: approval timeout aborts workflow
+- [~] 4.5.1 Approval step posts comment, workflow pauses, resumes on matching comment — covered by `approval_test.go` (`SuspendsAtApprovalStep`, `CheckResumesOnComment`, `ResumeContinuesWorkflow`) at engine level rather than a full daemon+source integration test
+- [~] 4.5.2 Approval timeout aborts workflow — covered by `approval_test.go` `CheckTimesOut`
 - [~] 4.5.3 `apiary resume` replays cached steps, continues from failure point — covered by engine unit tests (`resume_test.go`: skips-cached-and-continues, cached-memory-available-downstream, marks-prior-step-cached, re-evaluates-split) rather than a full daemon integration test (PR-4c)
 - [x] 4.5.4 Run full test suite: `go test ./...` — green on `main` after each phase PR
 
@@ -189,8 +189,8 @@ Approval steps that suspend a workflow instance until a human responds, driven b
 
 ## Cross-Cutting
 
-- [ ] X.1 Update `openspec/specs/plugin-api/spec.md` with new `SourceAdapter.PollTask` and updated `RunRequest`/`RunResult`
-- [ ] X.2 Update `openspec/specs/schema/spec.md` with `workflows:` block and new step types
-- [ ] X.3 Update `openspec/specs/cli/spec.md` with `apiary instances` and `apiary resume` commands
-- [ ] X.4 Update example `apiary.yaml` in `.apiary/` to show a sample workflow
-- [ ] X.5 Run `npx gitnexus analyze` after each phase to keep the knowledge graph current
+- [x] X.1 Update `openspec/specs/plugin-api/spec.md` — added "Workflow Mode extensions (experimental)": optional `TaskPoller` interface, `Cell.Comments`, and the workflow `RunRequest`/`RunResult` fields (PR-4e)
+- [x] X.2 Update `openspec/specs/schema/spec.md` — added `settings.experimental.workflow_mode` and a `workflows[]` (experimental) section with the step-type table (PR-4e)
+- [x] X.3 Update `openspec/specs/cli/spec.md` with `apiary instances` and `apiary resume` commands — the spec already documents both (authored ahead of implementation); commands now match it
+- [x] X.4 Add a sample workflow config — `.apiary/example-workflow.yaml` (validates with `apiary validate`), demonstrating agent/split/approval steps, memory, and `experimental.workflow_mode` (PR-4e)
+- [x] X.5 Run `gitnexus analyze` after each phase to keep the knowledge graph current — done in every phase PR's git workflow

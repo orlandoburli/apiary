@@ -1,0 +1,119 @@
+version: "1"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Example: Workflow Mode (experimental)
+#
+# This sample shows how to route a task through a multi-step workflow instead of
+# single-shot dispatch. Enable it with settings.experimental.workflow_mode.
+# A matched task runs through `steps` in dependency order, threading a small
+# enrichable "memory" baton between them. Approval steps suspend the instance
+# until a human responds on the task (GitHub issues support this via comments).
+#
+# Inspect and resume instances from the CLI:
+#   apiary instances                 # list workflow instances
+#   apiary instances <instance-id>   # step-level detail
+#   apiary resume <instance-id>      # replay cached steps, continue from failure
+# ─────────────────────────────────────────────────────────────────────────────
+
+runners:
+  - id: claude
+    type: cli
+    provider: claude
+    config:
+      args: ["--output-format", "stream-json", "--verbose"]
+    models: [claude-opus-4-8, claude-sonnet-4-6]
+
+default_runner: claude
+
+sources:
+  - id: github
+    type: github
+    config:
+      repo: your-org/your-repo
+      api_key: ${GITHUB_TOKEN}
+    poll_interval: 60s
+    filters:
+      states: [open]
+
+agents:
+  - id: investigator
+    description: "Classifies an issue by complexity"
+    soul_file: .apiary/souls/investigator.md
+    model: claude-opus-4-8
+  - id: engineer
+    description: "Implements the change"
+    soul_file: .apiary/souls/engineer.md
+    model: claude-sonnet-4-6
+  - id: reviewer
+    description: "Reviews the change"
+    soul_file: .apiary/souls/reviewer.md
+    model: claude-sonnet-4-6
+
+workflows:
+  - id: feature-development
+    description: "Plan → implement → human approval → review"
+    resume: allowed
+    trigger:
+      priority: 10
+      match:
+        labels: [ai-ready]
+        types: [feature, improvement]
+
+    steps:
+      # 1) Classify and plan. Persist a couple of fields into workflow memory.
+      - id: plan
+        agent: investigator
+        summary_prompt: "In 3-5 bullets: the approach, risks, and what the implementer needs."
+        output_schema:
+          type: object
+          properties:
+            complexity: {type: string, enum: [low, medium, high]}
+            approach: {type: string}
+          required: [complexity, approach]
+        memory:
+          write: [complexity, approach]
+
+      # 2) Route on the planned complexity. High complexity needs sign-off.
+      - id: route
+        type: split
+        depends_on: [plan]
+        branches:
+          - if: 'memory.complexity == "high"'
+            goto: approve
+          - else: true
+            goto: implement
+
+      # 3) Human approval checkpoint (only reached for high-complexity work).
+      #    The engine posts `message` and parks the instance until a maintainer
+      #    comments "approve" (resume) or "reject" (abort), or the timeout fires.
+      - id: approve
+        type: approval
+        message: "High-complexity change planned. Comment `approve` to proceed or `reject` to stop."
+        resume_on: {comment_contains: "approve"}
+        abort_on: {comment_contains: "reject"}
+        timeout: 24h
+        on_pass: {next: implement}
+
+      # 4) Implement, then review. Both read the accumulated memory baton.
+      - id: implement
+        agent: engineer
+        depends_on: [plan]
+        prompt: "Implement the change following the approach captured in memory."
+
+      - id: review
+        agent: reviewer
+        depends_on: [implement]
+        prompt: "Review the implementation for correctness and conventions."
+
+    on_complete:
+      set_state: in_review
+      add_labels: [reviewed]
+    on_fail:
+      add_labels: [needs-attention]
+
+settings:
+  concurrency: 2
+  state_lock: true
+  result_comment: true
+  experimental:
+    workflow_mode: true
