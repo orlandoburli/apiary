@@ -10,36 +10,38 @@ Parse the `workflows:` block alongside existing `routes:`. No execution changes.
 
 ### 1.1 Config Structs
 
-- [ ] 1.1.1 Add `WorkflowConfig`, `StepConfig`, `TriggerConfig`, `SplitBranch`, `ApprovalConfig`, `ApprovalTrigger`, `StepOutcome`, `MemoryConfig` structs to `src/internal/config/config.go`
-- [ ] 1.1.2 Add `Workflows []WorkflowConfig` field to top-level `Config` struct
-- [ ] 1.1.3 Update YAML unmarshaling to parse `workflows:` block
+- [x] 1.1.1 Add `WorkflowConfig`, `StepConfig`, `TriggerConfig`, `SplitBranch`, `ApprovalTrigger`, `StepOutcome`, `MemoryConfig`, `OutputSchema`, `SchemaField` structs (in new file `src/internal/config/workflow.go` to keep `config.go` focused)
+- [x] 1.1.2 Add `Workflows []WorkflowConfig` field to top-level `Config` struct
+- [x] 1.1.3 Update YAML unmarshaling to parse `workflows:` block (struct tags + parse round-trip test)
 
 ### 1.2 Config Validation
 
-- [ ] 1.2.1 Validate workflow IDs are unique and do not conflict with route IDs (`src/internal/config/validate.go`)
-- [ ] 1.2.2 Validate step graph: all `depends_on` references point to existing step IDs within the same workflow
-- [ ] 1.2.3 Validate step graph is a DAG (cycle detection); allow only declared `on_fail.goto` back-edges pointing to ancestors
-- [ ] 1.2.4 Validate all `agent` fields in steps reference a defined agent ID
-- [ ] 1.2.5 Validate all `branches[].goto` and `on_fail.goto` references point to existing step IDs
-- [ ] 1.2.6 Validate `memory.write` fields exist as top-level properties in the step's `output_schema`
-- [ ] 1.2.7 Validate `output_schema` is a supported JSON Schema subset (object, string, number, boolean, enum, required — no arrays at top level, no `$ref`)
-- [ ] 1.2.8 Validate split steps: `multi: false` requires exactly one `else` branch; `type: agent` steps require `agent` field; `type: approval` steps must not have `agent` field
-- [ ] 1.2.9 Validate `on_fail.max_retries` is present and ≥ 1 when `on_fail.goto` is set
-- [ ] 1.2.10 Validate `foreach.items` dot-path resolves to an `array` type in the referenced step's `output_schema`
-- [ ] 1.2.11 Validate sub-workflow references: `type: workflow` step must reference an existing workflow ID; referenced workflow must not contain `type: workflow` steps; no self-reference
-- [ ] 1.2.12 Validate `resume: auto` only when all steps are `idempotent: true`
-- [ ] 1.2.13 Write validation unit tests covering all new cases
+(in new files `workflow_validate.go` + `workflow_graph.go`, hooked into `Config.Validate()`)
+
+- [x] 1.2.1 Validate workflow IDs are unique and do not conflict with route IDs
+- [x] 1.2.2 Validate step graph: all `depends_on` references point to existing step IDs within the same workflow
+- [x] 1.2.3 Validate step graph is a DAG (cycle detection); allow only declared `on_fail.goto` back-edges pointing to ancestors
+- [x] 1.2.4 Validate all `agent` fields in steps reference a defined agent ID
+- [x] 1.2.5 Validate all `branches[].goto`, `on_fail.goto`, and `on_pass.next` references point to existing step IDs
+- [x] 1.2.6 Validate `memory.write` fields exist as top-level properties in the step's `output_schema`
+- [x] 1.2.7 Validate `output_schema` is a supported JSON Schema subset (top-level object; string, number, integer, boolean, array, object properties; enum on string only; arrays require `items` — arrays ARE supported because foreach consumes them; no `$ref`)
+- [x] 1.2.8 Validate split steps: `multi: false` requires exactly one `else`/fallback branch; `type: agent` steps require `agent` field; `type: approval`/`split`/`workflow` steps must not have `agent` field
+- [x] 1.2.9 Validate `on_fail.max_retries` is present and ≥ 1 when `on_fail.goto` is set
+- [x] 1.2.10 Validate `foreach.items` dot-path resolves to an `array` type in the referenced step's `output_schema`; concurrency 1–16; max_items 1–200; inner step must be `agent`
+- [x] 1.2.11 Validate sub-workflow references: `type: workflow` step must reference an existing workflow ID; referenced workflow must not contain `type: workflow` steps; no self-reference
+- [x] 1.2.12 Validate `resume: auto` only when all steps are `idempotent: true`
+- [x] 1.2.13 Write validation unit tests covering all new cases (44 cases)
 
 ### 1.3 `apiary validate` Update
 
-- [ ] 1.3.1 Update `apiary validate` to report workflow validation errors with step-level context (e.g. `workflow "feature-dev", step "implement": agent "backend" not found`)
-- [ ] 1.3.2 Update `apiary validate` to warn when a workflow is defined but no trigger is set and it is not referenced as a sub-workflow
+- [x] 1.3.1 Update `apiary validate` to report workflow validation errors with step-level context (e.g. `workflows[1] "bad-wf": step "s1": agent "ghost-agent" not defined`)
+- [x] 1.3.2 Update `apiary validate` to warn when a workflow is defined but no trigger is set and it is not referenced as a sub-workflow (`Config.WorkflowWarnings()`)
 
 ### 1.4 Tests
 
-- [ ] 1.4.1 Unit tests: valid workflow parses correctly
-- [ ] 1.4.2 Unit tests: all validation error cases produce correct messages
-- [ ] 1.4.3 Run full test suite: `go test ./...`
+- [x] 1.4.1 Unit tests: valid workflow parses correctly (`workflow_parse_test.go` — full YAML round-trip)
+- [x] 1.4.2 Unit tests: all validation error cases produce correct messages
+- [x] 1.4.3 Run full test suite: `go test ./...`
 
 ---
 

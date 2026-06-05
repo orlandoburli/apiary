@@ -65,7 +65,7 @@ Unstructured steps continue to expose `steps.<id>.output` as the full stdout str
 
 ## Validation
 
-1. `output_schema` must be a valid JSON Schema (subset: `object`, `string`, `number`, `boolean`, `enum`, `required`). Arrays and `$ref` are not supported in v1.
+1. `output_schema` must be a valid JSON Schema (subset: `object`, `string`, `number`, `integer`, `boolean`, `array`, `enum`, `required`). The top level must be an `object`. Arrays are supported (an `array` property requires an `items` definition) and are consumed by [foreach-step](../foreach-step/spec.md); `$ref` is not supported in v1. `enum` is only valid on `string` fields.
 2. At runtime, if the last line matches `APIARY_OUTPUT:` but the JSON fails schema validation, the step fails.
 3. Conditions referencing `steps.<id>.output.<field>` on a step without `output_schema` fail config validation.
 4. Conditions referencing `steps.<id>.output` (no field path) on a step with `output_schema` return the raw string (backward compatible).
