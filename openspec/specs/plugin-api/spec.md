@@ -91,6 +91,58 @@ type RunResult struct {
 }
 ```
 
+## Workflow Mode extensions (experimental)
+
+When `settings.experimental.workflow_mode` is enabled, the engine drives tasks
+through multi-step workflows. Adapters opt into the extra capabilities through
+**optional** interfaces — existing adapters keep working unchanged.
+
+### `TaskPoller` (optional) — required to host `approval` steps
+
+An `approval` step suspends a workflow until a human responds on the task. The
+engine re-reads the live task (and its comments) once per poll cycle to decide
+whether to resume or abort. A source can only host approvals if its adapter
+implements `TaskPoller`; otherwise the instance stays parked.
+
+```go
+// TaskPoller fetches a single task's current state, including its comments.
+// Implemented by adapters that can host approval steps.
+type TaskPoller interface {
+    PollTask(ctx context.Context, cellID string) (Cell, error)
+}
+```
+
+`PollTask` populates `Cell.Comments` so the engine can evaluate approval
+conditions (`comment_contains`, `label_added`, `state_changed`):
+
+```go
+type Comment struct {
+    ID        string
+    Body      string
+    CreatedAt time.Time
+}
+// Cell gains: Comments []Comment  // populated by TaskPoller; empty otherwise
+```
+
+The built-in **GitHub** adapter implements `TaskPoller` (issue + comments).
+
+### `RunRequest` / `RunResult` workflow fields
+
+Agent steps reuse the same `RunnerAdapter.Run`. Workflow mode adds these fields,
+all optional and ignored by runners that do not use them:
+
+```go
+// RunRequest, additional fields:
+SystemPrepend      string  // workflow memory document injected ahead of the prompt
+SummaryPrompt      string  // ask the agent for a short handoff note (memory baton)
+StepID             string  // the workflow step id (for logging / persistence)
+WorkflowInstanceID string  // the owning instance id
+
+// RunResult, additional fields:
+StructuredOutput map[string]any // parsed APIARY_OUTPUT: JSON (per output_schema)
+Summary          string         // the agent's handoff summary (APIARY_SUMMARY block)
+```
+
 ## Built-in Adapters (v1)
 
 ### Source Adapters

@@ -182,6 +182,38 @@ settings:
 | `result_comment` | bool | `true` | Post agent output as a comment on the source task |
 | `telemetry.enabled` | bool | `false` | Emit OTLP traces |
 | `telemetry.endpoint` | string | — | OTLP collector endpoint |
+| `experimental.workflow_mode` | bool | `false` | Route matched tasks through the multi-step workflow engine instead of single-shot dispatch |
+
+### `workflows[]` (experimental)
+
+Enabled by `settings.experimental.workflow_mode`. A workflow is a multi-step DAG
+that replaces single-shot dispatch: a task that matches a workflow's `trigger`
+runs through its `steps` in dependency order, threading a small enrichable
+**memory** baton between them. Routes and workflows share an id namespace; a
+plain route is treated as a single-step workflow. See the full annotated
+reference in the `workflow-mode` change specs (`specs/workflow/spec.md`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | ✓ | Unique across all workflows and routes |
+| `description` | string | — | Shown in the TUI and logs |
+| `resume` | string | — | `allowed` \| `forbidden` \| `auto` (resume eligibility) |
+| `trigger` | object | ✓ | Same matcher as `routes[].match`, plus `priority` |
+| `steps[]` | object[] | ✓ | Ordered steps forming the DAG |
+| `on_complete` / `on_fail` | object | — | Side-effects on terminal success/failure (`set_state`, `add_labels`) |
+
+**Step types** (`steps[].type`, default `agent`):
+
+| Type | Purpose | Key fields |
+|---|---|---|
+| `agent` | Invoke one agent | `agent`, `model`, `prompt`, `summary_prompt`, `output_schema`, `memory`, `depends_on`, `on_pass.next`, `on_fail.goto`/`max_retries` |
+| `split` | Conditional routing | `branches[].if` (expression) / `else`, `branches[].goto`, `multi` |
+| `approval` | Human checkpoint (suspends the instance) | `message`, `resume_on`, `abort_on`, `timeout` |
+| `foreach` | Fan-out over a prior step's array | `items`, `as`, `agent`, `max_items`, `fail_fast` |
+| `workflow` | Delegate to a child workflow | `workflow` (child id) |
+
+Split/approval conditions use a small expression language over `cell.*`,
+`memory.*`, and `steps.*` with `==`/`!=`/`contains`/`matches` and `and`/`or`/`not`.
 
 ## Environment Variable Interpolation
 
