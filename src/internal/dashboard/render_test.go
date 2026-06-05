@@ -276,6 +276,56 @@ func TestTaskNumberAndOpenURL(t *testing.T) {
 	}
 }
 
+func TestTaskDetailShowsUsageWhenPresent(t *testing.T) {
+	a := newTestApp(80, 24)
+	a.model.tasksTab.View = TaskViewDetail
+	a.model.tasksTab.Detail = &TaskItem{
+		TaskID:       "T-1",
+		Number:       "PRJ-5",
+		Title:        "test task",
+		Agent:        "engineer",
+		Status:       "success",
+		InputTokens:  1500,
+		OutputTokens: 420,
+		TotalTokens:  1920,
+		NumTurns:     8,
+		NumToolCalls: 23,
+		CostUSD:      0.0425,
+	}
+	out := stripANSI(a.renderTaskDetail(a.model.tasksTab, 20))
+	if !strings.Contains(out, "1500 in / 420 out / 1920 total") {
+		t.Errorf("should show token breakdown; got:\n%s", out)
+	}
+	if !strings.Contains(out, "8 / 23") {
+		t.Errorf("should show turns/tool calls; got:\n%s", out)
+	}
+	if !strings.Contains(out, "$0.0425") {
+		t.Errorf("should show cost; got:\n%s", out)
+	}
+}
+
+func TestTaskDetailShowsUsageWhenZero(t *testing.T) {
+	a := newTestApp(80, 24)
+	a.model.tasksTab.View = TaskViewDetail
+	a.model.tasksTab.Detail = &TaskItem{
+		TaskID:  "T-2",
+		Number:  "PRJ-6",
+		Title:   "old task",
+		Agent:   "engineer",
+		Status:  "success",
+	}
+	out := stripANSI(a.renderTaskDetail(a.model.tasksTab, 20))
+	if !strings.Contains(out, "0 in / 0 out / 0 total") {
+		t.Errorf("should show tokens even when zero; got:\n%s", out)
+	}
+	if !strings.Contains(out, "0 / 0") {
+		t.Errorf("should show turns/calls even when zero; got:\n%s", out)
+	}
+	if !strings.Contains(out, "$0.0000") {
+		t.Errorf("should show cost even when zero; got:\n%s", out)
+	}
+}
+
 func TestContextualFooter(t *testing.T) {
 	a := newTestApp(100, 24)
 

@@ -17,6 +17,10 @@ type DashboardStats struct {
 	FailedToday      int
 	AvgDurationMs    int64
 	SuccessRate      float64
+	TodayCostUSD     float64
+	TodayTokens      int
+	TodayInputTokens int
+	TodayOutputTokens int
 }
 
 // GetDashboardStats retrieves overall statistics.
@@ -68,6 +72,18 @@ func (c *Client) GetDashboardStats(ctx context.Context, startTime time.Time) (*D
 		WHERE created_at >= datetime('now', '-1 hour')
 	`)
 	_ = row.Scan(&stats.ActiveAgents)
+
+	// Get today's usage totals
+	row = c.db.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(input_tokens),0),
+			COALESCE(SUM(output_tokens),0),
+			COALESCE(SUM(total_tokens),0),
+			COALESCE(SUM(cost_usd),0)
+		FROM task_executions
+		WHERE created_at >= ?
+	`, todayStart)
+	_ = row.Scan(&stats.TodayInputTokens, &stats.TodayOutputTokens, &stats.TodayTokens, &stats.TodayCostUSD)
 
 	return stats, nil
 }
@@ -131,6 +147,8 @@ type AgentStats struct {
 	PID             int
 	HeartbeatAt     *time.Time
 	HeartbeatCount  int
+	TotalCostUSD    float64
+	TotalTokens     int
 }
 
 // GetAgentStats retrieves statistics for all agents. An agent is "active" when
@@ -152,7 +170,9 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 			MAX(CASE WHEN e.status = 'running' THEN e.title END) as current_task,
 			MAX(CASE WHEN e.status = 'running' THEN e.pid END) as current_pid,
 			MAX(CASE WHEN e.status = 'running' THEN e.heartbeat_at END) as current_heartbeat,
-			MAX(CASE WHEN e.status = 'running' THEN e.heartbeat_count END) as current_hb_count
+			MAX(CASE WHEN e.status = 'running' THEN e.heartbeat_count END) as current_hb_count,
+			COALESCE(SUM(e.total_tokens),0),
+			COALESCE(SUM(e.cost_usd),0)
 		FROM task_executions e
 		GROUP BY e.agent_id
 		ORDER BY e.agent_id
@@ -175,7 +195,8 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 		var hbCount sql.NullInt64
 		var lastEnded sql.NullString
 		err := rows.Scan(&s.ID, &s.QueuedCount, &s.CompletedCount, &avgMs, &successRate,
-			&lastEnded, &running, &currentTask, &pid, &hbStr, &hbCount)
+			&lastEnded, &running, &currentTask, &pid, &hbStr, &hbCount,
+			&s.TotalTokens, &s.TotalCostUSD)
 		if err != nil {
 			continue
 		}
