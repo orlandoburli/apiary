@@ -18,8 +18,13 @@ func newRestartCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "restart <cell-id>",
 		Short: "Force-restart a stale task",
-		Long: `Kill the running dispatch for the given cell, reset its state, and 
-re-queue it so the next poll picks it up again.`,
+		Long: `Kill the running dispatch for the given cell, reset its state, and
+re-queue it so the next poll picks it up again.
+
+Also strips the cell's control labels — the lock (e.g. "in-progress") and the
+stage marker (e.g. "agent:engineer") — so the task re-enters the flow from the
+start instead of being shadowed by a stale label. The labels removed are derived
+from the routes' exclude_label_prefix / exclude_labels.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cellID := strings.TrimSpace(args[0])
@@ -46,7 +51,7 @@ re-queue it so the next poll picks it up again.`,
 				return fmt.Errorf("restart failed: HTTP %d", resp.StatusCode)
 			}
 
-			fmt.Printf("✓ Restarted cell %s\n", cellID)
+			fmt.Printf("✓ Restarted cell %s (control labels cleared; re-enters the flow on the next poll)\n", cellID)
 			return nil
 		},
 	}

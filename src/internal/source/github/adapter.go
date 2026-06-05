@@ -243,6 +243,24 @@ func (a *Adapter) AddLabels(ctx context.Context, cell model.Cell, names []string
 	return nil
 }
 
+// RemoveLabels deletes the named labels from an issue, one DELETE per label so
+// the remaining labels are untouched. A label that is already absent (GitHub
+// returns 404) is ignored. Implements source.LabelRemover.
+func (a *Adapter) RemoveLabels(ctx context.Context, cell model.Cell, names []string) error {
+	issueNo := cell.ID
+	for _, name := range names {
+		path := fmt.Sprintf("/repos/%s/%s/issues/%s/labels/%s",
+			a.owner, a.repo, issueNo, url.PathEscape(name))
+		if _, err := a.client.delete(ctx, path); err != nil {
+			if strings.Contains(err.Error(), "status 404") {
+				continue // label already absent — nothing to remove
+			}
+			return fmt.Errorf("github: removing label %q from %s: %w", name, cell.ID, err)
+		}
+	}
+	return nil
+}
+
 func (a *Adapter) ensureLabel(ctx context.Context, name string) error {
 	path := fmt.Sprintf("/repos/%s/%s/labels", a.owner, a.repo)
 	_, err := a.client.post(ctx, path, labelCreateRequest{Name: name})

@@ -506,8 +506,82 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, cellID string) error {
 		}
 	}
 
+	// Strip control labels so the cell re-enters routing from the start instead
+	// of being shadowed by a stale lock (e.g. "in-progress") or a stage marker
+	// (e.g. "agent:engineer"). Needs the source's current labels (TaskPoller) and
+	// label removal (LabelRemover); sources missing either are skipped.
+	for _, sc := range d.cfg.Sources {
+		adapter, ok := d.sources[sc.ID]
+		if !ok {
+			continue
+		}
+		remover, ok := adapter.(source.LabelRemover)
+		if !ok {
+			continue
+		}
+		poller, ok := adapter.(source.TaskPoller)
+		if !ok {
+			continue
+		}
+		cell, err := poller.PollTask(ctx, cellID)
+		if err != nil {
+			aplog.Debug("force-restart %s: cannot fetch labels from %s: %v", cellID, sc.ID, err)
+			continue
+		}
+		if labels := d.controlLabels(cell); len(labels) > 0 {
+			if err := remover.RemoveLabels(ctx, cell, labels); err != nil {
+				aplog.Error("force-restart %s: removing control labels %v: %v", cellID, labels, err)
+			} else {
+				aplog.Info("force-restart %s: removed control labels %v", cellID, labels)
+			}
+		}
+	}
+
 	aplog.Info("force-restarted cell %s", cellID)
 	return nil
+}
+
+// controlLabels returns the labels on the cell that act as routing guards: any
+// label matching a route's exclude_label_prefix (e.g. "agent:") or listed in a
+// route's exclude_labels (e.g. "in-progress"). These are exactly the labels that
+// can keep a cell from matching a route, so force-restart strips them to send the
+// cell back to the start of the flow. Derived from the live config — no
+// hardcoded label names.
+func (d *Dispatcher) controlLabels(cell model.Cell) []string {
+	var prefixes []string
+	excluded := map[string]bool{}
+	collect := func(m config.RouteMatch) {
+		if m.ExcludeLabelPrefix != "" {
+			prefixes = append(prefixes, strings.ToLower(m.ExcludeLabelPrefix))
+		}
+		for _, l := range m.ExcludeLabels {
+			excluded[strings.ToLower(l)] = true
+		}
+	}
+	for _, r := range d.cfg.Routes {
+		collect(r.Match)
+	}
+	for _, wf := range d.cfg.Workflows {
+		if wf.Trigger != nil {
+			collect(wf.Trigger.Match)
+		}
+	}
+
+	var out []string
+	for _, l := range cell.Labels {
+		ll := strings.ToLower(l)
+		if excluded[ll] {
+			out = append(out, l)
+			continue
+		}
+		for _, p := range prefixes {
+			if strings.HasPrefix(ll, p) {
+				out = append(out, l)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // StartServer starts an HTTP server on the Unix socket for IPC.

@@ -1,7 +1,10 @@
 package github
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -182,5 +185,41 @@ func mustNotContain(t *testing.T, s, sub string) {
 	t.Helper()
 	if strings.Contains(s, sub) {
 		t.Errorf("expected output NOT to contain %q\ngot: %s", sub, s)
+	}
+}
+
+func TestRemoveLabels_DeletesEachLabel(t *testing.T) {
+	var deleted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			idx := strings.LastIndex(r.URL.Path, "/labels/")
+			deleted = append(deleted, r.URL.Path[idx+len("/labels/"):])
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	a := &Adapter{id: "gh", owner: "o", repo: "r", client: newClient(srv.URL, "")}
+	cell := model.Cell{ID: "42", Labels: []string{"agent:engineer", "in-progress", "bug"}}
+	if err := a.RemoveLabels(context.Background(), cell, []string{"agent:engineer", "in-progress"}); err != nil {
+		t.Fatalf("RemoveLabels: %v", err)
+	}
+	if len(deleted) != 2 || deleted[0] != "agent:engineer" || deleted[1] != "in-progress" {
+		t.Errorf("deleted = %v, want [agent:engineer in-progress]", deleted)
+	}
+}
+
+func TestRemoveLabels_Ignores404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"Label does not exist"}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	a := &Adapter{id: "gh", owner: "o", repo: "r", client: newClient(srv.URL, "")}
+	cell := model.Cell{ID: "42", Labels: []string{"in-progress"}}
+	if err := a.RemoveLabels(context.Background(), cell, []string{"in-progress"}); err != nil {
+		t.Errorf("expected 404 to be ignored, got %v", err)
 	}
 }
