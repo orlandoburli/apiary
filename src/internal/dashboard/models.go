@@ -65,10 +65,11 @@ type TasksTab struct {
 	History     []TaskItem // running + past tasks, newest first
 	SelectedIdx int
 
-	View      TaskView
-	Detail    *TaskItem  // populated when View == TaskViewDetail
-	Logs      []LogEntry // populated when View == TaskViewLogs
-	LogScroll int
+	View           TaskView
+	Detail         *TaskItem             // populated when View == TaskViewDetail
+	DetailInstance *WorkflowInstanceItem // workflow instance for Detail, if any
+	Logs           []LogEntry            // populated when View == TaskViewLogs
+	LogScroll      int
 
 	// Scroll / filter / sort
 	ScrollOffset int    // first visible row index
@@ -76,6 +77,25 @@ type TasksTab struct {
 	FilterActive bool   // true while typing a filter
 	SortField    string // "time" | "status" | "agent"  (default "time")
 	SortAsc      bool
+}
+
+// WorkflowInstanceItem is a workflow instance bound to a task, with its steps,
+// shown in the Task Detail view.
+type WorkflowInstanceItem struct {
+	ID       string
+	Workflow string
+	State    string // pending, running, approval_waiting, interrupted, done, failed
+	Message  string // approval message when State == approval_waiting
+	Steps    []WorkflowStepItem
+}
+
+// WorkflowStepItem is one step row within a WorkflowInstanceItem.
+type WorkflowStepItem struct {
+	StepID   string
+	Agent    string
+	State    string // pending, running, passed, failed, skipped, skipped_cached
+	Duration string
+	Cached   bool
 }
 
 // TaskItem is one task row (its latest execution attempt).
