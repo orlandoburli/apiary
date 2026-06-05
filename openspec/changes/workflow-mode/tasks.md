@@ -112,14 +112,14 @@ Multi-step workflows, parallel steps, split steps, foreach, sub-workflows, per-s
 - [x] 3.2.4 Unit tests: all operators, precedence, parse + eval errors; first-match, fallback, multi, skip cascade
 - [~] 3.2.5 Config-load validation of `branches[].if` syntax — deferred (needs an expr package config can import without a cycle); runtime treats an unparseable condition as non-match and logs it
 
-### 3.3 Foreach Steps
+### 3.3 Foreach Steps — PR-3b
 
-- [ ] 3.3.1 Implement foreach step execution: read items array from step structured output, spawn sub-runs
-- [ ] 3.3.2 Implement `concurrency` cap and `max_items` guard
-- [ ] 3.3.3 Implement prompt template rendering (`{{ item.field }}` substitution)
-- [ ] 3.3.4 Implement `fail_fast` behavior
-- [ ] 3.3.5 Expose `steps.<id>.outputs`, `steps.<id>.passed_count`, `steps.<id>.failed_count` in memory/expressions
-- [ ] 3.3.6 Unit tests: foreach with structured output, concurrency cap, max_items abort, fail_fast
+- [x] 3.3.1 Foreach execution (`foreach.go`): resolve the items array from a prior step's structured output, run the inner agent step once per item
+- [~] 3.3.2 `max_items` guard implemented (fails the step when exceeded); `concurrency` cap deferred with DAG parallelism — items run sequentially
+- [x] 3.3.3 Prompt template rendering: `{{ as }}` / `{{ as.field }}` substitution (`renderItemTemplate`), wired through new `StepRequest.Prompt` → executor `composeSystemAppend`
+- [x] 3.3.4 `fail_fast` behavior (stop after the first failing item)
+- [~] 3.3.5 Aggregate exposure — `steps.<id>.exit_code` carries the failed count (so `== 0` means all passed) and a summary in memory; full `outputs[i]` array indexing in expressions deferred
+- [x] 3.3.6 Unit tests: one-run-per-item, rendered prompt reaches executor, max_items guard, fail_fast, downstream-after-pass, invalid items path, template edge cases
 
 ### 3.4 Sub-Workflows
 

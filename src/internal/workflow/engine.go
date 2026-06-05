@@ -29,6 +29,9 @@ type StepRequest struct {
 	Agent      config.AgentConfig
 	Model      string // resolved model (step override or agent default)
 	MemoryDoc  string // workflow memory document to prepend (empty if memory.read is false)
+	// Prompt is the step-level instruction (step.prompt) with any foreach item
+	// templates already rendered. The executor folds it into the agent's prompt.
+	Prompt string
 }
 
 // StepResult is the outcome of executing one agent step.
@@ -175,6 +178,7 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 		Agent:      ag,
 		Model:      resolvedModel,
 		MemoryDoc:  memDoc,
+		Prompt:     step.Prompt,
 	})
 
 	finished := e.now()
