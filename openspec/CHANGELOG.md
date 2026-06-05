@@ -5,6 +5,7 @@
 | Change | Descrição | Status |
 |---|---|---|
 | [foundation](changes/foundation/) | Especificação inicial do projeto | in-progress |
+| [workflow-mode](changes/workflow-mode/) | Substituir pool/router flat por pipelines multi-step declarativos | proposed |
 
 ## Arquivadas
 

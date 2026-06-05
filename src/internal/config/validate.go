@@ -104,5 +104,7 @@ func (c *Config) Validate() []error {
 		routeIDs[r.ID] = true
 	}
 
+	errs = append(errs, c.validateWorkflows()...)
+
 	return errs
 }
