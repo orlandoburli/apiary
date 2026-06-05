@@ -42,6 +42,9 @@ func newRunCmd() *cobra.Command {
 				}
 				return fmt.Errorf("config validation failed")
 			}
+			for _, w := range cfg.WorkflowWarnings() {
+				fmt.Fprintf(os.Stderr, "  ⚠ %s\n", w)
+			}
 
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()

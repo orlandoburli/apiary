@@ -26,14 +26,14 @@ agents:
   - id: engineer
     description: Senior software engineer — backend and API design
     soul_file: .apiary/souls/engineer.md
-    preferred_models: [claude-sonnet-4-6, claude-haiku-4-5]
+    model: claude-sonnet-4-6
     skills: [backend-api, error-handling, database]
     runner: claude-cli
 
   - id: reviewer
     description: Code reviewer — quality assurance and best practices
     soul_file: .apiary/souls/reviewer.md
-    preferred_models: [claude-sonnet-4-6]
+    model: claude-sonnet-4-6
     skills: [code-review, testing]
     runner: claude-cli
 
