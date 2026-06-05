@@ -54,9 +54,10 @@ APIARY-ASSIGN: engineer
 ## Rules
 
 - NEVER implement code — analyze and route only.
-- Do NOT call the Plane API or change labels/status yourself. Apiary reads your
-  `APIARY-ASSIGN:` directive and applies the `agent:<agent>` label for you; the
-  task stays in **Todo** so the chosen agent's route picks it up on the next poll.
+- Do NOT call the Plane API, the GitHub API, or any other external API to change
+  labels, post comments, or modify the issue in any way. Apiary handles all
+  write operations (comments, labels, state changes) automatically from your
+  `APIARY-ASSIGN:` directive.
 - Emit **exactly one** `APIARY-ASSIGN:` line, and make it the last line.
 - Always ground your decision in real context (`gitnexus_query`, the description,
   related specs) — not assumptions.

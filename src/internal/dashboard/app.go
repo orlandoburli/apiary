@@ -306,24 +306,36 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.View == TaskViewList {
 			t := a.model.tasksTab
-			switch t.SortField {
-			case "", "time":
+			if t.SortField == "" || t.SortField == "time" {
 				t.SortField = "status"
-			case "status":
-				t.SortField = "agent"
-			case "agent":
-				t.SortField = "number"
-			case "number":
-				t.SortField = "title"
-			case "title":
-				t.SortField = "updated"
-			case "updated":
-				t.SortField = ""
+				t.SortAsc = true
+			} else {
+				t.SortAsc = !t.SortAsc
 			}
 		}
 	case "S":
 		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.View == TaskViewList {
-			a.model.tasksTab.SortAsc = !a.model.tasksTab.SortAsc
+			t := a.model.tasksTab
+			switch t.SortField {
+			case "", "time":
+				t.SortField = "status"
+				t.SortAsc = true
+			case "status":
+				t.SortField = "agent"
+				t.SortAsc = true
+			case "agent":
+				t.SortField = "number"
+				t.SortAsc = true
+			case "number":
+				t.SortField = "title"
+				t.SortAsc = true
+			case "title":
+				t.SortField = "updated"
+				t.SortAsc = false
+			case "updated":
+				t.SortField = "time"
+				t.SortAsc = false
+			}
 		}
 	case "esc":
 		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.FilterActive {
@@ -1060,19 +1072,25 @@ func (a *App) fetchTasks() tea.Cmd {
 // taskItemFromHistory converts a DB history row into a dashboard TaskItem.
 func taskItemFromHistory(r db.TaskHistoryItem) TaskItem {
 	return TaskItem{
-		TaskID:      r.TaskID,
-		Number:      r.Number,
-		URL:         r.URL,
-		Title:       r.Title,
-		Agent:       r.AgentID,
-		Model:       r.Model,
-		Runner:      r.Runner,
-		Status:      r.Status,
-		Attempt:     r.Attempt,
-		Duration:    time.Duration(r.DurationMs) * time.Millisecond,
-		StartedAt:   r.StartedAt,
-		CompletedAt: r.CompletedAt,
-		Error:       r.Error,
+		TaskID:       r.TaskID,
+		Number:       r.Number,
+		URL:          r.URL,
+		Title:        r.Title,
+		Agent:        r.AgentID,
+		Model:        r.Model,
+		Runner:       r.Runner,
+		Status:       r.Status,
+		Attempt:      r.Attempt,
+		Duration:     time.Duration(r.DurationMs) * time.Millisecond,
+		StartedAt:    r.StartedAt,
+		CompletedAt:  r.CompletedAt,
+		Error:        r.Error,
+		InputTokens:  r.InputTokens,
+		OutputTokens: r.OutputTokens,
+		TotalTokens:  r.TotalTokens,
+		NumTurns:     r.NumTurns,
+		NumToolCalls: r.NumToolCalls,
+		CostUSD:      r.CostUSD,
 	}
 }
 
@@ -1108,19 +1126,25 @@ func (a *App) fetchAgentTaskLogs(taskID string) tea.Cmd {
 		if dbConn != nil {
 			if r, err := dbConn.GetTaskDetail(ctx, taskID); err == nil && r != nil {
 				detail = &TaskItem{
-					TaskID:      r.TaskID,
-					Number:      r.Number,
-					URL:         r.URL,
-					Title:       r.Title,
-					Agent:       r.AgentID,
-					Model:       r.Model,
-					Runner:      r.Runner,
-					Status:      r.Status,
-					Attempt:     r.Attempt,
-					Duration:    time.Duration(r.DurationMs) * time.Millisecond,
-					StartedAt:   r.StartedAt,
-					CompletedAt: r.CompletedAt,
-					Error:       r.Error,
+					TaskID:       r.TaskID,
+					Number:       r.Number,
+					URL:          r.URL,
+					Title:        r.Title,
+					Agent:        r.AgentID,
+					Model:        r.Model,
+					Runner:       r.Runner,
+					Status:       r.Status,
+					Attempt:      r.Attempt,
+					Duration:     time.Duration(r.DurationMs) * time.Millisecond,
+					StartedAt:    r.StartedAt,
+					CompletedAt:  r.CompletedAt,
+					Error:        r.Error,
+					InputTokens:  r.InputTokens,
+					OutputTokens: r.OutputTokens,
+					TotalTokens:  r.TotalTokens,
+					NumTurns:     r.NumTurns,
+					NumToolCalls: r.NumToolCalls,
+					CostUSD:      r.CostUSD,
 				}
 			}
 			if rows, err := dbConn.GetTaskLogs(ctx, taskID, 5000); err == nil {
@@ -1147,19 +1171,25 @@ func (a *App) fetchTaskDetail(taskID string) tea.Cmd {
 		if dbConn != nil {
 			if r, err := dbConn.GetTaskDetail(ctx, taskID); err == nil && r != nil {
 				detail = &TaskItem{
-					TaskID:      r.TaskID,
-					Number:      r.Number,
-					URL:         r.URL,
-					Title:       r.Title,
-					Agent:       r.AgentID,
-					Model:       r.Model,
-					Runner:      r.Runner,
-					Status:      r.Status,
-					Attempt:     r.Attempt,
-					Duration:    time.Duration(r.DurationMs) * time.Millisecond,
-					StartedAt:   r.StartedAt,
-					CompletedAt: r.CompletedAt,
-					Error:       r.Error,
+					TaskID:       r.TaskID,
+					Number:       r.Number,
+					URL:          r.URL,
+					Title:        r.Title,
+					Agent:        r.AgentID,
+					Model:        r.Model,
+					Runner:       r.Runner,
+					Status:       r.Status,
+					Attempt:      r.Attempt,
+					Duration:     time.Duration(r.DurationMs) * time.Millisecond,
+					StartedAt:    r.StartedAt,
+					CompletedAt:  r.CompletedAt,
+					Error:        r.Error,
+					InputTokens:  r.InputTokens,
+					OutputTokens: r.OutputTokens,
+					TotalTokens:  r.TotalTokens,
+					NumTurns:     r.NumTurns,
+					NumToolCalls: r.NumToolCalls,
+					CostUSD:      r.CostUSD,
 				}
 			}
 		}
@@ -1178,19 +1208,25 @@ func (a *App) fetchTaskLogs(taskID string) tea.Cmd {
 		if dbConn != nil {
 			if r, err := dbConn.GetTaskDetail(ctx, taskID); err == nil && r != nil {
 				detail = &TaskItem{
-					TaskID:      r.TaskID,
-					Number:      r.Number,
-					URL:         r.URL,
-					Title:       r.Title,
-					Agent:       r.AgentID,
-					Model:       r.Model,
-					Runner:      r.Runner,
-					Status:      r.Status,
-					Attempt:     r.Attempt,
-					Duration:    time.Duration(r.DurationMs) * time.Millisecond,
-					StartedAt:   r.StartedAt,
-					CompletedAt: r.CompletedAt,
-					Error:       r.Error,
+					TaskID:       r.TaskID,
+					Number:       r.Number,
+					URL:          r.URL,
+					Title:        r.Title,
+					Agent:        r.AgentID,
+					Model:        r.Model,
+					Runner:       r.Runner,
+					Status:       r.Status,
+					Attempt:      r.Attempt,
+					Duration:     time.Duration(r.DurationMs) * time.Millisecond,
+					StartedAt:    r.StartedAt,
+					CompletedAt:  r.CompletedAt,
+					Error:        r.Error,
+					InputTokens:  r.InputTokens,
+					OutputTokens: r.OutputTokens,
+					TotalTokens:  r.TotalTokens,
+					NumTurns:     r.NumTurns,
+					NumToolCalls: r.NumToolCalls,
+					CostUSD:      r.CostUSD,
 				}
 			}
 			if rows, err := dbConn.GetTaskLogs(ctx, taskID, 5000); err == nil {
@@ -1701,6 +1737,15 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	row("Started", started)
 	row("Completed", completed)
 	row("Duration", dur)
+	if d.TotalTokens > 0 {
+		row("Tokens", fmt.Sprintf("%d in / %d out / %d total", d.InputTokens, d.OutputTokens, d.TotalTokens))
+	}
+	if d.NumTurns > 0 || d.NumToolCalls > 0 {
+		row("Turns / Calls", fmt.Sprintf("%d / %d", d.NumTurns, d.NumToolCalls))
+	}
+	if d.CostUSD > 0 {
+		row("Cost", fmt.Sprintf("$%.4f", d.CostUSD))
+	}
 	if d.URL != "" {
 		row("URL", StyleInfo.Render(d.URL))
 	}

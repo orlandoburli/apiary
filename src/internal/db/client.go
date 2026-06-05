@@ -89,6 +89,12 @@ type Execution struct {
 	CanRetry       bool
 	NextRetryAt    *time.Time
 	CreatedAt      time.Time
+	InputTokens    int
+	OutputTokens   int
+	TotalTokens    int
+	NumTurns       int
+	NumToolCalls   int
+	CostUSD        float64
 }
 
 func (c *Client) CreateExecution(ctx context.Context, taskID, agentID, title, number, taskURL, model, runner string, attempt int) (*Execution, error) {
@@ -125,9 +131,12 @@ func (c *Client) CreateExecution(ctx context.Context, taskID, agentID, title, nu
 func (c *Client) UpdateExecution(ctx context.Context, exec *Execution) error {
 	_, err := c.db.ExecContext(ctx, `
 		UPDATE task_executions
-		SET status = ?, completed_at = ?, duration_ms = ?, error_message = ?, can_retry = ?, next_retry_at = ?
+		SET status = ?, completed_at = ?, duration_ms = ?, error_message = ?, can_retry = ?, next_retry_at = ?,
+		    input_tokens = ?, output_tokens = ?, total_tokens = ?, num_turns = ?, num_tool_calls = ?, cost_usd = ?
 		WHERE id = ?
-	`, exec.Status, exec.CompletedAt, exec.DurationMs, exec.ErrorMsg, exec.CanRetry, exec.NextRetryAt, exec.ID)
+	`, exec.Status, exec.CompletedAt, exec.DurationMs, exec.ErrorMsg, exec.CanRetry, exec.NextRetryAt,
+		exec.InputTokens, exec.OutputTokens, exec.TotalTokens, exec.NumTurns, exec.NumToolCalls, exec.CostUSD,
+		exec.ID)
 	return err
 }
 
@@ -177,7 +186,10 @@ func (c *Client) ReconcileOrphanExecutions(ctx context.Context) (int64, error) {
 
 func (c *Client) GetLastExecution(ctx context.Context, taskID string) (*Execution, error) {
 	row := c.db.QueryRowContext(ctx, `
-		SELECT id, task_id, agent_id, attempt, status, started_at, completed_at, duration_ms, error_message, can_retry, next_retry_at, created_at
+		SELECT id, task_id, agent_id, attempt, status, started_at, completed_at, duration_ms,
+		       error_message, can_retry, next_retry_at, created_at,
+		       COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(total_tokens,0),
+		       COALESCE(num_turns,0), COALESCE(num_tool_calls,0), COALESCE(cost_usd,0)
 		FROM task_executions
 		WHERE task_id = ?
 		ORDER BY attempt DESC
@@ -187,7 +199,9 @@ func (c *Client) GetLastExecution(ctx context.Context, taskID string) (*Executio
 	exec := &Execution{}
 	err := row.Scan(&exec.ID, &exec.TaskID, &exec.AgentID, &exec.Attempt, &exec.Status,
 		&exec.StartedAt, &exec.CompletedAt, &exec.DurationMs, &exec.ErrorMsg, &exec.CanRetry,
-		&exec.NextRetryAt, &exec.CreatedAt)
+		&exec.NextRetryAt, &exec.CreatedAt,
+		&exec.InputTokens, &exec.OutputTokens, &exec.TotalTokens,
+		&exec.NumTurns, &exec.NumToolCalls, &exec.CostUSD)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

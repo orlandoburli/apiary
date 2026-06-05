@@ -33,6 +33,7 @@ This project is indexed by GitNexus as **apiary** (860 symbols, 1697 relationshi
 
 | Task | Read this skill file |
 |------|---------------------|
+| Configure / use Apiary (runners, sources, routes) | `.claude/skills/apiary-guide/SKILL.md` |
 | Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
 | Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
 | Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
