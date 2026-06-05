@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -575,6 +576,40 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"updated": agentID, "model": req.Model, "max_workers": req.MaxWorkers})
+	})
+	mux.HandleFunc("/instances", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		limit := 20
+		if l := q.Get("limit"); l != "" {
+			if n, err := strconv.Atoi(l); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		resp, err := d.Instances(r.Context(), q.Get("state"), q.Get("workflow"), limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	mux.HandleFunc("/instances/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/instances/")
+		if id == "" {
+			http.Error(w, "missing instance id", http.StatusBadRequest)
+			return
+		}
+		detail, err := d.InstanceDetail(r.Context(), id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if detail == nil {
+			http.Error(w, "instance not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(detail)
 	})
 	mux.HandleFunc("/clearlogs/", func(w http.ResponseWriter, r *http.Request) {
 		cellID := strings.TrimPrefix(r.URL.Path, "/clearlogs/")

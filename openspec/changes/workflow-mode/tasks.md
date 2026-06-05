@@ -168,9 +168,9 @@ Approval steps that suspend a workflow instance until a human responds, driven b
 
 ### 4.3 Resume Command
 
-- [ ] 4.3.1 Implement `apiary resume <instance-id>` CLI command — see [CLI spec](../../specs/cli/spec.md)
-- [ ] 4.3.2 Implement `apiary instances` CLI command
-- [ ] 4.3.3 Show resume confirmation prompt listing skipped steps and their side effects
+- [ ] 4.3.1 Implement `apiary resume <instance-id>` CLI command — see [CLI spec](../../specs/cli/spec.md) (PR-4c)
+- [x] 4.3.2 Implement `apiary instances` CLI command — list (filters: `--workflow`/`--state`/`--limit`/`--json`) and `apiary instances <id>` step-level detail, served by daemon IPC (`GET /instances`, `GET /instances/{id}`) reading `workflow_instances` + `step_runs` (PR-4b)
+- [ ] 4.3.3 Show resume confirmation prompt listing skipped steps and their side effects (PR-4c)
 
 ### 4.4 TUI Updates
 
