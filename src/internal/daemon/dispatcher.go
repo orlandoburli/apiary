@@ -611,6 +611,46 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(detail)
 	})
+	mux.HandleFunc("/resume/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/resume/")
+		if id == "" {
+			// `apiary resume --workflow <id>`: resolve the most recent
+			// resumable instance for the workflow.
+			wfID := r.URL.Query().Get("workflow")
+			if wfID == "" {
+				http.Error(w, "missing instance id", http.StatusBadRequest)
+				return
+			}
+			instID, err := d.ResolveResumeTarget(r.Context(), wfID)
+			if err != nil {
+				http.Error(w, err.Error(), resumeHTTPStatus(err))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": instID})
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			preview, err := d.ResumePreview(r.Context(), id)
+			if err != nil {
+				http.Error(w, err.Error(), resumeHTTPStatus(err))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(preview)
+		case http.MethodPost:
+			// Launch on the daemon-lifetime ctx so the run outlives the request.
+			if err := d.StartResume(ctx, id); err != nil {
+				http.Error(w, err.Error(), resumeHTTPStatus(err))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"queued": true, "instance_id": id})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 	mux.HandleFunc("/clearlogs/", func(w http.ResponseWriter, r *http.Request) {
 		cellID := strings.TrimPrefix(r.URL.Path, "/clearlogs/")
 		if cellID == "" {
