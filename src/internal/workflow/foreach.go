@@ -20,7 +20,7 @@ func (e *Engine) runForeachStep(ctx context.Context, r *dagRun, step config.Step
 	items, err := resolveItems(step.Items, r)
 	if err != nil {
 		aplog.Error("workflow %s: foreach %q: %v", r.wf.ID, step.ID, err)
-		r.failForeach(step.ID)
+		r.failStep(step.ID)
 		return true
 	}
 
@@ -31,13 +31,13 @@ func (e *Engine) runForeachStep(ctx context.Context, r *dagRun, step config.Step
 	if len(items) > maxItems {
 		aplog.Error("workflow %s: foreach %q: %d items exceeds max_items %d",
 			r.wf.ID, step.ID, len(items), maxItems)
-		r.failForeach(step.ID)
+		r.failStep(step.ID)
 		return true
 	}
 
 	if step.Step == nil {
 		aplog.Error("workflow %s: foreach %q: missing inner step", r.wf.ID, step.ID)
-		r.failForeach(step.ID)
+		r.failStep(step.ID)
 		return true
 	}
 
@@ -88,8 +88,9 @@ func (e *Engine) runForeachStep(ctx context.Context, r *dagRun, step config.Step
 	return true
 }
 
-// failForeach marks a foreach step failed in the run state.
-func (r *dagRun) failForeach(id string) {
+// failStep marks a step failed in the run state (used by foreach and
+// sub-workflow steps that fail before producing a normal step result).
+func (r *dagRun) failStep(id string) {
 	r.state[id] = stFailed
 	r.stepStates[id] = StepState{State: stFailed}
 }
