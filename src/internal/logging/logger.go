@@ -122,8 +122,15 @@ func (l *Logger) TaskError(ctx context.Context, taskID, msg string) {
 }
 
 func (l *Logger) log(ctx context.Context, level Level, msg, component, taskID string) {
-	// Drop messages below the configured threshold (both file and DB).
-	if severity(level) < severity(l.level) {
+	belowThreshold := severity(level) < severity(l.level)
+
+	// Per-task logs are always persisted to the DB so the dashboard's task
+	// detail view shows the full agent stream (which the runner emits at DEBUG)
+	// regardless of the service-wide log level. The console mirror in the
+	// dispatcher prints every entry too, so without this the dashboard would
+	// show nothing while the console showed the whole stream. Service logs and
+	// the shared apiary.log file still respect the threshold.
+	if belowThreshold && taskID == "" {
 		return
 	}
 
@@ -138,12 +145,16 @@ func (l *Logger) log(ctx context.Context, level Level, msg, component, taskID st
 		Timestamp: time.Now(),
 	}
 
-	// Write to file
-	line := fmt.Sprintf("[%s] [%s] %s\n", entry.Timestamp.Format("2006-01-02 15:04:05"), level, msg)
-	if component != "" {
-		line = fmt.Sprintf("[%s] [%s] [%s] %s\n", entry.Timestamp.Format("2006-01-02 15:04:05"), level, component, msg)
+	// Write to the shared log file only when at/above threshold, to avoid
+	// flooding apiary.log with the verbose per-task stream. The stream is still
+	// captured per task in the DB (and in the per-task log file).
+	if !belowThreshold {
+		line := fmt.Sprintf("[%s] [%s] %s\n", entry.Timestamp.Format("2006-01-02 15:04:05"), level, msg)
+		if component != "" {
+			line = fmt.Sprintf("[%s] [%s] [%s] %s\n", entry.Timestamp.Format("2006-01-02 15:04:05"), level, component, msg)
+		}
+		l.file.Write([]byte(line))
 	}
-	l.file.Write([]byte(line))
 
 	// Write to database
 	if l.db != nil {
