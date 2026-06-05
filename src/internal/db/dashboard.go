@@ -246,19 +246,25 @@ func parseSQLiteTime(s string) (time.Time, bool) {
 // TaskHistoryItem is one task in the Tasks-tab list: the most recent execution
 // attempt for a given task_id, plus how many attempts it took.
 type TaskHistoryItem struct {
-	TaskID      string
-	Number      string
-	URL         string
-	Title       string
-	AgentID     string
-	Model       string
-	Runner      string
-	Status      string // running, success, failed
-	Attempt     int    // total attempts for this task
-	DurationMs  int64
-	StartedAt   *time.Time
-	CompletedAt *time.Time
-	Error       string
+	TaskID       string
+	Number       string
+	URL          string
+	Title        string
+	AgentID      string
+	Model        string
+	Runner       string
+	Status       string // running, success, failed
+	Attempt      int    // total attempts for this task
+	DurationMs   int64
+	StartedAt    *time.Time
+	CompletedAt  *time.Time
+	Error        string
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
+	NumTurns     int
+	NumToolCalls int
+	CostUSD      float64
 }
 
 // GetTaskHistory returns recent tasks (running and finished), newest first,
@@ -376,7 +382,9 @@ func (c *Client) GetTasksByAgent(ctx context.Context, agentID string, limit int)
 func (c *Client) GetTaskDetail(ctx context.Context, taskID string) (*TaskHistoryItem, error) {
 	row := c.db.QueryRowContext(ctx, `
 		SELECT task_id, task_number, task_url, title, agent_id, model, runner, status, attempt,
-		       duration_ms, started_at, completed_at, error_message
+		       duration_ms, started_at, completed_at, error_message,
+		       COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(total_tokens,0),
+		       COALESCE(num_turns,0), COALESCE(num_tool_calls,0), COALESCE(cost_usd,0)
 		FROM task_executions
 		WHERE task_id = ?
 		ORDER BY id DESC
@@ -388,7 +396,9 @@ func (c *Client) GetTaskDetail(ctx context.Context, taskID string) (*TaskHistory
 	var dur sql.NullInt64
 	var startedStr, completedStr sql.NullString
 	err := row.Scan(&it.TaskID, &number, &taskURL, &title, &it.AgentID, &model, &runner, &status, &it.Attempt,
-		&dur, &startedStr, &completedStr, &errMsg)
+		&dur, &startedStr, &completedStr, &errMsg,
+		&it.InputTokens, &it.OutputTokens, &it.TotalTokens,
+		&it.NumTurns, &it.NumToolCalls, &it.CostUSD)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

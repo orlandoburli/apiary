@@ -73,19 +73,25 @@ type TasksTab struct {
 
 // TaskItem is one task row (its latest execution attempt).
 type TaskItem struct {
-	TaskID      string
-	Number      string // human reference, e.g. "ERP-42"
-	URL         string // link to the task in its source UI
-	Title       string
-	Agent       string
-	Model       string
-	Runner      string
-	Status      string // running, success, failed
-	Attempt     int
-	Duration    time.Duration
-	StartedAt   *time.Time
-	CompletedAt *time.Time
-	Error       string
+	TaskID       string
+	Number       string // human reference, e.g. "ERP-42"
+	URL          string // link to the task in its source UI
+	Title        string
+	Agent        string
+	Model        string
+	Runner       string
+	Status       string // running, success, failed
+	Attempt      int
+	Duration     time.Duration
+	StartedAt    *time.Time
+	CompletedAt  *time.Time
+	Error        string
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
+	NumTurns     int
+	NumToolCalls int
+	CostUSD      float64
 }
 
 // AgentView is which sub-screen the Agents tab is showing.

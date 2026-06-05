@@ -118,12 +118,14 @@ func (r *ApiRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	}
 
 	emit("debug", output)
+	usage := parseUsage(respRaw)
 	return model.RunResult{
 		WorkerID: req.WorkerID,
 		Success:  true,
 		Output:   strings.TrimSpace(output),
 		Logs:     logs,
 		Duration: time.Since(start),
+		Usage:    usage,
 	}, nil
 }
 
@@ -145,10 +147,52 @@ type chatResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage,omitempty"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error,omitempty"`
+}
+
+// anthropicResponse supports the Anthropic Messages API response format.
+type anthropicResponse struct {
+	Content []struct {
+		Text string `json:"text"`
+	} `json:"content"`
+	Usage *struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage,omitempty"`
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error,omitempty"`
+}
+
+func parseUsage(body []byte) *model.Usage {
+	// Try OpenAI-compatible format first
+	var openAI chatResponse
+	if err := json.Unmarshal(body, &openAI); err == nil && openAI.Usage != nil {
+		return &model.Usage{
+			InputTokens:  openAI.Usage.PromptTokens,
+			OutputTokens: openAI.Usage.CompletionTokens,
+			TotalTokens:  openAI.Usage.TotalTokens,
+		}
+	}
+	// Try Anthropic format
+	var anthropic anthropicResponse
+	if err := json.Unmarshal(body, &anthropic); err == nil && anthropic.Usage != nil {
+		return &model.Usage{
+			InputTokens:  anthropic.Usage.InputTokens,
+			OutputTokens: anthropic.Usage.OutputTokens,
+			TotalTokens:  anthropic.Usage.InputTokens + anthropic.Usage.OutputTokens,
+		}
+	}
+	return nil
 }
 
 func defaultParseResponse(body []byte) (output, errMsg string, isError bool) {

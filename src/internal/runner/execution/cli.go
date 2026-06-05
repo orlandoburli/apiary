@@ -92,6 +92,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		errBuf      bytes.Buffer
 		logs        []model.LogEntry
 		finalResult string
+		usage       model.Usage
 	)
 
 	emit := func(level, msg string) {
@@ -157,6 +158,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 				finalResult = res
 				mu.Unlock()
 			}
+			accumulateStreamUsage(line, &usage)
 			if pretty, ok := formatStreamLine(line); ok {
 				emit("debug", pretty)
 			} else {
@@ -186,12 +188,17 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		output = strings.TrimSpace(finalResult)
 	}
 
+	usagePtr := &usage
+	if usage.TotalTokens == 0 && usage.NumTurns == 0 && usage.CostUSD == 0 {
+		usagePtr = nil
+	}
 	result := model.RunResult{
 		WorkerID: req.WorkerID,
 		Success:  runErr == nil,
 		Output:   output,
 		Logs:     logs,
 		Duration: time.Since(start),
+		Usage:    usagePtr,
 	}
 	if runErr != nil {
 		stderr := strings.TrimSpace(errBuf.String())
@@ -210,6 +217,7 @@ type streamEvent struct {
 	Subtype string `json:"subtype"`
 	Model   string `json:"model"`
 	Result  string `json:"result"`
+	Index   int    `json:"index"`
 	Message struct {
 		Content []struct {
 			Type    string          `json:"type"`
@@ -218,11 +226,49 @@ type streamEvent struct {
 			Input   json.RawMessage `json:"input"`
 			Content json.RawMessage `json:"content"`
 		} `json:"content"`
+		Usage *struct {
+			InputTokens int `json:"input_tokens"`
+		} `json:"usage"`
 	} `json:"message"`
+	ContentBlock *struct {
+		Type  string          `json:"type"`
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
+	} `json:"content_block"`
+	Usage *struct {
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
 	DurationMs   int64   `json:"duration_ms"`
 	NumTurns     int     `json:"num_turns"`
 	TotalCostUSD float64 `json:"total_cost_usd"`
 	IsError      bool    `json:"is_error"`
+}
+
+func accumulateStreamUsage(line string, u *model.Usage) {
+	var ev streamEvent
+	if err := json.Unmarshal([]byte(line), &ev); err != nil || ev.Type == "" {
+		return
+	}
+	switch ev.Type {
+	case "message_start":
+		if ev.Message.Usage != nil {
+			u.InputTokens = ev.Message.Usage.InputTokens
+		}
+	case "message_delta":
+		if ev.Usage != nil {
+			u.OutputTokens = ev.Usage.OutputTokens
+		}
+		u.TotalTokens = u.InputTokens + u.OutputTokens
+	case "content_block_start":
+		if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
+			u.NumToolCalls++
+		}
+	case "result":
+		u.NumTurns = ev.NumTurns
+		if ev.TotalCostUSD > 0 {
+			u.CostUSD = ev.TotalCostUSD
+		}
+	}
 }
 
 func formatStreamLine(line string) (string, bool) {

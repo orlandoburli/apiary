@@ -26,6 +26,15 @@ type RunRequest struct {
 	Heartbeat func() `json:"-"`
 }
 
+type Usage struct {
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
+	NumTurns     int
+	NumToolCalls int
+	CostUSD      float64
+}
+
 type RunResult struct {
 	WorkerID string
 	Success  bool
@@ -33,6 +42,7 @@ type RunResult struct {
 	Logs     []LogEntry
 	Duration time.Duration
 	Error    error
+	Usage    *Usage // populated by runners that support usage reporting
 }
 
 type LogEntry struct {
