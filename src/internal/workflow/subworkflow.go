@@ -71,14 +71,22 @@ func (e *Engine) runChildInstance(ctx context.Context, parentInstID string, chil
 		return "", false
 	}
 
-	failed, _ := e.runDAG(ctx, childID, child, cell, seed, depth)
+	r := e.initDAG(childID, child, cell, seed, depth)
+	outcome := e.driveDAG(ctx, r)
+	// A sub-workflow cannot park independently in Phase 4: an approval step inside
+	// a child is treated as a failure (unsupported). Top-level approvals are the
+	// supported case.
+	if outcome == outcomeWaiting {
+		aplog.Error("sub-workflow %s: approval steps inside a sub-workflow are not supported", child.ID)
+		outcome = outcomeFailed
+	}
 
 	finalState := db.InstanceStateDone
-	if failed {
+	if outcome == outcomeFailed {
 		finalState = db.InstanceStateFailed
 	}
 	_ = e.store.UpdateWorkflowInstanceState(ctx, childID, finalState)
-	return childID, !failed
+	return childID, outcome == outcomeDone
 }
 
 // findWorkflow looks up a workflow definition by ID in the config.

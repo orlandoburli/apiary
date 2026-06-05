@@ -29,6 +29,7 @@ import (
 	runnerimpl "github.com/orlandoburli/apiary/internal/runner"
 	"github.com/orlandoburli/apiary/internal/source"
 	"github.com/orlandoburli/apiary/internal/version"
+	"github.com/orlandoburli/apiary/internal/workflow"
 )
 
 // sourceStat tracks per-source poll metadata.
@@ -77,6 +78,11 @@ type Dispatcher struct {
 
 	mu     sync.Mutex
 	runSeq int
+
+	// workflow engine (experimental.workflow_mode). Built once and long-lived so
+	// instances parked at approval steps survive across dispatch cycles.
+	engine     *workflow.Engine
+	engineOnce sync.Once
 }
 
 // New builds and connects a Dispatcher from the given config.
@@ -636,6 +642,12 @@ func (d *Dispatcher) pollLoop(ctx context.Context, sc config.SourceConfig, adapt
 }
 
 func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter source.Adapter, since time.Time) {
+	// Re-evaluate any workflows parked at approval steps against their live tasks
+	// on each poll cycle (resume/abort/timeout) before fetching new work.
+	if d.cfg.Settings.Experimental.WorkflowMode {
+		d.checkApprovals(ctx)
+	}
+
 	aplog.Debug("polling source %s (since %s)", sc.ID, since.Format(time.RFC3339))
 	cells, err := adapter.Poll(ctx, since)
 	if err != nil {

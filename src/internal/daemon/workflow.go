@@ -13,9 +13,20 @@ import (
 	"github.com/orlandoburli/apiary/internal/workflow"
 )
 
-// dispatchWorkflow runs a matched cell through the workflow engine instead of
-// the legacy single-shot path. In Phase 2 the route is synthesized into a
-// single-step workflow; multi-step workflow definitions arrive in Phase 3.
+// workflowEngine returns the dispatcher's long-lived workflow engine, building it
+// on first use. A single engine instance is essential so that workflows parked at
+// approval steps survive across dispatch and poll cycles.
+func (d *Dispatcher) workflowEngine() *workflow.Engine {
+	d.engineOnce.Do(func() {
+		d.engine = workflow.NewEngine(d.cfg, d.db, &wfStepExecutor{d: d},
+			workflow.WithSideEffects(&wfSideEffects{d: d}))
+	})
+	return d.engine
+}
+
+// dispatchWorkflow runs a matched cell through the workflow engine. The route is
+// matched to a defined workflow when one shares the route's id; otherwise the
+// route is synthesized into a single-step workflow.
 //
 // It is gated behind settings.experimental.workflow_mode and only reached when a
 // run-history DB is available (the engine persists instances and step runs).
@@ -25,19 +36,46 @@ func (d *Dispatcher) dispatchWorkflow(ctx context.Context, cell model.Cell, adap
 		return model.RunResult{Success: false}
 	}
 
-	wf := workflow.SynthesizeWorkflow(match.Route)
-
-	side := &wfSideEffects{adapter: adapter}
-	exec := &wfStepExecutor{d: d}
-	eng := workflow.NewEngine(d.cfg, d.db, exec, workflow.WithSideEffects(side))
-
-	instID, success, err := eng.RunInstance(ctx, wf, cell)
+	wf := d.resolveWorkflow(match)
+	instID, success, err := d.workflowEngine().RunInstance(ctx, wf, cell)
 	if err != nil {
 		aplog.Error("cell %s: workflow run failed: %v", cell.ID, err)
 		return model.RunResult{Success: false, WorkerID: match.Route.Agent}
 	}
-	aplog.Info("cell %s: workflow instance %s finished success=%v", cell.ID, instID, success)
+	aplog.Info("cell %s: workflow instance %s started (success=%v; may be awaiting approval)", cell.ID, instID, success)
 	return model.RunResult{Success: success, WorkerID: match.Route.Agent}
+}
+
+// resolveWorkflow returns the workflow to run for a matched route: a workflow
+// whose id equals the route id (a full multi-step definition), or a synthesized
+// single-step workflow for a plain route.
+func (d *Dispatcher) resolveWorkflow(match router.Match) config.WorkflowConfig {
+	for i := range d.cfg.Workflows {
+		if d.cfg.Workflows[i].ID == match.Route.ID {
+			return d.cfg.Workflows[i]
+		}
+	}
+	return workflow.SynthesizeWorkflow(match.Route)
+}
+
+// checkApprovals drives the engine's parked-approval evaluation using each
+// source's TaskPoller. Called once per poll cycle. Sources that do not implement
+// TaskPoller cannot resolve approvals (the instance stays parked).
+func (d *Dispatcher) checkApprovals(ctx context.Context) {
+	if d.db == nil || d.engine == nil {
+		return
+	}
+	d.engine.CheckParkedApprovals(ctx, func(sourceID, cellID string) (model.Cell, error) {
+		adapter, ok := d.sources[sourceID]
+		if !ok {
+			return model.Cell{}, fmt.Errorf("source %q not found", sourceID)
+		}
+		poller, ok := adapter.(source.TaskPoller)
+		if !ok {
+			return model.Cell{}, fmt.Errorf("source %q does not support per-task polling (approvals)", sourceID)
+		}
+		return poller.PollTask(ctx, cellID)
+	})
 }
 
 // wfStepExecutor adapts the dispatcher's runner machinery to the workflow
@@ -105,30 +143,48 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 	}
 }
 
-// wfSideEffects applies source-facing actions for a workflow instance against
-// the cell's source adapter.
+// wfSideEffects applies source-facing actions for a workflow instance. It
+// resolves the adapter per cell (via the cell's SourceID) so a single long-lived
+// engine can serve cells from any configured source.
 type wfSideEffects struct {
-	adapter source.Adapter
+	d *Dispatcher
+}
+
+// adapterFor returns the source adapter that produced the cell, or nil.
+func (s *wfSideEffects) adapterFor(cell model.Cell) source.Adapter {
+	return s.d.sources[cell.SourceID]
 }
 
 func (s *wfSideEffects) StateLock(ctx context.Context, cell model.Cell) error {
-	return s.adapter.Acknowledge(ctx, cell, model.AckActionInProgress)
+	adapter := s.adapterFor(cell)
+	if adapter == nil {
+		return fmt.Errorf("no adapter for source %q", cell.SourceID)
+	}
+	return adapter.Acknowledge(ctx, cell, model.AckActionInProgress)
 }
 
 func (s *wfSideEffects) PostComment(ctx context.Context, cell model.Cell, comment string) error {
-	return s.adapter.WriteResult(ctx, cell, model.RunResult{Success: true, Output: comment})
+	adapter := s.adapterFor(cell)
+	if adapter == nil {
+		return fmt.Errorf("no adapter for source %q", cell.SourceID)
+	}
+	return adapter.WriteResult(ctx, cell, model.RunResult{Success: true, Output: comment})
 }
 
 func (s *wfSideEffects) ApplyHook(ctx context.Context, cell model.Cell, hook config.OnComplete) error {
+	adapter := s.adapterFor(cell)
+	if adapter == nil {
+		return fmt.Errorf("no adapter for source %q", cell.SourceID)
+	}
 	if len(hook.AddLabels) > 0 {
-		if la, ok := s.adapter.(source.LabelAdder); ok {
+		if la, ok := adapter.(source.LabelAdder); ok {
 			if err := la.AddLabels(ctx, cell, hook.AddLabels); err != nil {
 				aplog.Error("cell %s: add labels %v: %v", cell.ID, hook.AddLabels, err)
 			}
 		}
 	}
 	if hook.SetState != "" {
-		if ss, ok := s.adapter.(source.StateSetter); ok {
+		if ss, ok := adapter.(source.StateSetter); ok {
 			if err := ss.SetState(ctx, cell, hook.SetState); err != nil {
 				aplog.Error("cell %s: set_state %q: %v", cell.ID, hook.SetState, err)
 			}
