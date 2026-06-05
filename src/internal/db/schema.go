@@ -103,6 +103,36 @@ CREATE TABLE IF NOT EXISTS dispatcher_state (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Workflow instances: one execution of a workflow bound to a Cell.
+CREATE TABLE IF NOT EXISTS workflow_instances (
+  id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  cell_id TEXT NOT NULL,
+  source_id TEXT,
+  state TEXT NOT NULL,            -- pending|running|approval_waiting|interrupted|done|failed
+  parent_instance_id TEXT,       -- set for sub-workflow child instances
+  resumed_from TEXT,             -- instance id this was resumed from
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Step runs: one row per step execution within a workflow instance.
+CREATE TABLE IF NOT EXISTS step_runs (
+  id TEXT PRIMARY KEY,
+  workflow_instance_id TEXT NOT NULL,
+  step_id TEXT NOT NULL,
+  agent_id TEXT,
+  state TEXT NOT NULL,           -- pending|running|passed|failed|skipped|skipped_cached
+  output TEXT,
+  structured_output TEXT,        -- JSON-encoded structured output
+  summary TEXT,
+  exit_code INTEGER,
+  skipped_cached BOOLEAN DEFAULT 0,
+  started_at TIMESTAMP,
+  finished_at TIMESTAMP,
+  FOREIGN KEY(workflow_instance_id) REFERENCES workflow_instances(id)
+);
+
 -- Create indices
 CREATE INDEX IF NOT EXISTS idx_executions_task ON task_executions(task_id);
 CREATE INDEX IF NOT EXISTS idx_executions_retry ON task_executions(next_retry_at) WHERE status='failed';
@@ -111,6 +141,10 @@ CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs(task_id);
 CREATE INDEX IF NOT EXISTS idx_service_logs_timestamp ON service_logs(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_wf_instances_state ON workflow_instances(state);
+CREATE INDEX IF NOT EXISTS idx_wf_instances_cell ON workflow_instances(cell_id);
+CREATE INDEX IF NOT EXISTS idx_wf_instances_parent ON workflow_instances(parent_instance_id);
+CREATE INDEX IF NOT EXISTS idx_step_runs_instance ON step_runs(workflow_instance_id);
 `
 
 // migrations are idempotent ALTER statements applied to databases created

@@ -119,14 +119,17 @@ func (r *ApiRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 
 	emit("debug", output)
 	usage := parseUsage(respRaw)
-	return model.RunResult{
+	result := model.RunResult{
 		WorkerID: req.WorkerID,
 		Success:  true,
 		Output:   strings.TrimSpace(output),
 		Logs:     logs,
 		Duration: time.Since(start),
 		Usage:    usage,
-	}, nil
+	}
+	// Extract APIARY_OUTPUT / APIARY_SUMMARY sentinels into structured fields.
+	applyStructured(&result)
+	return result, nil
 }
 
 func defaultBuildBody(prompt, model string, maxTokens int) ([]byte, error) {
