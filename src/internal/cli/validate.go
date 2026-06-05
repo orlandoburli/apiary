@@ -3,8 +3,8 @@ package cli
 import (
 	"fmt"
 
-	"github.com/spf13/cobra"
 	"github.com/orlandoburli/apiary/internal/config"
+	"github.com/spf13/cobra"
 )
 
 func newValidateCmd() *cobra.Command {
@@ -25,6 +25,10 @@ func newValidateCmd() *cobra.Command {
 					fmt.Fprintf(cmd.ErrOrStderr(), "  ✗ %s\n", e)
 				}
 				return fmt.Errorf("%d validation error(s)", len(errs))
+			}
+
+			for _, w := range cfg.WorkflowWarnings() {
+				fmt.Fprintf(cmd.ErrOrStderr(), "  ⚠ %s\n", w)
 			}
 
 			fmt.Println("✓ config is valid")

@@ -11,14 +11,15 @@ import (
 )
 
 type Config struct {
-	Version       string         `yaml:"version"`
-	Runners       []RunnerConfig `yaml:"runners"`
-	DefaultRunner string         `yaml:"default_runner"`
-	Sources       []SourceConfig `yaml:"sources"`
-	Agents        []AgentConfig  `yaml:"agents"`
-	Workers       []WorkerConfig `yaml:"workers"`
-	Routes        []RouteConfig  `yaml:"routes"`
-	Settings      Settings       `yaml:"settings"`
+	Version       string           `yaml:"version"`
+	Runners       []RunnerConfig   `yaml:"runners"`
+	DefaultRunner string           `yaml:"default_runner"`
+	Sources       []SourceConfig   `yaml:"sources"`
+	Agents        []AgentConfig    `yaml:"agents"`
+	Workers       []WorkerConfig   `yaml:"workers"`
+	Routes        []RouteConfig    `yaml:"routes"`
+	Workflows     []WorkflowConfig `yaml:"workflows"`
+	Settings      Settings         `yaml:"settings"`
 
 	rawContent string // original YAML text before env expansion; used by Save()
 }

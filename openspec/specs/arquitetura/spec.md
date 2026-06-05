@@ -85,3 +85,17 @@ deepseek/deepseek-r1
 mistral/mistral-large-2411
 meta/llama-3.3-70b
 ```
+
+---
+
+### ADR-007: `apiary.yaml` stays at `version: "1"` for workflow mode
+
+**Status:** Accepted
+
+**Decision:** The `workflows:` block and all related fields (`memory`, `summary_prompt`, `output_schema`, etc.) are added to `version: "1"`. No version bump.
+
+**Rationale:** The changes are fully additive — existing configs without `workflows:` continue to parse and run without modification. A config validator that understands `version: "1"` with workflows will accept old configs unchanged. Bumping to `version: "2"` would require every existing user to edit their config file for no functional benefit.
+
+**Version semantics going forward:** The `version` field will only increment when a breaking change is made to the schema — a field is removed, renamed, or its meaning changes in a backward-incompatible way. Additive changes (new optional fields, new top-level blocks) do not require a version bump.
+
+**Consequence:** If a user runs an old binary against a config that uses `workflows:`, the old binary emits an "unknown field" warning (not an error) and ignores the block. This is acceptable for a developer tool — users upgrading Apiary get workflow mode; users who haven't upgraded are unaffected.
