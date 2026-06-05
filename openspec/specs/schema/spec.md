@@ -182,16 +182,15 @@ settings:
 | `result_comment` | bool | `true` | Post agent output as a comment on the source task |
 | `telemetry.enabled` | bool | `false` | Emit OTLP traces |
 | `telemetry.endpoint` | string | — | OTLP collector endpoint |
-| `experimental.workflow_mode` | bool | `false` | Route matched tasks through the multi-step workflow engine instead of single-shot dispatch |
 
-### `workflows[]` (experimental)
+### `workflows[]`
 
-Enabled by `settings.experimental.workflow_mode`. A workflow is a multi-step DAG
-that replaces single-shot dispatch: a task that matches a workflow's `trigger`
-runs through its `steps` in dependency order, threading a small enrichable
-**memory** baton between them. Routes and workflows share an id namespace; a
-plain route is treated as a single-step workflow. See the full annotated
-reference in the `workflow-mode` change specs (`specs/workflow/spec.md`).
+The workflow engine is **the** dispatch path: a task that matches a workflow's
+`trigger` runs through its `steps` in dependency order, threading a small
+enrichable **memory** baton between them. Routes and workflows share an id
+namespace; a plain `route` is treated as a single-step workflow, so the two
+coexist. See the full annotated reference in the `workflow-mode` change specs
+(`specs/workflow/spec.md`).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
