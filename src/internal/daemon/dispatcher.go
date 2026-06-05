@@ -901,6 +901,14 @@ func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter sour
 				exec.ErrorMsg = result.Error.Error()
 			}
 		}
+		if result.Usage != nil {
+			exec.InputTokens = result.Usage.InputTokens
+			exec.OutputTokens = result.Usage.OutputTokens
+			exec.TotalTokens = result.Usage.TotalTokens
+			exec.NumTurns = result.Usage.NumTurns
+			exec.NumToolCalls = result.Usage.NumToolCalls
+			exec.CostUSD = result.Usage.CostUSD
+		}
 		_ = d.db.UpdateExecution(ctx, exec)
 
 		// Handle retry scheduling if enabled and applicable

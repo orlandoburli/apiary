@@ -126,6 +126,12 @@ var migrations = []string{
 	`ALTER TABLE task_executions ADD COLUMN pid INTEGER`,
 	`ALTER TABLE task_executions ADD COLUMN heartbeat_at TIMESTAMP`,
 	`ALTER TABLE task_executions ADD COLUMN heartbeat_count INTEGER DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN input_tokens INTEGER DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN output_tokens INTEGER DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN total_tokens INTEGER DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN num_turns INTEGER DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN num_tool_calls INTEGER DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN cost_usd REAL DEFAULT 0.0`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).

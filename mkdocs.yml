@@ -35,6 +35,7 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Apiary Guide: apiary-guide.md
   - Dashboard: dashboard.md
   - GitHub Source: github-source.md
   - Development: development.md
