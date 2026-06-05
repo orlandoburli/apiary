@@ -23,6 +23,8 @@ type dagRun struct {
 	instID string
 	wf     config.WorkflowConfig
 	cell   model.Cell
+	depth  int          // nesting depth (0 = top-level; >0 = sub-workflow child)
+	seed   []MemoryStep // inherited memory (sub-workflow snapshot from the parent)
 
 	byID  map[string]config.StepConfig
 	order []string // step ids in declaration order (deterministic scheduling)
@@ -40,12 +42,15 @@ type dagRun struct {
 // runDAG executes the workflow's step graph and returns whether the instance
 // failed along with the final memory contributions (for the completion comment).
 // It is the Phase 3 replacement for the sequential loop: it honors depends_on
-// ordering, split routing, on_fail.goto loops, and skip propagation.
-func (e *Engine) runDAG(ctx context.Context, instID string, wf config.WorkflowConfig, cell model.Cell) (bool, []MemoryStep) {
+// ordering, split routing, on_fail.goto loops, and skip propagation. seed is the
+// inherited memory for a sub-workflow child; depth tracks nesting.
+func (e *Engine) runDAG(ctx context.Context, instID string, wf config.WorkflowConfig, cell model.Cell, seed []MemoryStep, depth int) (bool, []MemoryStep) {
 	r := &dagRun{
 		instID:      instID,
 		wf:          wf,
 		cell:        cell,
+		depth:       depth,
+		seed:        seed,
 		byID:        map[string]config.StepConfig{},
 		state:       map[string]string{},
 		activated:   map[string]bool{},
@@ -201,8 +206,10 @@ func (e *Engine) runDAGStep(ctx context.Context, r *dagRun, id string) bool {
 		return e.runAgentDAGStep(ctx, r, step)
 	case config.StepTypeForeach:
 		return e.runForeachStep(ctx, r, step)
+	case config.StepTypeWorkflow:
+		return e.runSubWorkflowStep(ctx, r, step)
 	default:
-		// approval/workflow are not executed by this scheduler yet; treat as a
+		// approval steps are not executed by this scheduler yet; treat as a
 		// no-op pass so they don't block the graph.
 		aplog.Debug("workflow %s: step %q type %q not yet executable, passing through", r.wf.ID, step.ID, step.StepType())
 		r.state[id] = stPassed
@@ -339,9 +346,11 @@ func (r *dagRun) resetLoop(target string) {
 	r.passedOrder = kept
 }
 
-// memSteps returns the ordered memory contributions of passed steps.
+// memSteps returns the ordered memory contributions: inherited seed (for a
+// sub-workflow) first, then this run's passed steps.
 func (r *dagRun) memSteps() []MemoryStep {
-	out := make([]MemoryStep, 0, len(r.passedOrder))
+	out := make([]MemoryStep, 0, len(r.seed)+len(r.passedOrder))
+	out = append(out, r.seed...)
 	for _, id := range r.passedOrder {
 		if c, ok := r.contrib[id]; ok {
 			out = append(out, c)

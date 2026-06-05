@@ -131,7 +131,7 @@ func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, cell
 
 	// Execute the step graph: depends_on ordering, split routing, on_fail.goto
 	// loops, and skip propagation are all handled by the DAG scheduler.
-	failed, memSteps := e.runDAG(ctx, instID, wf, cell)
+	failed, memSteps := e.runDAG(ctx, instID, wf, cell, nil, 0)
 
 	finalState := db.InstanceStateDone
 	if failed {
