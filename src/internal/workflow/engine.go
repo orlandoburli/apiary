@@ -126,33 +126,9 @@ func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, cell
 		_ = e.side.StateLock(ctx, cell)
 	}
 
-	var memSteps []MemoryStep
-	failed := false
-
-	for _, step := range wf.Steps {
-		// Phase 2 executes only agent steps; routing/approval/foreach steps are
-		// handled by the Phase 3 DAG executor.
-		if step.StepType() != config.StepTypeAgent {
-			continue
-		}
-
-		res := e.runStep(ctx, instID, step, cell, memSteps)
-		memSteps = append(memSteps, MemoryStep{
-			StepID:      step.ID,
-			WriteFields: step.MemoryWriteFields(),
-			Structured:  res.StructuredOutput,
-			Summary:     res.Summary,
-		})
-
-		if e.resultCommentMode(wf) == config.ResultCommentPerStep && e.side != nil {
-			_ = e.side.PostComment(ctx, cell, perStepComment(step, res))
-		}
-
-		if !res.Success {
-			failed = true
-			break
-		}
-	}
+	// Execute the step graph: depends_on ordering, split routing, on_fail.goto
+	// loops, and skip propagation are all handled by the DAG scheduler.
+	failed, memSteps := e.runDAG(ctx, instID, wf, cell)
 
 	finalState := db.InstanceStateDone
 	if failed {
