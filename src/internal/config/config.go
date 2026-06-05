@@ -166,13 +166,21 @@ type RetryPolicy struct {
 }
 
 type Settings struct {
-	Concurrency   int         `yaml:"concurrency"`
-	LogLevel      string      `yaml:"log_level"`
-	StateLock     bool        `yaml:"state_lock"`
-	ResultComment bool        `yaml:"result_comment"`
-	TaskTimeout   string      `yaml:"task_timeout"`
-	RetryPolicy   RetryPolicy `yaml:"retry_policy"`
-	Telemetry     Telemetry   `yaml:"telemetry"`
+	Concurrency   int          `yaml:"concurrency"`
+	LogLevel      string       `yaml:"log_level"`
+	StateLock     bool         `yaml:"state_lock"`
+	ResultComment bool         `yaml:"result_comment"`
+	TaskTimeout   string       `yaml:"task_timeout"`
+	RetryPolicy   RetryPolicy  `yaml:"retry_policy"`
+	Telemetry     Telemetry    `yaml:"telemetry"`
+	Experimental  Experimental `yaml:"experimental"`
+}
+
+// Experimental gates opt-in, not-yet-stable features.
+type Experimental struct {
+	// WorkflowMode routes matched cells through the workflow engine (instances +
+	// step runs + memory) instead of the legacy single-shot dispatch path.
+	WorkflowMode bool `yaml:"workflow_mode"`
 }
 
 func (s *Settings) TaskTimeoutDuration() time.Duration {
