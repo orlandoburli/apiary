@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"time"
 
 	aplog "github.com/orlandoburli/apiary/internal/log"
 
@@ -15,6 +16,16 @@ const (
 	stPassed  = "passed"
 	stFailed  = "failed"
 	stSkipped = "skipped"
+	stWaiting = "waiting" // an approval step parked awaiting a human response
+)
+
+// dagOutcome is the terminal (or suspended) result of driving a DAG run.
+type dagOutcome int
+
+const (
+	outcomeDone dagOutcome = iota
+	outcomeFailed
+	outcomeWaiting // suspended at an approval step
 )
 
 // dagRun holds the mutable state of one workflow instance's step graph as the
@@ -37,14 +48,14 @@ type dagRun struct {
 	stepStates  map[string]StepState  // terminal states for expression context
 	contrib     map[string]MemoryStep // memory contribution per passed step
 	passedOrder []string              // step ids in the order they passed
+
+	waitingStep string    // id of the approval step currently parked, if any
+	parkedAt    time.Time // when the current approval parked (for timeout)
 }
 
-// runDAG executes the workflow's step graph and returns whether the instance
-// failed along with the final memory contributions (for the completion comment).
-// It is the Phase 3 replacement for the sequential loop: it honors depends_on
-// ordering, split routing, on_fail.goto loops, and skip propagation. seed is the
-// inherited memory for a sub-workflow child; depth tracks nesting.
-func (e *Engine) runDAG(ctx context.Context, instID string, wf config.WorkflowConfig, cell model.Cell, seed []MemoryStep, depth int) (bool, []MemoryStep) {
+// initDAG builds the in-memory state for a workflow instance's step graph. seed
+// is inherited memory for a sub-workflow child; depth tracks nesting.
+func (e *Engine) initDAG(instID string, wf config.WorkflowConfig, cell model.Cell, seed []MemoryStep, depth int) *dagRun {
 	r := &dagRun{
 		instID:      instID,
 		wf:          wf,
@@ -81,7 +92,13 @@ func (e *Engine) runDAG(ctx context.Context, instID string, wf config.WorkflowCo
 			r.activated[id] = true
 		}
 	}
+	return r
+}
 
+// driveDAG runs the scheduler until the graph completes, fails, or suspends at
+// an approval step. It honors depends_on ordering, split routing, on_fail.goto
+// loops, and skip propagation, and may be re-entered after an approval resolves.
+func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 	for {
 		next := r.pickRunnable()
 		if next == "" {
@@ -90,18 +107,49 @@ func (e *Engine) runDAG(ctx context.Context, instID string, wf config.WorkflowCo
 			}
 			break // nothing else can run
 		}
+		step := r.byID[next]
+		if step.StepType() == config.StepTypeApproval {
+			e.enterApproval(ctx, r, step)
+			return outcomeWaiting
+		}
 		if failed := e.runDAGStep(ctx, r, next); failed {
-			return true, r.memSteps()
+			return outcomeFailed
 		}
 	}
 
 	// The instance fails if any step ended failed.
 	for _, id := range r.order {
 		if r.state[id] == stFailed {
-			return true, r.memSteps()
+			return outcomeFailed
 		}
 	}
-	return false, r.memSteps()
+	return outcomeDone
+}
+
+// enterApproval parks the run at an approval step: it posts the step message to
+// the task and records the waiting step. The polling loop later resumes or
+// aborts it via the engine's approval handling.
+func (e *Engine) enterApproval(ctx context.Context, r *dagRun, step config.StepConfig) {
+	if e.side != nil && step.Message != "" {
+		_ = e.side.PostComment(ctx, r.cell, step.Message)
+	}
+	r.state[step.ID] = stWaiting
+	r.waitingStep = step.ID
+	r.parkedAt = e.now()
+	aplog.Info("workflow %s: instance %s parked at approval step %q", r.wf.ID, r.instID, step.ID)
+}
+
+// resolveApproval applies an approval decision to the parked step so the run can
+// continue: a resume marks it passed, an abort marks it failed.
+func (r *dagRun) resolveApproval(decision ApprovalDecision) {
+	step := r.waitingStep
+	r.waitingStep = ""
+	if decision == ApprovalResume {
+		r.state[step] = stPassed
+		r.stepStates[step] = StepState{State: stPassed}
+	} else {
+		r.state[step] = stFailed
+	}
 }
 
 // pickRunnable returns the next runnable step id (activated, pending, all

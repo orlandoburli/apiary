@@ -50,6 +50,14 @@ type LabelAdder interface {
 	AddLabels(ctx context.Context, cell model.Cell, labels []string) error
 }
 
+// TaskPoller is an optional interface that sources may implement to fetch the
+// current state of a single task by ID, including its comments. The workflow
+// engine uses it to evaluate approval-step resume/abort conditions against the
+// live task. Sources that do not implement it cannot host approval steps.
+type TaskPoller interface {
+	PollTask(ctx context.Context, cellID string) (model.Cell, error)
+}
+
 // Factory creates a new, unconfigured Adapter instance.
 type Factory func() Adapter
 

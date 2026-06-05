@@ -149,21 +149,22 @@ Multi-step workflows, parallel steps, split steps, foreach, sub-workflows, per-s
 
 ## Phase 4 — Approvals
 
-Approval steps. Requires source-write-back polling (new `PollTask` on `SourceAdapter`).
+Approval steps that suspend a workflow instance until a human responds, driven by per-task polling. Built on the workflow engine (legacy path is not involved).
 
-### 4.1 Source Adapter Extension
+### 4.1 Source Adapter Extension — PR-4a
 
-- [ ] 4.1.1 Add `PollTask(ctx, cellID string) (Cell, error)` to `SourceAdapter` interface — see [source-adapter-watch spec](specs/source-adapter-watch/spec.md)
-- [ ] 4.1.2 Implement `PollTask` in Plane adapter
-- [ ] 4.1.3 Implement `PollTask` in GitHub Issues adapter
-- [ ] 4.1.4 Add stub `PollTask` (returns `ErrNotSupported`) to all other adapters
+- [x] 4.1.1 `TaskPoller` optional interface (`PollTask(ctx, cellID) (Cell, error)`) — modeled like `StateSetter`/`LabelAdder` so it doesn't break existing adapters; `model.Cell` gains `Comments []Comment`
+- [~] 4.1.2 Plane `PollTask` — deferred (GitHub covers the primary case; Plane is a focused follow-up)
+- [x] 4.1.3 GitHub Issues `PollTask`: fetches the issue + its comments (`get` client helper, `comment` type), compile-time `TaskPoller` assertion, httptest-backed tests
+- [x] 4.1.4 Sources without `TaskPoller` simply cannot host approvals — the engine poll func returns an error and the instance stays parked (no stub needed thanks to the optional-interface pattern)
 
-### 4.2 Approval Engine
+### 4.2 Approval Engine — PR-4a
 
-- [ ] 4.2.1 Implement approval step execution: post message via `WriteResult`, set instance to `approval_waiting`
-- [ ] 4.2.2 Implement approval polling loop in `WorkflowEngine`: on each poll cycle, call `PollTask` for all `approval_waiting` instances and evaluate `resume_on` / `abort_on` conditions
-- [ ] 4.2.3 Implement approval timeout: abort instance when `timeout` expires
-- [ ] 4.2.4 Unit tests: approval posts message, waits, resumes on matching comment, aborts on abort condition, aborts on timeout
+- [x] 4.2.1 Approval step suspends the run: posts the message, sets the instance to `approval_waiting`, parks the in-memory run (`enterApproval`; DAG refactored into `initDAG` + re-entrant `driveDAG`)
+- [x] 4.2.2 `CheckParkedApprovals(poll)` evaluates each parked instance against the live task (`EvaluateApproval`: `comment_contains`/`label_added`/`state_changed`, resume-wins-over-abort) and resumes/aborts; daemon drives it once per poll cycle via the source's `TaskPoller` against a single long-lived engine
+- [x] 4.2.3 Approval timeout: `CheckParkedApprovals` aborts the instance when `step.timeout` elapses
+- [x] 4.2.4 Unit tests: condition matrix, suspend, resume-continues, abort-fails, resolve-unknown errors, check-resumes-on-comment, check-times-out, check-waits-when-no-signal
+- [~] 4.2.5 Restart survival — parked runs are in-memory; on daemon restart they are reconciled to `interrupted`. DB-reconstruction resume across restarts is a follow-up (acceptable given the "reset and create new flows" direction)
 
 ### 4.3 Resume Command
 
