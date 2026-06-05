@@ -199,9 +199,11 @@ func (e *Engine) runDAGStep(ctx context.Context, r *dagRun, id string) bool {
 		return e.runSplitStep(r, step)
 	case config.StepTypeAgent:
 		return e.runAgentDAGStep(ctx, r, step)
+	case config.StepTypeForeach:
+		return e.runForeachStep(ctx, r, step)
 	default:
-		// approval/foreach/workflow are not executed by the Phase 3a scheduler;
-		// treat as a no-op pass so they don't block the graph.
+		// approval/workflow are not executed by this scheduler yet; treat as a
+		// no-op pass so they don't block the graph.
 		aplog.Debug("workflow %s: step %q type %q not yet executable, passing through", r.wf.ID, step.ID, step.StepType())
 		r.state[id] = stPassed
 		return false
