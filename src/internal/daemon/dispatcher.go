@@ -698,6 +698,13 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 
 // dispatch acknowledges, runs, and writes the result for a single cell.
 func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter source.Adapter, match router.Match) model.RunResult {
+	// Experimental workflow mode routes the cell through the workflow engine
+	// (instances + step runs + memory). The legacy path below is untouched and
+	// remains the default when the flag is off.
+	if d.cfg.Settings.Experimental.WorkflowMode {
+		return d.dispatchWorkflow(ctx, cell, adapter, match)
+	}
+
 	// Get the agent ID from the route
 	agentID := match.Route.Agent
 	if agentID == "" {
