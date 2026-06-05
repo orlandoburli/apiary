@@ -359,3 +359,73 @@ func assertMatch(t *testing.T, ok bool, m router.Match, wantWorker string) {
 		t.Errorf("matched worker = %q, want %q", m.Worker.ID, wantWorker)
 	}
 }
+
+// TestRoute_WorkflowTriggerBecomesRoute verifies a workflow's trigger is
+// ingested as a synthetic route whose id equals the workflow id, so the
+// dispatcher can upgrade the match to the multi-step definition. The synthetic
+// route's agent is the workflow's first agent step (used for admission/logging).
+func TestRoute_WorkflowTriggerBecomesRoute(t *testing.T) {
+	c := &config.Config{
+		Version: "1",
+		Workflows: []config.WorkflowConfig{{
+			ID: "triage",
+			Trigger: &config.TriggerConfig{
+				Priority: 100,
+				Match:    config.RouteMatch{Source: "src-a", ExcludeLabelPrefix: "agent:"},
+			},
+			Steps: []config.StepConfig{
+				{ID: "classify", Agent: "investigator"},
+				{ID: "route", Type: config.StepTypeSplit, Branches: []config.SplitBranch{{Else: true, Goto: "classify"}}},
+			},
+		}},
+	}
+	r, err := router.New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An unlabeled cell triggers the workflow.
+	m, ok := r.Route(cell(withSource("src-a")))
+	if !ok {
+		t.Fatal("expected unlabeled cell to match the triage trigger")
+	}
+	if m.Route.ID != "triage" {
+		t.Errorf("Route.ID = %q, want %q (so resolveWorkflow upgrades to the workflow)", m.Route.ID, "triage")
+	}
+	if m.Route.Agent != "investigator" {
+		t.Errorf("Route.Agent = %q, want %q (first agent step)", m.Route.Agent, "investigator")
+	}
+
+	// A cell already bearing an agent: label is excluded by the trigger.
+	if _, ok := r.Route(cell(withSource("src-a"), withLabels("agent:engineer"))); ok {
+		t.Error("expected agent-labeled cell to be excluded from the triage trigger")
+	}
+}
+
+// TestRoute_ExplicitRouteWinsOverTriggerByPriority verifies explicit routes and
+// trigger routes are merged into one priority-ordered set.
+func TestRoute_ExplicitRouteWinsOverTriggerByPriority(t *testing.T) {
+	c := &config.Config{
+		Version: "1",
+		Routes: []config.RouteConfig{
+			agentRoute("direct-engineer", 10, "engineer", config.RouteMatch{Source: "src-a", Labels: []string{"agent:engineer"}}),
+		},
+		Workflows: []config.WorkflowConfig{{
+			ID:      "triage",
+			Trigger: &config.TriggerConfig{Priority: 100, Match: config.RouteMatch{Source: "src-a", ExcludeLabelPrefix: "agent:"}},
+			Steps:   []config.StepConfig{{ID: "classify", Agent: "investigator"}},
+		}},
+	}
+	r, err := router.New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, ok := r.Route(cell(withSource("src-a"), withLabels("agent:engineer")))
+	if !ok {
+		t.Fatal("expected a match")
+	}
+	if m.Route.ID != "direct-engineer" {
+		t.Errorf("Route.ID = %q, want the explicit lower-priority route", m.Route.ID)
+	}
+}

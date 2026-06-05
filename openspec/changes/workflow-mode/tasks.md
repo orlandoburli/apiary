@@ -81,6 +81,7 @@ Implement `WorkflowEngine` behind `settings.experimental.workflow_mode: true`. S
 - [x] 2.4.5 Implement `state_lock` (once at workflow start) and `result_comment` (`on_complete`/`per_step`/`off`) — see [workflow-hooks spec](specs/workflow-hooks/spec.md)
 - [x] 2.4.6 Wire engine into daemon behind `settings.experimental.workflow_mode` (new `daemon/workflow.go`; single gated branch at top of `dispatch()` — legacy path untouched when off)
 - [x] 2.4.7 Integration test: engine persists instance + step_run to real SQLite (`engine_integration_test.go`)
+- [x] 2.4.8 Wire workflow `trigger` into the router so a multi-step workflow actually dispatches (design §177). `router.New` now ingests each workflow's trigger as a synthetic route (id = workflow id, agent = first agent step); `resolveWorkflow` upgrades the match to the full definition. Without this, a `trigger:`-only workflow validated but never ran — only plain routes dispatched.
 
 ### 2.5 Tests
 

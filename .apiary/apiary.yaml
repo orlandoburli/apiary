@@ -12,7 +12,7 @@ runners:
       - claude-sonnet-4-6
       - claude-haiku-4-5
 
-default_runner: claude-cli
+default_runner: claude
 
 # ── Sources ────────────────────────────────────────────────────────────────────
 sources:
@@ -143,15 +143,86 @@ routes:
     on_complete:
       set_state: closed
 
-  - id: new-issue-classify
-    priority: 100
-    match:
-      source: project-erp
-      exclude_label_prefix: "agent:"
-    agent: investigator
+# (Classification + routing of brand-new issues is handled by the `triage`
+#  workflow below, not a route — the engine routes in one instance instead of
+#  re-labelling and re-polling.)
+
+# ── Workflows ──────────────────────────────────────────────────────────────────
+# A new issue with no `agent:` label runs through `triage`: the investigator
+# classifies it, a split routes on that decision, and the chosen agent does the
+# work — all in a single workflow instance. This replaces the old
+# `assign_from_output` directive, which the engine no longer supports.
+workflows:
+  - id: triage
+    description: "Classify a new issue and route it to the right agent in one instance."
+    resume: allowed
+    trigger:
+      priority: 100
+      match:
+        source: project-erp
+        exclude_label_prefix: "agent:"
+
+    steps:
+      # 1) Classify. The investigator emits a structured `agent` decision, which
+      #    we persist into workflow memory for the split to read.
+      - id: classify
+        agent: investigator
+        summary_prompt: "One line: which agent you chose and the key reason."
+        output_schema:
+          type: object
+          properties:
+            agent: {type: string, enum: [po, staff, engineer, reviewer, qa]}
+          required: [agent]
+        memory:
+          write: [agent]
+
+      # 2) Route on the classified agent. `engineer` is the fallback (the common
+      #    case, and a safe default if classification is missing/unparseable).
+      - id: route
+        type: split
+        depends_on: [classify]
+        branches:
+          - if: 'memory.agent == "po"'
+            goto: spec
+          - if: 'memory.agent == "staff"'
+            goto: design
+          - if: 'memory.agent == "reviewer"'
+            goto: review
+          - if: 'memory.agent == "qa"'
+            goto: validate
+          - else: true
+            goto: implement
+
+      # 3) Exactly one of these runs — whichever the split activates.
+      - id: spec
+        agent: po
+        depends_on: [route]
+        prompt: "Produce the spec / acceptance criteria for this issue."
+
+      - id: design
+        agent: staff
+        depends_on: [route]
+        prompt: "Design the solution and decompose it into smaller tasks."
+
+      - id: implement
+        agent: engineer
+        depends_on: [route]
+        prompt: "Implement the change following project conventions."
+
+      - id: review
+        agent: reviewer
+        depends_on: [route]
+        prompt: "Review the change for correctness and conventions."
+
+      - id: validate
+        agent: qa
+        depends_on: [route]
+        prompt: "Validate the implementation against its acceptance criteria."
+
     on_complete:
-      assign_from_output: true
-      # No set_state — the investigator only labels; the matching agent closes it.
+      set_state: closed
+    on_fail:
+      add_labels: [needs-attention]
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 settings:
