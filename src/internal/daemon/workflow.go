@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/orlandoburli/apiary/internal/config"
+	"github.com/orlandoburli/apiary/internal/db"
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/router"
@@ -127,19 +129,89 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		}
 	}
 
+	// Record a task_executions row for this step so the dashboard (Tasks
+	// history, Usage/cost, agent stats, live "running" status) observes
+	// workflow steps the same way it observed legacy single-shot runs. Each
+	// step is one execution; usage and PID/heartbeat are wired through.
+	exec := x.beginExecution(ctx, req)
+	if exec != nil {
+		execID := exec.ID
+		rr.SetPID = func(pid int) { _ = x.d.db.SetPID(ctx, execID, pid) }
+		rr.Heartbeat = func() { _ = x.d.db.SendHeartbeat(ctx, execID) }
+	}
+
 	runCtx, cancel := context.WithTimeout(ctx, rr.Timeout)
-	defer cancel()
+	// Register the cancel func so `apiary restart` / ForceRestart can interrupt
+	// an in-flight step. A single key per cell mirrors legacy behaviour.
+	x.d.runCancel.Store(req.Cell.ID, cancel)
+	defer func() {
+		cancel()
+		x.d.runCancel.Delete(req.Cell.ID)
+	}()
 
 	res, err := ra.Run(runCtx, rr)
 	if err != nil && res.Error == nil {
 		res.Error = err
 	}
+
+	x.finishExecution(ctx, exec, res)
+
 	return workflow.StepResult{
 		Success:          res.Success,
 		Output:           res.Output,
 		StructuredOutput: res.StructuredOutput,
 		Summary:          res.Summary,
 		Err:              res.Error,
+	}
+}
+
+// beginExecution creates the task_executions row for a step run, or returns nil
+// when no run-history DB is configured. The attempt number continues the cell's
+// execution history so retries/steps accumulate rather than reset.
+func (x *wfStepExecutor) beginExecution(ctx context.Context, req workflow.StepRequest) *db.Execution {
+	if x.d.db == nil {
+		return nil
+	}
+	attempt := 1
+	if last, _ := x.d.db.GetLastExecution(ctx, req.Cell.ID); last != nil {
+		attempt = last.Attempt + 1
+	}
+	runnerType := x.d.agentRunner[req.Step.Agent]
+	exec, err := x.d.db.CreateExecution(ctx, req.Cell.ID, req.Step.Agent, req.Cell.Title,
+		req.Cell.Number, req.Cell.URL, req.Model, runnerType, attempt)
+	if err != nil {
+		aplog.Error("cell %s: create execution record: %v", req.Cell.ID, err)
+		return nil
+	}
+	return exec
+}
+
+// finishExecution flips a step's execution row to its terminal state and records
+// duration and usage. A nil exec (no DB) is a no-op.
+func (x *wfStepExecutor) finishExecution(ctx context.Context, exec *db.Execution, res model.RunResult) {
+	if exec == nil || x.d.db == nil {
+		return
+	}
+	now := time.Now()
+	exec.CompletedAt = &now
+	exec.DurationMs = res.Duration.Milliseconds()
+	exec.Status = "success"
+	if !res.Success {
+		exec.Status = "failed"
+		if res.Error != nil {
+			exec.ErrorMsg = res.Error.Error()
+		}
+	}
+	if res.Usage != nil {
+		exec.InputTokens = res.Usage.InputTokens
+		exec.OutputTokens = res.Usage.OutputTokens
+		exec.TotalTokens = res.Usage.TotalTokens
+		exec.NumTurns = res.Usage.NumTurns
+		exec.NumToolCalls = res.Usage.NumToolCalls
+		exec.CostUSD = res.Usage.CostUSD
+	}
+	if err := x.d.db.UpdateExecution(ctx, exec); err != nil {
+		aplog.Error("cell %s: update execution record: %v", exec.TaskID, err)
 	}
 }
 
