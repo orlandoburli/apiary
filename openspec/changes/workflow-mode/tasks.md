@@ -49,28 +49,30 @@ Parse the `workflows:` block alongside existing `routes:`. No execution changes.
 
 Implement `WorkflowEngine` behind `settings.experimental.workflow_mode: true`. Single-step workflows only (no DAG, no split, no approval, no foreach). Plain `routes:` are synthesized as single-step workflows and run through the same engine.
 
-### 2.1 SQLite Schema
+> **Delivery note:** Phase 2 is shipped as two PRs. **PR-2a (foundations)** delivers the SQLite store, runner-interface changes, and the memory builder — all additive, fully unit-tested, zero behavior change. **PR-2b (engine)** delivers the `WorkflowEngine` and its daemon wiring (2.4–2.5), isolated because it touches the mature dispatcher. Real layout differs from the original task notes: the store lives in the existing `internal/db` package (not `internal/store`), and schema is defined inline in `db/schema.go`.
 
-- [ ] 2.1.1 Add `workflow_instances` table migration to `src/internal/store/migrations/`
-- [ ] 2.1.2 Add `step_runs` table migration
-- [ ] 2.1.3 Add `summary` and `structured_output` columns to `step_runs`
-- [ ] 2.1.4 Implement `WorkflowStore` in `src/internal/store/workflow_store.go`: CRUD for instances and step runs
+### 2.1 SQLite Schema — PR-2a
 
-### 2.2 Runner Interface Changes
+- [x] 2.1.1 Add `workflow_instances` table (in `src/internal/db/schema.go`)
+- [x] 2.1.2 Add `step_runs` table
+- [x] 2.1.3 `step_runs` includes `summary` and `structured_output` columns
+- [x] 2.1.4 Implement `WorkflowStore` in `src/internal/db/workflow_store.go`: CRUD for instances and step runs (+ `ReconcileOrphanWorkflowInstances`)
 
-- [ ] 2.2.1 Add `SystemPrepend`, `SummaryPrompt`, `StepID`, `WorkflowInstanceID` fields to `RunRequest` — see [runner-interface spec](specs/runner-interface/spec.md)
-- [ ] 2.2.2 Add `StructuredOutput map[string]any`, `Summary string` fields to `RunResult`
-- [ ] 2.2.3 Update OpenCode runner: inject `SystemPrepend` before soul file; parse `APIARY_OUTPUT:` last line into `StructuredOutput`; extract summary block into `Summary`
-- [ ] 2.2.4 Update script runner: inject `SystemPrepend`; pass `APIARY_SUMMARY_PROMPT` env var; parse `APIARY_OUTPUT:` line
-- [ ] 2.2.5 Update runner interface tests
+### 2.2 Runner Interface Changes — PR-2a
 
-### 2.3 Memory Builder
+- [x] 2.2.1 Add `SystemPrepend`, `SummaryPrompt`, `StepID`, `WorkflowInstanceID` fields to `RunRequest`
+- [x] 2.2.2 Add `StructuredOutput map[string]any`, `Summary string` fields to `RunResult`
+- [x] 2.2.3 Inject `SystemPrepend` before cell details in `buildPrompt`; parse `APIARY_OUTPUT:` into `StructuredOutput` and `APIARY_SUMMARY_START/END` into `Summary` (shared `structured.go`, applied by cli + api runners)
+- [~] 2.2.4 Script runner env vars (`APIARY_SYSTEM_PREPEND`, etc.) — deferred; the shared prompt/parse path already covers cli + api runners
+- [x] 2.2.5 Runner interface tests (`structured_test.go`)
 
-- [ ] 2.3.1 Implement `MemoryBuilder` in `src/internal/workflow/memory.go`: builds the memory document from cell + completed step runs
-- [ ] 2.3.2 Implement `memory_max_chars` truncation (oldest summaries first; Cell and Step Data never truncated)
-- [ ] 2.3.3 Unit tests for `MemoryBuilder` with various step combinations
+### 2.3 Memory Builder — PR-2a
 
-### 2.4 Workflow Engine
+- [x] 2.3.1 Implement `MemoryBuilder` in `src/internal/workflow/memory.go`: builds the memory document from cell + completed step contributions
+- [x] 2.3.2 Implement `memory_max_chars` truncation (oldest summaries first; Cell and Step Data never truncated)
+- [x] 2.3.3 Unit tests for `MemoryBuilder` with various step combinations
+
+### 2.4 Workflow Engine — PR-2b
 
 - [ ] 2.4.1 Implement `WorkflowEngine` in `src/internal/workflow/engine.go`
 - [ ] 2.4.2 Implement route synthesis: plain `routes:` entries produce a single-step `WorkflowConfig` internally

@@ -208,6 +208,8 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 			result.Error = runErr
 		}
 	}
+	// Extract APIARY_OUTPUT / APIARY_SUMMARY sentinels into structured fields.
+	applyStructured(&result)
 	return result, nil
 }
 
@@ -327,7 +329,7 @@ func formatStreamLine(line string) (string, bool) {
 			}
 		}
 		out := fmt.Sprintf("[result:%s] turns=%d duration=%s", status, ev.NumTurns,
-			(time.Duration(ev.DurationMs)*time.Millisecond).Round(time.Millisecond))
+			(time.Duration(ev.DurationMs) * time.Millisecond).Round(time.Millisecond))
 		if ev.TotalCostUSD > 0 {
 			out += fmt.Sprintf(" cost=$%.4f", ev.TotalCostUSD)
 		}
@@ -368,6 +370,10 @@ func truncateInput(raw json.RawMessage) string {
 
 func buildPrompt(req model.RunRequest) string {
 	var b strings.Builder
+	if req.SystemPrepend != "" {
+		b.WriteString(req.SystemPrepend)
+		b.WriteString("\n\n")
+	}
 	fmt.Fprintf(&b, "Task: %s\n", req.Cell.Title)
 	if req.Cell.Type != "" {
 		fmt.Fprintf(&b, "Type: %s\n", req.Cell.Type)
@@ -390,6 +396,9 @@ func buildPrompt(req model.RunRequest) string {
 		b.WriteString("\n")
 		b.WriteString(req.SystemAppend)
 		b.WriteString("\n")
+	}
+	if req.SummaryPrompt != "" {
+		b.WriteString(summaryInstruction(req.SummaryPrompt))
 	}
 	return b.String()
 }
