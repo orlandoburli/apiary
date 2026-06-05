@@ -2,6 +2,8 @@ package execution
 
 import (
 	"testing"
+
+	"github.com/orlandoburli/apiary/internal/model"
 )
 
 func TestFormatStreamLine_System(t *testing.T) {
@@ -45,6 +47,48 @@ func TestFormatStreamLine_UserToolResult(t *testing.T) {
 	}
 	if !contains(got, "ok") {
 		t.Errorf("unexpected: %q", got)
+	}
+}
+
+func TestAccumulateStreamUsage_Full(t *testing.T) {
+	var u model.Usage
+
+	accumulateStreamUsage(`{"type":"message_start","message":{"usage":{"input_tokens":523}}}`, &u)
+	if u.InputTokens != 523 {
+		t.Errorf("InputTokens = %d, want 523", u.InputTokens)
+	}
+
+	accumulateStreamUsage(`{"type":"message_delta","usage":{"output_tokens":142}}`, &u)
+	if u.OutputTokens != 142 {
+		t.Errorf("OutputTokens = %d, want 142", u.OutputTokens)
+	}
+	if u.TotalTokens != 523+142 {
+		t.Errorf("TotalTokens = %d, want %d", u.TotalTokens, 523+142)
+	}
+
+	accumulateStreamUsage(`{"type":"content_block_start","content_block":{"type":"tool_use","name":"Bash","input":{"command":"ls"}}}`, &u)
+	accumulateStreamUsage(`{"type":"content_block_start","content_block":{"type":"tool_use","name":"Read","input":{"file":"x"}}}`, &u)
+	if u.NumToolCalls != 2 {
+		t.Errorf("NumToolCalls = %d, want 2", u.NumToolCalls)
+	}
+
+	accumulateStreamUsage(`{"type":"result","subtype":"success","num_turns":4,"duration_ms":12000,"result":"done","total_cost_usd":0.087}`, &u)
+	if u.NumTurns != 4 {
+		t.Errorf("NumTurns = %d, want 4", u.NumTurns)
+	}
+	if u.CostUSD != 0.087 {
+		t.Errorf("CostUSD = %.4f, want 0.087", u.CostUSD)
+	}
+}
+
+func TestAccumulateStreamUsage_NoCost(t *testing.T) {
+	var u model.Usage
+	accumulateStreamUsage(`{"type":"result","subtype":"success","num_turns":2,"duration_ms":5000,"result":"ok"}`, &u)
+	if u.CostUSD != 0 {
+		t.Errorf("CostUSD = %.4f, want 0 when total_cost_usd not in event", u.CostUSD)
+	}
+	if u.NumTurns != 2 {
+		t.Errorf("NumTurns = %d, want 2", u.NumTurns)
 	}
 }
 
