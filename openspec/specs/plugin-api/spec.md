@@ -91,10 +91,10 @@ type RunResult struct {
 }
 ```
 
-## Workflow Mode extensions (experimental)
+## Workflow Mode extensions
 
-When `settings.experimental.workflow_mode` is enabled, the engine drives tasks
-through multi-step workflows. Adapters opt into the extra capabilities through
+The engine drives tasks through multi-step workflows (a plain route is a
+single-step workflow). Adapters opt into the extra capabilities through
 **optional** interfaces — existing adapters keep working unchanged.
 
 ### `TaskPoller` (optional) — required to host `approval` steps

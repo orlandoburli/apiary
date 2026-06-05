@@ -3,17 +3,13 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -80,7 +76,7 @@ type Dispatcher struct {
 	mu     sync.Mutex
 	runSeq int
 
-	// workflow engine (experimental.workflow_mode). Built once and long-lived so
+	// workflow engine — the dispatch path. Built once and long-lived so
 	// instances parked at approval steps survive across dispatch cycles.
 	engine     *workflow.Engine
 	engineOnce sync.Once
@@ -719,9 +715,7 @@ func (d *Dispatcher) pollLoop(ctx context.Context, sc config.SourceConfig, adapt
 func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter source.Adapter, since time.Time) {
 	// Re-evaluate any workflows parked at approval steps against their live tasks
 	// on each poll cycle (resume/abort/timeout) before fetching new work.
-	if d.cfg.Settings.Experimental.WorkflowMode {
-		d.checkApprovals(ctx)
-	}
+	d.checkApprovals(ctx)
 
 	aplog.Debug("polling source %s (since %s)", sc.ID, since.Format(time.RFC3339))
 	cells, err := adapter.Poll(ctx, since)
@@ -785,394 +779,10 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 
 // dispatch acknowledges, runs, and writes the result for a single cell.
 func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter source.Adapter, match router.Match) model.RunResult {
-	// Experimental workflow mode routes the cell through the workflow engine
-	// (instances + step runs + memory). The legacy path below is untouched and
-	// remains the default when the flag is off.
-	if d.cfg.Settings.Experimental.WorkflowMode {
-		return d.dispatchWorkflow(ctx, cell, adapter, match)
-	}
-
-	// Get the agent ID from the route
-	agentID := match.Route.Agent
-	if agentID == "" {
-		aplog.Error("cell %s: route %s has no agent", cell.ID, match.Route.ID)
-		return model.RunResult{Success: false}
-	}
-
-	// Find the agent config
-	var agent *config.AgentConfig
-	for i := range d.cfg.Agents {
-		if d.cfg.Agents[i].ID == agentID {
-			agent = &d.cfg.Agents[i]
-			break
-		}
-	}
-	if agent == nil {
-		aplog.Error("cell %s: agent %q not found", cell.ID, agentID)
-		return model.RunResult{Success: false}
-	}
-
-	// Inject per-agent source token so the adapter (e.g. GitHub) uses the
-	// agent's credentials for write operations (Acknowledge, WriteResult, etc).
-	// Poll still uses the source-level token.
-	if agent.SourceToken != "" {
-		ctx = context.WithValue(ctx, source.SourceTokenCtxKey, agent.SourceToken)
-	}
-
-	// Log the routing decision tree: why this cell landed on this agent, and
-	// which other routes were evaluated and rejected (DEBUG, per-task).
-	if d.logger != nil {
-		_, _, traces := d.router.Explain(cell)
-		d.logger.TaskDebug(ctx, cell.ID, fmt.Sprintf(
-			"routing decision for %q (source=%s labels=%v type=%s priority=%s):",
-			cell.Title, cell.SourceID, cell.Labels, cell.Type, cell.Priority))
-		for _, t := range traces {
-			marker := "·"
-			verb := "skip"
-			if t.Matched {
-				verb = "match"
-			}
-			if t.Selected {
-				marker = "▶"
-				verb = "SELECTED"
-			}
-			target := t.Agent
-			if target == "" {
-				target = "worker:" + t.Worker
-			}
-			d.logger.TaskDebug(ctx, cell.ID, fmt.Sprintf(
-				"  %s route=%s (prio=%d agent=%s) %s — %s",
-				marker, t.RouteID, t.Priority, target, verb, t.Reason))
-		}
-	}
-
-	if d.cfg.Settings.StateLock {
-		if err := adapter.Acknowledge(ctx, cell, model.AckActionInProgress); err != nil {
-			aplog.Error("cell %s: acknowledge error: %v", cell.ID, err)
-		}
-	}
-
-	// Use pseudo-worker ID for agent
-	pseudoWorkerID := fmt.Sprintf("agent-%s", agentID)
-	ra, ok := d.runners[pseudoWorkerID]
-	if !ok {
-		aplog.Error("cell %s: runner for agent %q not found", cell.ID, agentID)
-		return model.RunResult{Success: false}
-	}
-
-	// Read soul file and append to system prompt
-	systemAppend := ""
-	if agent.SoulFile != "" {
-		soulContent, err := os.ReadFile(agent.SoulFile)
-		if err != nil {
-			aplog.Error("cell %s: reading soul file %q: %v", cell.ID, agent.SoulFile, err)
-		} else {
-			systemAppend = string(soulContent)
-			aplog.Debug("cell %s: loaded soul file (%d bytes)", cell.ID, len(soulContent))
-		}
-	}
-
-	// Use first preferred model
-	selectedModel := agent.Model
-	runnerType := d.agentRunner[agentID]
-
-	aplog.Info("cell %s: dispatching to agent=%q model=%s", cell.ID, agentID, selectedModel)
-	if d.logger != nil {
-		d.logger.TaskInfo(ctx, cell.ID, fmt.Sprintf("dispatching to agent=%s model=%s runner=%s", agentID, selectedModel, runnerType))
-	}
-
-	// Create request with default values for agent-based dispatch
-	req := model.RunRequest{
-		Cell:         cell,
-		WorkerID:     agentID,
-		Model:        selectedModel,
-		MaxTurns:     15,
-		SystemAppend: systemAppend,
-		WorkingDir:   "/",
-		Env:          map[string]string{},
-		Timeout:      d.cfg.Settings.TaskTimeoutDuration(),
-	}
-
-	// Set git author identity from agent config so commits use the agent's
-	// GitHub identity rather than a shared system user.
-	if agent.SourceName != "" {
-		req.Env["GIT_AUTHOR_NAME"] = agent.SourceName
-		req.Env["GIT_COMMITTER_NAME"] = agent.SourceName
-	}
-	if agent.SourceEmail != "" {
-		req.Env["GIT_AUTHOR_EMAIL"] = agent.SourceEmail
-		req.Env["GIT_COMMITTER_EMAIL"] = agent.SourceEmail
-	}
-
-	// Stream the runner's live output (prompt, agent conversation, stderr)
-	// into the per-task log (dashboard) AND to the terminal so the user can
-	// watch the agent work in real time when running `apiary run`.
-	if d.logger != nil {
-		cellID := cell.ID
-		req.LogSink = func(e model.LogEntry) {
-			// Always write to DB for the dashboard
-			switch e.Level {
-			case "error":
-				d.logger.TaskError(ctx, cellID, e.Message)
-			case "info":
-				d.logger.TaskInfo(ctx, cellID, e.Message)
-			default:
-				d.logger.TaskDebug(ctx, cellID, e.Message)
-			}
-			// Also print to terminal so the user sees live output
-			aplog.Info("[%s] %s", cellID, e.Message)
-		}
-	}
-
-	runCtx, cancel := context.WithTimeout(ctx, req.Timeout)
-	d.runCancel.Store(cell.ID, cancel)
-	defer func() {
-		cancel()
-		d.runCancel.Delete(cell.ID)
-	}()
-
-	// Track execution attempt in database
-	var exec *db.Execution
-	lastExec, _ := d.db.GetLastExecution(ctx, cell.ID)
-	attempt := 1
-	if lastExec != nil {
-		attempt = lastExec.Attempt + 1
-	}
-
-	if d.db != nil {
-		var err error
-		exec, err = d.db.CreateExecution(ctx, cell.ID, agentID, cell.Title, cell.Number, cell.URL, selectedModel, runnerType, attempt)
-		if err != nil {
-			aplog.Error("cell %s: create execution record: %v", cell.ID, err)
-		}
-	}
-
-	// Wire PID tracking and heartbeat into the run request so the runner can
-	// report the child process PID and send periodic liveness signals.
-	if exec != nil && d.db != nil {
-		execID := exec.ID
-		req.SetPID = func(pid int) {
-			if err := d.db.SetPID(ctx, execID, pid); err != nil {
-				aplog.Error("cell %s: set pid: %v", cell.ID, err)
-			}
-		}
-		req.Heartbeat = func() {
-			if err := d.db.SendHeartbeat(ctx, execID); err != nil {
-				aplog.Error("cell %s: heartbeat: %v", cell.ID, err)
-			}
-		}
-	}
-
-	result, err := ra.Run(runCtx, req)
-	if err != nil && result.Error == nil {
-		result.Error = err
-	}
-	result.WorkerID = agentID
-
-	aplog.Info("cell %s: done success=%v duration=%s",
-		cell.ID, result.Success, result.Duration.Round(time.Second))
-
-	// Log agent output to console
-	if result.Output != "" {
-		aplog.Info("cell %s: agent output:\n%s", cell.ID, result.Output)
-	}
-	if result.Error != nil {
-		aplog.Error("cell %s: agent error: %v", cell.ID, result.Error)
-	}
-
-	// Per-task logs (visible in the dashboard Tasks → logs view)
-	if d.logger != nil {
-		if result.Output != "" {
-			d.logger.TaskInfo(ctx, cell.ID, result.Output)
-		}
-		if result.Error != nil {
-			d.logger.TaskError(ctx, cell.ID, result.Error.Error())
-		}
-		d.logger.TaskInfo(ctx, cell.ID, fmt.Sprintf("done success=%v duration=%s",
-			result.Success, result.Duration.Round(time.Second)))
-	}
-
-	// Update execution record with results
-	if exec != nil && d.db != nil {
-		exec.Status = "success"
-		exec.DurationMs = int64(result.Duration.Milliseconds())
-		now := time.Now()
-		exec.CompletedAt = &now
-		if !result.Success {
-			exec.Status = "failed"
-			if result.Error != nil {
-				exec.ErrorMsg = result.Error.Error()
-			}
-		}
-		if result.Usage != nil {
-			exec.InputTokens = result.Usage.InputTokens
-			exec.OutputTokens = result.Usage.OutputTokens
-			exec.TotalTokens = result.Usage.TotalTokens
-			exec.NumTurns = result.Usage.NumTurns
-			exec.NumToolCalls = result.Usage.NumToolCalls
-			exec.CostUSD = result.Usage.CostUSD
-		}
-		_ = d.db.UpdateExecution(ctx, exec)
-
-		// Handle retry scheduling if enabled and applicable
-		if !result.Success && d.retryMgr.ShouldRetry(attempt) && d.retryMgr.IsRetriable(result.Error.Error()) {
-			backoff := d.retryMgr.GetBackoffDuration(attempt)
-			nextRetryAt := time.Now().Add(backoff)
-			aplog.Debug("cell %s: attempt %d failed (retriable), scheduling retry in %v: %v",
-				cell.ID, attempt, backoff, result.Error)
-			exec.Status = "failed"
-			exec.CanRetry = true
-			exec.NextRetryAt = &nextRetryAt
-			_ = d.db.UpdateExecution(ctx, exec)
-
-			// Add to retry queue for processing when due
-			d.retryQueue.Store(cell.ID, retryQueueEntry{
-				cell:       cell,
-				adapter:    adapter,
-				match:      match,
-				retryAfter: nextRetryAt,
-				attempt:    attempt + 1,
-			})
-		}
-	}
-
-	if d.cfg.Settings.ResultComment {
-		if err := adapter.WriteResult(ctx, cell, result); err != nil {
-			aplog.Error("cell %s: write result: %v", cell.ID, err)
-		}
-	}
-
-	// on_complete: apply labels (static add_labels + classifier assignment),
-	// then the state transition. Only on a successful run — we don't want to
-	// route a task based on a classification that failed.
-	oc := match.Route.OnComplete
-	if result.Success {
-		labels := append([]string(nil), oc.AddLabels...)
-
-		if oc.AssignFromOutput {
-			if agentID, ok := parseAssignDirective(result.Output); ok {
-				if d.agentExists(agentID) {
-					prefix := oc.AssignLabelPrefix
-					if prefix == "" {
-						prefix = "agent:"
-					}
-					label := prefix + agentID
-					labels = append(labels, label)
-					aplog.Info("cell %s: classifier assigned agent=%s → label %q", cell.ID, agentID, label)
-					if d.logger != nil {
-						d.logger.TaskInfo(ctx, cell.ID, fmt.Sprintf("assigned to agent %q (label %q)", agentID, label))
-					}
-				} else {
-					aplog.Error("cell %s: classifier chose unknown agent %q — not assigning", cell.ID, agentID)
-					if d.logger != nil {
-						d.logger.TaskError(ctx, cell.ID, fmt.Sprintf("classifier chose unknown agent %q", agentID))
-					}
-				}
-			} else {
-			aplog.Debug("cell %s: assign_from_output set but no 'APIARY-ASSIGN: <agent>' directive in output", cell.ID)
-			if d.logger != nil {
-				d.logger.TaskInfo(ctx, cell.ID, "no APIARY-ASSIGN directive found in output")
-			}
-			}
-		}
-
-		if len(labels) > 0 {
-			if la, ok := adapter.(source.LabelAdder); ok {
-				if err := la.AddLabels(ctx, cell, labels); err != nil {
-					aplog.Error("cell %s: add labels %v: %v", cell.ID, labels, err)
-				}
-			} else {
-				aplog.Error("cell %s: source does not support adding labels", cell.ID)
-			}
-		}
-	}
-
-	if result.Success && oc.SetState != "" {
-		if ss, ok := adapter.(source.StateSetter); ok {
-			if err := ss.SetState(ctx, cell, oc.SetState); err != nil {
-				aplog.Error("cell %s: set_state: %v", cell.ID, err)
-			}
-		}
-	}
-
-	// PR review: if the cell is a pull request and the agent output includes
-	// an APIARY-REVIEW directive, submit the review via the GitHub API directly.
-	// This is independent of the source adapter — PR review is about code, not
-	// issue tracking. The repo is parsed from the cell URL.
-	if result.Success && cell.Type == "pull_request" {
-		if event, _, ok := parseReviewDirective(result.Output); ok {
-			token := agent.SourceToken
-			if token == "" {
-				token = d.sourceTokenForCell(cell)
-			}
-			if token != "" {
-				body := fmt.Sprintf("**Apiary review by %s:**\n\n%s", agentID, result.Output)
-				if err := submitPRReview(ctx, token, cell.URL, cell.ID, string(event), body); err != nil {
-					aplog.Error("cell %s: submit review: %v", cell.ID, err)
-				} else {
-					aplog.Info("cell %s: submitted review event=%s", cell.ID, event)
-					if d.logger != nil {
-						d.logger.TaskInfo(ctx, cell.ID, fmt.Sprintf("submitted PR review: %s", event))
-					}
-				}
-			}
-		}
-	}
-
-	return result
-}
-
-// assignDirectiveRe matches a classifier's routing directive, e.g.
-//
-//	APIARY-ASSIGN: engineer
-//
-// anywhere in the agent's output (case-insensitive, one per line).
-var assignDirectiveRe = regexp.MustCompile(`(?im)^\s*APIARY-ASSIGN:\s*(.+?)\s*$`)
-
-// reviewDirectiveRe matches a PR review directive, e.g.
-//
-//	APIARY-REVIEW: approve
-//	APIARY-REVIEW: request-changes
-//	APIARY-REVIEW: comment
-//
-// The value must be one of: approve, request_changes, or comment.
-var reviewDirectiveRe = regexp.MustCompile(`(?im)^\s*APIARY-REVIEW:\s*(.+?)\s*$`)
-
-// parseAssignDirective extracts the chosen agent id from an agent's output.
-// The last directive wins. A leading "agent:" on the value is tolerated and
-// stripped, so both `engineer` and `agent:engineer` resolve to "engineer".
-func parseAssignDirective(output string) (string, bool) {
-	matches := assignDirectiveRe.FindAllStringSubmatch(output, -1)
-	if len(matches) == 0 {
-		return "", false
-	}
-	val := strings.TrimSpace(matches[len(matches)-1][1])
-	val = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(val), "agent:"))
-	if val == "" {
-		return "", false
-	}
-	return val, true
-}
-
-// parseReviewDirective extracts the PR review decision from an agent's output.
-// The last directive wins. Valid values: approve, request-changes, comment.
-func parseReviewDirective(output string) (string, string, bool) {
-	matches := reviewDirectiveRe.FindAllStringSubmatch(output, -1)
-	if len(matches) == 0 {
-		return "", "", false
-	}
-	val := strings.TrimSpace(strings.ToLower(matches[len(matches)-1][1]))
-	return val, val, true
-}
-
-// agentExists reports whether an agent id is defined in the config.
-func (d *Dispatcher) agentExists(id string) bool {
-	for i := range d.cfg.Agents {
-		if strings.EqualFold(d.cfg.Agents[i].ID, id) {
-			return true
-		}
-	}
-	return false
+	// Workflow mode is the only dispatch path: every matched cell runs
+	// through the workflow engine (instances + step runs + memory). A plain
+	// route is synthesized into a single-step workflow by dispatchWorkflow.
+	return d.dispatchWorkflow(ctx, cell, adapter, match)
 }
 
 func (d *Dispatcher) recordPoll(sourceID string, count int) {
@@ -1259,61 +869,6 @@ func (d *Dispatcher) writeOpencodeAgent(ctx context.Context, ac config.AgentConf
 		aplog.Warn("agent %s: register in opencode.json: %v", ac.ID, err)
 	}
 	aplog.Debug("wrote opencode agent %s → %s", ac.ID, agentPath)
-	return nil
-}
-
-// sourceTokenForCell returns the source-level token for the source that
-// produced this cell. Used as fallback when the agent has no source_token set.
-func (d *Dispatcher) sourceTokenForCell(cell model.Cell) string {
-	for _, sc := range d.cfg.Sources {
-		if sc.ID == cell.SourceID {
-			if t, ok := sc.Config["api_key"].(string); ok {
-				return t
-			}
-		}
-	}
-	return ""
-}
-
-// submitPRReview submits a pull request review via the GitHub API.
-// The repo is parsed from the cell's GitHub URL (e.g.
-// https://github.com/owner/repo/pull/123).
-// This is independent of the source adapter — PR reviews are about code, not
-// issue tracking, and may use a different token/account than the source.
-func submitPRReview(ctx context.Context, token, cellURL, prNumber, event, body string) error {
-	u, err := url.Parse(cellURL)
-	if err != nil {
-		return fmt.Errorf("parse cell URL %q: %w", cellURL, err)
-	}
-	parts := strings.SplitN(strings.Trim(u.Path, "/"), "/", 4)
-	if len(parts) < 3 {
-		return fmt.Errorf("unexpected URL path %q, expected owner/repo/pull/123", u.Path)
-	}
-
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%s/reviews", parts[0], parts[1], prNumber)
-	payload := map[string]string{"event": event, "body": body}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal review payload: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("create review request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("github API call: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("github API: %s: %s", resp.Status, respBody)
-	}
 	return nil
 }
 
@@ -1464,5 +1019,3 @@ func (d *Dispatcher) UpdateAgentConfig(ctx context.Context, agentID, newModel, n
 
 	return nil
 }
-
-

@@ -30,11 +30,11 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 // matched to a defined workflow when one shares the route's id; otherwise the
 // route is synthesized into a single-step workflow.
 //
-// It is gated behind settings.experimental.workflow_mode and only reached when a
-// run-history DB is available (the engine persists instances and step runs).
+// This is the dispatch path; it requires a run-history DB (the engine persists
+// instances and step runs).
 func (d *Dispatcher) dispatchWorkflow(ctx context.Context, cell model.Cell, adapter source.Adapter, match router.Match) model.RunResult {
 	if d.db == nil {
-		aplog.Error("cell %s: workflow_mode requires a run-history database", cell.ID)
+		aplog.Error("cell %s: workflow dispatch requires a run-history database", cell.ID)
 		return model.RunResult{Success: false}
 	}
 
