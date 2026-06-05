@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 )
 
@@ -566,4 +567,85 @@ func (c *Client) GetActiveRuns(ctx context.Context) ([]struct {
 		runs = append(runs, run)
 	}
 	return runs, nil
+}
+
+// DailyUsage holds aggregated usage for a single day.
+type DailyUsage struct {
+	Date         string // "Jan 02"
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
+	CostUSD      float64
+}
+
+// GetDailyUsage returns per-day usage aggregates for the last N days.
+func (c *Client) GetDailyUsage(ctx context.Context, days int) ([]DailyUsage, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT
+			DATE(created_at) as day,
+			COALESCE(SUM(input_tokens),0),
+			COALESCE(SUM(output_tokens),0),
+			COALESCE(SUM(total_tokens),0),
+			COALESCE(SUM(cost_usd),0)
+		FROM task_executions
+		WHERE created_at >= datetime('now', ? || ' days')
+		GROUP BY DATE(created_at)
+		ORDER BY day ASC
+	`, fmt.Sprintf("-%d", days))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []DailyUsage
+	for rows.Next() {
+		var d DailyUsage
+		var dateStr string
+		if err := rows.Scan(&dateStr, &d.InputTokens, &d.OutputTokens, &d.TotalTokens, &d.CostUSD); err != nil {
+			continue
+		}
+		if t, err := time.Parse("2006-01-02", dateStr); err == nil {
+			d.Date = t.Format("Jan 02")
+		} else {
+			d.Date = dateStr
+		}
+		items = append(items, d)
+	}
+	return items, nil
+}
+
+// AgentUsage holds per-agent usage aggregates.
+type AgentUsage struct {
+	AgentID    string
+	TotalTokens int
+	CostUSD    float64
+	RunCount   int
+}
+
+// GetAgentUsage returns per-agent usage totals.
+func (c *Client) GetAgentUsage(ctx context.Context) ([]AgentUsage, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT
+			agent_id,
+			COUNT(*) as runs,
+			COALESCE(SUM(total_tokens),0),
+			COALESCE(SUM(cost_usd),0)
+		FROM task_executions
+		GROUP BY agent_id
+		ORDER BY SUM(cost_usd) DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []AgentUsage
+	for rows.Next() {
+		var a AgentUsage
+		if err := rows.Scan(&a.AgentID, &a.RunCount, &a.TotalTokens, &a.CostUSD); err != nil {
+			continue
+		}
+		items = append(items, a)
+	}
+	return items, nil
 }

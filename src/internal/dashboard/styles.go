@@ -70,6 +70,8 @@ var (
 	StyleInfo    = lipgloss.NewStyle().Foreground(ColorInfo)
 	StyleMuted   = lipgloss.NewStyle().Foreground(ColorMuted)
 
+	StyleChartBar = lipgloss.NewStyle().Foreground(ColorAccent)
+
 	StyleHighlight = lipgloss.NewStyle().
 			Background(ColorFocused).
 			Foreground(lipgloss.Color("0"))
@@ -92,7 +94,6 @@ func StatusColor(status string) string {
 	case "running":
 		return StyleWarning.Render("⟳")
 	case "idle", "pending":
-		return StyleMuted.Render("○")
 		return StyleMuted.Render("○")
 	default:
 		return StyleMuted.Render("?")
