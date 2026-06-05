@@ -155,7 +155,7 @@ func TestAgentSubViewsFramed(t *testing.T) {
 func TestLogsPagingKeys(t *testing.T) {
 	now := time.Now()
 	a := newTestApp(80, 20) // pageSize = height-5 = 15
-	a.model.activeTab = 3   // Logs
+	a.model.activeTab = 4   // Logs (index 4 after inserting Usage at 3)
 	// 60 short messages → 60 visual lines when wrapped.
 	for i := 0; i < 60; i++ {
 		a.model.logsTab.Logs = append(a.model.logsTab.Logs, LogEntry{Timestamp: now, Level: "INFO", Message: "line"})

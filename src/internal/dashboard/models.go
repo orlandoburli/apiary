@@ -2,6 +2,8 @@ package dashboard
 
 import (
 	"time"
+
+	"github.com/orlandoburli/apiary/internal/db"
 )
 
 // Model holds the state for the dashboard TUI.
@@ -11,6 +13,7 @@ type Model struct {
 	overviewTab    *OverviewTab
 	tasksTab       *TasksTab
 	agentsTab      *AgentsTab
+	usageTab       *UsageTab
 	logsTab        *LogsTab
 	width          int
 	height         int
@@ -153,6 +156,12 @@ type AgentStatus struct {
 	TotalTokens    int
 }
 
+// UsageTab shows token/cost charts over time and per agent.
+type UsageTab struct {
+	Daily  []db.DailyUsage
+	Agents []db.AgentUsage
+}
+
 // LogsTab shows service logs with filtering.
 type LogsTab struct {
 	Logs        []LogEntry
@@ -175,7 +184,7 @@ type LogEntry struct {
 func NewModel() *Model {
 	return &Model{
 		activeTab: 0,
-		tabs:      []string{"Overview", "Tasks", "Agents", "Logs"},
+		tabs:      []string{"Overview", "Tasks", "Agents", "Usage", "Logs"},
 		overviewTab: &OverviewTab{
 			Status:      "Loading...",
 			Uptime:      "0s",
@@ -188,6 +197,7 @@ func NewModel() *Model {
 		agentsTab: &AgentsTab{
 			Agents: []AgentStatus{},
 		},
+		usageTab: &UsageTab{},
 		logsTab: &LogsTab{
 			Logs:        []LogEntry{},
 			FilterLevel: "All",
