@@ -30,18 +30,22 @@ type AgentCount struct {
 }
 
 type OverviewTab struct {
-	Status          string
-	Uptime          string
-	Concurrency     int
-	ActiveAgents    int
-	ActiveRuns      int
-	QueuedTasks     int
-	CompletedToday  int
-	FailedToday     int
-	ThroughputRatio string
-	AvgDuration     string
-	SuccessRate     string
-	AgentBreakdown  []AgentCount
+	Status           string
+	Uptime           string
+	Concurrency      int
+	ActiveAgents     int
+	ActiveRuns       int
+	QueuedTasks      int
+	CompletedToday   int
+	FailedToday      int
+	ThroughputRatio  string
+	AvgDuration      string
+	SuccessRate      string
+	AgentBreakdown   []AgentCount
+	TodayCostUSD     float64
+	TodayTokens      int
+	TodayInputTokens int
+	TodayOutputTokens int
 }
 
 // TaskView is which sub-screen the Tasks tab is showing.
@@ -145,6 +149,8 @@ type AgentStatus struct {
 	SourceEmail    string // git author email from agent config
 	Runners        []string // all available runner IDs for cycling
 	RunnerModels   []string // models declared on the current runner config
+	TotalCostUSD   float64
+	TotalTokens    int
 }
 
 // LogsTab shows service logs with filtering.

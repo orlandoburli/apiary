@@ -1030,6 +1030,10 @@ func (a *App) fetchOverview() tea.Cmd {
 				data.FailedToday = stats.FailedToday
 				data.AvgDuration = fmt.Sprintf("%.1fs", float64(stats.AvgDurationMs)/1000)
 				data.SuccessRate = fmt.Sprintf("%.1f%%", stats.SuccessRate*100)
+				data.TodayCostUSD = stats.TodayCostUSD
+				data.TodayTokens = stats.TodayTokens
+				data.TodayInputTokens = stats.TodayInputTokens
+				data.TodayOutputTokens = stats.TodayOutputTokens
 				if stats.CompletedToday > 0 {
 					data.ThroughputRatio = fmt.Sprintf("%.1f", float64(stats.CompletedToday)/24)
 				} else {
@@ -1266,6 +1270,8 @@ func (a *App) fetchAgents() tea.Cmd {
 						PID:             ag.PID,
 						HeartbeatAt:     ag.HeartbeatAt,
 						HeartbeatCount:  ag.HeartbeatCount,
+						TotalCostUSD:    ag.TotalCostUSD,
+						TotalTokens:     ag.TotalTokens,
 					}
 					// Enrich from config
 					if a.cfg != nil {
@@ -1505,12 +1511,24 @@ func (a *App) renderOverviewTab(height int) string {
 		b.WriteString(label + runStr + "\n")
 	}
 
+	costStr := "—"
+	if o.TodayCostUSD > 0 {
+		costStr = fmt.Sprintf("$%.4f", o.TodayCostUSD)
+	}
+	tokensStr := "—"
+	if o.TodayTokens > 0 {
+		tokensStr = fmt.Sprintf("%d in / %d out / %d total", o.TodayInputTokens, o.TodayOutputTokens, o.TodayTokens)
+	}
 	fmt.Fprintf(&b,
 		"\nTasks (24h):\n"+
 			"  Running:    %d\n"+
 			"  Queued:     %d\n"+
 			"  Completed:  %s\n"+
 			"  Failed:     %s\n"+
+			"\n"+
+			"Usage (24h):\n"+
+			"  Cost:     %s\n"+
+			"  Tokens:   %s\n"+
 			"\n"+
 			"Metrics:\n"+
 			"  Throughput:   %s tasks/min\n"+
@@ -1520,6 +1538,8 @@ func (a *App) renderOverviewTab(height int) string {
 		o.QueuedTasks,
 		StyleSuccess.Render(fmt.Sprintf("%d ✓", o.CompletedToday)),
 		StyleError.Render(fmt.Sprintf("%d ✗", o.FailedToday)),
+		costStr,
+		tokensStr,
 		valueOr(o.ThroughputRatio, "0.0"),
 		valueOr(o.AvgDuration, "0.0s"),
 		valueOr(o.SuccessRate, "0.0%"),
@@ -1737,15 +1757,9 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	row("Started", started)
 	row("Completed", completed)
 	row("Duration", dur)
-	if d.TotalTokens > 0 {
-		row("Tokens", fmt.Sprintf("%d in / %d out / %d total", d.InputTokens, d.OutputTokens, d.TotalTokens))
-	}
-	if d.NumTurns > 0 || d.NumToolCalls > 0 {
-		row("Turns / Calls", fmt.Sprintf("%d / %d", d.NumTurns, d.NumToolCalls))
-	}
-	if d.CostUSD > 0 {
-		row("Cost", fmt.Sprintf("$%.4f", d.CostUSD))
-	}
+	row("Tokens", fmt.Sprintf("%d in / %d out / %d total", d.InputTokens, d.OutputTokens, d.TotalTokens))
+	row("Turns / Calls", fmt.Sprintf("%d / %d", d.NumTurns, d.NumToolCalls))
+	row("Cost", fmt.Sprintf("$%.4f", d.CostUSD))
 	if d.URL != "" {
 		row("URL", StyleInfo.Render(d.URL))
 	}
@@ -1917,15 +1931,16 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 		completedW = 11
 		avgW       = 10
 		successW   = 8
+		costW      = 10
 	)
 	inner := a.model.width - 2
-	agentW := inner - cursorW - workersW - statusW - completedW - avgW - successW - 10
+	agentW := inner - cursorW - workersW - statusW - completedW - avgW - successW - costW - 12
 	if agentW < 12 {
 		agentW = 12
 	}
 
 	var b strings.Builder
-	header := pad("", cursorW) + " " + pad("AGENT", agentW) + "    " + padLeft("WORKERS", workersW) + " " + pad("STATUS", statusW) + "  " + padLeft("COMPLETED", completedW) + "" + padLeft("AVG", avgW) + "  " + padLeft("SUCCESS", successW)
+	header := pad("", cursorW) + " " + pad("AGENT", agentW) + "    " + padLeft("WORKERS", workersW) + " " + pad("STATUS", statusW) + "  " + padLeft("COMPLETED", completedW) + "" + padLeft("AVG", avgW) + "  " + padLeft("SUCCESS", successW) + "  " + padLeft("COST", costW)
 	b.WriteString(StyleTableHeader.Render(header) + "\n")
 	for i, agent := range ag.Agents {
 		selected := i == ag.SelectedIdx
@@ -1945,6 +1960,11 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 		completed := padLeft(fmt.Sprintf("%d", agent.CompletedCount), completedW)
 		avg := padLeft(fmt.Sprintf("%.1fs", float64(agent.AvgDurationMs)/1000), avgW)
 		success := padLeft(successRateStyled(agent.SuccessRate), successW)
+		cost := "—"
+		if agent.TotalCostUSD > 0 {
+			cost = fmt.Sprintf("$%.2f", agent.TotalCostUSD)
+		}
+		cost = padLeft(cost, costW)
 		if selected {
 			cursor = StyleFocusedArrow.Render("▶") + " "
 			name = StyleSelectedRow.Render(name)
@@ -1953,8 +1973,9 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 			completed = StyleSelectedRow.Render(completed)
 			avg = StyleSelectedRow.Render(avg)
 			success = StyleSelectedRow.Render(success)
+			cost = StyleSelectedRow.Render(cost)
 		}
-		b.WriteString(cursor + " " + name + "    " + padLeft(workers, workersW) + " " + status + "  " + completed + avg + "  " + success + "\n")
+		b.WriteString(cursor + " " + name + "    " + padLeft(workers, workersW) + " " + status + "  " + completed + avg + "  " + success + "  " + padLeft(cost, costW) + "\n")
 	}
 	return a.box("AGENTS", b.String(), height)
 }
@@ -2040,6 +2061,15 @@ func (a *App) renderAgentDetail(ag *AgentsTab, height int) string {
 	b.WriteString("\n")
 	row("Avg duration", fmt.Sprintf("%.1fs", float64(d.AvgDurationMs)/1000))
 	row("Last task", lastEnded)
+	if d.TotalTokens > 0 || d.TotalCostUSD > 0 {
+		b.WriteString("\n")
+		if d.TotalTokens > 0 {
+			row("Total tokens", fmt.Sprintf("%d", d.TotalTokens))
+		}
+		if d.TotalCostUSD > 0 {
+			row("Total cost", fmt.Sprintf("$%.4f", d.TotalCostUSD))
+		}
+	}
 	return a.box("AGENT DETAILS — "+d.ID, b.String(), height)
 }
 
