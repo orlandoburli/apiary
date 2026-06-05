@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -345,6 +346,10 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 		aplog.Info("source %s: found %d cell(s)", sc.ID, len(cells))
 		d.recordPoll(sc.ID, len(cells))
 
+		sort.Slice(cells, func(i, j int) bool {
+			return cells[i].CreatedAt.Before(cells[j].CreatedAt)
+		})
+
 		for _, cell := range cells {
 			cell := cell
 			if _, loaded := d.inFlight.LoadOrStore(cell.ID, struct{}{}); loaded {
@@ -639,6 +644,10 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 	}
 	aplog.Info("source %s: found %d cell(s)", sc.ID, len(cells))
 	d.recordPoll(sc.ID, len(cells))
+
+	sort.Slice(cells, func(i, j int) bool {
+		return cells[i].CreatedAt.Before(cells[j].CreatedAt)
+	})
 
 	for _, cell := range cells {
 		cell := cell
