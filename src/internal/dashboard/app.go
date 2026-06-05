@@ -80,6 +80,7 @@ type agentTaskLogsMsg struct {
 	detail *TaskItem
 }
 type logsDataMsg struct{ logs []LogEntry }
+type usageDataMsg struct{ data UsageTab }
 
 // ── lifecycle ───────────────────────────────────────────────────────────────
 
@@ -183,6 +184,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case logsDataMsg:
 		if a.model.logsTab != nil {
 			a.model.logsTab.Logs = msg.logs
+		}
+		a.model.loading = false
+		a.model.lastRefresh = time.Now()
+
+	case usageDataMsg:
+		if a.model.usageTab != nil {
+			*a.model.usageTab = msg.data
 		}
 		a.model.loading = false
 		a.model.lastRefresh = time.Now()
@@ -995,6 +1003,8 @@ func (a *App) fetchActiveTab() tea.Cmd {
 		return a.fetchTasks()
 	case "Agents":
 		return a.fetchAgents()
+	case "Usage":
+		return a.fetchUsage()
 	case "Logs":
 		return a.fetchLogs()
 	}
@@ -1330,6 +1340,25 @@ func (a *App) fetchLogs() tea.Cmd {
 	}
 }
 
+func (a *App) fetchUsage() tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+
+		data := UsageTab{}
+		if dbConn != nil {
+			if rows, err := dbConn.GetDailyUsage(ctx, 14); err == nil {
+				data.Daily = rows
+			}
+			if rows, err := dbConn.GetAgentUsage(ctx); err == nil {
+				data.Agents = rows
+			}
+		}
+		return usageDataMsg{data: data}
+	}
+}
+
 // ── view ─────────────────────────────────────────────────────────────────────
 
 // View renders the dashboard.
@@ -1360,6 +1389,8 @@ func (a *App) View() string {
 		content = a.renderTasksTab(contentHeight)
 	case "Agents":
 		content = a.renderAgentsTab(contentHeight)
+	case "Usage":
+		content = a.renderUsageTab(contentHeight)
 	case "Logs":
 		content = a.renderLogsTab(contentHeight)
 	default:
@@ -1545,6 +1576,72 @@ func (a *App) renderOverviewTab(height int) string {
 		valueOr(o.SuccessRate, "0.0%"),
 	)
 	return a.box("OVERVIEW", b.String(), height)
+}
+
+func (a *App) renderUsageTab(height int) string {
+	u := a.model.usageTab
+	if u == nil {
+		return a.box("USAGE", StyleMuted.Render("No data yet")+"\n", height)
+	}
+
+	innerW := a.model.width - 4
+	if innerW < 20 {
+		innerW = 20
+	}
+
+	var b strings.Builder
+
+	// ── Daily cost line chart ─────────────────────────────────────────────
+	if len(u.Daily) > 0 {
+		costs := make([]float64, len(u.Daily))
+		labels := make([]string, len(u.Daily))
+		for i, d := range u.Daily {
+			costs[i] = d.CostUSD
+			labels[i] = d.Date
+		}
+		b.WriteString(StyleTableHeader.Render("Daily Cost (USD) — last 14 days") + "\n")
+		chart := lineChartLabels(costs, labels, innerW-8, chartHeight, "")
+		if chart == "" {
+			b.WriteString(StyleMuted.Render("  No cost data yet") + "\n")
+		} else {
+			b.WriteString(chart + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// ── Daily tokens line chart ───────────────────────────────────────────
+	if len(u.Daily) > 0 {
+		tokens := make([]float64, len(u.Daily))
+		labels := make([]string, len(u.Daily))
+		for i, d := range u.Daily {
+			tokens[i] = float64(d.TotalTokens)
+			labels[i] = d.Date
+		}
+		b.WriteString(StyleTableHeader.Render("Daily Tokens — last 14 days") + "\n")
+		chart := lineChartLabels(tokens, labels, innerW-8, chartHeight, "")
+		if chart == "" {
+			b.WriteString(StyleMuted.Render("  No token data yet") + "\n")
+		} else {
+			b.WriteString(chart + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// ── Per-agent cost bar chart ──────────────────────────────────────────
+	if len(u.Agents) > 0 {
+		items := make([]barItem, len(u.Agents))
+		for i, a := range u.Agents {
+			items[i] = barItem{Label: a.AgentID, Value: a.CostUSD}
+		}
+		b.WriteString(StyleTableHeader.Render("Cost by Agent (all time)") + "\n")
+		b.WriteString(barChart(items, innerW))
+	}
+
+	if b.Len() == 0 {
+		b.WriteString(StyleMuted.Render("  No usage data yet. Run some tasks first.") + "\n")
+	}
+
+	return a.box("USAGE", b.String(), height)
 }
 
 func (a *App) renderTasksTab(height int) string {
