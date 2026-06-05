@@ -83,8 +83,8 @@ func (a *Adapter) Poll(ctx context.Context, _ time.Time) ([]model.Cell, error) {
 	}
 	params := url.Values{
 		"state":     {state},
-		"sort":      {"updated"},
-		"direction": {"desc"},
+		"sort":      {"created"},
+		"direction": {"asc"},
 	}
 
 	issues, err := a.client.getAllIssues(ctx, path, params)
