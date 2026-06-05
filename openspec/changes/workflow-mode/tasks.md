@@ -132,10 +132,17 @@ Multi-step workflows, parallel steps, split steps, foreach, sub-workflows, per-s
 - [x] 3.5.1 `step.model` resolved in `runStep` (overrides the agent's model); also applies to foreach inner steps
 - [x] 3.5.2 Unit test: `TestEngine_PerStepModelOverride`
 
-### 3.6 Remove Feature Flag — DEFERRED (needs legacy parity first)
+### 3.6 Remove Feature Flag — DONE (engine is the only dispatch path)
 
-- [ ] 3.6.1 Remove `settings.experimental.workflow_mode` — **blocked**: flipping default-on would regress legacy `dispatch()` features the engine does not yet replicate (retry scheduling, PR-review directive, classifier `assign_from_output`, `task_executions` dashboard rows). Port these into the engine path before default-on.
-- [ ] 3.6.2 Update `apiary validate`/`status` to show workflow info unconditionally (after 3.6.1)
+Per the user decision ("forget about legacy — engine is the only router"), the
+flag was removed and `dispatch()` reduced to a thin wrapper over `dispatchWorkflow`.
+The one legacy feature with dashboard impact — `task_executions` observability —
+was ported into the engine step path (PR-5a) before the flip. The remaining
+legacy-niche behaviors (retry scheduling, PR-review `APIARY-REVIEW` directive,
+classifier `assign_from_output`) were intentionally dropped.
+
+- [x] 3.6.1 Remove `settings.experimental.workflow_mode` — flag + struct deleted; `dispatch()` always routes through the engine; legacy directive helpers (`parseAssignDirective`, `parseReviewDirective`, `submitPRReview`, `sourceTokenForCell`, `agentExists`) and their tests removed; example config + canonical specs updated to drop the flag (PR-5b)
+- [x] 3.6.2 `apiary validate` validates `workflows[]` unconditionally (always has, via `Config.Validate`); no flag-gated workflow info remained to unconditionalize (PR-5b)
 
 ### 3.7 Tests
 

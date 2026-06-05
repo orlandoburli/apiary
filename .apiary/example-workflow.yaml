@@ -3,8 +3,7 @@ version: "1"
 # ─────────────────────────────────────────────────────────────────────────────
 # Example: Workflow Mode (experimental)
 #
-# This sample shows how to route a task through a multi-step workflow instead of
-# single-shot dispatch. Enable it with settings.experimental.workflow_mode.
+# This sample shows how to route a task through a multi-step workflow.
 # A matched task runs through `steps` in dependency order, threading a small
 # enrichable "memory" baton between them. Approval steps suspend the instance
 # until a human responds on the task (GitHub issues support this via comments).
@@ -115,5 +114,3 @@ settings:
   concurrency: 2
   state_lock: true
   result_comment: true
-  experimental:
-    workflow_mode: true
