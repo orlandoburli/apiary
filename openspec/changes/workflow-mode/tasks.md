@@ -95,19 +95,22 @@ Implement `WorkflowEngine` behind `settings.experimental.workflow_mode: true`. S
 
 Multi-step workflows, parallel steps, split steps, foreach, sub-workflows, per-step model override. Enable by default (remove feature flag).
 
-### 3.1 DAG Executor
+> **Delivery note:** Phase 3 ships across PRs. **PR-3a** delivers the DAG scheduler (depends_on ordering, split routing, on_fail.goto loops, skip propagation) + the expression evaluator. **PR-3b** foreach; **PR-3c** sub-workflows + remove the experimental flag (default-on).
 
-- [ ] 3.1.1 Implement topological sort of steps by `depends_on` in `WorkflowEngine`
-- [ ] 3.1.2 Implement parallel step dispatch: steps ready at the same time run concurrently up to global concurrency limit
-- [ ] 3.1.3 Implement `on_fail.goto` loop-back with `retry_counts` tracking and `max_retries` enforcement
-- [ ] 3.1.4 Implement cascade reset: when a loop-back fires, reset all downstream steps to `pending`
+### 3.1 DAG Executor — PR-3a
 
-### 3.2 Split Steps
+- [x] 3.1.1 Dependency-driven scheduler over `depends_on` (`dag.go`), replacing the sequential loop in `RunInstance`
+- [~] 3.1.2 Parallel step dispatch — deferred. The scheduler runs ready steps one-at-a-time in deterministic order; concurrent execution of independent steps is a pure performance optimization (same results), layered on later with the global semaphore
+- [x] 3.1.3 `on_fail.goto` loop-back with per-step `retries` tracking and `max_retries` enforcement
+- [x] 3.1.4 Cascade reset: a loop-back resets the goto target and all transitive dependents to `pending` (clearing their memory contributions)
 
-- [ ] 3.2.1 Implement expression evaluator in `src/internal/workflow/expr.go` — see [proposal expression language](proposal.md#expression-language)
-- [ ] 3.2.2 Implement split step execution: evaluate branches, activate matching step(s)
-- [ ] 3.2.3 Support `multi: true` fan-out
-- [ ] 3.2.4 Unit tests: all expression operators, multi-branch split, fallback branch, unmatched split error
+### 3.2 Split Steps — PR-3a
+
+- [x] 3.2.1 Expression evaluator in `src/internal/workflow/expr.go` (recursive-descent parser + AST eval; `cell.*`/`memory.*`/`steps.*`, `==`/`!=`/`contains`/`matches`, `and`/`or`/`not`, parens)
+- [x] 3.2.2 Split step execution: evaluate branches, activate matching target(s), skip + cascade the rest
+- [x] 3.2.3 Support `multi: true` fan-out
+- [x] 3.2.4 Unit tests: all operators, precedence, parse + eval errors; first-match, fallback, multi, skip cascade
+- [~] 3.2.5 Config-load validation of `branches[].if` syntax — deferred (needs an expr package config can import without a cycle); runtime treats an unparseable condition as non-match and logs it
 
 ### 3.3 Foreach Steps
 
