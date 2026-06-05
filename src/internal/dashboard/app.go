@@ -61,8 +61,9 @@ type tickMsg time.Time
 type overviewDataMsg struct{ data OverviewTab }
 type tasksDataMsg struct{ items []TaskItem }
 type taskDetailMsg struct {
-	taskID string
-	detail *TaskItem
+	taskID   string
+	detail   *TaskItem
+	instance *WorkflowInstanceItem
 }
 type taskLogsMsg struct {
 	taskID string
@@ -131,6 +132,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case taskDetailMsg:
 		if a.model.tasksTab != nil {
 			a.model.tasksTab.Detail = msg.detail
+			a.model.tasksTab.DetailInstance = msg.instance
 			a.model.tasksTab.View = TaskViewDetail
 		}
 		a.model.loading = false
@@ -1207,8 +1209,59 @@ func (a *App) fetchTaskDetail(taskID string) tea.Cmd {
 				}
 			}
 		}
-		return taskDetailMsg{taskID: taskID, detail: detail}
+
+		instance := a.fetchWorkflowInstance(ctx, dbConn, taskID)
+		return taskDetailMsg{taskID: taskID, detail: detail, instance: instance}
 	}
+}
+
+// fetchWorkflowInstance loads the workflow instance (and its steps) bound to a
+// task, returning nil when the task ran through the legacy single-shot path.
+func (a *App) fetchWorkflowInstance(ctx context.Context, dbConn *db.Client, taskID string) *WorkflowInstanceItem {
+	if dbConn == nil {
+		return nil
+	}
+	inst, err := dbConn.GetLatestInstanceByCell(ctx, taskID)
+	if err != nil || inst == nil {
+		return nil
+	}
+	item := &WorkflowInstanceItem{ID: inst.ID, Workflow: inst.WorkflowID, State: inst.State}
+	if inst.State == db.InstanceStateApprovalWaiting {
+		item.Message = "Awaiting human approval — reply on the task to resume or abort."
+	}
+
+	steps, err := dbConn.ListStepRuns(ctx, inst.ID)
+	if err != nil {
+		return item
+	}
+	now := time.Now()
+	for _, s := range steps {
+		item.Steps = append(item.Steps, WorkflowStepItem{
+			StepID:   s.StepID,
+			Agent:    s.AgentID,
+			State:    s.State,
+			Duration: wfStepDuration(s, now),
+			Cached:   s.SkippedCached,
+		})
+	}
+	return item
+}
+
+// wfStepDuration renders a short duration for a step run: final span for a
+// finished step, live elapsed for a running one, "—" when not yet started.
+func wfStepDuration(s db.StepRun, now time.Time) string {
+	if s.StartedAt == nil {
+		return "—"
+	}
+	end := now
+	if s.FinishedAt != nil {
+		end = *s.FinishedAt
+	}
+	d := end.Sub(*s.StartedAt).Round(time.Second)
+	if d < 0 {
+		return "—"
+	}
+	return d.String()
 }
 
 func (a *App) fetchTaskLogs(taskID string) tea.Cmd {
@@ -1871,8 +1924,88 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 		b.WriteString("  " + StyleError.Render("Error:") + "\n")
 		b.WriteString("  " + StyleError.Render(truncate(d.Error, a.model.width-4)) + "\n")
 	}
+	if t.DetailInstance != nil {
+		b.WriteString(renderWorkflowSteps(t.DetailInstance))
+	}
 	label := taskDetailLabel(d)
 	return a.box(label, b.String(), height)
+}
+
+// renderWorkflowSteps renders the step-progress panel for a task that ran
+// through the workflow engine: the workflow id + instance state, an
+// approval-waiting banner when parked, and one row per step.
+func renderWorkflowSteps(inst *WorkflowInstanceItem) string {
+	var b strings.Builder
+	b.WriteString("\n  " + StyleLabel.Render("Workflow") + "      " +
+		StyleValueStrong.Render(valueOr(inst.Workflow, "—")) + "  " +
+		wfInstanceBadge(inst.State) + "\n")
+
+	if inst.State == db.InstanceStateApprovalWaiting && inst.Message != "" {
+		b.WriteString("  " + StyleWarning.Render("⏸ "+inst.Message) + "\n")
+	}
+
+	if len(inst.Steps) == 0 {
+		return b.String()
+	}
+	b.WriteString("\n  " + StyleLabel.Render("Steps") + "\n")
+	for _, s := range inst.Steps {
+		state := s.State
+		if s.Cached {
+			state += " (cached)"
+		}
+		b.WriteString(fmt.Sprintf("    %s  %s  %s  %s\n",
+			wfStepGlyph(s.State),
+			pad(truncate(s.StepID, 16), 16),
+			pad(truncate(s.Agent, 16), 16),
+			StyleMuted.Render(pad(s.Duration, 8))+"  "+wfStateStyle(s.State).Render(state),
+		))
+	}
+	return b.String()
+}
+
+func wfInstanceBadge(state string) string {
+	switch state {
+	case db.InstanceStateDone:
+		return StyleSuccess.Render("done")
+	case db.InstanceStateFailed:
+		return StyleError.Render("failed")
+	case db.InstanceStateRunning:
+		return StyleWarning.Render("running")
+	case db.InstanceStateApprovalWaiting:
+		return StyleWarning.Render("approval_waiting")
+	case db.InstanceStateInterrupted:
+		return StyleError.Render("interrupted")
+	default:
+		return StyleMuted.Render(state)
+	}
+}
+
+func wfStepGlyph(state string) string {
+	switch state {
+	case db.StepStatePassed:
+		return StyleSuccess.Render("✓")
+	case db.StepStateFailed:
+		return StyleError.Render("✗")
+	case db.StepStateRunning:
+		return StyleWarning.Render("●")
+	case db.StepStateSkipped, db.StepStateSkippedCached:
+		return StyleMuted.Render("⊘")
+	default:
+		return StyleMuted.Render("○")
+	}
+}
+
+func wfStateStyle(state string) lipgloss.Style {
+	switch state {
+	case db.StepStatePassed:
+		return StyleSuccess
+	case db.StepStateFailed:
+		return StyleError
+	case db.StepStateRunning:
+		return StyleWarning
+	default:
+		return StyleMuted
+	}
 }
 
 func taskDetailLabel(d *TaskItem) string {

@@ -174,16 +174,16 @@ Approval steps that suspend a workflow instance until a human responds, driven b
 
 ### 4.4 TUI Updates
 
-- [ ] 4.4.1 Add step-progress panel to Task Detail view (step ID, agent, state, duration)
-- [ ] 4.4.2 Show `approval_waiting` state with message in Task Detail
-- [ ] 4.4.3 Update Runs tab to show workflow instances with nested step runs
+- [x] 4.4.1 Add step-progress panel to Task Detail view (step ID, agent, state, duration) — `renderWorkflowSteps` appended to the Tasks-tab detail; `fetchTaskDetail` loads the bound instance via `db.GetLatestInstanceByCell` + `ListStepRuns` (PR-4d)
+- [x] 4.4.2 Show `approval_waiting` state with message in Task Detail — instance badge + a `⏸` banner when parked (PR-4d)
+- [~] 4.4.3 Workflow instances with nested step runs — surfaced in the Task Detail step panel (a task's instance + its steps) and via the `apiary instances`/`apiary instances <id>` CLI; a dedicated standalone Runs tab was not added since the detail panel + CLI cover the need (PR-4d)
 
 ### 4.5 Tests
 
 - [ ] 4.5.1 Integration test: approval step posts comment, workflow pauses, resumes on matching comment
 - [ ] 4.5.2 Integration test: approval timeout aborts workflow
 - [~] 4.5.3 `apiary resume` replays cached steps, continues from failure point — covered by engine unit tests (`resume_test.go`: skips-cached-and-continues, cached-memory-available-downstream, marks-prior-step-cached, re-evaluates-split) rather than a full daemon integration test (PR-4c)
-- [ ] 4.5.4 Run full test suite: `go test ./...`
+- [x] 4.5.4 Run full test suite: `go test ./...` — green on `main` after each phase PR
 
 ---
 
