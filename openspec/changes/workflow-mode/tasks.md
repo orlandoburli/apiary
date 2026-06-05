@@ -121,21 +121,21 @@ Multi-step workflows, parallel steps, split steps, foreach, sub-workflows, per-s
 - [~] 3.3.5 Aggregate exposure — `steps.<id>.exit_code` carries the failed count (so `== 0` means all passed) and a summary in memory; full `outputs[i]` array indexing in expressions deferred
 - [x] 3.3.6 Unit tests: one-run-per-item, rendered prompt reaches executor, max_items guard, fail_fast, downstream-after-pass, invalid items path, template edge cases
 
-### 3.4 Sub-Workflows
+### 3.4 Sub-Workflows — PR-3c
 
-- [ ] 3.4.1 Implement `type: workflow` step: create child instance, pass memory snapshot, link via `parent_instance_id`
-- [ ] 3.4.2 Implement child instance completion: mark parent step passed/failed based on child outcome
-- [ ] 3.4.3 Unit tests: child instance created and linked; parent step waits for child
+- [x] 3.4.1 `type: workflow` step (`subworkflow.go`): create a linked child instance (`parent_instance_id`), seeded with the parent's memory snapshot; runtime depth guard backs up the config no-nesting rule
+- [x] 3.4.2 Child completion: parent step passes iff the child instance reaches `done`; child memory is not merged back (isolated)
+- [x] 3.4.3 Unit tests: child runs + links to parent, child failure fails the parent step (downstream skipped), unknown reference fails, parent memory seeds child, nesting beyond depth 1 refused
 
-### 3.5 Per-Step Model Override
+### 3.5 Per-Step Model Override — done in PR-2b
 
-- [ ] 3.5.1 Read `step.model` field in engine; pass to `RunRequest.Model` overriding agent's `preferred_models[0]`
-- [ ] 3.5.2 Unit test: step with `model` override uses correct model
+- [x] 3.5.1 `step.model` resolved in `runStep` (overrides the agent's model); also applies to foreach inner steps
+- [x] 3.5.2 Unit test: `TestEngine_PerStepModelOverride`
 
-### 3.6 Remove Feature Flag
+### 3.6 Remove Feature Flag — DEFERRED (needs legacy parity first)
 
-- [ ] 3.6.1 Remove `settings.experimental.workflow_mode` flag; engine always active
-- [ ] 3.6.2 Update `apiary validate` and `apiary status` to show workflow info unconditionally
+- [ ] 3.6.1 Remove `settings.experimental.workflow_mode` — **blocked**: flipping default-on would regress legacy `dispatch()` features the engine does not yet replicate (retry scheduling, PR-review directive, classifier `assign_from_output`, `task_executions` dashboard rows). Port these into the engine path before default-on.
+- [ ] 3.6.2 Update `apiary validate`/`status` to show workflow info unconditionally (after 3.6.1)
 
 ### 3.7 Tests
 
