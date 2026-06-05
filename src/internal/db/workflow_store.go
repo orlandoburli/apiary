@@ -125,6 +125,66 @@ func (c *Client) ListWorkflowInstances(ctx context.Context, limit int) ([]Workfl
 	return scanInstances(rows)
 }
 
+// WorkflowInstanceView is a WorkflowInstance enriched with the cell's title,
+// used by the `apiary instances` listing.
+type WorkflowInstanceView struct {
+	WorkflowInstance
+	Title string
+}
+
+// ListWorkflowInstanceViews returns recent instances (newest first) joined with
+// the cell title, optionally filtered by state and/or workflow id.
+func (c *Client) ListWorkflowInstanceViews(ctx context.Context, state, workflowID string, limit int) ([]WorkflowInstanceView, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	q := `
+		SELECT wi.id, wi.workflow_id, wi.cell_id, COALESCE(wi.source_id,''), wi.state,
+		       COALESCE(wi.parent_instance_id,''), COALESCE(wi.resumed_from,''),
+		       wi.created_at, wi.updated_at, COALESCE(t.title,'')
+		FROM workflow_instances wi
+		LEFT JOIN tasks t ON t.id = wi.cell_id
+		WHERE 1=1`
+	var args []any
+	if state != "" {
+		q += " AND wi.state = ?"
+		args = append(args, state)
+	}
+	if workflowID != "" {
+		q += " AND wi.workflow_id = ?"
+		args = append(args, workflowID)
+	}
+	q += " ORDER BY wi.created_at DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := c.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []WorkflowInstanceView
+	for rows.Next() {
+		var v WorkflowInstanceView
+		if err := rows.Scan(&v.ID, &v.WorkflowID, &v.CellID, &v.SourceID, &v.State,
+			&v.ParentInstanceID, &v.ResumedFrom, &v.CreatedAt, &v.UpdatedAt, &v.Title); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// GetTaskTitle returns the stored title for a cell/task id, or "" if unknown.
+func (c *Client) GetTaskTitle(ctx context.Context, id string) (string, error) {
+	var title string
+	err := c.db.QueryRowContext(ctx, `SELECT COALESCE(title,'') FROM tasks WHERE id = ?`, id).Scan(&title)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return title, err
+}
+
 // ReconcileOrphanWorkflowInstances marks any instance left in the 'running'
 // state by a previously-killed process as 'interrupted'. Returns the count.
 // approval_waiting instances are intentionally left untouched — their condition
