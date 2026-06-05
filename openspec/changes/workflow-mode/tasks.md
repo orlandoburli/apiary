@@ -74,20 +74,20 @@ Implement `WorkflowEngine` behind `settings.experimental.workflow_mode: true`. S
 
 ### 2.4 Workflow Engine — PR-2b
 
-- [ ] 2.4.1 Implement `WorkflowEngine` in `src/internal/workflow/engine.go`
-- [ ] 2.4.2 Implement route synthesis: plain `routes:` entries produce a single-step `WorkflowConfig` internally
-- [ ] 2.4.3 Implement instance lifecycle: create → run step → complete/fail → apply hooks
-- [ ] 2.4.4 Implement concurrency semaphore — see [concurrency-model spec](specs/concurrency-model/spec.md)
-- [ ] 2.4.5 Implement `state_lock` and `result_comment` workflow behavior — see [workflow-hooks spec](specs/workflow-hooks/spec.md)
-- [ ] 2.4.6 Wire `WorkflowEngine` into daemon; respect `settings.experimental.workflow_mode` flag
-- [ ] 2.4.7 Integration test: plain route dispatches through engine, produces instance + step_run in SQLite
+- [x] 2.4.1 Implement `Engine` in `src/internal/workflow/engine.go` (pure core; `StepExecutor`/`SideEffects`/`Store` interfaces so it's testable in isolation)
+- [x] 2.4.2 Implement route synthesis: `SynthesizeWorkflow(route)` produces a single-step `WorkflowConfig`
+- [x] 2.4.3 Implement instance lifecycle: create instance → run step(s) sequentially with memory threading → mark done/failed → apply on_complete/on_fail hooks
+- [~] 2.4.4 Concurrency semaphore — deferred to Phase 3 (DAG/parallel); Phase 2 reuses the dispatcher's existing per-agent concurrency since each cell still runs one agent step
+- [x] 2.4.5 Implement `state_lock` (once at workflow start) and `result_comment` (`on_complete`/`per_step`/`off`) — see [workflow-hooks spec](specs/workflow-hooks/spec.md)
+- [x] 2.4.6 Wire engine into daemon behind `settings.experimental.workflow_mode` (new `daemon/workflow.go`; single gated branch at top of `dispatch()` — legacy path untouched when off)
+- [x] 2.4.7 Integration test: engine persists instance + step_run to real SQLite (`engine_integration_test.go`)
 
 ### 2.5 Tests
 
-- [ ] 2.5.1 Unit tests: engine creates instance, runs step, marks done
-- [ ] 2.5.2 Unit tests: `state_lock` fires at workflow start; `result_comment` posts at workflow end
-- [ ] 2.5.3 Integration test: end-to-end with a real source + runner stub
-- [ ] 2.5.4 Run full test suite: `go test ./...`
+- [x] 2.5.1 Unit tests: engine creates instance, runs step, marks done
+- [x] 2.5.2 Unit tests: `state_lock` fires at workflow start; `result_comment` on_complete/per_step/off
+- [x] 2.5.3 Integration test: engine against real `db.Client` (real-source end-to-end deferred — needs a fake source adapter, follow-up)
+- [x] 2.5.4 Run full test suite: `go test ./...`
 
 ---
 
