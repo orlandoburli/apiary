@@ -1263,54 +1263,60 @@ func (a *App) fetchAgents() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 		defer cancel()
 
-		agents := make([]AgentStatus, 0)
+		// Index DB stats by agent ID.
+		dbStats := map[string]db.AgentStats{}
 		if dbConn != nil {
 			if rows, err := dbConn.GetAgentStats(ctx); err == nil {
 				for _, ag := range rows {
-					s := AgentStatus{
-						ID:              ag.ID,
-						Status:          ag.Status,
-						RunningCount:    ag.RunningCount,
-						CurrentTask:     ag.CurrentTask,
-						QueuedCount:     ag.QueuedCount,
-						CompletedCount:  ag.CompletedCount,
-						AvgDurationMs:   ag.AvgDurationMs,
-						SuccessRate:     ag.SuccessRate,
-						LastTaskEndedAt: ag.LastTaskEndedAt,
-						PID:             ag.PID,
-						HeartbeatAt:     ag.HeartbeatAt,
-						HeartbeatCount:  ag.HeartbeatCount,
-						TotalCostUSD:    ag.TotalCostUSD,
-						TotalTokens:     ag.TotalTokens,
-					}
-					// Enrich from config
-					if a.cfg != nil {
-						for _, ac := range a.cfg.Agents {
-							if ac.ID == s.ID {
-								s.MaxWorkers = ac.MaxWorkers
-								s.RunnerType = ac.Runner
-								s.Model = ac.Model
-								s.SoulFile = ac.SoulFile
-								s.Description = ac.Description
-								s.SourceName = ac.SourceName
-								s.SourceEmail = ac.SourceEmail
-								break
-							}
-						}
-						if s.MaxWorkers < 1 {
-							s.MaxWorkers = 1
-						}
-						// Collect all runner IDs and models for the current runner
-						s.Runners = make([]string, 0, len(a.cfg.Runners))
-						for _, rc := range a.cfg.Runners {
-							s.Runners = append(s.Runners, rc.ID)
-							if rc.ID == s.RunnerType || (s.RunnerType == "" && rc.ID == a.cfg.DefaultRunner) {
-								s.RunnerModels = rc.Models
-							}
-						}
-					}
-					agents = append(agents, s)
+					dbStats[ag.ID] = ag
 				}
+			}
+		}
+
+		// Build list from config so every configured agent appears, even with no runs.
+		agents := make([]AgentStatus, 0)
+		if a.cfg != nil {
+			for _, ac := range a.cfg.Agents {
+				mw := ac.MaxWorkers
+				if mw < 1 {
+					mw = 1
+				}
+				s := AgentStatus{
+					ID:          ac.ID,
+					Status:      "idle",
+					MaxWorkers:  mw,
+					RunnerType:  ac.Runner,
+					Model:       ac.Model,
+					SoulFile:    ac.SoulFile,
+					Description: ac.Description,
+					SourceName:  ac.SourceName,
+					SourceEmail: ac.SourceEmail,
+				}
+				// Merge DB stats if this agent has any runs.
+				if ag, ok := dbStats[ac.ID]; ok {
+					s.Status = ag.Status
+					s.RunningCount = ag.RunningCount
+					s.CurrentTask = ag.CurrentTask
+					s.QueuedCount = ag.QueuedCount
+					s.CompletedCount = ag.CompletedCount
+					s.AvgDurationMs = ag.AvgDurationMs
+					s.SuccessRate = ag.SuccessRate
+					s.LastTaskEndedAt = ag.LastTaskEndedAt
+					s.PID = ag.PID
+					s.HeartbeatAt = ag.HeartbeatAt
+					s.HeartbeatCount = ag.HeartbeatCount
+					s.TotalCostUSD = ag.TotalCostUSD
+					s.TotalTokens = ag.TotalTokens
+				}
+				// Collect all runner IDs and models for the current runner.
+				s.Runners = make([]string, 0, len(a.cfg.Runners))
+				for _, rc := range a.cfg.Runners {
+					s.Runners = append(s.Runners, rc.ID)
+					if rc.ID == s.RunnerType || (s.RunnerType == "" && rc.ID == a.cfg.DefaultRunner) {
+						s.RunnerModels = rc.Models
+					}
+				}
+				agents = append(agents, s)
 			}
 		}
 		return agentsDataMsg{agents: agents}
