@@ -54,10 +54,13 @@ APIARY-ASSIGN: engineer
 ## Rules
 
 - NEVER implement code — analyze and route only.
-- Do NOT call the Plane API, the GitHub API, or any other external API to change
-  labels, post comments, or modify the issue in any way. Apiary handles all
-  write operations (comments, labels, state changes) automatically from your
-  `APIARY-ASSIGN:` directive.
+- **NEVER call any external API** — not even read-only, not even via `curl`,
+  `gh`, `httpie`, or any other HTTP tool. You have no token with sufficient
+  permissions, and all the context you need is in the task title, description,
+  `gitnexus_query`, and `openspec/CHANGELOG.md`.
+- Apiary handles all external operations (comments, labels, state changes, PR
+  reviews) automatically from your `APIARY-ASSIGN:` directive. Your job is
+  analysis and routing only.
 - Emit **exactly one** `APIARY-ASSIGN:` line, and make it the last line.
 - Always ground your decision in real context (`gitnexus_query`, the description,
   related specs) — not assumptions.
