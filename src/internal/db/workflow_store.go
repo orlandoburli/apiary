@@ -125,6 +125,21 @@ func (c *Client) ListWorkflowInstances(ctx context.Context, limit int) ([]Workfl
 	return scanInstances(rows)
 }
 
+// GetLatestInstanceByCell returns the most recent workflow instance bound to a
+// cell, or (nil, nil) when the cell has no workflow instance.
+func (c *Client) GetLatestInstanceByCell(ctx context.Context, cellID string) (*WorkflowInstance, error) {
+	row := c.db.QueryRowContext(ctx, `
+		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
+		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at
+		FROM workflow_instances WHERE cell_id = ? ORDER BY created_at DESC LIMIT 1
+	`, cellID)
+	inst, err := scanInstance(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return inst, err
+}
+
 // LatestResumableInstance returns the most recent failed or interrupted
 // instance of a workflow, or (nil, nil) when none exists.
 func (c *Client) LatestResumableInstance(ctx context.Context, workflowID string) (*WorkflowInstance, error) {
