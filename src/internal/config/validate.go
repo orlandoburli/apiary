@@ -106,5 +106,9 @@ func (c *Config) Validate() []error {
 
 	errs = append(errs, c.validateWorkflows()...)
 
+	// Removed-directive and unknown-field checks on the raw text (no-op when the
+	// config was built in code rather than loaded from a file).
+	errs = append(errs, c.lint()...)
+
 	return errs
 }
