@@ -32,9 +32,9 @@ This change defines **where and how Apiary binaries are published** so that, on 
 | **GitHub Releases** | all | GoReleaser archives (`.tar.gz` for unix, `.zip` for windows) + `checksums.txt` | this repo's Releases |
 | **Homebrew tap** | macOS, Linux | GoReleaser `homebrew_casks` block writes a cask (`brews`/formula is deprecated) → `brew install --cask orlandoburli/tap/apiary` | new `orlandoburli/homebrew-tap` repo |
 | **Scoop bucket** | Windows | GoReleaser `scoops` block writes a manifest | new `orlandoburli/scoop-bucket` repo |
-| **winget** | Windows | GoReleaser `winget` block opens a `winget-pkgs` PR | upstream `microsoft/winget-pkgs` |
+| ~~**winget**~~ | Windows | **dropped** — Scoop + direct download + WSL cover Windows | — |
 | **Linux packages** | Linux | GoReleaser `nfpms` produces `.deb` + `.rpm`, attached to the Release | this repo's Releases |
-| **AUR** | Arch Linux | GoReleaser `aurs` block publishes a `PKGBUILD` | new `apiary-bin` AUR package |
+| ~~**AUR**~~ | Arch Linux | **dropped** — deb/rpm + Docker + Homebrew cover Linux | — |
 | **Docker / OCI** | linux/amd64, linux/arm64 | GoReleaser `dockers` + `docker_manifests`, multi-arch | `ghcr.io/orlandoburli/apiary` |
 | ~~**`go install`**~~ | all (with Go) | **deferred** — broken by the dual-`go.mod` layout (the module lives in `src/`); see design OQ #5 | not documented for now |
 
