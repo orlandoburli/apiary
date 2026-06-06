@@ -4,6 +4,10 @@
   "description": "Live visual preview of apiary.yaml workflow files",
   "version": "0.1.0",
   "publisher": "apiary",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/orlandoburli/apiary"
+  },
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Visualization", "Other"],
   "keywords": ["apiary", "workflow", "yaml", "preview", "diagram"],
