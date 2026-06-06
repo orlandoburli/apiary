@@ -3,19 +3,35 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	sqlite3 "github.com/mattn/go-sqlite3"
+	"github.com/orlandoburli/apiary/internal/model"
 )
 
 type Client struct {
 	db *sql.DB
 }
 
+// execer is the subset of *sql.DB / *sql.Tx used by the insert helpers, so the
+// same INSERT logic can run either directly or inside a transaction.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // New opens a SQLite database and initializes schema.
 func New(ctx context.Context, dbPath string) (*Client, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	// _busy_timeout lets a writer wait for a held lock instead of failing
+	// immediately with SQLITE_BUSY — required for the concurrent SourceBinder
+	// path, where two pollers may bind the same item at once.
+	dsn := dbPath
+	if !strings.Contains(dsn, "?") {
+		dsn += "?_busy_timeout=5000"
+	}
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -38,6 +54,47 @@ func New(ctx context.Context, dbPath string) (*Client, error) {
 
 func (c *Client) Close() error {
 	return c.db.Close()
+}
+
+// ErrBindingExists is returned by CreateTaskWithBinding when a binding for the
+// (source_id, source_item_id) pair already exists. The transaction is rolled
+// back (so no orphan task remains) and the caller should re-fetch the winning
+// task via SourceBindingStore.GetBindingBySourceItem.
+var ErrBindingExists = errors.New("source binding already exists")
+
+// CreateTaskWithBinding atomically inserts an InternalTask and a SourceBinding
+// referencing it, in a single transaction. The binding's TaskID is set to the
+// (possibly generated) task ID before insertion. If the binding violates the
+// UNIQUE(source_id, source_item_id) constraint — i.e. a concurrent bind won the
+// race — the transaction rolls back and ErrBindingExists is returned, leaving no
+// orphan task behind.
+func (c *Client) CreateTaskWithBinding(ctx context.Context, task *model.InternalTask, binding *model.SourceBinding) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := insertTask(ctx, tx, task); err != nil {
+		return fmt.Errorf("insert task: %w", err)
+	}
+	binding.TaskID = task.ID
+	if err := insertBinding(ctx, tx, binding); err != nil {
+		if isUniqueViolation(err) {
+			return ErrBindingExists
+		}
+		return fmt.Errorf("insert binding: %w", err)
+	}
+	return tx.Commit()
+}
+
+// isUniqueViolation reports whether err is a SQLite UNIQUE-constraint failure.
+func isUniqueViolation(err error) bool {
+	var se sqlite3.Error
+	if errors.As(err, &se) {
+		return se.Code == sqlite3.ErrConstraint && se.ExtendedCode == sqlite3.ErrConstraintUnique
+	}
+	return false
 }
 
 // Task operations
