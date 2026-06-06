@@ -28,7 +28,7 @@ const (
 // EvaluateApproval decides whether an approval step should resume, abort, or keep
 // waiting, given the live task. resume_on takes precedence over abort_on when
 // both would match (an explicit approval wins).
-func EvaluateApproval(step config.StepConfig, cell model.Cell) ApprovalDecision {
+func EvaluateApproval(step config.StepConfig, cell model.SourceItem) ApprovalDecision {
 	if step.ResumeOn != nil && matchApprovalTrigger(*step.ResumeOn, cell) {
 		return ApprovalResume
 	}
@@ -40,7 +40,7 @@ func EvaluateApproval(step config.StepConfig, cell model.Cell) ApprovalDecision 
 
 // matchApprovalTrigger reports whether any populated field of the trigger matches
 // the cell (OR semantics across fields).
-func matchApprovalTrigger(t config.ApprovalTrigger, cell model.Cell) bool {
+func matchApprovalTrigger(t config.ApprovalTrigger, cell model.SourceItem) bool {
 	if t.CommentContains != "" && commentContains(cell, t.CommentContains) {
 		return true
 	}
@@ -55,7 +55,7 @@ func matchApprovalTrigger(t config.ApprovalTrigger, cell model.Cell) bool {
 
 // commentContains reports whether any comment body contains the substring
 // (case-insensitive).
-func commentContains(cell model.Cell, sub string) bool {
+func commentContains(cell model.SourceItem, sub string) bool {
 	needle := strings.ToLower(sub)
 	for _, c := range cell.Comments {
 		if strings.Contains(strings.ToLower(c.Body), needle) {
@@ -66,7 +66,7 @@ func commentContains(cell model.Cell, sub string) bool {
 }
 
 // labelPresent reports whether the cell carries the label (case-insensitive).
-func labelPresent(cell model.Cell, label string) bool {
+func labelPresent(cell model.SourceItem, label string) bool {
 	for _, l := range cell.Labels {
 		if strings.EqualFold(l, label) {
 			return true
@@ -78,7 +78,7 @@ func labelPresent(cell model.Cell, label string) bool {
 // ParkedApproval describes an instance suspended at an approval step.
 type ParkedApproval struct {
 	InstanceID string
-	Cell       model.Cell
+	Cell       model.SourceItem
 	Step       config.StepConfig // the waiting approval step (resume_on/abort_on/timeout)
 	ParkedAt   time.Time
 }
@@ -123,7 +123,7 @@ func (e *Engine) ResolveApproval(ctx context.Context, instanceID string, decisio
 // (fetched via poll) and resumes, aborts, or times it out as conditions dictate.
 // poll returns the current Cell for a (sourceID, cellID); when poll errors the
 // instance is left parked for the next cycle.
-func (e *Engine) CheckParkedApprovals(ctx context.Context, poll func(sourceID, cellID string) (model.Cell, error)) {
+func (e *Engine) CheckParkedApprovals(ctx context.Context, poll func(sourceID, cellID string) (model.SourceItem, error)) {
 	for _, p := range e.ParkedApprovals() {
 		if to := p.Step.ParsedTimeout(); to > 0 && e.now().Sub(p.ParkedAt) >= to {
 			aplog.Info("workflow: approval on instance %s timed out after %s — aborting", p.InstanceID, to)

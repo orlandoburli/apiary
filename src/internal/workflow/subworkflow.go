@@ -20,7 +20,7 @@ const maxSubWorkflowDepth = 1
 // memory taken on the scheduler goroutine before dispatch.
 func (e *Engine) executeSubWorkflowStep(
 	ctx context.Context, parentInstID string,
-	step config.StepConfig, cell model.Cell,
+	step config.StepConfig, cell model.SourceItem,
 	memSnap []MemoryStep, depth int, wfID string,
 ) StepResult {
 	if depth >= maxSubWorkflowDepth {
@@ -48,7 +48,7 @@ func (e *Engine) executeSubWorkflowStep(
 // instance) and does not apply the child's on_complete/on_fail hooks against the
 // shared cell — the child is an isolated pipeline whose only outward signal is
 // success/failure.
-func (e *Engine) runChildInstance(ctx context.Context, parentInstID string, child config.WorkflowConfig, cell model.Cell, seed []MemoryStep, depth int) (string, bool) {
+func (e *Engine) runChildInstance(ctx context.Context, parentInstID string, child config.WorkflowConfig, cell model.SourceItem, seed []MemoryStep, depth int) (string, bool) {
 	childID := e.newID("wf")
 	inst := &db.WorkflowInstance{
 		ID:               childID,

@@ -32,7 +32,7 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 //
 // This is the dispatch path; it requires a run-history DB (the engine persists
 // instances and step runs).
-func (d *Dispatcher) dispatchWorkflow(ctx context.Context, cell model.Cell, adapter source.Adapter, match router.Match) model.RunResult {
+func (d *Dispatcher) dispatchWorkflow(ctx context.Context, cell model.SourceItem, adapter source.Adapter, match router.Match) model.RunResult {
 	if d.db == nil {
 		aplog.Error("cell %s: workflow dispatch requires a run-history database", cell.ID)
 		return model.RunResult{Success: false}
@@ -67,14 +67,14 @@ func (d *Dispatcher) checkApprovals(ctx context.Context) {
 	if d.db == nil || d.engine == nil {
 		return
 	}
-	d.engine.CheckParkedApprovals(ctx, func(sourceID, cellID string) (model.Cell, error) {
+	d.engine.CheckParkedApprovals(ctx, func(sourceID, cellID string) (model.SourceItem, error) {
 		adapter, ok := d.sources[sourceID]
 		if !ok {
-			return model.Cell{}, fmt.Errorf("source %q not found", sourceID)
+			return model.SourceItem{}, fmt.Errorf("source %q not found", sourceID)
 		}
 		poller, ok := adapter.(source.TaskPoller)
 		if !ok {
-			return model.Cell{}, fmt.Errorf("source %q does not support per-task polling (approvals)", sourceID)
+			return model.SourceItem{}, fmt.Errorf("source %q does not support per-task polling (approvals)", sourceID)
 		}
 		return poller.PollTask(ctx, cellID)
 	})
@@ -226,11 +226,11 @@ type wfSideEffects struct {
 }
 
 // adapterFor returns the source adapter that produced the cell, or nil.
-func (s *wfSideEffects) adapterFor(cell model.Cell) source.Adapter {
+func (s *wfSideEffects) adapterFor(cell model.SourceItem) source.Adapter {
 	return s.d.sources[cell.SourceID]
 }
 
-func (s *wfSideEffects) StateLock(ctx context.Context, cell model.Cell) error {
+func (s *wfSideEffects) StateLock(ctx context.Context, cell model.SourceItem) error {
 	adapter := s.adapterFor(cell)
 	if adapter == nil {
 		return fmt.Errorf("no adapter for source %q", cell.SourceID)
@@ -238,7 +238,7 @@ func (s *wfSideEffects) StateLock(ctx context.Context, cell model.Cell) error {
 	return adapter.Acknowledge(ctx, cell, model.AckActionInProgress)
 }
 
-func (s *wfSideEffects) PostComment(ctx context.Context, cell model.Cell, comment string) error {
+func (s *wfSideEffects) PostComment(ctx context.Context, cell model.SourceItem, comment string) error {
 	adapter := s.adapterFor(cell)
 	if adapter == nil {
 		return fmt.Errorf("no adapter for source %q", cell.SourceID)
@@ -246,7 +246,7 @@ func (s *wfSideEffects) PostComment(ctx context.Context, cell model.Cell, commen
 	return adapter.WriteResult(ctx, cell, model.RunResult{Success: true, Output: comment})
 }
 
-func (s *wfSideEffects) ApplyHook(ctx context.Context, cell model.Cell, hook config.OnComplete) error {
+func (s *wfSideEffects) ApplyHook(ctx context.Context, cell model.SourceItem, hook config.OnComplete) error {
 	adapter := s.adapterFor(cell)
 	if adapter == nil {
 		return fmt.Errorf("no adapter for source %q", cell.SourceID)

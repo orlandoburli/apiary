@@ -51,7 +51,7 @@ func TestWfStepExecutor_RecordsExecution(t *testing.T) {
 
 	res := x.ExecuteStep(ctx, workflow.StepRequest{
 		InstanceID: "wf_1",
-		Cell:       model.Cell{ID: "c1", Title: "Fix bug", Number: "#42"},
+		Cell:       model.SourceItem{ID: "c1", Title: "Fix bug", Number: "#42"},
 		Step:       config.StepConfig{ID: "plan", Agent: "architect"},
 		Model:      "claude-opus-4-8",
 	})

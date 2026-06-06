@@ -24,13 +24,13 @@ type Adapter interface {
 	Connect(ctx context.Context, config map[string]any) error
 
 	// Poll returns tasks matching the source filters since the given time.
-	Poll(ctx context.Context, since time.Time) ([]model.Cell, error)
+	Poll(ctx context.Context, since time.Time) ([]model.SourceItem, error)
 
-	// Acknowledge is called after a Cell has been dispatched.
-	Acknowledge(ctx context.Context, cell model.Cell, action model.AckAction) error
+	// Acknowledge is called after a SourceItem has been dispatched.
+	Acknowledge(ctx context.Context, cell model.SourceItem, action model.AckAction) error
 
 	// WriteResult posts the run output back to the source task.
-	WriteResult(ctx context.Context, cell model.Cell, result model.RunResult) error
+	WriteResult(ctx context.Context, cell model.SourceItem, result model.RunResult) error
 
 	// WebhookHandler returns an http.Handler for push-mode sources.
 	// Returns nil for poll-only adapters.
@@ -40,14 +40,14 @@ type Adapter interface {
 // StateSetter is an optional interface that sources may implement to allow
 // the dispatcher to transition a task to a named state (e.g. on_complete).
 type StateSetter interface {
-	SetState(ctx context.Context, cell model.Cell, stateName string) error
+	SetState(ctx context.Context, cell model.SourceItem, stateName string) error
 }
 
 // LabelAdder is an optional interface that sources may implement to add labels
 // to a task. The dispatcher uses it for on_complete.add_labels and for the
 // classifier handoff (e.g. a classifier agent assigns "agent:<chosen>").
 type LabelAdder interface {
-	AddLabels(ctx context.Context, cell model.Cell, labels []string) error
+	AddLabels(ctx context.Context, cell model.SourceItem, labels []string) error
 }
 
 // LabelRemover is an optional interface that sources may implement to remove
@@ -55,7 +55,7 @@ type LabelAdder interface {
 // control labels — a stale lock (e.g. "in-progress") and the stage marker
 // (e.g. "agent:engineer") — so the task re-enters routing from the start.
 type LabelRemover interface {
-	RemoveLabels(ctx context.Context, cell model.Cell, labels []string) error
+	RemoveLabels(ctx context.Context, cell model.SourceItem, labels []string) error
 }
 
 // TaskPoller is an optional interface that sources may implement to fetch the
@@ -63,7 +63,7 @@ type LabelRemover interface {
 // engine uses it to evaluate approval-step resume/abort conditions against the
 // live task. Sources that do not implement it cannot host approval steps.
 type TaskPoller interface {
-	PollTask(ctx context.Context, cellID string) (model.Cell, error)
+	PollTask(ctx context.Context, cellID string) (model.SourceItem, error)
 }
 
 // Factory creates a new, unconfigured Adapter instance.
