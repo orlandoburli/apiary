@@ -15,13 +15,14 @@ type Model struct {
 	agentsTab      *AgentsTab
 	usageTab       *UsageTab
 	logsTab        *LogsTab
+	workflowsTab   *WorkflowsTab
 	width          int
 	height         int
 	lastRefresh    time.Time
 	lastTabRefresh map[int]time.Time // Track refresh per tab
 	loading        bool              // Show loading state
 
-	confirmAction string // "restart" or "clear" when awaiting confirmation
+	confirmAction string // "restart" or "clear" or "stop" when awaiting confirmation
 	confirmTaskID string
 }
 
@@ -55,9 +56,10 @@ type OverviewTab struct {
 type TaskView int
 
 const (
-	TaskViewList TaskView = iota
+	TaskViewList     TaskView = iota
 	TaskViewDetail
 	TaskViewLogs
+	TaskViewWorkflow // live workflow instance monitor
 )
 
 // TasksTab shows task history with detail and log sub-views.
@@ -71,6 +73,13 @@ type TasksTab struct {
 	Logs           []LogEntry            // populated when View == TaskViewLogs
 	LogScroll      int
 
+	// Workflow monitor sub-view (View == TaskViewWorkflow).
+	WorkflowInstance *WorkflowInstanceItem // instance being monitored
+	WorkflowStepIdx  int                   // selected step index in monitor
+	WorkflowLogs     []LogEntry            // logs for the selected step
+	WorkflowLogScroll int
+	WorkflowShowLogs bool // true when the log panel is expanded
+
 	// Scroll / filter / sort
 	ScrollOffset int    // first visible row index
 	FilterText   string // current filter query
@@ -80,22 +89,33 @@ type TasksTab struct {
 }
 
 // WorkflowInstanceItem is a workflow instance bound to a task, with its steps,
-// shown in the Task Detail view.
+// shown in the Task Detail and workflow monitor views.
 type WorkflowInstanceItem struct {
 	ID       string
 	Workflow string
 	State    string // pending, running, approval_waiting, interrupted, done, failed
 	Message  string // approval message when State == approval_waiting
+	CellID   string // the task/cell this instance is bound to
 	Steps    []WorkflowStepItem
 }
 
 // WorkflowStepItem is one step row within a WorkflowInstanceItem.
 type WorkflowStepItem struct {
-	StepID   string
-	Agent    string
-	State    string // pending, running, passed, failed, skipped, skipped_cached
-	Duration string
-	Cached   bool
+	StepID       string
+	Agent        string
+	State        string // pending, running, passed, failed, skipped, skipped_cached
+	Duration     string
+	Cached       bool
+	Output       string
+	Summary      string
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
+	CostUSD      float64
+	NumTurns     int
+	NumToolCalls int
+	StartedAt    *time.Time
+	FinishedAt   *time.Time
 }
 
 // TaskItem is one task row (its latest execution attempt).
@@ -200,11 +220,45 @@ type LogEntry struct {
 	Message   string
 }
 
+// WorkflowStepDef is one step definition shown in the Workflows config tab.
+type WorkflowStepDef struct {
+	ID        string
+	Type      string
+	Agent     string
+	DependsOn []string
+	Condition string
+	Prompt    string
+}
+
+// WorkflowConfigItem is one workflow shown in the Workflows config tab.
+type WorkflowConfigItem struct {
+	ID          string
+	Description string
+	Steps       []WorkflowStepDef
+}
+
+// WorkflowsView is which panel the Workflows tab has focus on.
+type WorkflowsView int
+
+const (
+	WorkflowsViewList WorkflowsView = iota
+	WorkflowsViewSteps
+)
+
+// WorkflowsTab shows the static workflow config definitions (read-only).
+type WorkflowsTab struct {
+	Workflows    []WorkflowConfigItem
+	SelectedIdx  int // selected workflow in the left panel
+	StepIdx      int // selected step in the right panel
+	StepScroll   int // scroll offset in the step list
+	Focus        WorkflowsView
+}
+
 // NewModel creates a new dashboard model.
 func NewModel() *Model {
 	return &Model{
 		activeTab: 0,
-		tabs:      []string{"Overview", "Tasks", "Agents", "Usage", "Logs"},
+		tabs:      []string{"Overview", "Tasks", "Agents", "Usage", "Logs", "Workflows"},
 		overviewTab: &OverviewTab{
 			Status:      "Loading...",
 			Uptime:      "0s",
@@ -217,12 +271,13 @@ func NewModel() *Model {
 		agentsTab: &AgentsTab{
 			Agents: []AgentStatus{},
 		},
-		usageTab: &UsageTab{},
+		usageTab:     &UsageTab{},
 		logsTab: &LogsTab{
 			Logs:        []LogEntry{},
 			FilterLevel: "All",
 			Wrap:        true,
 		},
+		workflowsTab:   &WorkflowsTab{},
 		lastTabRefresh: make(map[int]time.Time),
 		loading:        true,
 	}

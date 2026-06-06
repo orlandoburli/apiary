@@ -166,6 +166,8 @@ var migrations = []string{
 	`ALTER TABLE task_executions ADD COLUMN num_turns INTEGER DEFAULT 0`,
 	`ALTER TABLE task_executions ADD COLUMN num_tool_calls INTEGER DEFAULT 0`,
 	`ALTER TABLE task_executions ADD COLUMN cost_usd REAL DEFAULT 0.0`,
+	`ALTER TABLE task_executions ADD COLUMN workflow_instance_id TEXT`,
+	`ALTER TABLE task_executions ADD COLUMN step_id TEXT`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).

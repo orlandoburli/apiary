@@ -183,6 +183,9 @@ func (x *wfStepExecutor) beginExecution(ctx context.Context, req workflow.StepRe
 		aplog.Error("cell %s: create execution record: %v", req.Cell.ID, err)
 		return nil
 	}
+	if req.InstanceID != "" {
+		_ = x.d.db.SetStepLink(ctx, exec.ID, req.InstanceID, req.Step.ID)
+	}
 	return exec
 }
 
