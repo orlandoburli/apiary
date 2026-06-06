@@ -3,6 +3,8 @@ package workflow
 import (
 	"context"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,8 +13,10 @@ import (
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
-// fakeStore records instances and step runs in memory.
+// fakeStore records instances and step runs in memory. Thread-safe so it can be
+// used from concurrent engine tests.
 type fakeStore struct {
+	mu        sync.Mutex
 	instances map[string]*db.WorkflowInstance
 	stepRuns  map[string]*db.StepRun
 	stepOrder []string
@@ -24,36 +28,49 @@ func newFakeStore() *fakeStore {
 
 func (f *fakeStore) CreateWorkflowInstance(_ context.Context, inst *db.WorkflowInstance) error {
 	cp := *inst
+	f.mu.Lock()
 	f.instances[inst.ID] = &cp
+	f.mu.Unlock()
 	return nil
 }
 func (f *fakeStore) UpdateWorkflowInstanceState(_ context.Context, id, state string) error {
+	f.mu.Lock()
 	if inst, ok := f.instances[id]; ok {
 		inst.State = state
 	}
+	f.mu.Unlock()
 	return nil
 }
 func (f *fakeStore) CreateStepRun(_ context.Context, sr *db.StepRun) error {
 	cp := *sr
+	f.mu.Lock()
 	f.stepRuns[sr.ID] = &cp
 	f.stepOrder = append(f.stepOrder, sr.ID)
+	f.mu.Unlock()
 	return nil
 }
 func (f *fakeStore) UpdateStepRun(_ context.Context, sr *db.StepRun) error {
 	cp := *sr
+	f.mu.Lock()
 	f.stepRuns[sr.ID] = &cp
+	f.mu.Unlock()
 	return nil
 }
 
 // fakeExecutor returns scripted results keyed by step ID and records requests.
+// Thread-safe so it can be used from concurrent engine tests.
 type fakeExecutor struct {
+	mu      sync.Mutex
 	results map[string]StepResult
 	seen    []StepRequest
 }
 
 func (f *fakeExecutor) ExecuteStep(_ context.Context, req StepRequest) StepResult {
+	f.mu.Lock()
 	f.seen = append(f.seen, req)
-	if r, ok := f.results[req.Step.ID]; ok {
+	r, ok := f.results[req.Step.ID]
+	f.mu.Unlock()
+	if ok {
 		return r
 	}
 	return StepResult{Success: true, Output: "ok"}
@@ -77,13 +94,12 @@ func (f *fakeSide) ApplyHook(_ context.Context, _ model.Cell, h config.OnComplet
 }
 
 func testEngine(cfg *config.Config, store Store, exec StepExecutor, side SideEffects) *Engine {
-	seq := 0
+	var seq atomic.Int64
 	return NewEngine(cfg, store, exec,
 		WithSideEffects(side),
 		WithClock(func() time.Time { return time.Unix(1000, 0) }),
 		WithIDGen(func(prefix string) string {
-			seq++
-			return prefix + "-" + itoa(seq)
+			return prefix + "-" + itoa(int(seq.Add(1)))
 		}),
 	)
 }
