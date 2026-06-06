@@ -452,6 +452,13 @@ func warnDeprecatedResultComment(cfg *Config) {
 
 func expandEnv(s string) string {
 	return os.Expand(s, func(key string) string {
+		// Leave workflow expression delimiters `${{ … }}` untouched — they are a
+		// supported authoring syntax (see lower_v2.lowerExpr), not env references.
+		// os.Expand splits `${{ expr }}` into key=`{ expr ` with the trailing `}`
+		// left in the stream, so returning `${`+key+`}` reconstitutes the literal.
+		if strings.HasPrefix(key, "{") {
+			return "${" + key + "}"
+		}
 		return os.Getenv(strings.TrimSpace(key))
 	})
 }
