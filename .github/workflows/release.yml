@@ -39,3 +39,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT with contents:write on homebrew-tap + scoop-bucket. Empty until
+          # the secret is created — fine, because brews/scoops skip_upload: auto
+          # skips prereleases, and stable releases run only after it's set.
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
