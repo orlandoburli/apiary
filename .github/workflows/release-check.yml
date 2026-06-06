@@ -41,3 +41,7 @@ jobs:
         with:
           version: "~> v2"
           args: release --snapshot --clean
+        env:
+          # snapshot skips upload, but the brews/scoops token template is still
+          # resolved — give it a dummy so the build doesn't fail on a missing env.
+          TAP_GITHUB_TOKEN: dummy-snapshot-token
