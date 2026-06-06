@@ -112,6 +112,10 @@ type RouteConfig struct {
 	Agent      string     `yaml:"agent"`
 	Worker     string     `yaml:"worker"`
 	OnComplete OnComplete `yaml:"on_complete"`
+	// Exclusive mirrors TriggerConfig.Exclusive: a matched exclusive route stops
+	// RouteAll from considering any lower-priority route. Set by the Router when it
+	// synthesizes routes from workflow triggers.
+	Exclusive bool `yaml:"-"`
 }
 
 type RouteMatch struct {

@@ -55,10 +55,11 @@ func New(cfg *config.Config) (*Router, error) {
 			continue
 		}
 		routes = append(routes, config.RouteConfig{
-			ID:       wf.ID,
-			Priority: wf.Trigger.Priority,
-			Match:    wf.Trigger.Match,
-			Agent:    firstAgentStep(wf),
+			ID:        wf.ID,
+			Priority:  wf.Trigger.Priority,
+			Match:     wf.Trigger.Match,
+			Agent:     firstAgentStep(wf),
+			Exclusive: wf.Trigger.Exclusive,
 		})
 	}
 	sort.Slice(routes, func(i, j int) bool {
@@ -102,21 +103,91 @@ func firstAgentStep(wf config.WorkflowConfig) string {
 // Route evaluates all rules against the SourceItem and returns the first match.
 // Returns (zero, false) if no rule matches.
 func (r *Router) Route(item model.SourceItem) (Match, bool) {
+	t := targetFromItem(item)
 	for _, route := range r.routes {
-		if r.matches(route, item) {
-			// Agent-based routing: route.Agent is required; worker is for backward compat
-			if route.Agent != "" {
-				return Match{Route: route}, true
+		if ok, _ := r.evaluateTarget(route, t); ok {
+			if m, ok := r.resolveMatch(route); ok {
+				return m, true
 			}
-			// Backward compat: fall back to worker if agent not specified
-			worker, ok := r.workers[route.Worker]
-			if !ok {
-				continue
-			}
-			return Match{Worker: worker, Route: route}, true
 		}
 	}
 	return Match{}, false
+}
+
+// RouteAll evaluates every trigger against the task in priority order and returns
+// all matches — one InternalTask may fan out to several workflows. Evaluation
+// stops after the first matched route that is Exclusive, so a terminal trigger
+// (e.g. a classifier or catch-all) can claim the task alone instead of fanning
+// out alongside lower-priority triggers. Returns nil if nothing matches.
+//
+// Routing is on the task, not the SourceItem: a source-bound task's routing
+// attributes (labels, state, source, type, priority) are kept live by the
+// SourceBinder on each poll, so RouteAll observes the same data Route would.
+func (r *Router) RouteAll(task model.InternalTask) []Match {
+	t := targetFromTask(task)
+	var matches []Match
+	for _, route := range r.routes {
+		ok, _ := r.evaluateTarget(route, t)
+		if !ok {
+			continue
+		}
+		m, ok := r.resolveMatch(route)
+		if !ok {
+			continue
+		}
+		matches = append(matches, m)
+		if route.Exclusive {
+			break
+		}
+	}
+	return matches
+}
+
+// resolveMatch turns a matched route into a Match: agent-based routing is
+// preferred (route.Agent), falling back to a defined worker for backward compat.
+// Returns false if the route resolves to neither — the caller skips it.
+func (r *Router) resolveMatch(route config.RouteConfig) (Match, bool) {
+	if route.Agent != "" {
+		return Match{Route: route}, true
+	}
+	if worker, ok := r.workers[route.Worker]; ok {
+		return Match{Worker: worker, Route: route}, true
+	}
+	return Match{}, false
+}
+
+// target is the set of attributes a route is evaluated against. Both a SourceItem
+// and an InternalTask map onto it (see targetFromItem / targetFromTask), so the
+// same matching logic serves Route (SourceItem) and RouteAll (InternalTask).
+type target struct {
+	sourceID string
+	state    string
+	labels   []string
+	typ      string
+	priority string
+	title    string
+}
+
+func targetFromItem(cell model.SourceItem) target {
+	return target{
+		sourceID: cell.SourceID,
+		state:    cell.State,
+		labels:   cell.Labels,
+		typ:      cell.Type,
+		priority: cell.Priority,
+		title:    cell.Title,
+	}
+}
+
+func targetFromTask(task model.InternalTask) target {
+	return target{
+		sourceID: task.Metadata.Source,
+		state:    task.Metadata.State,
+		labels:   task.Metadata.Labels,
+		typ:      task.Metadata.Type,
+		priority: task.Metadata.Priority,
+		title:    task.Title,
+	}
 }
 
 func (r *Router) matches(route config.RouteConfig, cell model.SourceItem) bool {
@@ -128,29 +199,36 @@ func (r *Router) matches(route config.RouteConfig, cell model.SourceItem) bool {
 // On a miss the reason names the first condition that rejected the cell; on a
 // hit it summarises which conditions were satisfied.
 func (r *Router) evaluate(route config.RouteConfig, cell model.SourceItem) (bool, string) {
+	return r.evaluateTarget(route, targetFromItem(cell))
+}
+
+// evaluateTarget is the shared matching core. It reports whether a route matches
+// the given target and a human-readable reason — on a miss, the first condition
+// that rejected it; on a hit, a summary of the satisfied conditions.
+func (r *Router) evaluateTarget(route config.RouteConfig, t target) (bool, string) {
 	m := route.Match
 
-	if m.Source != "" && cell.SourceID != m.Source {
-		return false, fmt.Sprintf("source %q != required %q", cell.SourceID, m.Source)
+	if m.Source != "" && t.sourceID != m.Source {
+		return false, fmt.Sprintf("source %q != required %q", t.sourceID, m.Source)
 	}
 
-	if len(m.States) > 0 && !containsInsensitive(m.States, cell.State) {
-		return false, fmt.Sprintf("state %q not in %v", cell.State, m.States)
+	if len(m.States) > 0 && !containsInsensitive(m.States, t.state) {
+		return false, fmt.Sprintf("state %q not in %v", t.state, m.States)
 	}
 
 	if len(m.Labels) > 0 {
-		cellLabels := toLowerSet(cell.Labels)
+		labels := toLowerSet(t.labels)
 		for _, required := range m.Labels {
-			if !cellLabels[strings.ToLower(required)] {
-				return false, fmt.Sprintf("missing required label %q (cell has %v)", required, cell.Labels)
+			if !labels[strings.ToLower(required)] {
+				return false, fmt.Sprintf("missing required label %q (cell has %v)", required, t.labels)
 			}
 		}
 	}
 
 	if len(m.ExcludeLabels) > 0 {
-		cellLabels := toLowerSet(cell.Labels)
+		labels := toLowerSet(t.labels)
 		for _, excluded := range m.ExcludeLabels {
-			if cellLabels[strings.ToLower(excluded)] {
+			if labels[strings.ToLower(excluded)] {
 				return false, fmt.Sprintf("has excluded label %q", excluded)
 			}
 		}
@@ -158,24 +236,24 @@ func (r *Router) evaluate(route config.RouteConfig, cell model.SourceItem) (bool
 
 	if m.ExcludeLabelPrefix != "" {
 		prefix := strings.ToLower(m.ExcludeLabelPrefix)
-		for _, l := range cell.Labels {
+		for _, l := range t.labels {
 			if strings.HasPrefix(strings.ToLower(l), prefix) {
 				return false, fmt.Sprintf("has label %q matching excluded prefix %q", l, m.ExcludeLabelPrefix)
 			}
 		}
 	}
 
-	if len(m.Types) > 0 && !containsInsensitive(m.Types, cell.Type) {
-		return false, fmt.Sprintf("type %q not in %v", cell.Type, m.Types)
+	if len(m.Types) > 0 && !containsInsensitive(m.Types, t.typ) {
+		return false, fmt.Sprintf("type %q not in %v", t.typ, m.Types)
 	}
 
-	if len(m.Priority) > 0 && !containsInsensitive(m.Priority, cell.Priority) {
-		return false, fmt.Sprintf("priority %q not in %v", cell.Priority, m.Priority)
+	if len(m.Priority) > 0 && !containsInsensitive(m.Priority, t.priority) {
+		return false, fmt.Sprintf("priority %q not in %v", t.priority, m.Priority)
 	}
 
 	if re, ok := r.regexes[route.ID]; ok {
-		if !re.MatchString(cell.Title) {
-			return false, fmt.Sprintf("title %q does not match /%s/", cell.Title, m.TitleRegex)
+		if !re.MatchString(t.title) {
+			return false, fmt.Sprintf("title %q does not match /%s/", t.title, m.TitleRegex)
 		}
 	}
 

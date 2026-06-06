@@ -31,10 +31,22 @@ type InternalTask struct {
 
 // TaskMetadata carries routing-relevant attributes of an InternalTask. It is
 // persisted as JSON in internal_tasks.metadata.
+//
+// For source-bound tasks the SourceBinder keeps these fields in sync with the
+// live source item on every poll, so trigger matching (Router.RouteAll) sees the
+// current labels/state — the apiary handoff flow mutates a source item's labels
+// to advance it from one workflow to the next, and routing must observe that.
 type TaskMetadata struct {
 	Labels   []string
 	Priority string
 	Type     string // "issue", "work_item", "log_event", "internal", ...
+	// Source is the originating source id for a source-bound task (empty for
+	// spawned tasks). It mirrors the source item's SourceID so triggers gated on
+	// match.source still resolve once routing is on the task, not the SourceItem.
+	Source string
+	// State mirrors the live source item's state (e.g. "todo", "in_progress")
+	// so triggers gated on match.states resolve. Empty for spawned tasks.
+	State string
 }
 
 // SourceBinding links a source item to an InternalTask. One task may have many

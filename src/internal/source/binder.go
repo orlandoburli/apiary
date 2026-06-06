@@ -44,7 +44,7 @@ func (b *DefaultSourceBinder) Bind(ctx context.Context, item model.SourceItem) (
 	if existing, err := b.resolveExisting(ctx, item); err != nil {
 		return model.InternalTask{}, err
 	} else if existing != nil {
-		return *existing, nil
+		return b.refresh(ctx, *existing, item)
 	}
 
 	task := taskFromItem(item)
@@ -87,6 +87,53 @@ func (b *DefaultSourceBinder) resolveExisting(ctx context.Context, item model.So
 	return task, nil
 }
 
+// refresh keeps a source-bound task's routing attributes in step with the live
+// source item on every poll. The apiary handoff flow advances a task by mutating
+// its source item's labels (and state), so Router.RouteAll must observe the
+// current values, not those frozen at first bind. It only rewrites title,
+// description, and metadata when they actually changed; task lifecycle state,
+// input, and the outstanding-workflow counter are left untouched.
+func (b *DefaultSourceBinder) refresh(ctx context.Context, task model.InternalTask, item model.SourceItem) (model.InternalTask, error) {
+	fresh := metaFromItem(item)
+	if task.Title == item.Title && task.Description == item.Description && metaEqual(task.Metadata, fresh) {
+		return task, nil
+	}
+	if err := b.tasks.UpdateTaskMetadata(ctx, task.ID, item.Title, item.Description, fresh); err != nil {
+		return model.InternalTask{}, fmt.Errorf("refresh task %s from %s/%s: %w", task.ID, item.SourceID, item.ID, err)
+	}
+	task.Title = item.Title
+	task.Description = item.Description
+	task.Metadata = fresh
+	return task, nil
+}
+
+// metaFromItem maps a source item's routing-relevant attributes into TaskMetadata.
+func metaFromItem(item model.SourceItem) model.TaskMetadata {
+	return model.TaskMetadata{
+		Labels:   item.Labels,
+		Priority: item.Priority,
+		Type:     item.Type,
+		Source:   item.SourceID,
+		State:    item.State,
+	}
+}
+
+// metaEqual reports whether two TaskMetadata carry the same routing attributes.
+func metaEqual(a, b model.TaskMetadata) bool {
+	if a.Priority != b.Priority || a.Type != b.Type || a.Source != b.Source || a.State != b.State {
+		return false
+	}
+	if len(a.Labels) != len(b.Labels) {
+		return false
+	}
+	for i := range a.Labels {
+		if a.Labels[i] != b.Labels[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // taskFromItem builds a registered InternalTask from a source item. Input is left
 // nil: structured input is only set for spawned tasks, never source-bound ones.
 func taskFromItem(item model.SourceItem) model.InternalTask {
@@ -94,11 +141,7 @@ func taskFromItem(item model.SourceItem) model.InternalTask {
 		Title:       item.Title,
 		Description: item.Description,
 		State:       model.TaskStateRegistered,
-		Metadata: model.TaskMetadata{
-			Labels:   item.Labels,
-			Priority: item.Priority,
-			Type:     item.Type,
-		},
+		Metadata:    metaFromItem(item),
 	}
 }
 
