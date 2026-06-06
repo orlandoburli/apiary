@@ -43,7 +43,7 @@ sources:
 | **Acknowledge** | `POST /repos/{owner}/{repo}/issues/{number}/labels` (adds `in-progress`) | When `settings.state_lock: true` |
 | **WriteResult** | `POST /repos/{owner}/{repo}/issues/{number}/comments` | When `settings.result_comment: true` |
 | **SetState** | `PATCH /repos/{owner}/{repo}/issues/{number}` (sets `state`) | Via `route.on_complete.set_state` |
-| **AddLabels** | `PATCH /repos/{owner}/{repo}/issues/{number}` (replaces labels) | Via `route.on_complete.add_labels` or `assign_from_output` |
+| **AddLabels** | `PATCH /repos/{owner}/{repo}/issues/{number}` (replaces labels) | Via `route.on_complete.add_labels` |
 
 GitHub's `/issues` endpoint also returns pull requests, but the adapter filters
 them out during polling — only plain issues become cells (always
@@ -93,7 +93,7 @@ source-level `api_key`:
 - **Acknowledge** — adds `in-progress` label
 - **WriteResult** — posts comment with run output
 - **SetState** — closes/re-opens issue via `on_complete.set_state`
-- **AddLabels** — adds labels via `on_complete.add_labels` or `assign_from_output`
+- **AddLabels** — adds labels via `on_complete.add_labels`
 
 **Poll** always uses the source-level `api_key` — one account reads all issues.
 
@@ -151,14 +151,11 @@ Routes are evaluated in `priority` ascending order. The first match wins.
 |---|---|---|
 | `set_state` | `string` | Transition the cell to this state after a successful run |
 | `add_labels` | `[string]` | Add these labels to the cell after a successful run |
-| `assign_from_output` | `bool` | Parse `APIARY-ASSIGN: <agent>` from output and add label `agent:<agent>` |
-| `assign_label_prefix` | `string` | Label prefix for assign_from_output (default: `"agent:"`) |
 
-### Example: issue classification flow
+### Example: route by label
 
 ```yaml
 routes:
-  # Specific agent routes — evaluated first (lower priority wins)
   - id: engineer-implement
     priority: 20
     match:
@@ -167,21 +164,10 @@ routes:
     agent: engineer
     on_complete:
       set_state: closed
-
-  # Fallback: classify unassigned issues
-  - id: new-issue-classify
-    priority: 100
-    match:
-      source: my-repo
-      exclude_label_prefix: "agent:"
-    agent: investigator
-    on_complete:
-      assign_from_output: true
 ```
 
-The fallback catches any cell without an `agent:*` label. The investigator
-classifies it and outputs `APIARY-ASSIGN: engineer`, which Apiary converts
-to the label `agent:engineer`. On the next poll, the matching route fires.
+The route matches any cell carrying the `agent:engineer` label and dispatches
+it to the engineer agent, closing the issue when the run succeeds.
 
 ## Environment variables
 
@@ -210,14 +196,6 @@ No manual sourcing needed — `Config.Load()` handles it.
 | `GIT_AUTHOR_EMAIL` | Runner — set from `agent.source_email` |
 | `GIT_COMMITTER_NAME` | Runner — same as `GIT_AUTHOR_NAME` |
 | `GIT_COMMITTER_EMAIL` | Runner — same as `GIT_AUTHOR_EMAIL` |
-
-## `on_complete` directives
-
-Agents can output directives in their final output to trigger side effects:
-
-| Directive | Example | Effect |
-|---|---|---|
-| `APIARY-ASSIGN` | `APIARY-ASSIGN: engineer` | Adds label `agent:engineer` (via `assign_from_output`) |
 
 ## Setting up locally
 
