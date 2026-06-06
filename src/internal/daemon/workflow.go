@@ -57,7 +57,7 @@ func (d *Dispatcher) resolveWorkflow(match router.Match) config.WorkflowConfig {
 			return d.cfg.Workflows[i]
 		}
 	}
-	return workflow.SynthesizeWorkflow(match.Route)
+	return config.WorkflowConfig{}
 }
 
 // checkApprovals drives the engine's parked-approval evaluation using each

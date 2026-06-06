@@ -78,81 +78,94 @@ agents:
     model: claude-sonnet-4-6
     max_workers: 2
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
-routes:
+# ── Workflows ──────────────────────────────────────────────────────────────────
+# Single-agent workflows (formerly `routes:`) — each matches on the agent: label.
+workflows:
   - id: staff-design
-    priority: 10
-    match:
-      source: project-erp
-      labels: [agent:staff]
-    agent: staff
+    trigger:
+      priority: 10
+      match:
+        source: project-erp
+        labels: [agent:staff]
+    steps:
+      - id: run
+        agent: staff
     on_complete:
       set_state: closed
 
   - id: po-spec
-    priority: 15
-    match:
-      source: project-erp
-      labels: [agent:po]
-    agent: po
+    trigger:
+      priority: 15
+      match:
+        source: project-erp
+        labels: [agent:po]
+    steps:
+      - id: run
+        agent: po
     on_complete:
       set_state: closed
 
   - id: backend-implement
-    priority: 20
-    match:
-      source: project-erp
-      labels: [agent:backend]
-    agent: backend
+    trigger:
+      priority: 20
+      match:
+        source: project-erp
+        labels: [agent:backend]
+    steps:
+      - id: run
+        agent: backend
     on_complete:
       set_state: closed
 
   - id: frontend-implement
-    priority: 21
-    match:
-      source: project-erp
-      labels: [agent:frontend]
-    agent: frontend
+    trigger:
+      priority: 21
+      match:
+        source: project-erp
+        labels: [agent:frontend]
+    steps:
+      - id: run
+        agent: frontend
     on_complete:
       set_state: closed
 
   - id: engineer-implement
-    priority: 22
-    match:
-      source: project-erp
-      labels: [agent:engineer]
-    agent: engineer
+    trigger:
+      priority: 22
+      match:
+        source: project-erp
+        labels: [agent:engineer]
+    steps:
+      - id: run
+        agent: engineer
     on_complete:
       set_state: closed
 
   - id: code-review
-    priority: 25
-    match:
-      source: project-erp
-      labels: [agent:reviewer]
-    agent: reviewer
+    trigger:
+      priority: 25
+      match:
+        source: project-erp
+        labels: [agent:reviewer]
+    steps:
+      - id: run
+        agent: reviewer
     on_complete:
       set_state: closed
 
   - id: qa-validate
-    priority: 30
-    match:
-      source: project-erp
-      labels: [agent:qa]
-    agent: qa
+    trigger:
+      priority: 30
+      match:
+        source: project-erp
+        labels: [agent:qa]
+    steps:
+      - id: run
+        agent: qa
     on_complete:
       set_state: closed
 
-# (Classification + routing of brand-new issues is handled by the `triage`
-#  workflow below, not a route — the engine routes in one instance instead of
-#  re-labelling and re-polling.)
-
-# ── Workflows ──────────────────────────────────────────────────────────────────
-# A new issue with no `agent:` label runs through `triage`: the investigator
-# classifies it, a split routes on that decision, and the chosen agent does the
-# work — all in a single workflow instance. This replaces the old
-# `assign_from_output` directive, which the engine no longer supports.
-workflows:
+  # Triage — classify a new issue and route it to the right agent in one instance.
   - id: triage
     description: "Classify a new issue and route it to the right agent in one instance."
     resume: allowed
@@ -180,7 +193,6 @@ workflows:
       #    case, and a safe default if classification is missing/unparseable).
       - id: route
         type: split
-        depends_on: [classify]
         branches:
           - if: 'memory.agent == "po"'
             goto: spec
@@ -196,27 +208,22 @@ workflows:
       # 3) Exactly one of these runs — whichever the split activates.
       - id: spec
         agent: po
-        depends_on: [route]
         prompt: "Produce the spec / acceptance criteria for this issue."
 
       - id: design
         agent: staff
-        depends_on: [route]
         prompt: "Design the solution and decompose it into smaller tasks."
 
       - id: implement
         agent: engineer
-        depends_on: [route]
         prompt: "Implement the change following project conventions."
 
       - id: review
         agent: reviewer
-        depends_on: [route]
         prompt: "Review the change for correctness and conventions."
 
       - id: validate
         agent: qa
-        depends_on: [route]
         prompt: "Validate the implementation against its acceptance criteria."
 
     on_complete:

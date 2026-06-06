@@ -33,11 +33,23 @@ func validateStepGraph(ctx string, wf WorkflowConfig, stepIDs map[string]bool) [
 	}
 
 	// on_fail.goto back-edges must target an ancestor (a transitive dependency).
+	// For v2 workflows (no DependsOn edges), sequential order is the implicit graph:
+	// any step that appears earlier in the slice is an ancestor.
+	seqOrder := map[string]int{}
+	for i, s := range wf.Steps {
+		seqOrder[s.ID] = i
+	}
 	for _, s := range wf.Steps {
 		if s.OnFail == nil || s.OnFail.Goto == "" || !stepIDs[s.OnFail.Goto] {
 			continue
 		}
-		if !isAncestor(s.ID, s.OnFail.Goto, deps) {
+		var ok bool
+		if len(deps) == 0 {
+			ok = seqOrder[s.OnFail.Goto] < seqOrder[s.ID]
+		} else {
+			ok = isAncestor(s.ID, s.OnFail.Goto, deps)
+		}
+		if !ok {
 			errs = append(errs, fmt.Errorf("%s: step %q on_fail.goto %q must target an ancestor step (a transitive dependency)", ctx, s.ID, s.OnFail.Goto))
 		}
 	}

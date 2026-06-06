@@ -84,26 +84,6 @@ func (c *Config) Validate() []error {
 		workerIDs[w.ID] = true
 	}
 
-	routeIDs := map[string]bool{}
-	for i, r := range c.Routes {
-		if r.ID == "" {
-			errs = append(errs, fmt.Errorf("routes[%d]: id is required", i))
-		}
-		if r.Agent == "" {
-			errs = append(errs, fmt.Errorf("routes[%d] %q: agent is required", i, r.ID))
-		}
-		if r.Agent != "" && !agentIDs[r.Agent] {
-			errs = append(errs, fmt.Errorf("routes[%d] %q: agent %q not defined", i, r.ID, r.Agent))
-		}
-		if r.Match.Source != "" && !sourceIDs[r.Match.Source] {
-			errs = append(errs, fmt.Errorf("routes[%d] %q: source %q not defined", i, r.ID, r.Match.Source))
-		}
-		if routeIDs[r.ID] {
-			errs = append(errs, fmt.Errorf("routes[%d]: duplicate id %q", i, r.ID))
-		}
-		routeIDs[r.ID] = true
-	}
-
 	// Validate v2-specific authoring rules before lowering (while v2 fields are
 	// still present on the raw StepConfig nodes).
 	errs = append(errs, c.validateV2Workflows()...)
