@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	aplog "github.com/orlandoburli/apiary/internal/log"
 )
 
 type Config struct {
@@ -415,7 +417,24 @@ func Load(path string) (*Config, error) {
 	if cfg.Settings.LogLevel == "" {
 		cfg.Settings.LogLevel = "info"
 	}
+	warnDeprecatedResultComment(&cfg)
 	return &cfg, nil
+}
+
+// warnDeprecatedResultComment logs a deprecation warning when result_comment is
+// set to any non-default value, at the global settings level or on any workflow.
+// The feature still works (see Engine.resultCommentMode); the APIARY_PUBLISH
+// marker in agent output is the supported replacement.
+func warnDeprecatedResultComment(cfg *Config) {
+	const msg = "result_comment is deprecated; use APIARY_PUBLISH marker in agent output instead"
+	if cfg.Settings.ResultComment {
+		aplog.Warn("settings.result_comment: %s", msg)
+	}
+	for _, wf := range cfg.Workflows {
+		if wf.ResultComment != "" {
+			aplog.Warn("workflow %q: %s", wf.ID, msg)
+		}
+	}
 }
 
 func expandEnv(s string) string {

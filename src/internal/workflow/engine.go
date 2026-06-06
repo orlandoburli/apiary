@@ -48,7 +48,11 @@ type StepResult struct {
 	Output           string
 	StructuredOutput map[string]any
 	Summary          string
-	Err              error
+	// PublishPayload is the APIARY_PUBLISH text the agent emitted, if any. The
+	// engine writes it back to the task's source bindings as a comment. The
+	// executor clears it when the step sets publish: off.
+	PublishPayload string
+	Err            error
 }
 
 // StepExecutor performs the actual runner invocation for a single agent step.
@@ -226,8 +230,12 @@ func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool
 	return !failed
 }
 
-// runStep executes one agent step, persisting its step run, and returns the result.
-func (e *Engine) runStep(ctx context.Context, instID string, step config.StepConfig, cell model.SourceItem, memSteps []MemoryStep) StepResult {
+// runStep executes one agent step, persisting its step run, and returns the
+// result. task and bindings are immutable snapshots threaded through so the
+// publish write-back can reach the task's source bindings; they are passed by
+// value (not via dagRun) so the function stays safe to call from the parallel
+// and foreach worker goroutines.
+func (e *Engine) runStep(ctx context.Context, instID string, step config.StepConfig, cell model.SourceItem, task model.InternalTask, bindings []model.SourceBinding, memSteps []MemoryStep) StepResult {
 	started := e.now()
 	sr := &db.StepRun{
 		ID:                 e.newID("sr"),
@@ -278,8 +286,30 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 	} else {
 		sr.State = db.StepStateFailed
 	}
+	e.publishStep(ctx, task, bindings, res, sr)
 	_ = e.store.UpdateStepRun(ctx, sr)
 	return res
+}
+
+// publishStep writes an agent-emitted APIARY_PUBLISH payload back to the task's
+// source bindings and records the outcome on the step run. The executor has
+// already cleared the payload when the step set publish: off, so a non-empty
+// payload here means write-back was requested. A task with no bindings (e.g. a
+// spawned task) is silently skipped.
+func (e *Engine) publishStep(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, res StepResult, sr *db.StepRun) {
+	if res.PublishPayload == "" {
+		return
+	}
+	sr.PublishPayload = res.PublishPayload
+	if e.side == nil || len(bindings) == 0 {
+		sr.PublishState = db.PublishStateSkipped
+		return
+	}
+	if err := e.side.PostComment(ctx, task, bindings, res.PublishPayload); err != nil {
+		sr.PublishState = db.PublishStateFailed
+		return
+	}
+	sr.PublishState = db.PublishStateSent
 }
 
 // applyCompletion applies the on_complete/on_fail hook and posts the on_complete

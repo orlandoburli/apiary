@@ -28,6 +28,13 @@ const (
 	ResultCommentOff        = "off"
 )
 
+// Publish modes for an agent step: whether the engine writes an APIARY_PUBLISH
+// payload emitted by the agent back to the task's source bindings.
+const (
+	PublishAuto = "auto" // default: write back when the agent emits a payload
+	PublishOff  = "off"  // never write back, even if a payload is present
+)
+
 // on_missing_output policy values for an agent step that declares output_schema.
 const (
 	OnMissingOutputWarn   = "warn"
@@ -105,6 +112,10 @@ type StepConfig struct {
 	Memory          *MemoryConfig `yaml:"memory,omitempty"`
 	OnPass          *StepNext     `yaml:"on_pass,omitempty"`
 	OnFail          *StepOutcome  `yaml:"on_fail,omitempty"`
+	// Publish controls whether an APIARY_PUBLISH payload emitted by this step's
+	// agent is written back to the task's source bindings: auto (default) | off.
+	// Empty inherits the auto default.
+	Publish string `yaml:"publish,omitempty"`
 
 	// ── split step ────────────────────────────────────────────────
 	Multi    bool          `yaml:"multi,omitempty"`
