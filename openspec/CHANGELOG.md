@@ -2,14 +2,17 @@
 
 ## Ativas
 
-| Change | Descrição | Status |
-|---|---|---|
-| [foundation](changes/foundation/) | Especificação inicial do projeto | in-progress |
-| [workflow-mode](changes/workflow-mode/) | Substituir pool/router flat por pipelines multi-step declarativos | proposed |
-| [config-lint-removed-directives](changes/config-lint-removed-directives/) | `validate`/`run` rejeitam diretivas removidas (ex.: `assign_from_output`) e campos desconhecidos, com mensagem de migração | proposed |
-| [workflow-sequential-authoring](changes/workflow-sequential-authoring/) | Autoria v2: sequência implícita + `if/else` + gates de aprovação (`reject_when`/`on_reject`), compilando para o DAG atual (design only) | proposed |
+_(nenhuma change ativa no momento)_
 
 ## Arquivadas
+
+### 2026-06-06
+
+- **apiary-agent-config-redesign** — Redesenho da configuração de agentes: nova seção `agents:` no config, soul files, `preferred_models`, skills metadata; rotas passam a referenciar agentes por ID.
+- **foundation** — Especificação inicial do projeto: specs de visão geral, arquitetura, schema, plugin-api, CLI, roadmap; setup do repositório.
+- **workflow-mode** — Substituição do pool/router flat por pipelines multi-step declarativos: engine de workflows com DAG, split, foreach, sub-workflows, approvals, resume, TUI step-panel.
+- **config-lint-removed-directives** — `validate`/`run` rejeitam diretivas removidas (ex.: `assign_from_output`) e campos desconhecidos, com mensagem de migração.
+- **workflow-sequential-authoring** — Autoria v2: sequência implícita + `if/else` + gates de aprovação (`reject_when`/`on_reject`), lowering para o DAG atual; scheduler concorrente com semáforo global.
 
 ### 2026-06-03
 
