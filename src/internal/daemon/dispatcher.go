@@ -37,15 +37,6 @@ type sourceStat struct {
 	inFlight  int
 }
 
-// retryQueueEntry tracks a cell pending retry.
-type retryQueueEntry struct {
-	cell       model.Cell
-	adapter    source.Adapter
-	match      router.Match
-	retryAfter time.Time
-	attempt    int
-}
-
 // Dispatcher polls configured sources, routes cells to workers, and manages
 // concurrent runner invocations.
 type Dispatcher struct {
@@ -58,17 +49,15 @@ type Dispatcher struct {
 	runners     map[string]runnerimpl.Runner
 	agentRunner map[string]string
 
-	db       *db.Client
-	logger   *logging.Logger
-	retryMgr *RetryManager
+	db     *db.Client
+	logger *logging.Logger
 
-	sem       chan struct{}             // poll concurrency (size 1)
+	sem       chan struct{}            // poll concurrency (size 1)
 	agentSem  map[string]chan struct{} // per-agent dispatch concurrency
 	active    atomic.Int32
 	inFlight  sync.Map
 	activeRuns sync.Map
 	runCancel  sync.Map
-	retryQueue sync.Map
 
 	stats  map[string]*sourceStat
 	statMu sync.RWMutex
@@ -100,7 +89,6 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		agentRunner: make(map[string]string),
 		db:          dbClient,
 		logger:      logger,
-		retryMgr:    NewRetryManager(&cfg.Settings.RetryPolicy),
 		sem:         make(chan struct{}, 1), // poll: one at a time
 		agentSem:    make(map[string]chan struct{}),
 		stats:       make(map[string]*sourceStat),
@@ -281,58 +269,12 @@ func truncate(s string, max int) string {
 	return s[:max-1] + "…"
 }
 
-// processPendingRetries checks the retry queue and re-dispatches cells whose retry time has arrived.
-func (d *Dispatcher) processPendingRetries(ctx context.Context) {
-	if !d.retryMgr.policy.Enabled {
-		return
-	}
-
-	now := time.Now()
-	var readyForRetry []retryQueueEntry
-
-	// Collect entries that are ready to retry
-	d.retryQueue.Range(func(key, value any) bool {
-		entry := value.(retryQueueEntry)
-		if entry.retryAfter.Before(now) || entry.retryAfter.Equal(now) {
-			readyForRetry = append(readyForRetry, entry)
-		}
-		return true
-	})
-
-	// Re-dispatch ready entries
-	for _, entry := range readyForRetry {
-		// Remove from queue first
-		d.retryQueue.Delete(entry.cell.ID)
-
-		agentID := entry.match.Route.Agent
-		sem := d.agentSem[agentID]
-		if sem != nil {
-			sem <- struct{}{}
-		}
-		d.active.Add(1)
-
-		go func(e retryQueueEntry, sem chan struct{}) {
-			defer func() {
-				if sem != nil {
-					<-sem
-				}
-				d.active.Add(-1)
-				d.inFlight.Delete(e.cell.ID)
-			}()
-			_ = d.dispatch(ctx, e.cell, e.adapter, e.match)
-		}(entry, sem)
-	}
-}
-
 // RunOnce polls every source once, dispatches all matching cells, waits for
 // completion, and returns an error if any run failed.
 func (d *Dispatcher) RunOnce(ctx context.Context) error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var failedIDs []string
-
-	// Process any pending retries first
-	d.processPendingRetries(ctx)
 
 	for _, sc := range d.cfg.Sources {
 		adapter, ok := d.sources[sc.ID]

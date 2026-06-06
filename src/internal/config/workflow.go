@@ -73,6 +73,11 @@ type StepConfig struct {
 	ID        string   `yaml:"id"`
 	Type      string   `yaml:"type,omitempty"` // agent(default)|split|approval|foreach|workflow
 	DependsOn []string `yaml:"depends_on,omitempty"`
+	// SeqDependsOn holds implicit sequential dependencies injected by the v2
+	// lowering pass. Unlike DependsOn, a condition-skipped SeqDependsOn dep
+	// is treated as satisfied — its successors can still run.
+	// Never set by hand; use DependsOn for explicit dependencies.
+	SeqDependsOn []string `yaml:"seq_depends_on,omitempty"`
 
 	// ── shared / cross-cutting ────────────────────────────────────
 	// Name is a human-readable label shown in logs and dashboards.

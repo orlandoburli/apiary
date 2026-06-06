@@ -39,16 +39,6 @@ func (s SourceConfig) ParsedPollInterval() (time.Duration, error) {
 	return time.ParseDuration(s.PollInterval)
 }
 
-func (r *RetryPolicy) ParsedBackoff() time.Duration {
-	if r.parsedBackoff == 0 && r.BackoffBase != "" {
-		d, _ := time.ParseDuration(r.BackoffBase)
-		r.parsedBackoff = d
-	}
-	if r.parsedBackoff == 0 {
-		return 1 * time.Second
-	}
-	return r.parsedBackoff
-}
 
 type SourceFilters struct {
 	States []string `yaml:"states"`
@@ -155,24 +145,13 @@ type OnComplete struct {
 	AssignLabelPrefix string `yaml:"assign_label_prefix"`
 }
 
-type RetryPolicy struct {
-	Enabled            bool     `yaml:"enabled"`
-	MaxAttempts        int      `yaml:"max_attempts"`
-	BackoffStrategy    string   `yaml:"backoff_strategy"` // "exponential" or "fixed"
-	BackoffBase        string   `yaml:"backoff_base"`     // e.g., "1s", "5s"
-	RetriableErrors    []string `yaml:"retriable_errors"`
-	NonRetriableErrors []string `yaml:"non_retriable_errors"`
-	parsedBackoff      time.Duration
-}
-
 type Settings struct {
-	Concurrency   int         `yaml:"concurrency"`
-	LogLevel      string      `yaml:"log_level"`
-	StateLock     bool        `yaml:"state_lock"`
-	ResultComment bool        `yaml:"result_comment"`
-	TaskTimeout   string      `yaml:"task_timeout"`
-	RetryPolicy   RetryPolicy `yaml:"retry_policy"`
-	Telemetry     Telemetry   `yaml:"telemetry"`
+	Concurrency   int       `yaml:"concurrency"`
+	LogLevel      string    `yaml:"log_level"`
+	StateLock     bool      `yaml:"state_lock"`
+	ResultComment bool      `yaml:"result_comment"`
+	TaskTimeout   string    `yaml:"task_timeout"`
+	Telemetry     Telemetry `yaml:"telemetry"`
 }
 
 func (s *Settings) TaskTimeoutDuration() time.Duration {
@@ -198,23 +177,6 @@ func LoadDefaults() *Config {
 		Settings: Settings{
 			Concurrency: 4,
 			LogLevel:    "info",
-			RetryPolicy: RetryPolicy{
-				Enabled:         true,
-				MaxAttempts:     3,
-				BackoffStrategy: "exponential",
-				BackoffBase:     "1s",
-				RetriableErrors: []string{
-					"timeout",
-					"connection_error",
-					"resource_unavailable",
-					"rate_limited",
-				},
-				NonRetriableErrors: []string{
-					"validation_error",
-					"configuration_error",
-					"not_found",
-				},
-			},
 		},
 	}
 }
@@ -450,20 +412,6 @@ func Load(path string) (*Config, error) {
 	if cfg.Settings.LogLevel == "" {
 		cfg.Settings.LogLevel = "info"
 	}
-	// Fill in retry policy defaults if not specified
-	if cfg.Settings.RetryPolicy.MaxAttempts == 0 {
-		cfg.Settings.RetryPolicy.MaxAttempts = 3
-	}
-	if cfg.Settings.RetryPolicy.BackoffStrategy == "" {
-		cfg.Settings.RetryPolicy.BackoffStrategy = "exponential"
-	}
-	if cfg.Settings.RetryPolicy.BackoffBase == "" {
-		cfg.Settings.RetryPolicy.BackoffBase = "1s"
-	}
-	if !cfg.Settings.RetryPolicy.Enabled && cfg.Settings.RetryPolicy.MaxAttempts > 0 {
-		cfg.Settings.RetryPolicy.Enabled = true
-	}
-
 	return &cfg, nil
 }
 
