@@ -62,26 +62,3 @@ settings:
   state_lock: true
   result_comment: true
 
-  # Crash recovery configuration
-  retry_policy:
-    enabled: true
-    max_attempts: 3
-    backoff_strategy: exponential    # or "fixed"
-    backoff_base: 1s                 # e.g., "1s", "5s", "10s"
-
-    # Errors that should trigger automatic retry
-    retriable_errors:
-      - timeout
-      - connection_error
-      - connection refused
-      - temporarily unavailable
-      - rate_limited
-      - deadlock detected
-
-    # Errors that should NOT retry
-    non_retriable_errors:
-      - validation error
-      - config error
-      - authentication failed
-      - not found
-      - permission denied
