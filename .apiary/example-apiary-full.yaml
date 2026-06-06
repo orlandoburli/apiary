@@ -312,6 +312,49 @@ workflows:
     on_fail:
       add_labels: [needs-attention]
 
+  # ── Internal fan-out & agent-driven write-back (internal-task-model) ──────────
+  # `exclusive: true` — when this trigger matches, the router stops evaluating
+  # lower-priority triggers, so an incident does NOT also fan out to the agent:*
+  # workflows above; it is claimed by this workflow alone. (With exclusive: false,
+  # the default, a task fans out to EVERY matching workflow, each as its own
+  # instance, and the top-level `tasks:` hook below fires once all of them finish.)
+  - id: incident-triage
+    description: "Triage an incident, write a summary back to the issue, and spawn a collection task."
+    trigger:
+      priority: 5
+      exclusive: true
+      match:
+        source: project-erp
+        labels: [incident]
+    steps:
+      - id: triage
+        agent: investigator
+        prompt: |
+          Assess the incident. Then write a short human-facing summary back to the
+          issue and spawn a follow-up task to collect diagnostics, by emitting:
+
+          APIARY_PUBLISH_BEGIN
+          <one-paragraph summary posted as a comment on the source item>
+          APIARY_PUBLISH_END
+
+          APIARY_SPAWN_BEGIN
+          {"workflow": "collect-logs", "title": "Collect logs for incident", "input": {"severity": "high"}}
+          APIARY_SPAWN_END
+        publish: auto   # write the APIARY_PUBLISH payload back to the task's source bindings
+        spawn: await    # block until the spawned collect-logs task is terminal; its failure fails this step
+    on_complete:
+      set_state: in review
+
+  # Named child workflow dispatched at runtime by the APIARY_SPAWN marker above. It
+  # has no trigger — it runs against a binding-less InternalTask whose parent is the
+  # spawning task, started BY NAME rather than by routing.
+  - id: collect-logs
+    description: "Collect diagnostic logs for an incident (spawned via APIARY_SPAWN)."
+    steps:
+      - id: collect
+        agent: investigator
+        prompt: "Gather the relevant logs and metrics for the incident described in the task input."
+
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 settings:
@@ -319,3 +362,15 @@ settings:
   log_level: info
   state_lock: true
   result_comment: true
+
+# ── Task completion hook (internal-task-model) ───────────────────────────────────
+# Fires once per InternalTask, when the LAST of its fanned-out workflows reaches a
+# terminal state: on_complete when all succeeded, on_fail when any failed. Applies
+# to every source binding on the task. (Per-workflow on_complete/on_fail above fire
+# once per workflow instance; this fires once per task.)
+tasks:
+  on_complete:
+    add_labels: [ai-complete]
+  on_fail:
+    set_state: blocked
+    add_labels: [ai-failed]
