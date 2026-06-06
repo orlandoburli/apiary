@@ -8,20 +8,31 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/config"
 	aplog "github.com/orlandoburli/apiary/internal/log"
+	"github.com/orlandoburli/apiary/internal/model"
 )
 
 // defaultForeachMaxItems caps fan-out when the step omits max_items.
 const defaultForeachMaxItems = 50
 
-// runForeachStep expands a foreach step over the array resolved from a prior
-// step's structured output, running its inner agent step once per item. It
-// returns true if the instance must fail (an item failed and no recovery).
-func (e *Engine) runForeachStep(ctx context.Context, r *dagRun, step config.StepConfig) bool {
-	items, err := resolveItems(step.Items, r)
+// foreachResult carries the aggregate outcome of a foreach step execution.
+type foreachResult struct {
+	passed int
+	failed int
+}
+
+// executeForeachStep runs a foreach step without touching dagRun; it is safe to
+// call from a worker goroutine. contribSnap is a snapshot of r.contrib taken on
+// the scheduler goroutine before dispatch.
+func (e *Engine) executeForeachStep(
+	ctx context.Context, instID string,
+	step config.StepConfig, cell model.Cell,
+	memSnap []MemoryStep, contribSnap map[string]MemoryStep,
+	wfID string,
+) (StepResult, foreachResult) {
+	items, err := resolveItemsFromContrib(step.Items, contribSnap)
 	if err != nil {
-		aplog.Error("workflow %s: foreach %q: %v", r.wf.ID, step.ID, err)
-		r.failStep(step.ID)
-		return true
+		aplog.Error("workflow %s: foreach %q: %v", wfID, step.ID, err)
+		return StepResult{Success: false, Output: err.Error()}, foreachResult{}
 	}
 
 	maxItems := step.MaxItems
@@ -30,15 +41,16 @@ func (e *Engine) runForeachStep(ctx context.Context, r *dagRun, step config.Step
 	}
 	if len(items) > maxItems {
 		aplog.Error("workflow %s: foreach %q: %d items exceeds max_items %d",
-			r.wf.ID, step.ID, len(items), maxItems)
-		r.failStep(step.ID)
-		return true
+			wfID, step.ID, len(items), maxItems)
+		return StepResult{
+			Success: false,
+			Output:  fmt.Sprintf("foreach: %d items exceeds max_items %d", len(items), maxItems),
+		}, foreachResult{}
 	}
 
 	if step.Step == nil {
-		aplog.Error("workflow %s: foreach %q: missing inner step", r.wf.ID, step.ID)
-		r.failStep(step.ID)
-		return true
+		aplog.Error("workflow %s: foreach %q: missing inner step", wfID, step.ID)
+		return StepResult{Success: false, Output: "foreach: missing inner step"}, foreachResult{}
 	}
 
 	as := step.As
@@ -46,9 +58,7 @@ func (e *Engine) runForeachStep(ctx context.Context, r *dagRun, step config.Step
 		as = "item"
 	}
 
-	memSteps := r.memSteps() // snapshot: all sub-runs read the same memory
-	passed, failed := 0, 0
-
+	var fr foreachResult
 	for i, item := range items {
 		sub := *step.Step
 		sub.ID = fmt.Sprintf("%s[%d]", step.ID, i)
@@ -56,36 +66,28 @@ func (e *Engine) runForeachStep(ctx context.Context, r *dagRun, step config.Step
 		sub.DependsOn = nil
 		sub.Prompt = renderItemTemplate(step.Step.Prompt, as, item)
 
-		res := e.runStep(ctx, r.instID, sub, r.cell, memSteps)
+		res := e.runStep(ctx, instID, sub, cell, memSnap)
 		if res.Success {
-			passed++
+			fr.passed++
 		} else {
-			failed++
+			fr.failed++
 			if step.FailFast {
-				aplog.Info("workflow %s: foreach %q: fail_fast after item %d", r.wf.ID, step.ID, i)
+				aplog.Info("workflow %s: foreach %q: fail_fast after item %d", wfID, step.ID, i)
 				break
 			}
 		}
 	}
 
-	allOK := failed == 0
-	r.state[step.ID] = passFail(allOK)
-	// Expose aggregate via the step state: exit_code carries the failed count, so
-	// `steps.<id>.exit_code == 0` reads as "all items passed".
-	r.stepStates[step.ID] = StepState{
-		State:    passFail(allOK),
-		ExitCode: failed,
-		Output:   fmt.Sprintf("foreach: %d passed, %d failed", passed, failed),
-	}
+	allOK := fr.failed == 0
+	summary := ""
 	if allOK {
-		r.contrib[step.ID] = MemoryStep{
-			StepID:  step.ID,
-			Summary: fmt.Sprintf("%s: processed %d item(s)", step.ID, passed),
-		}
-		r.passedOrder = append(r.passedOrder, step.ID)
-		return false
+		summary = fmt.Sprintf("%s: processed %d item(s)", step.ID, fr.passed)
 	}
-	return true
+	return StepResult{
+		Success: allOK,
+		Output:  fmt.Sprintf("foreach: %d passed, %d failed", fr.passed, fr.failed),
+		Summary: summary,
+	}, fr
 }
 
 // failStep marks a step failed in the run state (used by foreach and
@@ -95,9 +97,9 @@ func (r *dagRun) failStep(id string) {
 	r.stepStates[id] = StepState{State: stFailed}
 }
 
-// resolveItems resolves a foreach `items` path (steps.<id>.output.<field...>) to
-// an array within a prior passed step's structured output.
-func resolveItems(path string, r *dagRun) ([]any, error) {
+// resolveItemsFromContrib resolves a foreach `items` path to an array within a
+// prior passed step's structured output, reading from a contrib snapshot.
+func resolveItemsFromContrib(path string, contribSnap map[string]MemoryStep) ([]any, error) {
 	parts := strings.Split(path, ".")
 	if len(parts) < 4 || parts[0] != "steps" || parts[2] != "output" {
 		return nil, fmt.Errorf("invalid items path %q (want steps.<id>.output.<field>)", path)
@@ -105,7 +107,7 @@ func resolveItems(path string, r *dagRun) ([]any, error) {
 	id := parts[1]
 	fields := parts[3:]
 
-	contrib, ok := r.contrib[id]
+	contrib, ok := contribSnap[id]
 	if !ok || contrib.Structured == nil {
 		return nil, fmt.Errorf("step %q has no structured output to read items from", id)
 	}
