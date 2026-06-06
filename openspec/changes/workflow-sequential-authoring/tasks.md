@@ -35,5 +35,16 @@
 - [ ] Engine tests for `fail_when` pass/reject/loop-back/retry-exhaustion.
 - [ ] End-to-end: classify→implement→review(reject→loop)→qa→done.
 
-## Follow-up (separate change)
+## Composition (loops / sub-workflows / parallel)
+- [ ] `uses:` alias for sub-workflow steps (engine already supports `type: workflow`).
+- [ ] `for_each:`/`as:`/`max:` authored aliases → existing `type: foreach`
+      (`items`/`as`/`max_items`/`step`); loop already runs (serial).
+- [ ] Accept `parallel:` block in the parser (lowers to independent steps + join);
+      execute sequentially for now, clearly flagged as not-yet-concurrent.
+
+## Follow-up (separate changes)
+- [ ] **Concurrent scheduler + global `settings.concurrency` semaphore** — makes
+      `parallel:` truly parallel and `for_each.concurrency` real (the original
+      `concurrency-model` spec). Biggest lift; its own change after v2 + gates land.
+- [ ] Honor `for_each.concurrency` (bounded goroutines over items) on top of it.
 - [ ] Decide fate of `settings.retry_policy` (inert today).

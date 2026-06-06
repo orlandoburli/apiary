@@ -39,6 +39,11 @@ para o engine de DAG já existente** (ele já faz sequência via ordem e loop vi
    O agente emite um veredito estruturado; o step "reprova" logicamente e o fluxo
    volta para um step anterior (loop-back), reaproveitando o mecanismo de retry do
    engine. (É o que falta no Actions: "reprovou → refaz um step anterior".)
+5. **Composição (já no spec original):** `for_each:` (loop sobre itens-filho — GHA
+   `strategy.matrix`), `uses:` (sub-workflow reutilizável — GHA reusable workflows)
+   e `parallel:` (fan-out + join — GHA jobs paralelos). Status honesto: foreach e
+   sub-workflow já existem no engine (foreach roda **serial**); **parallel não
+   existe** (o executor roda um step por vez). Ver design.md §8.
 
 ### Os dois fluxos-alvo, na sintaxe nova
 
@@ -113,8 +118,12 @@ resto é açúcar de autoria que baixa para primitivas existentes (`depends_on`,
   carrega o veredito do gate. (Ver design.md.)
 - `settings.retry_policy` continua fora (inerte; decisão à parte).
 
-## Não-objetivos
+## Não-objetivos (desta change)
 
 - Reescrever o executor de DAG.
-- Loops gerais / `while` arbitrário além do loop-back de gate.
+- **Execução paralela real** (`parallel:` concorrente + semáforo global de
+  `concurrency`) e `for_each.concurrency` honrado — é o `concurrency-model` original,
+  o maior esforço; vira change própria **depois** da v2 sequencial + gates. Nesta
+  change `parallel:` é aceito mas roda serial (sinalizado, não é no-op silencioso).
+- Loops gerais / `while` arbitrário além de `for_each` e do loop-back de gate.
 - Comando de migração automática da sintaxe antiga → v2.

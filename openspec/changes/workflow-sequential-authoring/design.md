@@ -151,7 +151,71 @@ Remaining (decide at implementation):
 - Field-name collisions when two steps emit the same output field — qualify by step
   id in the lowered `memory` namespace if it ever happens.
 
-## 8. Worked example — the two target flows (authored form)
+## 8. Composition: loops, parallel, sub-workflows (GHA-inspired)
+
+All three were in the original `workflow-mode` spec. Status and v2 surface:
+
+### a) Loop over child items — `for_each` (GHA `strategy.matrix`)
+**Engine: built, but serial.** `StepTypeForeach` exists (`workflow/foreach.go`); it
+iterates `items` and binds each to `as`, but the loop is a plain `for range` — the
+`concurrency` field is parsed and **ignored** today.
+
+```yaml
+- id: implement-tasks
+  for_each: ${{ steps.design.outputs.tasks }}   # array from a prior step's output
+  as: task
+  agent: engineer
+  prompt: "Implement: ${{ task.title }}"
+  max: 20            # cap (lowers to foreach max_items)
+  concurrency: 4     # run N items at once  ← needs engine to honor it
+```
+Lowers to the existing `type: foreach` (`items`/`as`/`max_items`/`step`). Use case:
+Staff emits a `tasks` array → fan out an engineer run per task. **Work to do:**
+honor `concurrency` (bounded goroutines over items) — depends on §8d.
+
+### b) Sub-workflows / sub-steps — `uses` (GHA reusable workflows)
+**Engine: built.** `StepTypeWorkflow` (`workflow/subworkflow.go`) runs another named
+workflow as a step (one level of nesting), inheriting memory.
+
+```yaml
+- id: ship
+  uses: implement-pipeline        # call another workflow by id
+  if: ${{ classify.track == 'implement' }}
+```
+This is how a track becomes a reusable building block: define `implement-pipeline`
+(engineer→review→qa) once, `uses:` it from `triage` and elsewhere. Lowers to
+`type: workflow, workflow: implement-pipeline`. v2 work is just the `uses:` alias +
+parse.
+
+### c) Parallel steps — `parallel:` block (GHA parallel jobs)
+**Engine: NOT built.** `driveDAG`/`pickRunnable` runs one step at a time, so
+independent steps currently execute sequentially. True concurrency needs a
+concurrent scheduler bounded by a global agent semaphore (the unbuilt
+`concurrency-model` spec).
+
+```yaml
+- parallel:                       # run these concurrently, join when all pass
+    - { id: tests, agent: qa,       prompt: "Run the test suite." }
+    - { id: docs,  agent: engineer, prompt: "Update the docs." }
+# steps after the block run once BOTH finished (selective join)
+```
+Lowers to: block members share the upstream dep and have no order between them; the
+next step joins on all. **Biggest lift** — requires making the executor run ready
+steps on bounded goroutines and a global `settings.concurrency` semaphore around
+every agent invocation. Until built, `parallel:` could be accepted but executed
+sequentially (correct, not yet concurrent) — flagged so it's not a silent no-op.
+
+### d) Concurrency model (prerequisite for true a + c)
+Adopt the original `concurrency-model` decision: `settings.concurrency` is one
+global cap on simultaneous agent invocations across all instances, parallel steps,
+and foreach items. Every runner call acquires/releases one slot. This is what makes
+`for_each.concurrency` and `parallel:` safe (no 24-agents-on-one-workdir blowups).
+
+**Honest scope:** (b) is essentially free (alias). (a) needs concurrency honored.
+(c)+(d) are the real engineering — a concurrent scheduler + global semaphore — and
+should likely be their own change after the sequential v2 + gates land.
+
+## 9. Worked example — the two target flows (authored form)
 
 ```yaml
 workflows:
