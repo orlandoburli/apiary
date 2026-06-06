@@ -106,6 +106,20 @@ See [`docs/dashboard.md`](docs/dashboard.md) for a per-tab data reference —
 what each tab shows, the source table and query behind every field, the
 refresh model, and current data gaps.
 
+## VS Code extension
+
+**Apiary Workflow Visualizer** renders a live diagram of your `apiary.yaml`
+while you edit it — one flowchart per workflow, showing sources, triggers,
+steps, splits, and retry loops. Install it from the Marketplace:
+
+```
+ext install orlandoburli.vscode-apiary
+```
+
+See [`docs/vscode-extension.md`](docs/vscode-extension.md) for usage and what
+the diagram shows. The extension source lives under
+[`tools/vscode-apiary`](tools/vscode-apiary).
+
 ## Status
 
 > Pre-alpha. Implementation in progress.
