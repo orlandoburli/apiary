@@ -195,6 +195,64 @@ func TestForeach_AllPassDownstreamRuns(t *testing.T) {
 	}
 }
 
+func TestForeach_ConcurrentItems(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Settings.Concurrency = 4
+	store := newFakeStore()
+	exec := newConcurrentExecutor() // records start order
+	exec.results["plan"] = planWithIssues(4)
+	eng := testEngine(cfg, store, exec, &fakeSide{})
+
+	wf := foreachWorkflow(config.StepConfig{
+		As:          "issue",
+		Concurrency: 2, // run at most 2 items at a time
+		Step:        &config.StepConfig{Agent: "backend-dev", Prompt: "Fix {{ issue.file }}"},
+	})
+
+	_, success, err := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	if err != nil {
+		t.Fatalf("RunInstance: %v", err)
+	}
+	if !success {
+		t.Fatal("expected success")
+	}
+
+	// All 4 items must have run.
+	subRuns := 0
+	exec.mu.Lock()
+	for _, id := range exec.started {
+		if strings.HasPrefix(id, "fix-each[") {
+			subRuns++
+		}
+	}
+	exec.mu.Unlock()
+	if subRuns != 4 {
+		t.Errorf("expected 4 sub-runs, got %d", subRuns)
+	}
+}
+
+func TestForeach_ConcurrentFailFast(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Settings.Concurrency = 4
+	store := newFakeStore()
+	exec := newConcurrentExecutor()
+	exec.results["plan"] = planWithIssues(6)
+	exec.results["fix-each[0]"] = StepResult{Success: false}
+	eng := testEngine(cfg, store, exec, &fakeSide{})
+
+	wf := foreachWorkflow(config.StepConfig{
+		As:          "issue",
+		Concurrency: 3,
+		FailFast:    true,
+		Step:        &config.StepConfig{Agent: "backend-dev"},
+	})
+
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	if success {
+		t.Fatal("expected failure (item 0 failed with fail_fast)")
+	}
+}
+
 func TestForeach_InvalidItemsPathFails(t *testing.T) {
 	cfg := baseCfg()
 	store := newFakeStore()

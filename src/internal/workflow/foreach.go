@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/orlandoburli/apiary/internal/config"
 	aplog "github.com/orlandoburli/apiary/internal/log"
@@ -23,11 +25,16 @@ type foreachResult struct {
 // executeForeachStep runs a foreach step without touching dagRun; it is safe to
 // call from a worker goroutine. contribSnap is a snapshot of r.contrib taken on
 // the scheduler goroutine before dispatch.
+//
+// sem is the global concurrency semaphore. When non-nil (concurrent mode), each
+// item goroutine acquires a slot from sem; the caller must have released its own
+// slot before calling this function. When nil (sequential mode), items run one
+// at a time without touching the semaphore.
 func (e *Engine) executeForeachStep(
 	ctx context.Context, instID string,
 	step config.StepConfig, cell model.Cell,
 	memSnap []MemoryStep, contribSnap map[string]MemoryStep,
-	wfID string,
+	wfID string, sem chan struct{},
 ) (StepResult, foreachResult) {
 	items, err := resolveItemsFromContrib(step.Items, contribSnap)
 	if err != nil {
@@ -58,6 +65,19 @@ func (e *Engine) executeForeachStep(
 		as = "item"
 	}
 
+	if sem != nil && step.Concurrency > 1 {
+		return e.executeForeachConcurrent(ctx, instID, step, cell, memSnap, wfID, sem, items, as)
+	}
+	return e.executeForeachSequential(ctx, instID, step, cell, memSnap, wfID, items, as)
+}
+
+// executeForeachSequential runs foreach items one at a time (original behaviour).
+func (e *Engine) executeForeachSequential(
+	ctx context.Context, instID string,
+	step config.StepConfig, cell model.Cell,
+	memSnap []MemoryStep, wfID string,
+	items []any, as string,
+) (StepResult, foreachResult) {
 	var fr foreachResult
 	for i, item := range items {
 		sub := *step.Step
@@ -77,11 +97,82 @@ func (e *Engine) executeForeachStep(
 			}
 		}
 	}
+	return foreachStepResult(step.ID, fr)
+}
 
+// executeForeachConcurrent runs foreach items concurrently, bounded by both
+// step.Concurrency (inner cap) and the global semaphore sem. The caller must
+// have released its own global slot before calling this function.
+func (e *Engine) executeForeachConcurrent(
+	ctx context.Context, instID string,
+	step config.StepConfig, cell model.Cell,
+	memSnap []MemoryStep, wfID string,
+	sem chan struct{}, items []any, as string,
+) (StepResult, foreachResult) {
+	var (
+		mu      sync.Mutex
+		wg      sync.WaitGroup
+		fr      foreachResult
+		stopped int32 // 1 when fail_fast triggered
+	)
+
+	// innerSem caps how many item goroutines are active simultaneously.
+	innerSem := make(chan struct{}, step.Concurrency)
+
+	for i, item := range items {
+		if step.FailFast && atomic.LoadInt32(&stopped) != 0 {
+			break
+		}
+
+		// Throttle goroutine fan-out by the per-foreach concurrency cap.
+		innerSem <- struct{}{}
+
+		if step.FailFast && atomic.LoadInt32(&stopped) != 0 {
+			<-innerSem
+			break
+		}
+
+		sub := *step.Step
+		sub.ID = fmt.Sprintf("%s[%d]", step.ID, i)
+		sub.Type = config.StepTypeAgent
+		sub.DependsOn = nil
+		sub.Prompt = renderItemTemplate(step.Step.Prompt, as, item)
+
+		wg.Add(1)
+		go func(sub config.StepConfig) {
+			defer wg.Done()
+			defer func() { <-innerSem }()
+
+			sem <- struct{}{} // acquire global slot
+			defer func() { <-sem }()
+
+			res := e.runStep(ctx, instID, sub, cell, memSnap)
+
+			mu.Lock()
+			if res.Success {
+				fr.passed++
+			} else {
+				fr.failed++
+				if step.FailFast {
+					atomic.StoreInt32(&stopped, 1)
+					aplog.Info("workflow %s: foreach %q: fail_fast triggered by %s",
+						wfID, step.ID, sub.ID)
+				}
+			}
+			mu.Unlock()
+		}(sub)
+	}
+
+	wg.Wait()
+	return foreachStepResult(step.ID, fr)
+}
+
+// foreachStepResult builds the StepResult from accumulated foreachResult counts.
+func foreachStepResult(stepID string, fr foreachResult) (StepResult, foreachResult) {
 	allOK := fr.failed == 0
 	summary := ""
 	if allOK {
-		summary = fmt.Sprintf("%s: processed %d item(s)", step.ID, fr.passed)
+		summary = fmt.Sprintf("%s: processed %d item(s)", stepID, fr.passed)
 	}
 	return StepResult{
 		Success: allOK,

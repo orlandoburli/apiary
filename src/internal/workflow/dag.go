@@ -13,12 +13,13 @@ import (
 
 // step execution states within a DAG run.
 const (
-	stPending = "pending"
-	stRunning = "running" // dispatched to a worker goroutine, not yet complete
-	stPassed  = "passed"
-	stFailed  = "failed"
-	stSkipped = "skipped"
-	stWaiting = "waiting" // an approval step parked awaiting a human response
+	stPending    = "pending"
+	stRunning    = "running"    // dispatched to a worker goroutine, not yet complete
+	stPassed     = "passed"
+	stFailed     = "failed"
+	stSkipped    = "skipped"    // cascade-skipped because a dep failed/was cascade-skipped
+	stCondSkipped = "cond_skipped" // skipped because the step's own condition was false
+	stWaiting    = "waiting"    // an approval step parked awaiting a human response
 )
 
 // dagOutcome is the terminal (or suspended) result of driving a DAG run.
@@ -137,7 +138,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 			if step.Condition != "" {
 				evalCtx := EvalContext{Cell: r.cell, Memory: r.memoryValues(), Steps: r.stepStates}
 				if e.conditionFalse(step.Condition, evalCtx) {
-					r.markSkipped(id)
+					r.markCondSkipped(id)
 					aplog.Debug("workflow %s: step %q skipped (condition false)", r.wf.ID, id)
 					continue
 				}
@@ -182,7 +183,15 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 					res, parallelContribs = e.runParallelStep(ctx, r.instID, step, r.cell, memSnap)
 				case config.StepTypeForeach:
 					var fr foreachResult
-					res, fr = e.executeForeachStep(ctx, r.instID, step, r.cell, memSnap, contribSnap, r.wf.ID)
+					if step.Concurrency > 1 {
+						// Release our global slot so item goroutines can use all
+						// available slots. Re-acquire before the deferred release fires.
+						<-sem
+						res, fr = e.executeForeachStep(ctx, r.instID, step, r.cell, memSnap, contribSnap, r.wf.ID, sem)
+						sem <- struct{}{}
+					} else {
+						res, fr = e.executeForeachStep(ctx, r.instID, step, r.cell, memSnap, contribSnap, r.wf.ID, nil)
+					}
 					foreachExitCode = fr.failed
 				case config.StepTypeWorkflow:
 					res = e.executeSubWorkflowStep(ctx, r.instID, step, r.cell, memSnap, r.depth, r.wf.ID)
@@ -379,7 +388,16 @@ func (r *dagRun) pickAllRunnable() []string {
 
 func (r *dagRun) depsPassed(id string) bool {
 	for _, dep := range r.byID[id].DependsOn {
+		// Explicit deps must be fully passed; condition-skip does cascade here.
 		if r.state[dep] != stPassed {
+			return false
+		}
+	}
+	for _, dep := range r.byID[id].SeqDependsOn {
+		// Implicit sequential deps: condition-skipped counts as satisfied so the
+		// successor can still run even when its predecessor's if: was false.
+		st := r.state[dep]
+		if st != stPassed && st != stCondSkipped {
 			return false
 		}
 	}
@@ -396,8 +414,19 @@ func (r *dagRun) skipUnreachable() bool {
 		if r.state[id] != stPending {
 			continue
 		}
-		// A dependency ended skipped/failed → this step can never run.
+		// Explicit dep ended skipped/failed → this step can never run.
 		for _, dep := range r.byID[id].DependsOn {
+			if r.state[dep] == stSkipped || r.state[dep] == stFailed {
+				r.markSkipped(id)
+				progress = true
+				break
+			}
+		}
+		if r.state[id] != stPending {
+			continue
+		}
+		// Seq dep failed/skipped cascades too, but stCondSkipped does not.
+		for _, dep := range r.byID[id].SeqDependsOn {
 			if r.state[dep] == stSkipped || r.state[dep] == stFailed {
 				r.markSkipped(id)
 				progress = true
@@ -435,9 +464,10 @@ func (r *dagRun) feedingSplitsDone(id string) bool {
 	return true
 }
 
-// markSkipped sets a step skipped and cascades to pending dependents.
+// markSkipped sets a step cascade-skipped (because a dep failed or was cascade-skipped)
+// and propagates to pending dependents. Does not override stCondSkipped.
 func (r *dagRun) markSkipped(id string) {
-	if r.state[id] == stSkipped {
+	if r.state[id] == stSkipped || r.state[id] == stCondSkipped {
 		return
 	}
 	r.state[id] = stSkipped
@@ -451,7 +481,24 @@ func (r *dagRun) markSkipped(id string) {
 				break
 			}
 		}
+		if r.state[other] != stPending {
+			continue
+		}
+		// SeqDependsOn failures also cascade (only stCondSkipped is exempt).
+		for _, dep := range r.byID[other].SeqDependsOn {
+			if dep == id {
+				r.markSkipped(other)
+				break
+			}
+		}
 	}
+}
+
+// markCondSkipped marks exactly this step as condition-skipped (no cascade).
+// Successors that depend only on condition-skipped steps can still run.
+func (r *dagRun) markCondSkipped(id string) {
+	r.state[id] = stCondSkipped
+	r.stepStates[id] = StepState{State: stCondSkipped}
 }
 
 // runSplitStep evaluates a split's branches and activates the chosen target(s),
@@ -515,6 +562,11 @@ func (r *dagRun) resetLoop(target string) {
 		reset[id] = true
 		for _, other := range r.order {
 			for _, dep := range r.byID[other].DependsOn {
+				if dep == id {
+					mark(other)
+				}
+			}
+			for _, dep := range r.byID[other].SeqDependsOn {
 				if dep == id {
 					mark(other)
 				}

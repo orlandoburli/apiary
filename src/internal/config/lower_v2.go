@@ -125,9 +125,10 @@ func (lc *lowerCtx) lowerSteps(steps []StepConfig, prevID, inheritedCondition st
 func (lc *lowerCtx) lowerLeafStep(s StepConfig, prevID, inheritedCondition string) (StepConfig, error) {
 	out := s
 
-	// Apply implicit sequencing: depend on previous sibling if not overriding.
+	// Apply implicit sequencing via SeqDependsOn (not DependsOn) so that a
+	// condition-skipped step in a sequential chain does not block its successor.
 	if prevID != "" && len(out.DependsOn) == 0 {
-		out.DependsOn = []string{prevID}
+		out.SeqDependsOn = []string{prevID}
 	}
 
 	// Lower output: alias.
