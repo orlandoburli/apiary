@@ -2,10 +2,6 @@
 
 ## Ativas
 
-### workflow-env-vars
-
-Variáveis de ambiente opcionais por escopo: `agents[].env`, `workflows[].env` e `workflows[].steps[].env`, mescladas por step com precedência STEP > WORKFLOW > AGENT, sobre a camada base de identidade (git + `source_token` → `GITHUB_TOKEN`/`GH_TOKEN`). Merge no executor do daemon (`stepEnv`); engine apenas repassa o env de workflow via `StepRequest.WorkflowEnv`.
-
 ### binary-distribution
 
 Publicação dos binários por release: GoReleaser dirigido por push de tag `v*` produz archives + checksums (GitHub Releases), Homebrew tap, Scoop bucket, winget, pacotes Linux (`.deb`/`.rpm` + AUR) e imagem OCI multi-arch (`ghcr.io`). Assinatura/notarização (macOS/Windows) fica fora do escopo v1. Restrição dominante: `mattn/go-sqlite3` exige cgo, então cross-compile precisa de toolchains C.
@@ -18,6 +14,7 @@ InternalTask como unidade canônica de trabalho: sources viram binders (registra
 
 ### 2026-06-06
 
+- **workflow-env-vars** — Variáveis de ambiente opcionais por escopo: `agents[].env`, `workflows[].env` e `workflows[].steps[].env`, mescladas por step com precedência STEP > WORKFLOW > AGENT, sobre a camada base de identidade (git + `source_token` → `GITHUB_TOKEN`/`GH_TOKEN`). Merge no executor do daemon (`stepEnv`); engine repassa o env de workflow via `StepRequest.WorkflowEnv`.
 - **apiary-agent-config-redesign** — Redesenho da configuração de agentes: nova seção `agents:` no config, soul files, `preferred_models`, skills metadata; rotas passam a referenciar agentes por ID.
 - **foundation** — Especificação inicial do projeto: specs de visão geral, arquitetura, schema, plugin-api, CLI, roadmap; setup do repositório.
 - **workflow-mode** — Substituição do pool/router flat por pipelines multi-step declarativos: engine de workflows com DAG, split, foreach, sub-workflows, approvals, resume, TUI step-panel.

@@ -65,6 +65,9 @@ type WorkflowConfig struct {
 	Steps         []StepConfig   `yaml:"steps"`
 	OnComplete    *OnComplete    `yaml:"on_complete,omitempty"`
 	OnFail        *OnComplete    `yaml:"on_fail,omitempty"`
+	// Env is the workflow-scope environment overlay applied to every step of this
+	// workflow. It overrides agent.env and is overridden by step.env.
+	Env map[string]string `yaml:"env,omitempty"`
 }
 
 // ResumePolicy returns the effective resume policy, defaulting to ResumeAllowed.
@@ -127,6 +130,9 @@ type StepConfig struct {
 	// handled: auto (default, fire-and-forget) | await (block on the child).
 	// Empty inherits the auto default.
 	Spawn string `yaml:"spawn,omitempty"`
+	// Env is the step-scope environment overlay. It is the highest-precedence
+	// explicit scope: it overrides workflow.env and agent.env for the same key.
+	Env map[string]string `yaml:"env,omitempty"`
 
 	// ── split step ────────────────────────────────────────────────
 	Multi    bool          `yaml:"multi,omitempty"`

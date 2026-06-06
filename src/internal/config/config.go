@@ -76,6 +76,10 @@ type AgentConfig struct {
 	SourceToken string   `yaml:"source_token,omitempty"`
 	SourceEmail string   `yaml:"source_email,omitempty"`
 	SourceName  string   `yaml:"source_name,omitempty"`
+	// Env is the agent-scope environment overlay applied to every step that runs
+	// this agent, in any workflow. It is the lowest-precedence explicit env scope
+	// (below workflow.env and step.env), layered on top of the identity overlay.
+	Env map[string]string `yaml:"env,omitempty"`
 }
 
 type WorkerConfig struct {
