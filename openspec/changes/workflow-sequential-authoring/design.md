@@ -3,6 +3,22 @@
 > Design only. Describes the authoring surface, how it lowers to the current DAG
 > engine, and the small engine capabilities it needs.
 
+## Layering & status (read first)
+
+Two layers, do not conflate them:
+
+- **Authored surface (this change):** a **nested step tree** — order + nesting +
+  `if:`. You **do not write** `depends_on`, `split`/`goto`, or `uses:`/references.
+- **Engine IR (already implemented):** `depends_on`, `split`, `type: workflow`,
+  `foreach` — described by the `workflow-mode` specs. The authored tree **lowers
+  to** this IR; the IR is not removed, it's the compile target.
+
+So `depends_on` is **not** removed — it moved layers: gone from authoring, kept as
+IR. Reference-based sub-workflows (`type: workflow` + name) are **dropped from
+authoring** (composition is nesting) and survive only as a lowering target. The
+`workflow-mode` specs for `workflow` and `sub-workflows` carry a banner pointing
+here.
+
 ## 0. Inspiration: GitHub Actions
 
 The authored surface follows the GitHub Actions `steps:` model, which already
@@ -494,3 +510,43 @@ flowchart TD
 For a **parallel** step the same flow runs per child concurrently; the parent's
 pass/fail is then the `join` policy (`all`/`any`/`${{ expr }}`) over the children.
 For a **foreach** step it runs per item (bounded by the global semaphore).
+
+## 11. Triggers & binding (unchanged by v2)
+
+How a GitHub issue (or any source cell) gets bound to a workflow. The `trigger:`
+block is **workflow-level and identical before/after v2** — only the `steps:` body
+changes. Polling-based; there are no webhooks.
+
+```
+source poll (poll_interval)  →  cells  →  router.Route(cell)  →  dispatchWorkflow → RunInstance
+   filters.states                            first matching trigger (by priority)
+```
+
+```yaml
+workflows:
+  - id: triage
+    trigger:
+      priority: 100                 # lower number = checked first; first match wins
+      match:
+        source: project-erp         # ← binds to this source's polled cells
+        exclude_label_prefix: "agent:"   # brand-new (unrouted) issues only
+        # also: states:[…] labels:[…] exclude_labels:[…] types:[…] title_regex:"…"
+    steps: [ ... ]                   # v2 nested tree
+```
+
+- **Poll, not push.** Each `sources:` entry polls every `poll_interval`; the GitHub
+  adapter lists issues filtered by `filters.states` (e.g. `[open]`) → one cell each.
+  It re-lists **all** matching issues every cycle (no "since" delta).
+- **Matching.** Every workflow `trigger:` is registered as a synthetic route
+  (`id = workflow id`, `priority`, `match`) alongside plain `routes:`, sorted by
+  `priority` ascending; the first match wins and its workflow runs.
+- **"New issue" = a fallback trigger.** Match on "no `agent:` label" at the highest
+  priority number (checked last), so already-routed issues hit their specific route
+  first and only genuinely new ones reach `triage`.
+- **Terminal-state requirement (critical).** Because every poll re-lists matching
+  issues, a workflow **must move the issue out of its own `match` set on
+  completion** — `on_complete: { set_state: closed }` (drops out of `states:[open]`)
+  or add a label the trigger excludes. Otherwise it re-triggers every poll. (This is
+  the exact loop the removed `assign_from_output` caused: it never moved the issue
+  out of the match set.) In-flight dedup is handled by an in-memory set; it does not
+  survive completion, so the terminal state is what prevents re-runs.
