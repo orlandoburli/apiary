@@ -157,11 +157,19 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 
 	x.finishExecution(ctx, exec, res)
 
+	// publish: off suppresses write-back before the engine ever sees the payload,
+	// even when the agent emitted an APIARY_PUBLISH block.
+	publishPayload := res.PublishPayload
+	if req.Step.Publish == config.PublishOff {
+		publishPayload = ""
+	}
+
 	return workflow.StepResult{
 		Success:          res.Success,
 		Output:           res.Output,
 		StructuredOutput: res.StructuredOutput,
 		Summary:          res.Summary,
+		PublishPayload:   publishPayload,
 		Err:              res.Error,
 	}
 }

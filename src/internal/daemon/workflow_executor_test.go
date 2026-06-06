@@ -84,3 +84,49 @@ func TestWfStepExecutor_RecordsExecution(t *testing.T) {
 		t.Errorf("duration = %dms, want 1200", exec.DurationMs)
 	}
 }
+
+// TestWfStepExecutor_PublishPropagation verifies the executor forwards the
+// runner's APIARY_PUBLISH payload to the engine by default (publish: auto) and
+// clears it when the step sets publish: off, before the engine ever sees it
+// (6.1.2, 6.4.2).
+func TestWfStepExecutor_PublishPropagation(t *testing.T) {
+	ctx := context.Background()
+	dbc, err := db.New(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbc.Close() })
+
+	runner := &fakeRunner{result: model.RunResult{
+		Success:        true,
+		Output:         "done",
+		PublishPayload: "## Result\nshipped",
+	}}
+	d := &Dispatcher{
+		cfg:         &config.Config{},
+		db:          dbc,
+		runners:     map[string]runnerpkg.Runner{"agent-architect": runner},
+		agentRunner: map[string]string{"architect": "claude"},
+	}
+	x := &wfStepExecutor{d: d}
+
+	// Default (publish unset == auto): payload propagates.
+	auto := x.ExecuteStep(ctx, workflow.StepRequest{
+		InstanceID: "wf_1",
+		Cell:       model.SourceItem{ID: "c1"},
+		Step:       config.StepConfig{ID: "plan", Agent: "architect"},
+	})
+	if auto.PublishPayload != "## Result\nshipped" {
+		t.Errorf("auto: payload = %q, want it propagated", auto.PublishPayload)
+	}
+
+	// publish: off clears the payload before the engine sees it.
+	off := x.ExecuteStep(ctx, workflow.StepRequest{
+		InstanceID: "wf_2",
+		Cell:       model.SourceItem{ID: "c1"},
+		Step:       config.StepConfig{ID: "plan", Agent: "architect", Publish: config.PublishOff},
+	})
+	if off.PublishPayload != "" {
+		t.Errorf("publish off: payload = %q, want cleared", off.PublishPayload)
+	}
+}
