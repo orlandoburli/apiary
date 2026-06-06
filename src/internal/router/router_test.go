@@ -33,20 +33,26 @@ func worker(id string) config.WorkerConfig {
 	return config.WorkerConfig{ID: id, Runner: "cli", Model: "test/model"}
 }
 
-func cell(opts ...func(*model.Cell)) model.Cell {
-	c := model.Cell{SourceID: "src-a", Type: "bug", Priority: "high"}
+func cell(opts ...func(*model.SourceItem)) model.SourceItem {
+	c := model.SourceItem{SourceID: "src-a", Type: "bug", Priority: "high"}
 	for _, o := range opts {
 		o(&c)
 	}
 	return c
 }
 
-func withSource(id string) func(*model.Cell)   { return func(c *model.Cell) { c.SourceID = id } }
-func withLabels(l ...string) func(*model.Cell) { return func(c *model.Cell) { c.Labels = l } }
-func withType(t string) func(*model.Cell)      { return func(c *model.Cell) { c.Type = t } }
-func withPriority(p string) func(*model.Cell)  { return func(c *model.Cell) { c.Priority = p } }
-func withTitle(t string) func(*model.Cell)     { return func(c *model.Cell) { c.Title = t } }
-func withState(s string) func(*model.Cell)     { return func(c *model.Cell) { c.State = s } }
+func withSource(id string) func(*model.SourceItem) {
+	return func(c *model.SourceItem) { c.SourceID = id }
+}
+func withLabels(l ...string) func(*model.SourceItem) {
+	return func(c *model.SourceItem) { c.Labels = l }
+}
+func withType(t string) func(*model.SourceItem) { return func(c *model.SourceItem) { c.Type = t } }
+func withPriority(p string) func(*model.SourceItem) {
+	return func(c *model.SourceItem) { c.Priority = p }
+}
+func withTitle(t string) func(*model.SourceItem) { return func(c *model.SourceItem) { c.Title = t } }
+func withState(s string) func(*model.SourceItem) { return func(c *model.SourceItem) { c.State = s } }
 
 // ── states / exclusion matchers ────────────────────────────────────────────────
 
@@ -343,7 +349,7 @@ func TestRoute_CombinedConditions(t *testing.T) {
 	))
 	tests := []struct {
 		name  string
-		c     model.Cell
+		c     model.SourceItem
 		match bool
 	}{
 		{"all match", cell(withSource("src-a"), withLabels("bug"), withType("bug")), true},

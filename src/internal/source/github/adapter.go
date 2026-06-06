@@ -83,7 +83,7 @@ func (a *Adapter) SetFilters(states, labels []string) {
 	}
 }
 
-func (a *Adapter) Poll(ctx context.Context, _ time.Time) ([]model.Cell, error) {
+func (a *Adapter) Poll(ctx context.Context, _ time.Time) ([]model.SourceItem, error) {
 	path := fmt.Sprintf("/repos/%s/%s/issues", a.owner, a.repo)
 
 	state := "open"
@@ -101,12 +101,12 @@ func (a *Adapter) Poll(ctx context.Context, _ time.Time) ([]model.Cell, error) {
 		return nil, fmt.Errorf("github: polling issues: %w", err)
 	}
 
-	var cells []model.Cell
+	var cells []model.SourceItem
 	for _, item := range issues {
 		if !a.matchesFilters(item) {
 			continue
 		}
-		cells = append(cells, a.toCell(item))
+		cells = append(cells, a.toSourceItem(item))
 	}
 	return cells, nil
 }
@@ -134,7 +134,7 @@ func (a *Adapter) matchesFilters(item issue) bool {
 	return true
 }
 
-func (a *Adapter) Acknowledge(ctx context.Context, cell model.Cell, action model.AckAction) error {
+func (a *Adapter) Acknowledge(ctx context.Context, cell model.SourceItem, action model.AckAction) error {
 	if action != model.AckActionInProgress {
 		return nil
 	}
@@ -147,7 +147,7 @@ func (a *Adapter) Acknowledge(ctx context.Context, cell model.Cell, action model
 	return nil
 }
 
-func (a *Adapter) WriteResult(ctx context.Context, cell model.Cell, result model.RunResult) error {
+func (a *Adapter) WriteResult(ctx context.Context, cell model.SourceItem, result model.RunResult) error {
 	issueNo := cell.ID
 	path := fmt.Sprintf("/repos/%s/%s/issues/%s/comments", a.owner, a.repo, issueNo)
 	body := formatComment(result)
@@ -163,18 +163,18 @@ func (a *Adapter) WebhookHandler() http.Handler { return nil }
 // PollTask fetches the current state of a single issue plus its comments, for
 // the workflow engine to evaluate approval-step conditions. Implements
 // source.TaskPoller.
-func (a *Adapter) PollTask(ctx context.Context, cellID string) (model.Cell, error) {
+func (a *Adapter) PollTask(ctx context.Context, cellID string) (model.SourceItem, error) {
 	path := fmt.Sprintf("/repos/%s/%s/issues/%s", a.owner, a.repo, cellID)
 	body, err := a.client.get(ctx, path)
 	if err != nil {
-		return model.Cell{}, fmt.Errorf("github: poll task %s: %w", cellID, err)
+		return model.SourceItem{}, fmt.Errorf("github: poll task %s: %w", cellID, err)
 	}
 	var item issue
 	if err := json.Unmarshal(body, &item); err != nil {
-		return model.Cell{}, fmt.Errorf("github: decoding issue %s: %w", cellID, err)
+		return model.SourceItem{}, fmt.Errorf("github: decoding issue %s: %w", cellID, err)
 	}
 
-	cell := a.toCell(item)
+	cell := a.toSourceItem(item)
 	comments, err := a.fetchComments(ctx, cellID)
 	if err != nil {
 		aplog.Debug("github: fetch comments for %s: %v", cellID, err)
@@ -203,7 +203,7 @@ func (a *Adapter) fetchComments(ctx context.Context, issueNo string) ([]model.Co
 	return out, nil
 }
 
-func (a *Adapter) SetState(ctx context.Context, cell model.Cell, stateName string) error {
+func (a *Adapter) SetState(ctx context.Context, cell model.SourceItem, stateName string) error {
 	issueNo := cell.ID
 	path := fmt.Sprintf("/repos/%s/%s/issues/%s", a.owner, a.repo, issueNo)
 	_, err := a.client.patch(ctx, path, issueRequest{State: stateName})
@@ -213,7 +213,7 @@ func (a *Adapter) SetState(ctx context.Context, cell model.Cell, stateName strin
 	return nil
 }
 
-func (a *Adapter) AddLabels(ctx context.Context, cell model.Cell, names []string) error {
+func (a *Adapter) AddLabels(ctx context.Context, cell model.SourceItem, names []string) error {
 	if len(names) == 0 {
 		return nil
 	}
@@ -246,7 +246,7 @@ func (a *Adapter) AddLabels(ctx context.Context, cell model.Cell, names []string
 // RemoveLabels deletes the named labels from an issue, one DELETE per label so
 // the remaining labels are untouched. A label that is already absent (GitHub
 // returns 404) is ignored. Implements source.LabelRemover.
-func (a *Adapter) RemoveLabels(ctx context.Context, cell model.Cell, names []string) error {
+func (a *Adapter) RemoveLabels(ctx context.Context, cell model.SourceItem, names []string) error {
 	issueNo := cell.ID
 	for _, name := range names {
 		path := fmt.Sprintf("/repos/%s/%s/issues/%s/labels/%s",
@@ -270,7 +270,7 @@ func (a *Adapter) ensureLabel(ctx context.Context, name string) error {
 	return nil
 }
 
-func (a *Adapter) toCell(item issue) model.Cell {
+func (a *Adapter) toSourceItem(item issue) model.SourceItem {
 	labels := make([]string, 0, len(item.Labels))
 	for _, l := range item.Labels {
 		labels = append(labels, strings.ToLower(l.Name))
@@ -284,7 +284,7 @@ func (a *Adapter) toCell(item issue) model.Cell {
 	}
 
 	url := strings.Replace(item.HTMLURL, "/pull/", "/issues/", 1)
-	return model.Cell{
+	return model.SourceItem{
 		ID:          fmt.Sprintf("%d", item.Number),
 		SourceID:    a.ID(),
 		Number:      fmt.Sprintf("#%d", item.Number),

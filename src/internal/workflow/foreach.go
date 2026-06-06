@@ -32,7 +32,7 @@ type foreachResult struct {
 // at a time without touching the semaphore.
 func (e *Engine) executeForeachStep(
 	ctx context.Context, instID string,
-	step config.StepConfig, cell model.Cell,
+	step config.StepConfig, cell model.SourceItem,
 	memSnap []MemoryStep, contribSnap map[string]MemoryStep,
 	wfID string, sem chan struct{},
 ) (StepResult, foreachResult) {
@@ -74,7 +74,7 @@ func (e *Engine) executeForeachStep(
 // executeForeachSequential runs foreach items one at a time (original behaviour).
 func (e *Engine) executeForeachSequential(
 	ctx context.Context, instID string,
-	step config.StepConfig, cell model.Cell,
+	step config.StepConfig, cell model.SourceItem,
 	memSnap []MemoryStep, wfID string,
 	items []any, as string,
 ) (StepResult, foreachResult) {
@@ -105,7 +105,7 @@ func (e *Engine) executeForeachSequential(
 // have released its own global slot before calling this function.
 func (e *Engine) executeForeachConcurrent(
 	ctx context.Context, instID string,
-	step config.StepConfig, cell model.Cell,
+	step config.StepConfig, cell model.SourceItem,
 	memSnap []MemoryStep, wfID string,
 	sem chan struct{}, items []any, as string,
 ) (StepResult, foreachResult) {

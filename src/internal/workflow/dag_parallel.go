@@ -24,7 +24,7 @@ type parallelChildResult struct {
 // runParallelStep is called from a worker goroutine and must NOT touch dagRun.
 func (e *Engine) runParallelStep(
 	ctx context.Context, instID string,
-	step config.StepConfig, cell model.Cell,
+	step config.StepConfig, cell model.SourceItem,
 	memSnap []MemoryStep,
 ) (StepResult, []MemoryStep) {
 	children := step.SubSteps
@@ -97,4 +97,4 @@ func applyJoinPolicy(join string, results []parallelChildResult) bool {
 }
 
 // Silence unused-import warning when model is only used for the function signature.
-var _ model.Cell
+var _ model.SourceItem

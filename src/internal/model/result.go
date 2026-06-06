@@ -3,7 +3,7 @@ package model
 import "time"
 
 type RunRequest struct {
-	Cell          Cell
+	Cell          SourceItem
 	WorkerID      string
 	Model         string
 	MaxTurns      int
@@ -86,7 +86,7 @@ const (
 
 type ActiveRun struct {
 	ID        string
-	Cell      Cell
+	Cell      SourceItem
 	WorkerID  string
 	Model     string
 	Status    RunStatus

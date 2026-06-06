@@ -92,7 +92,7 @@ func TestApplyStructured_MutatesResult(t *testing.T) {
 
 func TestBuildPrompt_PrependAndSummary(t *testing.T) {
 	req := model.RunRequest{
-		Cell:          model.Cell{Title: "Fix bug"},
+		Cell:          model.SourceItem{Title: "Fix bug"},
 		SystemPrepend: "=== Workflow Memory ===\ncomplexity: high\n======================",
 		SystemAppend:  "soul content",
 		SummaryPrompt: "Summarize what you did.",
@@ -117,7 +117,7 @@ func TestBuildPrompt_PrependAndSummary(t *testing.T) {
 }
 
 func TestBuildPrompt_NoWorkflowFieldsUnchanged(t *testing.T) {
-	req := model.RunRequest{Cell: model.Cell{Title: "Plain task"}}
+	req := model.RunRequest{Cell: model.SourceItem{Title: "Plain task"}}
 	prompt := buildPrompt(req)
 	if strings.Contains(prompt, summaryStartMarker) {
 		t.Error("plain prompt should not contain summary markers")

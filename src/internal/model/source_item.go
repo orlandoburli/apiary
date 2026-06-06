@@ -7,8 +7,7 @@ import "time"
 // the SourceBinder translates a SourceItem into an InternalTask, after which the
 // task — not the SourceItem — travels forward into routing and execution.
 //
-// This is the canonical name; the legacy alias Cell (cell.go) is deprecated and
-// removed in Phase 2.
+// This is the canonical name; it replaces the former Cell type.
 type SourceItem struct {
 	ID          string
 	SourceID    string
@@ -28,3 +27,18 @@ type SourceItem struct {
 	// approval condition.
 	Comments []Comment
 }
+
+// Comment is a single comment on a source task, used to evaluate approval-step
+// resume/abort conditions (comment_contains).
+type Comment struct {
+	ID        string
+	Body      string
+	CreatedAt time.Time
+}
+
+type AckAction string
+
+const (
+	AckActionInProgress AckAction = "in_progress"
+	AckActionSkip       AckAction = "skip"
+)

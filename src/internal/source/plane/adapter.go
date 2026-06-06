@@ -212,7 +212,7 @@ func (a *Adapter) SetFilters(states, labels []string) {
 	}
 }
 
-func (a *Adapter) Poll(ctx context.Context, since time.Time) ([]model.Cell, error) {
+func (a *Adapter) Poll(ctx context.Context, since time.Time) ([]model.SourceItem, error) {
 	if err := a.loadMetadata(ctx); err != nil {
 		return nil, err
 	}
@@ -223,7 +223,7 @@ func (a *Adapter) Poll(ctx context.Context, since time.Time) ([]model.Cell, erro
 		return nil, fmt.Errorf("plane: polling work items: %w", err)
 	}
 
-	var cells []model.Cell
+	var cells []model.SourceItem
 	for _, item := range items {
 		if !a.matchesFilters(item) {
 			continue
@@ -232,7 +232,7 @@ func (a *Adapter) Poll(ctx context.Context, since time.Time) ([]model.Cell, erro
 		if !since.IsZero() && !updatedAt.After(since) {
 			continue
 		}
-		cells = append(cells, a.toCell(item))
+		cells = append(cells, a.toSourceItem(item))
 	}
 	return cells, nil
 }
@@ -260,7 +260,7 @@ func (a *Adapter) matchesFilters(item workItem) bool {
 	return true
 }
 
-func (a *Adapter) Acknowledge(ctx context.Context, cell model.Cell, action model.AckAction) error {
+func (a *Adapter) Acknowledge(ctx context.Context, cell model.SourceItem, action model.AckAction) error {
 	if action != model.AckActionInProgress {
 		return nil
 	}
@@ -275,7 +275,7 @@ func (a *Adapter) Acknowledge(ctx context.Context, cell model.Cell, action model
 	return nil
 }
 
-func (a *Adapter) WriteResult(ctx context.Context, cell model.Cell, result model.RunResult) error {
+func (a *Adapter) WriteResult(ctx context.Context, cell model.SourceItem, result model.RunResult) error {
 	path := a.workItemsBase() + "/" + cell.ID + "/comments/"
 	comment := formatComment(result)
 	_, err := a.client.post(ctx, path, commentRequest{CommentHTML: comment})
@@ -288,7 +288,7 @@ func (a *Adapter) WriteResult(ctx context.Context, cell model.Cell, result model
 func (a *Adapter) WebhookHandler() http.Handler { return nil }
 
 // SetState implements source.StateSetter.
-func (a *Adapter) SetState(ctx context.Context, cell model.Cell, stateName string) error {
+func (a *Adapter) SetState(ctx context.Context, cell model.SourceItem, stateName string) error {
 	if err := a.loadMetadata(ctx); err != nil {
 		return err
 	}
@@ -308,7 +308,7 @@ func (a *Adapter) SetState(ctx context.Context, cell model.Cell, stateName strin
 // work item's existing labels (Plane's PATCH replaces the set, so we must send
 // the full list) and auto-creates any label that doesn't yet exist in the
 // project. Names are matched case-insensitively.
-func (a *Adapter) AddLabels(ctx context.Context, cell model.Cell, names []string) error {
+func (a *Adapter) AddLabels(ctx context.Context, cell model.SourceItem, names []string) error {
 	if len(names) == 0 {
 		return nil
 	}
@@ -372,7 +372,7 @@ func (a *Adapter) workItemsBase() string {
 	return fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/%s", a.workspace, a.project, path)
 }
 
-func (a *Adapter) toCell(item workItem) model.Cell {
+func (a *Adapter) toSourceItem(item workItem) model.SourceItem {
 	labels := make([]string, 0, len(item.Labels))
 	for _, id := range item.Labels {
 		if name := a.labelIDToName[id]; name != "" {
@@ -387,7 +387,7 @@ func (a *Adapter) toCell(item workItem) model.Cell {
 		number = fmt.Sprintf("%s-%d", a.projectIdentifier, item.SequenceID)
 	}
 
-	cell := model.Cell{
+	cell := model.SourceItem{
 		ID:          item.ID,
 		SourceID:    a.ID(),
 		Number:      number,

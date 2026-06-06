@@ -19,16 +19,16 @@ func TestEvaluateApproval_Conditions(t *testing.T) {
 
 	cases := []struct {
 		name string
-		cell model.Cell
+		cell model.SourceItem
 		want ApprovalDecision
 	}{
-		{"no signal", model.Cell{}, ApprovalWait},
-		{"resume by comment", model.Cell{Comments: []model.Comment{{Body: "looks good, APPROVE"}}}, ApprovalResume},
-		{"resume by label", model.Cell{Labels: []string{"approved"}}, ApprovalResume},
-		{"abort by comment", model.Cell{Comments: []model.Comment{{Body: "please reject this"}}}, ApprovalAbort},
-		{"abort by state", model.Cell{State: "cancelled"}, ApprovalAbort},
-		{"resume wins over abort", model.Cell{Comments: []model.Comment{{Body: "approve"}, {Body: "reject"}}}, ApprovalResume},
-		{"unrelated comment waits", model.Cell{Comments: []model.Comment{{Body: "what about tests?"}}}, ApprovalWait},
+		{"no signal", model.SourceItem{}, ApprovalWait},
+		{"resume by comment", model.SourceItem{Comments: []model.Comment{{Body: "looks good, APPROVE"}}}, ApprovalResume},
+		{"resume by label", model.SourceItem{Labels: []string{"approved"}}, ApprovalResume},
+		{"abort by comment", model.SourceItem{Comments: []model.Comment{{Body: "please reject this"}}}, ApprovalAbort},
+		{"abort by state", model.SourceItem{State: "cancelled"}, ApprovalAbort},
+		{"resume wins over abort", model.SourceItem{Comments: []model.Comment{{Body: "approve"}, {Body: "reject"}}}, ApprovalResume},
+		{"unrelated comment waits", model.SourceItem{Comments: []model.Comment{{Body: "what about tests?"}}}, ApprovalWait},
 	}
 	for _, c := range cases {
 		if got := EvaluateApproval(step, c.cell); got != c.want {
@@ -57,7 +57,7 @@ func TestApproval_SuspendsAtApprovalStep(t *testing.T) {
 	side := &fakeSide{}
 	eng := testEngine(cfg, store, exec, side)
 
-	instID, success, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.Cell{ID: "c1"})
+	instID, success, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.SourceItem{ID: "c1"})
 	if success {
 		t.Fatal("a parked instance should not report success")
 	}
@@ -87,7 +87,7 @@ func TestApproval_ResumeContinuesWorkflow(t *testing.T) {
 	exec := &fakeExecutor{}
 	eng := testEngine(cfg, store, exec, &fakeSide{})
 
-	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.Cell{ID: "c1"})
+	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.SourceItem{ID: "c1"})
 
 	success, err := eng.ResolveApproval(context.Background(), instID, ApprovalResume)
 	if err != nil {
@@ -114,7 +114,7 @@ func TestApproval_AbortFailsWorkflow(t *testing.T) {
 	exec := &fakeExecutor{}
 	eng := testEngine(cfg, store, exec, &fakeSide{})
 
-	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.Cell{ID: "c1"})
+	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.SourceItem{ID: "c1"})
 
 	success, _ := eng.ResolveApproval(context.Background(), instID, ApprovalAbort)
 	if success {
@@ -141,11 +141,11 @@ func TestApproval_CheckResumesOnComment(t *testing.T) {
 	exec := &fakeExecutor{}
 	eng := testEngine(cfg, store, exec, &fakeSide{})
 
-	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.Cell{ID: "c1", SourceID: "s1"})
+	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.SourceItem{ID: "c1", SourceID: "s1"})
 
 	// Poll returns a cell with an approving comment.
-	poll := func(sourceID, cellID string) (model.Cell, error) {
-		return model.Cell{ID: cellID, SourceID: sourceID,
+	poll := func(sourceID, cellID string) (model.SourceItem, error) {
+		return model.SourceItem{ID: cellID, SourceID: sourceID,
 			Comments: []model.Comment{{Body: "approve please"}}}, nil
 	}
 	eng.CheckParkedApprovals(context.Background(), poll)
@@ -171,12 +171,12 @@ func TestApproval_CheckTimesOut(t *testing.T) {
 		WithIDGen(func(p string) string { return p + "-1" }),
 	)
 
-	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.Cell{ID: "c1", SourceID: "s1"})
+	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.SourceItem{ID: "c1", SourceID: "s1"})
 
 	// Advance clock past 48h; poll returns nothing actionable.
 	clock = time.Unix(0, 0).Add(49 * time.Hour)
-	noSignal := func(sourceID, cellID string) (model.Cell, error) {
-		return model.Cell{ID: cellID}, nil
+	noSignal := func(sourceID, cellID string) (model.SourceItem, error) {
+		return model.SourceItem{ID: cellID}, nil
 	}
 	eng.CheckParkedApprovals(context.Background(), noSignal)
 
@@ -190,10 +190,10 @@ func TestApproval_CheckWaitsWhenNoSignal(t *testing.T) {
 	store := newFakeStore()
 	eng := testEngine(cfg, store, &fakeExecutor{}, &fakeSide{})
 
-	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.Cell{ID: "c1", SourceID: "s1"})
+	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.SourceItem{ID: "c1", SourceID: "s1"})
 
-	poll := func(sourceID, cellID string) (model.Cell, error) {
-		return model.Cell{ID: cellID, Comments: []model.Comment{{Body: "still thinking"}}}, nil
+	poll := func(sourceID, cellID string) (model.SourceItem, error) {
+		return model.SourceItem{ID: cellID, Comments: []model.Comment{{Body: "still thinking"}}}, nil
 	}
 	eng.CheckParkedApprovals(context.Background(), poll)
 

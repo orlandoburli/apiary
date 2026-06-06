@@ -25,7 +25,7 @@ type Store interface {
 // StepRequest is the input to executing one agent step.
 type StepRequest struct {
 	InstanceID string
-	Cell       model.Cell
+	Cell       model.SourceItem
 	Step       config.StepConfig
 	Agent      config.AgentConfig
 	Model      string // resolved model (step override or agent default)
@@ -53,11 +53,11 @@ type StepExecutor interface {
 // SideEffects applies source-facing actions. A nil SideEffects disables them.
 type SideEffects interface {
 	// StateLock marks the task in-progress at workflow start.
-	StateLock(ctx context.Context, cell model.Cell) error
+	StateLock(ctx context.Context, cell model.SourceItem) error
 	// PostComment posts a comment (result_comment) on the task.
-	PostComment(ctx context.Context, cell model.Cell, comment string) error
+	PostComment(ctx context.Context, cell model.SourceItem, comment string) error
 	// ApplyHook applies an on_complete/on_fail hook (set_state, add_labels).
-	ApplyHook(ctx context.Context, cell model.Cell, hook config.OnComplete) error
+	ApplyHook(ctx context.Context, cell model.SourceItem, hook config.OnComplete) error
 }
 
 // Engine orchestrates a workflow instance: it persists the instance and its step
@@ -117,7 +117,7 @@ func NewEngine(cfg *config.Config, store Store, exec StepExecutor, opts ...Optio
 // approval_waiting until ResolveApproval (driven by the polling loop) resumes it.
 // Errors creating the instance are returned; per-step failures are recorded and
 // reflected in the final instance state and the success flag, not returned.
-func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, cell model.Cell) (instanceID string, success bool, err error) {
+func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, cell model.SourceItem) (instanceID string, success bool, err error) {
 	instID := e.newID("wf")
 	inst := &db.WorkflowInstance{
 		ID:         instID,
@@ -167,7 +167,7 @@ func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool
 }
 
 // runStep executes one agent step, persisting its step run, and returns the result.
-func (e *Engine) runStep(ctx context.Context, instID string, step config.StepConfig, cell model.Cell, memSteps []MemoryStep) StepResult {
+func (e *Engine) runStep(ctx context.Context, instID string, step config.StepConfig, cell model.SourceItem, memSteps []MemoryStep) StepResult {
 	started := e.now()
 	sr := &db.StepRun{
 		ID:                 e.newID("sr"),
@@ -224,7 +224,7 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 
 // applyCompletion applies the on_complete/on_fail hook and posts the on_complete
 // result comment (the final memory document).
-func (e *Engine) applyCompletion(ctx context.Context, wf config.WorkflowConfig, cell model.Cell, failed bool, memSteps []MemoryStep) {
+func (e *Engine) applyCompletion(ctx context.Context, wf config.WorkflowConfig, cell model.SourceItem, failed bool, memSteps []MemoryStep) {
 	if e.side == nil {
 		return
 	}
