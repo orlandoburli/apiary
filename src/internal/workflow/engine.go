@@ -22,6 +22,13 @@ type Store interface {
 	UpdateStepRun(ctx context.Context, sr *db.StepRun) error
 }
 
+// bindingLister is the optional capability the engine uses to resolve a task's
+// source bindings (for side-effect fan-out and the execution view). *db.Client
+// satisfies it; fake stores in tests that omit it simply yield no bindings.
+type bindingLister interface {
+	ListBindingsByTask(ctx context.Context, taskID string) ([]model.SourceBinding, error)
+}
+
 // StepRequest is the input to executing one agent step.
 type StepRequest struct {
 	InstanceID string
@@ -50,14 +57,18 @@ type StepExecutor interface {
 	ExecuteStep(ctx context.Context, req StepRequest) StepResult
 }
 
-// SideEffects applies source-facing actions. A nil SideEffects disables them.
+// SideEffects applies source-facing actions for an InternalTask. Each action
+// fans out to the task's source bindings (today a task has at most one binding;
+// spawned tasks have none, in which case the action is a no-op). A nil
+// SideEffects disables them.
 type SideEffects interface {
-	// StateLock marks the task in-progress at workflow start.
-	StateLock(ctx context.Context, cell model.SourceItem) error
-	// PostComment posts a comment (result_comment) on the task.
-	PostComment(ctx context.Context, cell model.SourceItem, comment string) error
-	// ApplyHook applies an on_complete/on_fail hook (set_state, add_labels).
-	ApplyHook(ctx context.Context, cell model.SourceItem, hook config.OnComplete) error
+	// StateLock marks each bound source item in-progress at workflow start.
+	StateLock(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding) error
+	// PostComment posts a comment (result_comment) on each bound source item.
+	PostComment(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, comment string) error
+	// ApplyHook applies an on_complete/on_fail hook (set_state, add_labels) to
+	// each bound source item.
+	ApplyHook(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, hook config.OnComplete) error
 }
 
 // Engine orchestrates a workflow instance: it persists the instance and its step
@@ -111,17 +122,22 @@ func NewEngine(cfg *config.Config, store Store, exec StepExecutor, opts ...Optio
 	return e
 }
 
-// RunInstance executes a workflow for a cell. It returns the created instance ID
-// and whether the instance completed successfully. An instance that suspends at
-// an approval step returns success=false with no error — it is parked in state
-// approval_waiting until ResolveApproval (driven by the polling loop) resumes it.
-// Errors creating the instance are returned; per-step failures are recorded and
-// reflected in the final instance state and the success flag, not returned.
-func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, cell model.SourceItem) (instanceID string, success bool, err error) {
+// RunInstance executes a workflow for an InternalTask. It returns the created
+// instance ID and whether the instance completed successfully. An instance that
+// suspends at an approval step returns success=false with no error — it is parked
+// in state approval_waiting until ResolveApproval (driven by the polling loop)
+// resumes it. Errors creating the instance are returned; per-step failures are
+// recorded and reflected in the final instance state and the success flag, not
+// returned.
+func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, task model.InternalTask) (instanceID string, success bool, err error) {
+	bindings := e.bindingsFor(ctx, task.ID)
+	cell := sourceItemView(task, bindings)
+
 	instID := e.newID("wf")
 	inst := &db.WorkflowInstance{
 		ID:         instID,
 		WorkflowID: wf.ID,
+		TaskID:     task.ID,
 		CellID:     cell.ID,
 		SourceID:   cell.SourceID,
 		State:      db.InstanceStateRunning,
@@ -133,12 +149,56 @@ func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, cell
 
 	// state_lock fires once at workflow start (not per step).
 	if e.cfg.Settings.StateLock && e.side != nil {
-		_ = e.side.StateLock(ctx, cell)
+		_ = e.side.StateLock(ctx, task, bindings)
 	}
 
-	r := e.initDAG(instID, wf, cell, nil, 0)
+	r := e.initDAG(instID, wf, task, bindings, nil, 0)
 	outcome := e.driveDAG(ctx, r)
 	return instID, e.settle(ctx, r, outcome), nil
+}
+
+// bindingsFor resolves a task's source bindings via the Store when it supports
+// it (the production *db.Client). Returns nil for fake stores, spawned tasks
+// (no bindings), or on error — all of which leave side effects as no-ops.
+func (e *Engine) bindingsFor(ctx context.Context, taskID string) []model.SourceBinding {
+	if taskID == "" {
+		return nil
+	}
+	bl, ok := e.store.(bindingLister)
+	if !ok {
+		return nil
+	}
+	bindings, err := bl.ListBindingsByTask(ctx, taskID)
+	if err != nil {
+		return nil
+	}
+	return bindings
+}
+
+// sourceItemView projects an InternalTask (plus its primary source binding, if
+// any) into the SourceItem shape the executor, memory builder, and expression
+// engine consume. The primary binding supplies source identity (id, number, url);
+// the task supplies the live content and routing attributes. For a binding-less
+// task (spawned, or no-DB transient) the task's own ID and metadata stand in.
+func sourceItemView(task model.InternalTask, bindings []model.SourceBinding) model.SourceItem {
+	item := model.SourceItem{
+		ID:          task.ID,
+		SourceID:    task.Metadata.Source,
+		Title:       task.Title,
+		Description: task.Description,
+		Labels:      task.Metadata.Labels,
+		Type:        task.Metadata.Type,
+		Priority:    task.Metadata.Priority,
+		State:       task.Metadata.State,
+	}
+	if len(bindings) > 0 {
+		b := bindings[0]
+		item.ID = b.SourceItemID
+		item.SourceID = b.SourceID
+		item.Number = b.SourceItemNumber
+		item.URL = b.SourceItemURL
+	}
+	return item
 }
 
 // settle persists the terminal state of a run and applies completion hooks, or
@@ -162,7 +222,7 @@ func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool
 	e.mu.Lock()
 	delete(e.parked, r.instID)
 	e.mu.Unlock()
-	e.applyCompletion(ctx, r.wf, r.cell, failed, r.memSteps())
+	e.applyCompletion(ctx, r, failed)
 	return !failed
 }
 
@@ -223,15 +283,16 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 }
 
 // applyCompletion applies the on_complete/on_fail hook and posts the on_complete
-// result comment (the final memory document).
-func (e *Engine) applyCompletion(ctx context.Context, wf config.WorkflowConfig, cell model.SourceItem, failed bool, memSteps []MemoryStep) {
+// result comment (the final memory document) to the task's source bindings.
+func (e *Engine) applyCompletion(ctx context.Context, r *dagRun, failed bool) {
 	if e.side == nil {
 		return
 	}
+	wf := r.wf
 
 	if !failed && e.resultCommentMode(wf) == config.ResultCommentOnComplete {
-		doc := e.mem.Build(cell, memSteps)
-		_ = e.side.PostComment(ctx, cell, finalComment(wf, false, doc))
+		doc := e.mem.Build(r.cell, r.memSteps())
+		_ = e.side.PostComment(ctx, r.task, r.bindings, finalComment(wf, false, doc))
 	}
 
 	var hook *config.OnComplete
@@ -241,7 +302,7 @@ func (e *Engine) applyCompletion(ctx context.Context, wf config.WorkflowConfig, 
 		hook = wf.OnComplete
 	}
 	if hook != nil {
-		_ = e.side.ApplyHook(ctx, cell, *hook)
+		_ = e.side.ApplyHook(ctx, r.task, r.bindings, *hook)
 	}
 }
 

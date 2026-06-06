@@ -35,7 +35,7 @@ func TestDAG_ConditionSkipsStep(t *testing.T) {
 		{ID: "deploy", Agent: "architect", DependsOn: []string{"implement"}},
 	}}
 
-	instID, success, err := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
+	instID, success, err := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestDAG_CondSkip_SeqSuccessorStillRuns(t *testing.T) {
 		},
 	}}
 
-	_, success, err := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
+	_, success, err := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestDAG_ConditionTrueRunsStep(t *testing.T) {
 		},
 	}}
 
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
 	if !success {
 		t.Fatal("expected success")
 	}
@@ -157,7 +157,7 @@ func TestDAG_FailWhenRejectsStep(t *testing.T) {
 		},
 	}}
 
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
 	if !success {
 		t.Fatal("expected success after retry")
 	}
@@ -188,7 +188,7 @@ func TestDAG_FailWhenFalseDoesNotReject(t *testing.T) {
 		},
 	}}
 
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
 	if !success {
 		t.Fatal("expected success when fail_when is false")
 	}
@@ -218,7 +218,7 @@ func TestDAG_FailWhenExhaustsRetries(t *testing.T) {
 		},
 	}}
 
-	instID, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
+	instID, success, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
 	if success {
 		t.Fatal("expected failure after exhausted retries")
 	}
@@ -250,7 +250,7 @@ func TestDAG_OnMissingOutputFail(t *testing.T) {
 		},
 	}}
 
-	instID, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
+	instID, success, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
 	if success {
 		t.Fatal("expected failure when structured output is missing with on_missing_output=fail")
 	}
@@ -277,7 +277,7 @@ func TestDAG_OnMissingOutputWarnDoesNotFail(t *testing.T) {
 		},
 	}}
 
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
 	if !success {
 		t.Fatal("expected success when on_missing_output=warn and output is absent")
 	}

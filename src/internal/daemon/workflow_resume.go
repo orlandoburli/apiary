@@ -132,10 +132,10 @@ func (d *Dispatcher) StartResume(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	cell := d.cellForInstance(ctx, inst)
+	task := d.taskForInstance(ctx, inst)
 
 	go func() {
-		success, rerr := d.workflowEngine().ResumeInstance(ctx, id, wf, cell, steps)
+		success, rerr := d.workflowEngine().ResumeInstance(ctx, id, wf, task, steps)
 		if rerr != nil {
 			aplog.Error("resume %s: %v", id, rerr)
 			return
@@ -173,6 +173,20 @@ func resumeHTTPStatus(err error) int {
 	default:
 		return http.StatusInternalServerError
 	}
+}
+
+// taskForInstance resolves the InternalTask a resume runs against. When the
+// instance carries a task id (the post-Phase-5 path) the persisted task is
+// loaded so the engine can resolve its source bindings for side effects. A
+// legacy instance with no task id falls back to a transient task synthesized
+// from the live/stored cell (no bindings → side effects are skipped on resume).
+func (d *Dispatcher) taskForInstance(ctx context.Context, inst *db.WorkflowInstance) model.InternalTask {
+	if inst.TaskID != "" {
+		if t, err := d.db.InternalTasks().GetTask(ctx, inst.TaskID); err == nil && t != nil {
+			return *t
+		}
+	}
+	return transientTask(d.cellForInstance(ctx, inst))
 }
 
 // cellForInstance rebuilds the cell to resume against: a fresh poll when the
