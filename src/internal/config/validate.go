@@ -104,6 +104,10 @@ func (c *Config) Validate() []error {
 		routeIDs[r.ID] = true
 	}
 
+	// Validate v2-specific authoring rules before lowering (while v2 fields are
+	// still present on the raw StepConfig nodes).
+	errs = append(errs, c.validateV2Workflows()...)
+
 	// Lower v2 authored workflows to DAG IR before validation so the validator
 	// sees only canonical StepConfig fields.
 	if err := LowerV2WorkflowInConfig(c); err != nil {
