@@ -29,6 +29,14 @@ func init() {
 		"prompt_positional": true,
 	}))
 
+	// Cursor agent CLI — requires the `agent` binary from https://cursor.com/install.
+	// Runs headlessly with stream-json output; --force auto-approves file changes.
+	runner.Register("cursor-cli", cliFactory("agent", map[string]any{
+		"args":              []any{"-p", "--output-format", "stream-json", "--force"},
+		"prompt_flag":       "",
+		"prompt_positional": true,
+	}))
+
 	// ── API providers ──────────────────────────────────────────────────────────
 	// ApiRunner uses default BuildBody and ParseResponse (OpenAI-compatible format).
 	// Providers with a different schema should pass custom functions.
@@ -36,12 +44,6 @@ func init() {
 		return &execution.ApiRunner{
 			Endpoint:   "https://api.opencode.ai/v1/chat/completions",
 			AuthHeader: "Bearer ${OPENCODE_API_KEY}",
-		}
-	})
-
-	runner.Register("cursor-api", func() runner.Runner {
-		return &execution.CursorRunner{
-			BaseURL: "https://api.cursor.com",
 		}
 	})
 }
