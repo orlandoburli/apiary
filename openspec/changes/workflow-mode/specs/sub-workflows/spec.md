@@ -1,5 +1,13 @@
 # Specification: Sub-Workflows
 
+> **Authoring model superseded by `workflow-sequential-authoring`.** Composition is
+> now **visual nesting** — a step *contains* its sub-steps — not reference-by-name.
+> `type: workflow` survives only as an **engine IR / lowering target** (an anonymous
+> sub-run for an isolated nested group or a multi-step `for_each` body), not as an
+> authored `uses:`/reference feature. The reuse-by-reference motivation below is
+> intentionally dropped in v2 (nest, don't reference). This doc remains the IR
+> reference for the `type: workflow` mechanism.
+
 Allow a workflow step to invoke another named workflow, enabling composition and reuse of common pipelines.
 
 ## Problem
