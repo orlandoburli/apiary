@@ -82,6 +82,15 @@ type agentTaskLogsMsg struct {
 }
 type logsDataMsg struct{ logs []LogEntry }
 type usageDataMsg struct{ data UsageTab }
+type workflowsConfigMsg struct{ workflows []WorkflowConfigItem }
+type workflowMonitorMsg struct {
+	taskID   string
+	instance *WorkflowInstanceItem
+}
+type workflowStepLogsMsg struct {
+	stepID string
+	logs   []LogEntry
+}
 
 // ── lifecycle ───────────────────────────────────────────────────────────────
 
@@ -196,6 +205,39 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.model.loading = false
 		a.model.lastRefresh = time.Now()
+
+	case workflowsConfigMsg:
+		if a.model.workflowsTab != nil {
+			a.model.workflowsTab.Workflows = msg.workflows
+		}
+		a.model.loading = false
+		a.model.lastRefresh = time.Now()
+
+	case workflowMonitorMsg:
+		if a.model.tasksTab != nil {
+			a.model.tasksTab.WorkflowInstance = msg.instance
+			a.model.tasksTab.WorkflowStepIdx = 0
+			a.model.tasksTab.WorkflowLogs = nil
+			a.model.tasksTab.WorkflowLogScroll = 0
+			a.model.tasksTab.WorkflowShowLogs = false
+			a.model.tasksTab.View = TaskViewWorkflow
+		}
+		a.model.loading = false
+
+	case workflowStepLogsMsg:
+		if a.model.tasksTab != nil {
+			a.model.tasksTab.WorkflowLogs = msg.logs
+			a.model.tasksTab.WorkflowLogScroll = 0
+			a.model.tasksTab.WorkflowShowLogs = true
+		}
+		a.model.loading = false
+
+	case workflowMonitorRefreshMsg:
+		if a.model.tasksTab != nil && msg.instance != nil {
+			// Update step states without resetting the cursor position.
+			a.model.tasksTab.WorkflowInstance = msg.instance
+		}
+		a.model.loading = false
 	}
 
 	return a, nil
@@ -230,6 +272,8 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return a, a.restartTaskCmd(id)
 			case "clear":
 				return a, a.clearLogsCmd(id)
+			case "stop":
+				return a, a.stopInstanceCmd(id)
 			}
 		default:
 			a.model.confirmAction = ""
@@ -258,9 +302,17 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	// While a Tasks sub-view (detail/logs) is open, keys are scoped to it.
+	// While a Tasks sub-view (detail/logs/workflow) is open, keys are scoped to it.
 	if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.View != TaskViewList {
 		return a.handleTaskSubViewKey(key)
+	}
+
+	// Workflow config tab: scope navigation keys when the step panel is focused.
+	if a.model.ActiveTab() == "Workflows" && a.model.workflowsTab != nil {
+		switch key {
+		case "up", "down", "k", "j", "enter", "right", "l", "esc", "left", "h", "backspace":
+			return a.handleWorkflowsKey(key)
+		}
 	}
 	// While an Agents sub-view (detail/activity) is open, keys are scoped to it.
 	if a.model.ActiveTab() == "Agents" && a.model.agentsTab != nil && a.model.agentsTab.View != AgentViewList {
@@ -470,7 +522,9 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "Tasks":
 			if id, ok := a.selectedTaskID(); ok {
 				a.model.loading = true
-				return a, a.fetchTaskLogs(id)
+				// Open the workflow monitor if this task has a workflow instance,
+				// otherwise fall back to the task logs view.
+				return a, a.openWorkflowMonitorOrLogs(id)
 			}
 		case "Agents":
 			if id, ok := a.selectedAgentID(); ok {
@@ -703,9 +757,15 @@ func (a *App) selectedActivityTaskID() (string, bool) {
 	return ag.Activity[ag.ActivityIdx].TaskID, true
 }
 
-// handleTaskSubViewKey handles keys while a task detail/logs sub-view is open.
+// handleTaskSubViewKey handles keys while a task detail/logs/workflow sub-view is open.
 func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 	t := a.model.tasksTab
+
+	// Workflow monitor has its own key map.
+	if t.View == TaskViewWorkflow {
+		return a.handleWorkflowMonitorKey(key)
+	}
+
 	switch key {
 	case "esc", "backspace", "h", "left":
 		// Back to the list.
@@ -755,6 +815,149 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 		if t.View == TaskViewLogs {
 			t.LogScroll = clampScroll(t.LogScroll+a.pageSize(), len(a.taskLogLines()))
 		}
+	}
+	return a, nil
+}
+
+// handleWorkflowMonitorKey handles keys inside the live workflow monitor.
+func (a *App) handleWorkflowMonitorKey(key string) (tea.Model, tea.Cmd) {
+	t := a.model.tasksTab
+	inst := t.WorkflowInstance
+	if inst == nil {
+		t.View = TaskViewList
+		return a, nil
+	}
+
+	switch key {
+	case "esc", "backspace", "h", "left":
+		if t.WorkflowShowLogs {
+			t.WorkflowShowLogs = false
+			t.WorkflowLogs = nil
+		} else {
+			t.View = TaskViewList
+			t.WorkflowInstance = nil
+			t.WorkflowStepIdx = 0
+			t.WorkflowLogs = nil
+		}
+
+	case "up", "k":
+		if t.WorkflowShowLogs {
+			if t.WorkflowLogScroll > 0 {
+				t.WorkflowLogScroll--
+			}
+		} else if t.WorkflowStepIdx > 0 {
+			t.WorkflowStepIdx--
+			t.WorkflowLogs = nil
+			t.WorkflowShowLogs = false
+		}
+
+	case "down", "j":
+		if t.WorkflowShowLogs {
+			lines := a.wfStepLogLines()
+			if t.WorkflowLogScroll < len(lines)-1 {
+				t.WorkflowLogScroll++
+			}
+		} else if t.WorkflowStepIdx < len(inst.Steps)-1 {
+			t.WorkflowStepIdx++
+			t.WorkflowLogs = nil
+			t.WorkflowShowLogs = false
+		}
+
+	case "g", "home":
+		if t.WorkflowShowLogs {
+			t.WorkflowLogScroll = 0
+		} else {
+			t.WorkflowStepIdx = 0
+		}
+
+	case "G", "end":
+		if t.WorkflowShowLogs {
+			t.WorkflowLogScroll = lastIndex(len(a.wfStepLogLines()))
+		} else {
+			t.WorkflowStepIdx = lastIndex(len(inst.Steps))
+		}
+
+	case "pgup", "ctrl+u":
+		if t.WorkflowShowLogs {
+			t.WorkflowLogScroll = clampScroll(t.WorkflowLogScroll-a.pageSize(), len(a.wfStepLogLines()))
+		} else {
+			t.WorkflowStepIdx = clampScroll(t.WorkflowStepIdx-a.pageSize(), len(inst.Steps))
+		}
+
+	case "pgdown", "ctrl+d", " ":
+		if t.WorkflowShowLogs {
+			t.WorkflowLogScroll = clampScroll(t.WorkflowLogScroll+a.pageSize(), len(a.wfStepLogLines()))
+		} else {
+			t.WorkflowStepIdx = clampScroll(t.WorkflowStepIdx+a.pageSize(), len(inst.Steps))
+		}
+
+	case "l", "enter":
+		// Open logs for the selected step.
+		if !t.WorkflowShowLogs && t.WorkflowStepIdx < len(inst.Steps) {
+			step := inst.Steps[t.WorkflowStepIdx]
+			a.model.loading = true
+			return a, a.fetchWorkflowStepLogs(inst.CellID, step.StepID, step.StartedAt, step.FinishedAt)
+		}
+
+	case "r":
+		// Refresh the monitor.
+		if inst != nil {
+			a.model.loading = true
+			return a, a.refreshWorkflowMonitor(inst.ID, inst.CellID)
+		}
+
+	case "X":
+		// Stop the workflow instance (no restart).
+		a.model.confirmAction = "stop"
+		a.model.confirmTaskID = inst.ID
+
+	case "R":
+		// Restart the whole workflow (force-restart the cell).
+		a.model.confirmAction = "restart"
+		a.model.confirmTaskID = inst.CellID
+	}
+	return a, nil
+}
+
+// handleWorkflowsKey handles keys in the static Workflows config tab.
+func (a *App) handleWorkflowsKey(key string) (tea.Model, tea.Cmd) {
+	wt := a.model.workflowsTab
+	if wt == nil {
+		return a, nil
+	}
+	switch key {
+	case "up", "k":
+		if wt.Focus == WorkflowsViewList {
+			if wt.SelectedIdx > 0 {
+				wt.SelectedIdx--
+				wt.StepIdx = 0
+				wt.StepScroll = 0
+			}
+		} else {
+			if wt.StepIdx > 0 {
+				wt.StepIdx--
+			}
+		}
+	case "down", "j":
+		if wt.Focus == WorkflowsViewList {
+			if wt.SelectedIdx < len(wt.Workflows)-1 {
+				wt.SelectedIdx++
+				wt.StepIdx = 0
+				wt.StepScroll = 0
+			}
+		} else {
+			if wt.SelectedIdx < len(wt.Workflows) {
+				steps := wt.Workflows[wt.SelectedIdx].Steps
+				if wt.StepIdx < len(steps)-1 {
+					wt.StepIdx++
+				}
+			}
+		}
+	case "enter", "right", "l":
+		wt.Focus = WorkflowsViewSteps
+		wt.StepIdx = 0
+	case "esc", "left", "h", "backspace":
+		wt.Focus = WorkflowsViewList
 	}
 	return a, nil
 }
@@ -896,6 +1099,199 @@ func (a *App) clearLogsCmd(taskID string) tea.Cmd {
 	}
 }
 
+// stopInstanceCmd sends a POST /instances/stop/{id} request to stop a workflow
+// instance without re-dispatching it.
+func (a *App) stopInstanceCmd(instanceID string) tea.Cmd {
+	return func() tea.Msg {
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", a.socketPath)
+			},
+		}
+		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+		url := fmt.Sprintf("http://apiary/instances/stop/%s", instanceID)
+		resp, err := client.Post(url, "application/json", nil)
+		if err != nil {
+			return nil
+		}
+		resp.Body.Close()
+		return nil
+	}
+}
+
+// openWorkflowMonitorOrLogs opens the workflow monitor if the task has a
+// workflow instance, or the logs view otherwise.
+func (a *App) openWorkflowMonitorOrLogs(taskID string) tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+		if dbConn != nil {
+			inst, err := dbConn.GetLatestInstanceByCell(ctx, taskID)
+			if err == nil && inst != nil {
+				item := &WorkflowInstanceItem{
+					ID:       inst.ID,
+					Workflow: inst.WorkflowID,
+					State:    inst.State,
+					CellID:   inst.CellID,
+				}
+				if inst.State == "approval_waiting" {
+					item.Message = "Awaiting human approval — reply on the task to resume or abort."
+				}
+				steps, err := dbConn.ListStepRuns(ctx, inst.ID)
+				if err == nil {
+					now := time.Now()
+					for _, s := range steps {
+						si := WorkflowStepItem{
+							StepID:     s.StepID,
+							Agent:      s.AgentID,
+							State:      s.State,
+							Duration:   wfStepDuration(s, now),
+							Cached:     s.SkippedCached,
+							Output:     s.Output,
+							Summary:    s.Summary,
+							StartedAt:  s.StartedAt,
+							FinishedAt: s.FinishedAt,
+						}
+						if usage, err := dbConn.GetStepUsage(ctx, inst.ID, s.StepID); err == nil && usage != nil {
+							si.InputTokens = usage.InputTokens
+							si.OutputTokens = usage.OutputTokens
+							si.TotalTokens = usage.TotalTokens
+							si.CostUSD = usage.CostUSD
+							si.NumTurns = usage.NumTurns
+							si.NumToolCalls = usage.NumToolCalls
+						}
+						item.Steps = append(item.Steps, si)
+					}
+				}
+				return workflowMonitorMsg{taskID: taskID, instance: item}
+			}
+		}
+		// No workflow instance — fall back to logs view.
+		return taskLogsMsg{taskID: taskID, logs: nil, detail: nil}
+	}
+}
+
+// refreshWorkflowMonitor re-fetches a workflow instance and its steps for the
+// live monitor, updating states in-place (without resetting the step cursor).
+func (a *App) refreshWorkflowMonitor(instanceID, cellID string) tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+		if dbConn == nil {
+			return nil
+		}
+		inst, err := dbConn.GetWorkflowInstance(ctx, instanceID)
+		if err != nil || inst == nil {
+			return nil
+		}
+		item := &WorkflowInstanceItem{
+			ID:       inst.ID,
+			Workflow: inst.WorkflowID,
+			State:    inst.State,
+			CellID:   inst.CellID,
+		}
+		if inst.State == "approval_waiting" {
+			item.Message = "Awaiting human approval — reply on the task to resume or abort."
+		}
+		steps, err := dbConn.ListStepRuns(ctx, instanceID)
+		if err == nil {
+			now := time.Now()
+			for _, s := range steps {
+				si := WorkflowStepItem{
+					StepID:     s.StepID,
+					Agent:      s.AgentID,
+					State:      s.State,
+					Duration:   wfStepDuration(s, now),
+					Cached:     s.SkippedCached,
+					Output:     s.Output,
+					Summary:    s.Summary,
+					StartedAt:  s.StartedAt,
+					FinishedAt: s.FinishedAt,
+				}
+				if usage, err := dbConn.GetStepUsage(ctx, instanceID, s.StepID); err == nil && usage != nil {
+					si.InputTokens = usage.InputTokens
+					si.OutputTokens = usage.OutputTokens
+					si.TotalTokens = usage.TotalTokens
+					si.CostUSD = usage.CostUSD
+					si.NumTurns = usage.NumTurns
+					si.NumToolCalls = usage.NumToolCalls
+				}
+				item.Steps = append(item.Steps, si)
+			}
+		}
+		// Preserve the step cursor — return a monitor refresh, not a full reset.
+		return workflowMonitorRefreshMsg{instance: item}
+	}
+}
+
+// workflowMonitorRefreshMsg carries a live-refresh of the instance (no cursor reset).
+type workflowMonitorRefreshMsg struct{ instance *WorkflowInstanceItem }
+
+// fetchWorkflowStepLogs fetches task logs scoped to a specific step's time window.
+func (a *App) fetchWorkflowStepLogs(cellID, stepID string, from, to *time.Time) tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+		var logs []LogEntry
+		if dbConn != nil {
+			if rows, err := dbConn.GetTaskLogsInRange(ctx, cellID, from, to); err == nil {
+				for _, l := range rows {
+					logs = append(logs, LogEntry{
+						Timestamp: l.Timestamp,
+						Level:     l.Level,
+						Message:   l.Message,
+					})
+				}
+			}
+		}
+		return workflowStepLogsMsg{stepID: stepID, logs: logs}
+	}
+}
+
+// fetchWorkflowsConfig fetches workflow definitions from the local config (no IPC needed).
+func (a *App) fetchWorkflowsConfig() tea.Cmd {
+	cfg := a.cfg
+	return func() tea.Msg {
+		var items []WorkflowConfigItem
+		if cfg != nil {
+			for _, wf := range cfg.Workflows {
+				item := WorkflowConfigItem{
+					ID:          wf.ID,
+					Description: wf.Description,
+				}
+				for _, step := range wf.Steps {
+					stype := step.Type
+					if stype == "" {
+						stype = "agent"
+					}
+					item.Steps = append(item.Steps, WorkflowStepDef{
+						ID:        step.ID,
+						Type:      stype,
+						Agent:     step.Agent,
+						DependsOn: step.DependsOn,
+						Condition: step.Condition,
+						Prompt:    step.Prompt,
+					})
+				}
+				items = append(items, item)
+			}
+		}
+		return workflowsConfigMsg{workflows: items}
+	}
+}
+
+// wfStepLogLines returns the log lines for the currently-selected workflow step.
+func (a *App) wfStepLogLines() []string {
+	t := a.model.tasksTab
+	if t == nil {
+		return nil
+	}
+	return a.logEntryLines(t.WorkflowLogs)
+}
+
 // updateAgentConfigCmd sends a PATCH /api/config/agent/{id} request to the
 // daemon via the IPC socket to hot-reload model, runner, or max_workers.
 // Falls back to direct file modification if the socket is unreachable.
@@ -1002,6 +1398,10 @@ func (a *App) fetchActiveTab() tea.Cmd {
 	case "Overview":
 		return a.fetchOverview()
 	case "Tasks":
+		// When the workflow monitor is open, refresh the instance on each tick.
+		if t := a.model.tasksTab; t != nil && t.View == TaskViewWorkflow && t.WorkflowInstance != nil {
+			return a.refreshWorkflowMonitor(t.WorkflowInstance.ID, t.WorkflowInstance.CellID)
+		}
 		return a.fetchTasks()
 	case "Agents":
 		return a.fetchAgents()
@@ -1009,6 +1409,8 @@ func (a *App) fetchActiveTab() tea.Cmd {
 		return a.fetchUsage()
 	case "Logs":
 		return a.fetchLogs()
+	case "Workflows":
+		return a.fetchWorkflowsConfig()
 	}
 	return nil
 }
@@ -1452,6 +1854,8 @@ func (a *App) View() string {
 		content = a.renderUsageTab(contentHeight)
 	case "Logs":
 		content = a.renderLogsTab(contentHeight)
+	case "Workflows":
+		content = a.renderWorkflowsTab(contentHeight)
 	default:
 		content = a.box("UNKNOWN", "Unknown tab\n", contentHeight)
 	}
@@ -1466,9 +1870,13 @@ func (a *App) View() string {
 func (a *App) renderConfirmModal(view string) string {
 	label := "Restart task"
 	msg := "Are you sure you want to restart this task?"
-	if a.model.confirmAction == "clear" {
+	switch a.model.confirmAction {
+	case "clear":
 		label = "Clear logs"
 		msg = "Are you sure you want to clear all logs for this task?"
+	case "stop":
+		label = "Stop workflow"
+		msg = "Stop this workflow instance? It will be marked interrupted."
 	}
 
 	dialog := lipgloss.NewStyle().
@@ -1713,6 +2121,8 @@ func (a *App) renderTasksTab(height int) string {
 		return a.renderTaskDetail(t, height)
 	case TaskViewLogs:
 		return a.renderTaskLogs(t, height)
+	case TaskViewWorkflow:
+		return a.renderWorkflowMonitor(t, height)
 	default:
 		return a.renderTaskList(t, height)
 	}
@@ -2560,9 +2970,19 @@ func (a *App) footerKeys() []fkey {
 				return []fkey{{"esc", "back"}, {"l", "logs"}, {"o", "open"}, {"R", "restart"}, {"C", "clear"}, {"r", "reload"}, {"q", "quit"}}
 			case TaskViewLogs:
 				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"o", "open"}, {"C", "clear"}, {"q", "quit"}}
+			case TaskViewWorkflow:
+				if t.WorkflowShowLogs {
+					return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"q", "quit"}}
+				}
+				return []fkey{{"↑/↓", "step"}, {"enter/l", "logs"}, {"r", "refresh"}, {"X", "stop"}, {"R", "restart"}, {"esc", "back"}, {"q", "quit"}}
 			}
 		}
-		return []fkey{{"↑/↓", "select"}, {"enter/l", "logs"}, {"d", "details"}, {"o", "open"}, {"R", "restart"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
+		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"d", "details"}, {"o", "open"}, {"R", "restart"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
+	case "Workflows":
+		if wt := a.model.workflowsTab; wt != nil && wt.Focus == WorkflowsViewSteps {
+			return []fkey{{"↑/↓", "step"}, {"esc/←", "back"}, {"tab", "next tab"}, {"q", "quit"}}
+		}
+		return []fkey{{"↑/↓", "workflow"}, {"enter/→", "steps"}, {"tab", "next tab"}, {"q", "quit"}}
 	case "Agents":
 		if ag := a.model.agentsTab; ag != nil {
 			switch ag.View {
@@ -2707,6 +3127,280 @@ func truncate(s string, max int) string {
 		return "…"
 	}
 	return string([]rune(s)[:max-1]) + "…"
+}
+
+// renderWorkflowMonitor renders the live workflow instance monitor.
+// Layout: left panel (step list) | right panel (step detail or logs).
+func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
+	inst := t.WorkflowInstance
+	if inst == nil {
+		return a.box("WORKFLOW MONITOR", StyleMuted.Render("No workflow instance")+"\n", height)
+	}
+
+	totalW := a.model.width - 2
+	leftW := totalW * 2 / 5
+	rightW := totalW - leftW - 1
+	if leftW < 20 {
+		leftW = 20
+	}
+
+	label := "WORKFLOW  " + StyleValueStrong.Render(inst.Workflow) + "  " + wfInstanceBadge(inst.State)
+
+	// ── left panel: step list ───────────────────────────────────────────────
+	var left strings.Builder
+	if inst.Message != "" {
+		left.WriteString(StyleWarning.Render("  ⏸ "+inst.Message) + "\n")
+	}
+	bodyRows := height - 4
+	if bodyRows < 1 {
+		bodyRows = 1
+	}
+
+	// Header row
+	hdr := pad("", 2) + pad("STEP", 18) + " " + pad("AGENT", 14) + " " + pad("STATE", 10) + " " + "DUR"
+	left.WriteString(StyleTableHeader.Render(fitLine(hdr, leftW)) + "\n")
+	bodyRows--
+
+	// Windowed step list
+	start := t.WorkflowStepIdx - bodyRows/2
+	if start > len(inst.Steps)-bodyRows {
+		start = len(inst.Steps) - bodyRows
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := start + bodyRows
+	if end > len(inst.Steps) {
+		end = len(inst.Steps)
+	}
+
+	for i := start; i < end; i++ {
+		s := inst.Steps[i]
+		selected := i == t.WorkflowStepIdx
+		glyph := wfStepGlyph(s.State)
+		stepName := truncate(s.StepID, 17)
+		agent := truncate(valueOr(s.Agent, "—"), 13)
+		state := truncate(s.State, 10)
+		dur := truncate(s.Duration, 8)
+
+		row := glyph + " " + pad(stepName, 17) + " " + pad(agent, 13) + "   " + pad(state, 10) + " " + StyleMuted.Render(dur)
+		if selected {
+			row = StyleSelectedRow.Render(fitLine("  "+stepName+" "+agent+"   "+state+" "+dur, leftW))
+			row = StyleFocusedArrow.Render("▶") + " " + StyleSelectedRow.Render(fitLine(stepName+" "+agent+"   "+state+" "+dur, leftW-2))
+		}
+		left.WriteString(fitLine(row, leftW) + "\n")
+	}
+
+	// ── right panel: step detail or logs ───────────────────────────────────
+	var right strings.Builder
+	if t.WorkflowShowLogs {
+		// Log panel.
+		right.WriteString(StyleTableHeader.Render(fitLine("STEP LOGS", rightW)) + "\n")
+		lines := a.wfStepLogLines()
+		logRows := height - 4
+		ls := t.WorkflowLogScroll
+		if ls > len(lines)-1 {
+			ls = len(lines) - 1
+		}
+		if ls < 0 {
+			ls = 0
+		}
+		le := ls + logRows
+		if le > len(lines) {
+			le = len(lines)
+		}
+		for i := ls; i < le; i++ {
+			right.WriteString(fitLine(lines[i], rightW) + "\n")
+		}
+		if len(lines) == 0 {
+			right.WriteString(StyleMuted.Render("No logs for this step.") + "\n")
+		}
+	} else if t.WorkflowStepIdx < len(inst.Steps) {
+		// Detail panel for selected step.
+		s := inst.Steps[t.WorkflowStepIdx]
+		row2 := func(k, v string) {
+			right.WriteString("  " + StyleLabel.Render(pad(k+":", 12)) + " " + v + "\n")
+		}
+		right.WriteString(StyleTableHeader.Render(fitLine(" "+s.StepID, rightW)) + "\n")
+		row2("State", wfStepGlyph(s.State)+" "+wfStateStyle(s.State).Render(s.State))
+		row2("Agent", valueOr(s.Agent, "—"))
+		row2("Duration", valueOr(s.Duration, "—"))
+		if s.Cached {
+			row2("Cache", StyleMuted.Render("skipped (cached)"))
+		}
+		right.WriteString("\n")
+
+		if s.TotalTokens > 0 {
+			row2("Tokens", fmt.Sprintf("%d in / %d out / %d total", s.InputTokens, s.OutputTokens, s.TotalTokens))
+			row2("Cost", fmt.Sprintf("$%.5f", s.CostUSD))
+			row2("Turns", fmt.Sprintf("%d turns / %d calls", s.NumTurns, s.NumToolCalls))
+			right.WriteString("\n")
+		}
+
+		if s.Summary != "" {
+			right.WriteString("  " + StyleLabel.Render("Summary:") + "\n")
+			for _, line := range wrapPlain(s.Summary, rightW-4) {
+				right.WriteString("    " + StyleMuted.Render(line) + "\n")
+			}
+			right.WriteString("\n")
+		}
+
+		if s.Output != "" {
+			right.WriteString("  " + StyleLabel.Render("Output:") + "\n")
+			outputLines := wrapPlain(s.Output, rightW-4)
+			maxOut := height - lipgloss.Height(right.String()) - 2
+			if maxOut < 1 {
+				maxOut = 1
+			}
+			for i, line := range outputLines {
+				if i >= maxOut {
+					right.WriteString("    " + StyleMuted.Render("…") + "\n")
+					break
+				}
+				right.WriteString("    " + line + "\n")
+			}
+		}
+
+		if s.State == db.StepStateRunning || s.State == db.StepStatePassed || s.State == db.StepStateFailed {
+			right.WriteString("\n  " + StyleMuted.Render("enter/l: logs  X: stop workflow  R: restart workflow") + "\n")
+		}
+	} else {
+		right.WriteString(StyleMuted.Render("  Select a step") + "\n")
+	}
+
+	// Render side-by-side within a single box by stitching lines.
+	leftLines := strings.Split(strings.TrimRight(left.String(), "\n"), "\n")
+	rightLines := strings.Split(strings.TrimRight(right.String(), "\n"), "\n")
+	maxLines := len(leftLines)
+	if len(rightLines) > maxLines {
+		maxLines = len(rightLines)
+	}
+
+	sep := StyleBorder.Render("│")
+	var body strings.Builder
+	for i := 0; i < maxLines; i++ {
+		l := ""
+		if i < len(leftLines) {
+			l = leftLines[i]
+		}
+		r := ""
+		if i < len(rightLines) {
+			r = rightLines[i]
+		}
+		body.WriteString(fitLine(l, leftW) + sep + fitLine(r, rightW) + "\n")
+	}
+	return a.box(label, body.String(), height)
+}
+
+// renderWorkflowsTab renders the static workflow config navigation tab.
+// Layout: left list of workflows | right step tree for selected workflow.
+func (a *App) renderWorkflowsTab(height int) string {
+	wt := a.model.workflowsTab
+	if wt == nil || len(wt.Workflows) == 0 {
+		return a.box("WORKFLOWS", StyleMuted.Render("No workflows defined in config.")+"\n", height)
+	}
+
+	totalW := a.model.width - 2
+	leftW := 28
+	rightW := totalW - leftW - 1
+
+	// ── left panel: workflow list ───────────────────────────────────────────
+	var left strings.Builder
+	left.WriteString(StyleTableHeader.Render(fitLine("WORKFLOW", leftW)) + "\n")
+
+	for i, wf := range wt.Workflows {
+		selected := i == wt.SelectedIdx
+		label := truncate(wf.ID, leftW-4)
+		steps := fmt.Sprintf("[%d steps]", len(wf.Steps))
+		if selected && wt.Focus == WorkflowsViewList {
+			row := StyleSelectedRow.Render(fitLine(" ▶ "+label, leftW))
+			left.WriteString(row + "\n")
+		} else if selected {
+			row := StyleAccent.Render(fitLine(" ● "+label, leftW-len(steps)-1)) + StyleMuted.Render(steps)
+			left.WriteString(fitLine(row, leftW) + "\n")
+		} else {
+			left.WriteString(fitLine("   "+label, leftW) + "\n")
+		}
+	}
+
+	// ── right panel: step definitions ──────────────────────────────────────
+	var right strings.Builder
+	if wt.SelectedIdx < len(wt.Workflows) {
+		wf := wt.Workflows[wt.SelectedIdx]
+		desc := valueOr(wf.Description, StyleMuted.Render("(no description)"))
+		right.WriteString(StyleValueStrong.Render(wf.ID) + "  " + StyleMuted.Render(desc) + "\n")
+		right.WriteString(StyleMuted.Render(strings.Repeat("─", rightW)) + "\n")
+
+		if len(wf.Steps) == 0 {
+			right.WriteString(StyleMuted.Render("  No steps defined.") + "\n")
+		}
+		for i, step := range wf.Steps {
+			selected := i == wt.StepIdx && wt.Focus == WorkflowsViewSteps
+			typeLabel := styleStepType(step.Type)
+			stepLine := typeLabel + " " + StyleValueStrong.Render(step.ID)
+			if step.Agent != "" {
+				stepLine += "  " + StyleAccent.Render("→ "+step.Agent)
+			}
+			if selected {
+				right.WriteString(StyleSelectedRow.Render(fitLine("  "+ansi.Strip(stepLine), rightW)) + "\n")
+				// Expand detail for selected step.
+				if len(step.DependsOn) > 0 {
+					right.WriteString("    " + StyleMuted.Render("depends: "+strings.Join(step.DependsOn, ", ")) + "\n")
+				}
+				if step.Condition != "" {
+					right.WriteString("    " + StyleMuted.Render("if: "+truncate(step.Condition, rightW-10)) + "\n")
+				}
+				if step.Prompt != "" {
+					right.WriteString("    " + StyleMuted.Render("prompt: "+truncate(step.Prompt, rightW-12)) + "\n")
+				}
+			} else {
+				right.WriteString(fitLine("  "+stepLine, rightW) + "\n")
+				if len(step.DependsOn) > 0 {
+					right.WriteString("    " + StyleMuted.Render("↳ needs: "+strings.Join(step.DependsOn, ", ")) + "\n")
+				}
+			}
+		}
+	}
+
+	// Stitch side-by-side.
+	leftLines := strings.Split(strings.TrimRight(left.String(), "\n"), "\n")
+	rightLines := strings.Split(strings.TrimRight(right.String(), "\n"), "\n")
+	maxLines := len(leftLines)
+	if len(rightLines) > maxLines {
+		maxLines = len(rightLines)
+	}
+
+	sep := StyleBorder.Render("│")
+	var body strings.Builder
+	for i := 0; i < maxLines; i++ {
+		l := ""
+		if i < len(leftLines) {
+			l = leftLines[i]
+		}
+		r := ""
+		if i < len(rightLines) {
+			r = rightLines[i]
+		}
+		body.WriteString(fitLine(l, leftW) + sep + fitLine(r, rightW) + "\n")
+	}
+	return a.box("WORKFLOWS", body.String(), height)
+}
+
+func styleStepType(t string) string {
+	switch t {
+	case "agent", "":
+		return StyleInfo.Render("[agent]    ")
+	case "approval":
+		return StyleWarning.Render("[approval] ")
+	case "foreach":
+		return StyleAccent.Render("[foreach]  ")
+	case "parallel":
+		return StyleAccent.Render("[parallel] ")
+	case "split":
+		return StyleMuted.Render("[split]    ")
+	default:
+		return StyleMuted.Render("[" + pad(t, 9) + "]")
+	}
 }
 
 // Run starts the dashboard.

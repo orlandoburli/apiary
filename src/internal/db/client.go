@@ -89,12 +89,14 @@ type Execution struct {
 	CanRetry       bool
 	NextRetryAt    *time.Time
 	CreatedAt      time.Time
-	InputTokens    int
-	OutputTokens   int
-	TotalTokens    int
-	NumTurns       int
-	NumToolCalls   int
-	CostUSD        float64
+	InputTokens        int
+	OutputTokens       int
+	TotalTokens        int
+	NumTurns           int
+	NumToolCalls       int
+	CostUSD            float64
+	WorkflowInstanceID string
+	StepID             string
 }
 
 func (c *Client) CreateExecution(ctx context.Context, taskID, agentID, title, number, taskURL, model, runner string, attempt int) (*Execution, error) {
@@ -157,6 +159,32 @@ func (c *Client) SendHeartbeat(ctx context.Context, execID int64) error {
 		WHERE id = ?
 	`, time.Now(), execID)
 	return err
+}
+
+// SetStepLink associates a task_execution row with its workflow instance and step,
+// enabling per-step usage queries from the dashboard.
+func (c *Client) SetStepLink(ctx context.Context, execID int64, instanceID, stepID string) error {
+	_, err := c.db.ExecContext(ctx, `
+		UPDATE task_executions SET workflow_instance_id = ?, step_id = ? WHERE id = ?
+	`, nullStr(instanceID), nullStr(stepID), execID)
+	return err
+}
+
+// GetStepUsage returns token and cost totals for the most recent execution of a
+// specific step within a workflow instance.
+func (c *Client) GetStepUsage(ctx context.Context, instanceID, stepID string) (*Execution, error) {
+	row := c.db.QueryRowContext(ctx, `
+		SELECT input_tokens, output_tokens, total_tokens, num_turns, num_tool_calls, cost_usd
+		FROM task_executions
+		WHERE workflow_instance_id = ? AND step_id = ?
+		ORDER BY created_at DESC LIMIT 1
+	`, instanceID, stepID)
+	var e Execution
+	err := row.Scan(&e.InputTokens, &e.OutputTokens, &e.TotalTokens, &e.NumTurns, &e.NumToolCalls, &e.CostUSD)
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
 }
 
 // ReconcileOrphanExecutions marks any executions still in the 'running' state
