@@ -292,6 +292,16 @@ type OnRejectConfig struct {
 // IsV2Step reports whether this step was written in v2 authored form (i.e., it
 // uses at least one v2-only field that must be lowered before execution).
 func (s StepConfig) IsV2Step() bool {
+	// A lowered parallel node carries its children in SubSteps but is already IR:
+	// only the lowering pass sets Type=parallel, never the author. Treat it as
+	// already-lowered so a second lowering pass exits early (LowerV2Workflow is
+	// documented idempotent). Without this, len(SubSteps)>0 below would re-flag it
+	// and lowerSteps would dissolve the parallel into a sequential group, losing
+	// the concurrency and the join policy. (Lowered foreach already returns false:
+	// it uses Items+Step, leaving SubSteps/ParallelSteps/ForEachExpr empty.)
+	if s.Type == StepTypeParallel {
+		return false
+	}
 	return s.If != "" || s.RejectWhen != "" || s.OnReject != nil ||
 		len(s.SubSteps) > 0 || len(s.ParallelSteps) > 0 || s.ForEachExpr != "" || s.Output != nil
 }
