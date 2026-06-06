@@ -109,10 +109,17 @@ func TestLint_EmptyRawContentIsNoOp(t *testing.T) {
 	}
 }
 
-// TestLint_ExampleConfigsNoFalsePositives strict-decodes and removed-checks every
-// shipped example so a stricter validator never rejects a config we ship.
+// TestLint_ExampleConfigsNoFalsePositives strict-decodes, removed-checks, AND
+// fully validates every shipped example so neither a stricter linter nor the
+// structural validator ever rejects a config we ship. lint() alone is not
+// enough: it never runs Validate(), which is how a runner-id mismatch
+// (default_runner / agent runner not defined in runners) once slipped through a
+// shipped example. Validate() resolves soul_file paths against the process
+// working directory, so the test runs from the repo root where the examples'
+// relative soul_file paths live.
 func TestLint_ExampleConfigsNoFalsePositives(t *testing.T) {
 	root := repoRoot(t)
+	t.Chdir(root)
 	examples := []string{
 		".apiary/example-apiary-full.yaml",
 		".apiary/example-workflow.yaml",
@@ -120,14 +127,23 @@ func TestLint_ExampleConfigsNoFalsePositives(t *testing.T) {
 		".apiary/apiary.yaml",
 	}
 	for _, rel := range examples {
-		rel := rel
 		t.Run(rel, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join(root, rel))
+			data, err := os.ReadFile(rel)
 			if err != nil {
 				t.Skipf("example not found: %v", err)
 			}
 			if errs := newRawConfig(string(data)).lint(); len(errs) != 0 {
 				t.Errorf("%s should lint clean, got: %v", rel, errs)
+			}
+			// Full structural validation must also be clean: Load() parses and
+			// expands env vars, Validate() checks runner/source/agent references
+			// and soul_file existence.
+			cfg, err := Load(rel)
+			if err != nil {
+				t.Fatalf("%s should load, got: %v", rel, err)
+			}
+			if errs := cfg.Validate(); len(errs) != 0 {
+				t.Errorf("%s should Validate clean, got: %v", rel, errs)
 			}
 		})
 	}
