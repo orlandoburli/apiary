@@ -1,8 +1,9 @@
 # GitHub Source
 
 The `github` source adapter polls issues from a GitHub repository and maps them
-to Apiary Cells for routing and dispatch. Pull requests are also included as
-cells with `Type: "pull_request"`.
+to Apiary Cells for routing and dispatch. Pull requests are **not** ingested:
+GitHub's issues endpoint also returns PRs (every PR is an issue in the API), but
+the adapter skips them — PRs are implementation artifacts, not work items.
 
 ## Configuration
 
@@ -44,9 +45,9 @@ sources:
 | **SetState** | `PATCH /repos/{owner}/{repo}/issues/{number}` (sets `state`) | Via `route.on_complete.set_state` |
 | **AddLabels** | `PATCH /repos/{owner}/{repo}/issues/{number}` (replaces labels) | Via `route.on_complete.add_labels` or `assign_from_output` |
 
-Both issues and pull requests are returned by the poll. PRs are not filtered
-out — they get `Type: "pull_request"` and can be routed independently via
-`match.types: ["pull_request"]`.
+GitHub's `/issues` endpoint also returns pull requests, but the adapter filters
+them out during polling — only plain issues become cells (always
+`Type: "issue"`).
 
 ## Token permissions
 
@@ -140,7 +141,7 @@ Routes are evaluated in `priority` ascending order. The first match wins.
 | `exclude_labels` | `[string]` | Cell must NOT have any of these labels |
 | `exclude_label_prefix` | `string` | Cell must not have a label starting with this prefix |
 | `states` | `[string]` | Only match cells whose state is in this list |
-| `types` | `[string]` | Only match cells whose type is in this list (e.g. `["pull_request"]`) |
+| `types` | `[string]` | Only match cells whose type is in this list (GitHub cells are always `"issue"`) |
 | `title_regex` | `string` | Cell title must match this Go regexp |
 | `priority` | `[string]` | Only match cells whose priority is in this list |
 
@@ -182,50 +183,6 @@ The fallback catches any cell without an `agent:*` label. The investigator
 classifies it and outputs `APIARY-ASSIGN: engineer`, which Apiary converts
 to the label `agent:engineer`. On the next poll, the matching route fires.
 
-## PR Review
-
-When a cell has `Type: "pull_request"` and the agent's output contains an
-`APIARY-REVIEW` directive, the dispatcher submits a formal GitHub PR review.
-
-### Directive
-
-The agent outputs one of these (last directive wins):
-
-```
-APIARY-REVIEW: approve
-APIARY-REVIEW: request-changes
-APIARY-REVIEW: comment
-```
-
-### Route
-
-```yaml
-routes:
-  - id: review-pr
-    priority: 12
-    match:
-      source: my-repo
-      types: [pull_request]
-    agent: reviewer
-    on_complete:
-      set_state: closed
-```
-
-### How it works
-
-1. Poll returns the PR as a cell with `Type: "pull_request"`
-2. Route matches by `types: [pull_request]` → dispatches to reviewer agent
-3. Reviewer agent gets the PR number (`cell.ID`), description, labels
-4. Agent reviews the code (e.g. via `gh pr diff {number}`)
-5. Agent outputs `APIARY-REVIEW: approve`
-6. Dispatcher calls `POST /repos/{owner}/{repo}/pulls/{number}/reviews`
-   using the agent's `source_token` — the review comes from the agent's
-   GitHub identity
-
-PR review is independent of the source adapter. The repo is parsed from the
-cell's URL, and the token comes from `agent.source_token` (with fallback to
-the source-level `api_key`).
-
 ## Environment variables
 
 ### `.env` auto-load
@@ -261,7 +218,6 @@ Agents can output directives in their final output to trigger side effects:
 | Directive | Example | Effect |
 |---|---|---|
 | `APIARY-ASSIGN` | `APIARY-ASSIGN: engineer` | Adds label `agent:engineer` (via `assign_from_output`) |
-| `APIARY-REVIEW` | `APIARY-REVIEW: approve` | Submits PR review (approve/request-changes/comment) |
 
 ## Setting up locally
 
