@@ -9,6 +9,9 @@ const (
 	StepTypeApproval = "approval"
 	StepTypeForeach  = "foreach"
 	StepTypeWorkflow = "workflow"
+	// StepTypeParallel is emitted by the v2 lowering pass for `parallel:` steps.
+	// Children run concurrently (§8e); the step's outcome = the join policy.
+	StepTypeParallel = "parallel"
 )
 
 // Resume policy values for a workflow.
@@ -116,6 +119,34 @@ type StepConfig struct {
 
 	// ── sub-workflow step ─────────────────────────────────────────
 	Workflow string `yaml:"workflow,omitempty"`
+
+	// ── v2 authored fields (present before lowering; absent after) ───
+	// These are written by humans in v2 syntax and lowered to the IR fields
+	// above by LowerV2Workflow. They must not be used directly by the engine.
+
+	// If is the authored guard expression (e.g. `${{ classify.track == 'complex' }}`).
+	// Lowers to Condition.
+	If string `yaml:"if,omitempty"`
+	// RejectWhen is the authored rejection gate expression.
+	// Lowers to FailWhen (with expression rewritten to use memory.* accessors).
+	RejectWhen string `yaml:"reject_when,omitempty"`
+	// OnReject is the authored loop-back spec. Lowers to OnFail.
+	OnReject *OnRejectConfig `yaml:"on_reject,omitempty"`
+	// SubSteps is a sequential group of child steps (v2 `steps:` inside a step).
+	// Dissolved during lowering: children are inlined into the parent flat list.
+	SubSteps []StepConfig `yaml:"steps,omitempty"`
+	// ParallelSteps are concurrent child steps (v2 `parallel:` inside a step).
+	// Lowers to a StepTypeParallel node with embedded children.
+	ParallelSteps []StepConfig `yaml:"parallel,omitempty"`
+	// Join is the parallel step join policy: all (default) | any | ${{ expr }}.
+	Join string `yaml:"join,omitempty"`
+	// ForEachExpr is the v2 `for_each:` expression (e.g. `${{ design.tasks }}`).
+	// Lowers to Items (dot-path) + foreach step type.
+	ForEachExpr string `yaml:"for_each,omitempty"`
+	// Max is the v2 `max:` loop cap. Lowers to MaxItems.
+	Max int `yaml:"max,omitempty"`
+	// Output is the v2 alias for OutputSchema (shorter key in authored YAML).
+	Output *OutputSchema `yaml:"output,omitempty"`
 }
 
 // StepType returns the step's type, defaulting to StepTypeAgent when unset.
@@ -218,4 +249,20 @@ type SchemaField struct {
 	Items      *SchemaField           `yaml:"items,omitempty"`
 	Properties map[string]SchemaField `yaml:"properties,omitempty"`
 	Required   []string               `yaml:"required,omitempty"`
+}
+
+// OnRejectConfig is the v2 authored loop-back spec for reject_when gates.
+// It lowers to StepOutcome (on_fail.goto + max_retries).
+type OnRejectConfig struct {
+	// RestartFrom names the earlier sibling step to restart from when rejected.
+	RestartFrom string `yaml:"restart_from"`
+	// Max is the maximum number of rejection+restart cycles (≥ 1).
+	Max int `yaml:"max,omitempty"`
+}
+
+// IsV2Step reports whether this step was written in v2 authored form (i.e., it
+// uses at least one v2-only field that must be lowered before execution).
+func (s StepConfig) IsV2Step() bool {
+	return s.If != "" || s.RejectWhen != "" || s.OnReject != nil ||
+		len(s.SubSteps) > 0 || len(s.ParallelSteps) > 0 || s.ForEachExpr != "" || s.Output != nil
 }
