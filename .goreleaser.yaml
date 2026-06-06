@@ -1,6 +1,7 @@
 # GoReleaser config — Apiary binary distribution
 # Phase 1: cross-platform archives + checksums on each `v*` tag.
-# Later phases add nfpms (deb/rpm), dockers (ghcr.io), brews, scoops, winget, aurs.
+# Phase 2: nfpms (deb/rpm). Phase 3: multi-arch Docker images on ghcr.io.
+# Later phases add brews, scoops, winget, aurs.
 # Docs: https://goreleaser.com
 version: 2
 
@@ -38,6 +39,61 @@ archives:
     files:
       - README.md
       - LICENSE
+
+nfpms:
+  - id: apiary
+    ids: [apiary]
+    package_name: apiary
+    vendor: Orlando Burli
+    homepage: "https://github.com/orlandoburli/apiary"
+    maintainer: Orlando Burli <orlando.developermaster@gmail.com>
+    description: Task-driven agent orchestration harness (GitHub Issues, Plane, and other sources).
+    license: AGPL-3.0
+    formats: [deb, rpm]
+    bindir: /usr/bin
+
+# Multi-arch images. Each `dockers` entry builds one arch from the prebuilt
+# static binary; `docker_manifests` stitches them into a single multi-arch tag.
+dockers:
+  - id: amd64
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    use: buildx
+    image_templates:
+      - "ghcr.io/orlandoburli/apiary:{{ .Version }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.source=https://github.com/orlandoburli/apiary"
+      - "--label=org.opencontainers.image.licenses=AGPL-3.0"
+  - id: arm64
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile
+    use: buildx
+    image_templates:
+      - "ghcr.io/orlandoburli/apiary:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.source=https://github.com/orlandoburli/apiary"
+      - "--label=org.opencontainers.image.licenses=AGPL-3.0"
+
+docker_manifests:
+  - name_template: "ghcr.io/orlandoburli/apiary:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/orlandoburli/apiary:{{ .Version }}-amd64"
+      - "ghcr.io/orlandoburli/apiary:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/orlandoburli/apiary:latest"
+    skip_push: auto # don't move :latest on prereleases / snapshots
+    image_templates:
+      - "ghcr.io/orlandoburli/apiary:{{ .Version }}-amd64"
+      - "ghcr.io/orlandoburli/apiary:{{ .Version }}-arm64"
 
 checksum:
   name_template: "checksums.txt"
