@@ -148,6 +148,11 @@ agents:
     source_token: ${GITHUB_TOKEN_REVIEWER}
     source_email: reviewer@company.com
     source_name: Reviewer Bot
+    # Agent-scope env: applied to every step that runs this agent, in any
+    # workflow. Lowest-precedence explicit scope (workflow.env and step.env
+    # override it), layered above the identity overlay (git + source_token).
+    env:
+      REVIEW_PROFILE: strict
 
   - id: qa
     description: "QA — validates implementation against acceptance criteria"
@@ -232,9 +237,18 @@ workflows:
       match:
         source: project-erp
         labels: [agent:reviewer]
+    # Workflow-scope env: applied to every step of this workflow. Overrides
+    # agent.env; overridden by step.env. Precedence: STEP > WORKFLOW > AGENT.
+    env:
+      REVIEW_PROFILE: relaxed
+      CI_TARGET: staging
     steps:
       - id: run
         agent: reviewer
+        # Step-scope env: highest-precedence explicit scope. CI_TARGET here wins
+        # over the workflow value; REVIEW_PROFILE falls back to the workflow's.
+        env:
+          CI_TARGET: production
     on_complete:
       set_state: in review
 

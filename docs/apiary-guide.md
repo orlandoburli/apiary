@@ -274,6 +274,7 @@ agents:
 | `source_email` | no | Git author email (set as `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_EMAIL` in runner env) |
 | `source_name` | no | Git author name (set as `GIT_AUTHOR_NAME`, `GIT_COMMITTER_NAME` in runner env) |
 | `max_workers` | no | Per-agent concurrency cap (default: global `settings.concurrency`) |
+| `env` | no | Agent-scope environment variables (map). Lowest-precedence explicit scope — see [Environment variables](#environment-variables) |
 
 ### `routes`
 
@@ -375,10 +376,54 @@ In detail view: `m` cycles model, `r` cycles runner, `w` cycles max_workers. Cha
 
 Each agent can have its own GitHub identity for write operations:
 
-- `source_token` — overrides source `api_key` for Acknowledge/WriteResult/SetState/AddLabels
+- `source_token` — overrides source `api_key` for Acknowledge/WriteResult/SetState/AddLabels (passed through Go context via `context.WithValue(ctx, source.SourceTokenCtxKey, token)`), and is also exported to the agent subprocess as `GITHUB_TOKEN` / `GH_TOKEN` so `gh` commands the agent runs itself authenticate as the agent's own account
 - `source_email` + `source_name` — injected as `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` in the runner's environment
 
-Passed through Go context via `context.WithValue(ctx, source.SourceTokenCtxKey, token)`.
+## Environment variables
+
+Agent subprocesses inherit the daemon's environment plus an overlay. You can set
+arbitrary environment variables at three scopes via an `env: { KEY: VALUE }` map:
+
+| Scope | Field | Applies to |
+|---|---|---|
+| **Agent** | `agents[].env` | every step that runs this agent, in any workflow |
+| **Workflow** | `workflows[].env` | every step of this workflow |
+| **Step** | `workflows[].steps[].env` | only that step |
+
+**Precedence (highest wins): STEP > WORKFLOW > AGENT.** A key set at step scope
+overrides the same key at workflow scope, which overrides agent scope.
+
+These three explicit scopes sit **above the identity overlay** (the git identity
+and the `source_token` → `GITHUB_TOKEN`/`GH_TOKEN` mapping described under
+[Agent Identity](#agent-identity)), so by default the agent's own token wins — but
+an explicit `env` value at any scope can deliberately override it (e.g. a single
+step setting its own `GITHUB_TOKEN`).
+
+Values pass through the config loader's `${VAR}` expansion (resolved at load
+time), so you can forward a daemon var explicitly:
+`env: { DEPLOY_URL: "${DEPLOY_URL}" }`.
+
+```yaml
+agents:
+  - id: reviewer
+    source_token: ${GITHUB_TOKEN_REVIEWER}
+    env:
+      REVIEW_PROFILE: strict     # agent-scope default
+
+workflows:
+  - id: code-review
+    env:
+      REVIEW_PROFILE: relaxed    # overrides the agent value for this workflow
+      CI_TARGET: staging
+    steps:
+      - id: run
+        agent: reviewer
+        env:
+          CI_TARGET: production  # overrides the workflow value for this step only
+```
+
+Effective environment for `run`: `REVIEW_PROFILE=relaxed`, `CI_TARGET=production`,
+plus the identity overlay.
 
 ## Troubleshooting
 

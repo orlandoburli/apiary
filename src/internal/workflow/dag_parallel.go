@@ -26,7 +26,7 @@ func (e *Engine) runParallelStep(
 	ctx context.Context, instID string,
 	step config.StepConfig, cell model.SourceItem,
 	task model.InternalTask, bindings []model.SourceBinding,
-	memSnap []MemoryStep,
+	memSnap []MemoryStep, wfEnv map[string]string,
 ) (StepResult, []MemoryStep) {
 	children := step.SubSteps
 	if len(children) == 0 {
@@ -37,7 +37,7 @@ func (e *Engine) runParallelStep(
 
 	for i, child := range children {
 		go func(i int, child config.StepConfig) {
-			res := e.runStep(ctx, instID, child, cell, task, bindings, memSnap)
+			res := e.runStep(ctx, instID, child, cell, task, bindings, memSnap, wfEnv)
 			resultCh <- parallelChildResult{idx: i, step: child, res: res}
 		}(i, child)
 	}

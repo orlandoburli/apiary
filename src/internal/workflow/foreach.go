@@ -35,7 +35,7 @@ func (e *Engine) executeForeachStep(
 	step config.StepConfig, cell model.SourceItem,
 	task model.InternalTask, bindings []model.SourceBinding,
 	memSnap []MemoryStep, contribSnap map[string]MemoryStep,
-	wfID string, sem chan struct{},
+	wfID string, sem chan struct{}, wfEnv map[string]string,
 ) (StepResult, foreachResult) {
 	items, err := resolveItemsFromContrib(step.Items, contribSnap)
 	if err != nil {
@@ -67,9 +67,9 @@ func (e *Engine) executeForeachStep(
 	}
 
 	if sem != nil && step.Concurrency > 1 {
-		return e.executeForeachConcurrent(ctx, instID, step, cell, task, bindings, memSnap, wfID, sem, items, as)
+		return e.executeForeachConcurrent(ctx, instID, step, cell, task, bindings, memSnap, wfID, sem, items, as, wfEnv)
 	}
-	return e.executeForeachSequential(ctx, instID, step, cell, task, bindings, memSnap, wfID, items, as)
+	return e.executeForeachSequential(ctx, instID, step, cell, task, bindings, memSnap, wfID, items, as, wfEnv)
 }
 
 // executeForeachSequential runs foreach items one at a time (original behaviour).
@@ -78,7 +78,7 @@ func (e *Engine) executeForeachSequential(
 	step config.StepConfig, cell model.SourceItem,
 	task model.InternalTask, bindings []model.SourceBinding,
 	memSnap []MemoryStep, wfID string,
-	items []any, as string,
+	items []any, as string, wfEnv map[string]string,
 ) (StepResult, foreachResult) {
 	var fr foreachResult
 	for i, item := range items {
@@ -88,7 +88,7 @@ func (e *Engine) executeForeachSequential(
 		sub.DependsOn = nil
 		sub.Prompt = renderItemTemplate(step.Step.Prompt, as, item)
 
-		res := e.runStep(ctx, instID, sub, cell, task, bindings, memSnap)
+		res := e.runStep(ctx, instID, sub, cell, task, bindings, memSnap, wfEnv)
 		if res.Success {
 			fr.passed++
 		} else {
@@ -110,7 +110,7 @@ func (e *Engine) executeForeachConcurrent(
 	step config.StepConfig, cell model.SourceItem,
 	task model.InternalTask, bindings []model.SourceBinding,
 	memSnap []MemoryStep, wfID string,
-	sem chan struct{}, items []any, as string,
+	sem chan struct{}, items []any, as string, wfEnv map[string]string,
 ) (StepResult, foreachResult) {
 	var (
 		mu      sync.Mutex
@@ -149,7 +149,7 @@ func (e *Engine) executeForeachConcurrent(
 			sem <- struct{}{} // acquire global slot
 			defer func() { <-sem }()
 
-			res := e.runStep(ctx, instID, sub, cell, task, bindings, memSnap)
+			res := e.runStep(ctx, instID, sub, cell, task, bindings, memSnap, wfEnv)
 
 			mu.Lock()
 			if res.Success {
