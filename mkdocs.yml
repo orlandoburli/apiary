@@ -38,6 +38,7 @@ nav:
   - Apiary Guide: apiary-guide.md
   - Dashboard: dashboard.md
   - GitHub Source: github-source.md
+  - VS Code Extension: vscode-extension.md
   - Development: development.md
 
 extra:
