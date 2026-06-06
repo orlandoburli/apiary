@@ -20,10 +20,33 @@ import (
 // approval steps survive across dispatch and poll cycles.
 func (d *Dispatcher) workflowEngine() *workflow.Engine {
 	d.engineOnce.Do(func() {
-		d.engine = workflow.NewEngine(d.cfg, d.db, &wfStepExecutor{d: d},
-			workflow.WithSideEffects(&wfSideEffects{d: d}))
+		opts := []workflow.Option{workflow.WithSideEffects(&wfSideEffects{d: d})}
+		if d.db != nil {
+			opts = append(opts, workflow.WithSpawner(d.newSpawner()))
+		}
+		d.engine = workflow.NewEngine(d.cfg, d.db, &wfStepExecutor{d: d}, opts...)
 	})
 	return d.engine
+}
+
+// newSpawner builds the WorkflowSpawner backing the APIARY_SPAWN marker: it
+// resolves a named workflow from config, persists the child InternalTask, and
+// runs the workflow through this dispatcher's engine. A nil DB disables spawning
+// (handled by the engine as a step error if a marker is emitted).
+func (d *Dispatcher) newSpawner() workflow.WorkflowSpawner {
+	resolve := func(id string) (config.WorkflowConfig, bool) {
+		for i := range d.cfg.Workflows {
+			if d.cfg.Workflows[i].ID == id {
+				return d.cfg.Workflows[i], true
+			}
+		}
+		return config.WorkflowConfig{}, false
+	}
+	run := func(ctx context.Context, wf config.WorkflowConfig, task model.InternalTask) (bool, error) {
+		_, success, err := d.workflowEngine().RunInstance(ctx, wf, task)
+		return success, err
+	}
+	return workflow.NewDefaultSpawner(resolve, d.db.InternalTasks(), run, nil, nil)
 }
 
 // dispatchWorkflow runs a matched task through the workflow engine. The route is
@@ -164,12 +187,19 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		publishPayload = ""
 	}
 
+	// A malformed APIARY_SPAWN block is a step-level error so the workflow fails
+	// with a descriptive message rather than silently dropping the request.
+	if res.SpawnError != nil {
+		return workflow.StepResult{Success: false, Output: res.Output, Err: res.SpawnError}
+	}
+
 	return workflow.StepResult{
 		Success:          res.Success,
 		Output:           res.Output,
 		StructuredOutput: res.StructuredOutput,
 		Summary:          res.Summary,
 		PublishPayload:   publishPayload,
+		SpawnRequest:     res.SpawnRequest,
 		Err:              res.Error,
 	}
 }

@@ -66,8 +66,11 @@ type StepRun struct {
 	// PublishState records the write-back outcome: sent | failed | skipped.
 	// Empty when the step emitted no publish payload.
 	PublishState string
-	StartedAt    *time.Time
-	FinishedAt   *time.Time
+	// SpawnedTaskID is the child InternalTask id created when the step emitted an
+	// APIARY_SPAWN request. Empty when the step spawned nothing.
+	SpawnedTaskID string
+	StartedAt     *time.Time
+	FinishedAt    *time.Time
 }
 
 // CreateWorkflowInstance inserts a new workflow instance. The caller supplies
@@ -254,12 +257,13 @@ func (c *Client) CreateStepRun(ctx context.Context, sr *StepRun) error {
 	_, err := c.db.ExecContext(ctx, `
 		INSERT INTO step_runs
 		  (id, workflow_instance_id, step_id, agent_id, state, output, structured_output,
-		   summary, exit_code, skipped_cached, publish_payload, publish_state, started_at, finished_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   summary, exit_code, skipped_cached, publish_payload, publish_state, spawned_task_id,
+		   started_at, finished_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, sr.ID, sr.WorkflowInstanceID, sr.StepID, nullStr(sr.AgentID), sr.State,
 		nullStr(sr.Output), nullStr(sr.StructuredOutput), nullStr(sr.Summary),
 		sr.ExitCode, sr.SkippedCached, nullStr(sr.PublishPayload), nullStr(sr.PublishState),
-		sr.StartedAt, sr.FinishedAt)
+		nullStr(sr.SpawnedTaskID), sr.StartedAt, sr.FinishedAt)
 	return err
 }
 
@@ -270,11 +274,11 @@ func (c *Client) UpdateStepRun(ctx context.Context, sr *StepRun) error {
 		UPDATE step_runs
 		SET state = ?, output = ?, structured_output = ?, summary = ?,
 		    exit_code = ?, skipped_cached = ?, publish_payload = ?, publish_state = ?,
-		    started_at = ?, finished_at = ?
+		    spawned_task_id = ?, started_at = ?, finished_at = ?
 		WHERE id = ?
 	`, sr.State, nullStr(sr.Output), nullStr(sr.StructuredOutput), nullStr(sr.Summary),
 		sr.ExitCode, sr.SkippedCached, nullStr(sr.PublishPayload), nullStr(sr.PublishState),
-		sr.StartedAt, sr.FinishedAt, sr.ID)
+		nullStr(sr.SpawnedTaskID), sr.StartedAt, sr.FinishedAt, sr.ID)
 	return err
 }
 
@@ -284,7 +288,8 @@ func (c *Client) ListStepRuns(ctx context.Context, instanceID string) ([]StepRun
 		SELECT id, workflow_instance_id, step_id, COALESCE(agent_id,''), state,
 		       COALESCE(output,''), COALESCE(structured_output,''), COALESCE(summary,''),
 		       COALESCE(exit_code,0), COALESCE(skipped_cached,0),
-		       COALESCE(publish_payload,''), COALESCE(publish_state,''), started_at, finished_at
+		       COALESCE(publish_payload,''), COALESCE(publish_state,''),
+		       COALESCE(spawned_task_id,''), started_at, finished_at
 		FROM step_runs WHERE workflow_instance_id = ? ORDER BY rowid ASC
 	`, instanceID)
 	if err != nil {
@@ -297,7 +302,7 @@ func (c *Client) ListStepRuns(ctx context.Context, instanceID string) ([]StepRun
 		var sr StepRun
 		if err := rows.Scan(&sr.ID, &sr.WorkflowInstanceID, &sr.StepID, &sr.AgentID, &sr.State,
 			&sr.Output, &sr.StructuredOutput, &sr.Summary, &sr.ExitCode, &sr.SkippedCached,
-			&sr.PublishPayload, &sr.PublishState, &sr.StartedAt, &sr.FinishedAt); err != nil {
+			&sr.PublishPayload, &sr.PublishState, &sr.SpawnedTaskID, &sr.StartedAt, &sr.FinishedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, sr)
