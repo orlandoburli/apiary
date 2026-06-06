@@ -52,6 +52,10 @@ type Dispatcher struct {
 	db     *db.Client
 	logger *logging.Logger
 
+	// binder records each polled SourceItem as an InternalTask + SourceBinding.
+	// nil when no DB is configured (tests / dry-run without persistence).
+	binder source.SourceBinder
+
 	sem       chan struct{}            // poll concurrency (size 1)
 	agentSem  map[string]chan struct{} // per-agent dispatch concurrency
 	active    atomic.Int32
@@ -92,6 +96,11 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		sem:         make(chan struct{}, 1), // poll: one at a time
 		agentSem:    make(map[string]chan struct{}),
 		stats:       make(map[string]*sourceStat),
+	}
+
+	// The binder persists InternalTasks + SourceBindings; it needs the DB.
+	if dbClient != nil {
+		d.binder = source.NewSourceBinder(dbClient)
 	}
 
 	// Per-agent concurrency: each agent gets its own semaphore so that
@@ -300,6 +309,7 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 			if _, loaded := d.inFlight.LoadOrStore(cell.ID, struct{}{}); loaded {
 				continue
 			}
+			d.bindItem(ctx, cell)
 			match, ok := d.router.Route(cell)
 			if !ok {
 				aplog.Debug("  %q: no route matched (source=%q labels=%v)", cell.Title, cell.SourceID, cell.Labels)
@@ -774,6 +784,7 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 			aplog.Debug("cell %s: already in-flight, skipping", cell.ID)
 			continue
 		}
+		d.bindItem(ctx, cell)
 		match, ok := d.router.Route(cell)
 		if !ok {
 			aplog.Debug("cell %s (%q): no matching route, skipping", cell.ID, cell.Title)
@@ -813,6 +824,24 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 			d.dispatch(ctx, cell, adapter, match)
 		}()
 	}
+}
+
+// bindItem records a polled source item as an InternalTask + SourceBinding via
+// the binder. It is idempotent: re-polling the same item resolves to the same
+// task. Binding is independent of routing — an item with no matching route still
+// gets a registered task. A bind failure is logged, not fatal: Phase 3 still
+// dispatches off the SourceItem, so a missing task only affects the new task
+// registry, not the existing execution path. No-op when the binder is unset.
+func (d *Dispatcher) bindItem(ctx context.Context, cell model.SourceItem) {
+	if d.binder == nil {
+		return
+	}
+	task, err := d.binder.Bind(ctx, cell)
+	if err != nil {
+		aplog.Error("bind source item %s (%q): %v", cell.ID, cell.Title, err)
+		return
+	}
+	aplog.Debug("bound source item %s → task %s [%s]", cell.ID, task.ID, task.State)
 }
 
 // dispatch acknowledges, runs, and writes the result for a single cell.

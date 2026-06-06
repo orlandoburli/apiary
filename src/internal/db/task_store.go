@@ -44,6 +44,13 @@ func newID() string {
 // generated and written back to the struct. Metadata and Input are stored as
 // JSON; a nil Input is stored as SQL NULL.
 func (s *InternalTaskStore) CreateTask(ctx context.Context, task *model.InternalTask) error {
+	return insertTask(ctx, s.db, task)
+}
+
+// insertTask writes a task row using the given executor (a *sql.DB or a *sql.Tx).
+// It fills in a generated ID, timestamps, and the default state on the struct so
+// the caller can read them back — notably to set SourceBinding.TaskID.
+func insertTask(ctx context.Context, ex execer, task *model.InternalTask) error {
 	if task.ID == "" {
 		task.ID = newID()
 	}
@@ -69,7 +76,7 @@ func (s *InternalTaskStore) CreateTask(ctx context.Context, task *model.Internal
 		inputJSON = string(b)
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	_, err = ex.ExecContext(ctx, `
 		INSERT INTO internal_tasks
 		  (id, parent_task_id, title, description, input, state, metadata,
 		   outstanding_workflows, created_at, updated_at)
