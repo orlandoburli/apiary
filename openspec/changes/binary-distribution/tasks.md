@@ -22,7 +22,7 @@ Minimum shippable: tag → cross-platform archives + checksums on the GitHub Rel
 - [x] 1.1 Add `.goreleaser.yaml` with `builds`, `archives`, `checksums`, `release` blocks; ldflags set `internal/version.Version` to match the Makefile
 - [x] 1.2 Add `.github/workflows/release.yml` (`on: push tags 'v*'`, `contents:write`), running `goreleaser release --clean`
 - [x] 1.3 Add a PR check job (`release-check.yml`): `goreleaser check` + `goreleaser release --snapshot --clean` (no publish) so config breakage is caught pre-tag
-- [ ] 1.4 Dry-run: cut a `v0.x.0-rc` pre-release; download each archive, run `apiary version`, confirm it prints the tag *(local snapshot verified: 6 archives + checksums build, binary reports injected version; real tag still pending)*
+- [x] 1.4 Dry-run done: **`v0.1.0-rc.1`** released live — GitHub prerelease with 11 assets (6 archives + 4 deb/rpm + checksums); binary reports the injected version
 
 ## Phase 2 — Linux native packages
 
@@ -33,13 +33,14 @@ Minimum shippable: tag → cross-platform archives + checksums on the GitHub Rel
 
 - [x] 3.1 Add `Dockerfile` (distroless/static, nonroot) and `dockers` + `docker_manifests` blocks (linux/amd64 + arm64). **Note:** `dockers`/`docker_manifests` are deprecated in favor of `dockers_v2` — migrate later (Phase 7-ish).
 - [x] 3.2 Add ghcr.io login + QEMU + buildx + `packages:write` to `release.yml`; multi-arch manifest (`:latest` stable-only via `skip_push: auto`)
-- [ ] 3.3 Make the ghcr package public after first push; smoke `docker run ghcr.io/orlandoburli/apiary:<tag> version` *(local snapshot image runs + reports version; real push pending the RC tag)*
+- [~] 3.3 Images + manifest pushed live by `v0.1.0-rc.1` (tag is `0.1.0-rc.1`, no `v`). **(user)** still must flip the ghcr package visibility to **public** (access-control change); then `docker pull ghcr.io/orlandoburli/apiary:0.1.0-rc.1` works anonymously
 
 ## Phase 4 — Homebrew + Scoop
 
-- [ ] 4.1 Create `orlandoburli/homebrew-tap` and `orlandoburli/scoop-bucket` repos
-- [ ] 4.2 Create fine-grained PAT `TAP_GITHUB_TOKEN` (contents:write on the tap/bucket repos); add as Actions secret
-- [ ] 4.3 Add `brews` + `scoops` blocks; tag a release; verify `brew install orlandoburli/tap/apiary` (macOS + Linux) and `scoop install apiary`
+- [ ] 4.1 **(user)** Create `orlandoburli/homebrew-tap` and `orlandoburli/scoop-bucket` repos (public)
+- [ ] 4.2 **(user)** Create fine-grained PAT `TAP_GITHUB_TOKEN` (contents:write on the tap/bucket repos); add as Actions secret
+- [x] 4.3 Add `homebrew_casks` + `scoops` blocks (config landed ahead of the repos/token); wire `TAP_GITHUB_TOKEN` into `release.yml` (+ dummy in `release-check.yml`). `skip_upload: auto` → only stable tags publish. **Note:** `brews` (formula) is deprecated → used `homebrew_casks`, so install is `brew install --cask orlandoburli/tap/apiary`. Cask includes an `xattr` postflight to strip Gatekeeper quarantine (unsigned binary). Validated: snapshot writes `Casks/apiary.rb` (per-arch URLs+sha) and `scoop/apiary.json`.
+- [ ] 4.4 After 4.1+4.2: cut a **stable** tag (`v0.1.0`), then verify `brew install --cask orlandoburli/tap/apiary` (macOS + Linux) and `scoop install apiary`
 
 ## Phase 5 — winget + AUR (fast-follow if deferred in 0.3)
 
