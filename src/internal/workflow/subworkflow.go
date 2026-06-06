@@ -20,7 +20,7 @@ const maxSubWorkflowDepth = 1
 // memory taken on the scheduler goroutine before dispatch.
 func (e *Engine) executeSubWorkflowStep(
 	ctx context.Context, parentInstID string,
-	step config.StepConfig, cell model.SourceItem,
+	step config.StepConfig, task model.InternalTask, bindings []model.SourceBinding,
 	memSnap []MemoryStep, depth int, wfID string,
 ) StepResult {
 	if depth >= maxSubWorkflowDepth {
@@ -35,7 +35,7 @@ func (e *Engine) executeSubWorkflowStep(
 		return StepResult{Success: false, Output: fmt.Sprintf("workflow %q not found", step.Workflow)}
 	}
 
-	_, success := e.runChildInstance(ctx, parentInstID, *child, cell, memSnap, depth+1)
+	_, success := e.runChildInstance(ctx, parentInstID, *child, task, bindings, memSnap, depth+1)
 	summary := ""
 	if success {
 		summary = fmt.Sprintf("sub-workflow %q completed", child.ID)
@@ -48,11 +48,13 @@ func (e *Engine) executeSubWorkflowStep(
 // instance) and does not apply the child's on_complete/on_fail hooks against the
 // shared cell — the child is an isolated pipeline whose only outward signal is
 // success/failure.
-func (e *Engine) runChildInstance(ctx context.Context, parentInstID string, child config.WorkflowConfig, cell model.SourceItem, seed []MemoryStep, depth int) (string, bool) {
+func (e *Engine) runChildInstance(ctx context.Context, parentInstID string, child config.WorkflowConfig, task model.InternalTask, bindings []model.SourceBinding, seed []MemoryStep, depth int) (string, bool) {
 	childID := e.newID("wf")
+	cell := sourceItemView(task, bindings)
 	inst := &db.WorkflowInstance{
 		ID:               childID,
 		WorkflowID:       child.ID,
+		TaskID:           task.ID,
 		CellID:           cell.ID,
 		SourceID:         cell.SourceID,
 		State:            db.InstanceStateRunning,
@@ -64,7 +66,7 @@ func (e *Engine) runChildInstance(ctx context.Context, parentInstID string, chil
 		return "", false
 	}
 
-	r := e.initDAG(childID, child, cell, seed, depth)
+	r := e.initDAG(childID, child, task, bindings, seed, depth)
 	outcome := e.driveDAG(ctx, r)
 	// A sub-workflow cannot park independently in Phase 4: an approval step inside
 	// a child is treated as a failure (unsupported). Top-level approvals are the

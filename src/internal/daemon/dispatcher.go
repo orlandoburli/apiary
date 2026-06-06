@@ -835,7 +835,7 @@ func (d *Dispatcher) fanOut(ctx context.Context, cell model.SourceItem, adapter 
 					wg.Done()
 				}
 			}()
-			result := d.dispatch(ctx, cell, adapter, match)
+			result := d.dispatch(ctx, cell, adapter, task, match)
 			if !result.Success && onFail != nil {
 				onFail(cell.ID)
 			}
@@ -856,6 +856,10 @@ func (d *Dispatcher) fanOut(ctx context.Context, cell model.SourceItem, adapter 
 // no task ID to track outstanding workflows against.
 func transientTask(cell model.SourceItem) model.InternalTask {
 	return model.InternalTask{
+		// No DB row exists, so this id is never persisted; it stands in as the
+		// engine's execution-view id (sourceItemView falls back to it when the
+		// task has no binding) so the runner still keys on the source item id.
+		ID:          cell.ID,
 		Title:       cell.Title,
 		Description: cell.Description,
 		State:       model.TaskStateRegistered,
@@ -889,12 +893,12 @@ func (d *Dispatcher) bindItem(ctx context.Context, cell model.SourceItem) (task 
 	return task, true
 }
 
-// dispatch acknowledges, runs, and writes the result for a single cell.
-func (d *Dispatcher) dispatch(ctx context.Context, cell model.SourceItem, adapter source.Adapter, match router.Match) model.RunResult {
-	// Workflow mode is the only dispatch path: every matched cell runs
+// dispatch acknowledges, runs, and writes the result for a single task.
+func (d *Dispatcher) dispatch(ctx context.Context, cell model.SourceItem, adapter source.Adapter, task model.InternalTask, match router.Match) model.RunResult {
+	// Workflow mode is the only dispatch path: every matched task runs
 	// through the workflow engine (instances + step runs + memory). A plain
 	// route is synthesized into a single-step workflow by dispatchWorkflow.
-	return d.dispatchWorkflow(ctx, cell, adapter, match)
+	return d.dispatchWorkflow(ctx, cell, task, match)
 }
 
 func (d *Dispatcher) recordPoll(sourceID string, count int) {
