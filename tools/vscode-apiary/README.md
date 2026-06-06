@@ -1,6 +1,6 @@
 # Apiary Workflow Visualizer
 
-Live visual preview of [apiary](https://github.com/orlandoburli/apiary) workflow YAML files, rendered as a Mermaid flowchart directly inside VS Code or Cursor.
+Live visual preview of [apiary](https://orlandoburli.com.br/apiary/) workflow YAML files, rendered as a Mermaid flowchart directly inside VS Code or Cursor.
 
 ## Features
 
@@ -27,4 +27,7 @@ Cmd+Shift+P → Apiary: Show Workflow Preview
 
 ## About Apiary
 
-[Apiary](https://github.com/orlandoburli/apiary) is an open-source AI agent orchestration system that dispatches work to Claude, OpenCode, and other LLM runners based on GitHub Issues, Plane tasks, and other sources.
+[Apiary](https://orlandoburli.com.br/apiary/) is an open-source AI agent orchestration system that dispatches work to Claude, OpenCode, and other LLM runners based on GitHub Issues, Plane tasks, and other sources.
+
+- 🌐 Website: https://orlandoburli.com.br/apiary/
+- 📦 Source: https://github.com/orlandoburli/apiary
