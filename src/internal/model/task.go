@@ -63,10 +63,12 @@ type SourceBinding struct {
 
 // SpawnRequest describes a new InternalTask requested by a workflow step via the
 // APIARY_SPAWN marker. WorkflowSpawner (internal/workflow) consumes it to create
-// the child task and dispatch the named workflow.
+// the child task and dispatch the named workflow. The JSON tags map the marker's
+// payload ({"workflow","title","input"}) onto this struct; ParentTaskID is never
+// taken from agent output — the engine sets it to the spawning task's id.
 type SpawnRequest struct {
-	ParentTaskID string
-	WorkflowID   string
-	Title        string
-	Input        map[string]any
+	ParentTaskID string         `json:"-"`
+	WorkflowID   string         `json:"workflow"`
+	Title        string         `json:"title"`
+	Input        map[string]any `json:"input"`
 }

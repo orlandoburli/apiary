@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,9 @@ import (
 	"github.com/orlandoburli/apiary/internal/db"
 	"github.com/orlandoburli/apiary/internal/model"
 )
+
+// errTest is a sentinel error for tests that script a failure.
+var errTest = errors.New("test error")
 
 // synthWF converts a RouteConfig to an equivalent single-step WorkflowConfig.
 // Used only in tests; production code no longer has SynthesizeWorkflow.
@@ -121,6 +125,39 @@ func (f *fakeSide) ApplyHook(_ context.Context, _ model.InternalTask, _ []model.
 	return nil
 }
 
+// fakeSpawner records spawn requests and returns scripted outcomes.
+type fakeSpawner struct {
+	mu       sync.Mutex
+	requests []model.SpawnRequest
+	child    model.InternalTask
+	spawnErr error
+	awaitOK  bool
+	awaitErr error
+}
+
+func (f *fakeSpawner) Spawn(_ context.Context, req model.SpawnRequest) (model.InternalTask, error) {
+	f.mu.Lock()
+	f.requests = append(f.requests, req)
+	f.mu.Unlock()
+	if f.spawnErr != nil {
+		return model.InternalTask{}, f.spawnErr
+	}
+	return f.child, nil
+}
+
+func (f *fakeSpawner) Await(_ context.Context, _ string) (bool, error) {
+	return f.awaitOK, f.awaitErr
+}
+
+func (f *fakeSpawner) lastRequest() (model.SpawnRequest, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.requests) == 0 {
+		return model.SpawnRequest{}, false
+	}
+	return f.requests[len(f.requests)-1], true
+}
+
 func testEngine(cfg *config.Config, store Store, exec StepExecutor, side SideEffects) *Engine {
 	var seq atomic.Int64
 	return NewEngine(cfg, store, exec,
@@ -130,6 +167,27 @@ func testEngine(cfg *config.Config, store Store, exec StepExecutor, side SideEff
 			return prefix + "-" + itoa(int(seq.Add(1)))
 		}),
 	)
+}
+
+// testEngineWithSpawner builds a test engine wired with a spawner.
+func testEngineWithSpawner(cfg *config.Config, store Store, exec StepExecutor, side SideEffects, sp WorkflowSpawner) *Engine {
+	var seq atomic.Int64
+	return NewEngine(cfg, store, exec,
+		WithSideEffects(side),
+		WithSpawner(sp),
+		WithClock(func() time.Time { return time.Unix(1000, 0) }),
+		WithIDGen(func(prefix string) string {
+			return prefix + "-" + itoa(int(seq.Add(1)))
+		}),
+	)
+}
+
+// spawnWF builds a single-step workflow whose agent step uses the given spawn mode.
+func spawnWF(spawnMode string) config.WorkflowConfig {
+	return config.WorkflowConfig{
+		ID:    "r",
+		Steps: []config.StepConfig{{ID: "run", Agent: "backend-dev", Spawn: spawnMode}},
+	}
 }
 
 func itoa(n int) string {
@@ -284,6 +342,107 @@ func TestEngine_PublishSkippedWhenNoBindings(t *testing.T) {
 	}
 	if sr.PublishPayload != "should not post" {
 		t.Errorf("expected publish_payload persisted even when skipped, got %q", sr.PublishPayload)
+	}
+}
+
+// TestEngine_SpawnAutoFireAndForget covers 7.2.2/7.2.3 + 7.3.1 at the engine
+// level: a step emitting APIARY_SPAWN creates a child (parent set to the running
+// task) and records spawned_task_id; in auto mode the step's own success stands.
+func TestEngine_SpawnAutoFireAndForget(t *testing.T) {
+	cfg := baseCfg()
+	store := newFakeStore()
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"run": {Success: true, Output: "ok", SpawnRequest: &model.SpawnRequest{
+			WorkflowID: "collect", Title: "Collect", Input: map[string]any{"k": "v"},
+		}},
+	}}
+	sp := &fakeSpawner{child: model.InternalTask{ID: "task-child"}}
+	eng := testEngineWithSpawner(cfg, store, exec, &fakeSide{}, sp)
+
+	instID, _, err := eng.RunInstance(context.Background(), spawnWF(config.SpawnAuto),
+		model.InternalTask{ID: "C1", Title: "Parent"})
+	if err != nil {
+		t.Fatalf("RunInstance: %v", err)
+	}
+	if store.instances[instID].State != db.InstanceStateDone {
+		t.Errorf("expected instance done, got %s", store.instances[instID].State)
+	}
+
+	req, ok := sp.lastRequest()
+	if !ok {
+		t.Fatal("spawner was not called")
+	}
+	if req.ParentTaskID != "C1" {
+		t.Errorf("spawn ParentTaskID = %q, want C1 (the running task)", req.ParentTaskID)
+	}
+	if req.WorkflowID != "collect" || req.Input["k"] != "v" {
+		t.Errorf("spawn request not forwarded: %+v", req)
+	}
+	sr := store.stepRuns[store.stepOrder[0]]
+	if sr.SpawnedTaskID != "task-child" {
+		t.Errorf("spawned_task_id = %q, want task-child", sr.SpawnedTaskID)
+	}
+}
+
+// TestEngine_SpawnAwait covers 7.2.5 + 7.3.2: spawn: await fails the step when
+// the child fails and passes it when the child succeeds.
+func TestEngine_SpawnAwait(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		awaitOK bool
+		want    string
+	}{
+		{"child done", true, db.InstanceStateDone},
+		{"child failed", false, db.InstanceStateFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			exec := &fakeExecutor{results: map[string]StepResult{
+				"run": {Success: true, Output: "ok", SpawnRequest: &model.SpawnRequest{WorkflowID: "collect"}},
+			}}
+			sp := &fakeSpawner{child: model.InternalTask{ID: "task-child"}, awaitOK: tc.awaitOK}
+			eng := testEngineWithSpawner(baseCfg(), store, exec, &fakeSide{}, sp)
+
+			instID, _, err := eng.RunInstance(context.Background(), spawnWF(config.SpawnAwait),
+				model.InternalTask{ID: "C1"})
+			if err != nil {
+				t.Fatalf("RunInstance: %v", err)
+			}
+			if store.instances[instID].State != tc.want {
+				t.Errorf("instance state = %s, want %s", store.instances[instID].State, tc.want)
+			}
+		})
+	}
+}
+
+// TestEngine_SpawnErrorFailsStep covers 7.3.4 at the engine level: a spawner
+// error (e.g. unknown workflow) fails the step rather than passing silently.
+func TestEngine_SpawnErrorFailsStep(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"run": {Success: true, SpawnRequest: &model.SpawnRequest{WorkflowID: "nope"}},
+	}}
+	sp := &fakeSpawner{spawnErr: errTest}
+	eng := testEngineWithSpawner(baseCfg(), store, exec, &fakeSide{}, sp)
+
+	instID, _, _ := eng.RunInstance(context.Background(), spawnWF(config.SpawnAuto), model.InternalTask{ID: "C1"})
+	if store.instances[instID].State != db.InstanceStateFailed {
+		t.Errorf("expected failed instance on spawn error, got %s", store.instances[instID].State)
+	}
+}
+
+// TestEngine_SpawnWithoutSpawnerFailsStep: a spawn marker with no spawner wired
+// is a step error, never a silent no-op (7.3.4 spirit).
+func TestEngine_SpawnWithoutSpawnerFailsStep(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"run": {Success: true, SpawnRequest: &model.SpawnRequest{WorkflowID: "collect"}},
+	}}
+	eng := testEngine(baseCfg(), store, exec, &fakeSide{}) // no spawner
+
+	instID, _, _ := eng.RunInstance(context.Background(), spawnWF(config.SpawnAuto), model.InternalTask{ID: "C1"})
+	if store.instances[instID].State != db.InstanceStateFailed {
+		t.Errorf("expected failed instance when no spawner configured, got %s", store.instances[instID].State)
 	}
 }
 
