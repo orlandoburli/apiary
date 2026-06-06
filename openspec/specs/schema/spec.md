@@ -202,6 +202,7 @@ coexist. See the full annotated reference in the `workflow-mode` change specs
 | `trigger.exclusive` | bool | — | When this workflow matches, stop evaluating lower-priority triggers (it claims the task alone). Default `false`: a task **fans out** to every matching workflow (each runs as its own instance) |
 | `steps[]` | object[] | ✓ | Ordered steps forming the DAG |
 | `on_complete` / `on_fail` | object | — | Per-workflow side-effects on terminal success/failure (`set_state`, `add_labels`) |
+| `env` | map | — | Workflow-scope environment variables applied to every step. Overrides `agents[].env`; overridden by `steps[].env`. See **Environment variables** below |
 
 **Step types** (`steps[].type`, default `agent`):
 
@@ -222,6 +223,26 @@ Split/approval conditions use a small expression language over `cell.*`,
 |---|---|---|---|
 | `publish` | enum | `auto` | `auto`: write the step's `APIARY_PUBLISH` payload back to the task's source bindings as a comment. `off`: never write back, even if a payload is emitted. |
 | `spawn` | enum | `auto` | Controls an `APIARY_SPAWN` request the step emits. `auto`: fire-and-forget — the child task is created and dispatched, the step does not wait. `await`: block until the spawned task is terminal; a child failure fails this step. |
+| `env` | map | — | Step-scope environment variables. Highest-precedence explicit scope — overrides `workflows[].env` and `agents[].env`. See **Environment variables** below |
+
+### Environment variables
+
+Agent subprocesses receive `os.Environ()` (daemon-inherited) plus an overlay. The
+overlay is composed lowest-precedence first:
+
+```
+identity overlay (git author/committer + source_token → GITHUB_TOKEN/GH_TOKEN)
+  ← agents[].env        (agent scope)
+    ← workflows[].env   (workflow scope)
+      ← steps[].env     (step scope, highest precedence)
+```
+
+So explicit-scope precedence is **STEP > WORKFLOW > AGENT**, all of which sit above
+the identity overlay (a deliberate `env` value can override `GITHUB_TOKEN`). Each
+`env` is a `{ KEY: VALUE }` string map; values are subject to the usual `${VAR}`
+expansion at config-load time (see **Environment Variable Interpolation**). The merge is
+performed by the daemon's step executor; the workflow engine threads the
+workflow-scope map to the executor via `StepRequest.WorkflowEnv`.
 
 ### `tasks` (top-level completion hook)
 

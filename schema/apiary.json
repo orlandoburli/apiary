@@ -157,6 +157,13 @@
           "source_name": {
             "type": "string",
             "description": "Display name for the source"
+          },
+          "env": {
+            "type": "object",
+            "description": "Agent-scope environment variables for the agent subprocess. Lowest-precedence explicit scope (overridden by workflow.env and step.env), applied above the identity overlay (git + source_token).",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         }
       }
@@ -283,6 +290,13 @@
           },
           "on_fail": {
             "$ref": "#/definitions/OnComplete"
+          },
+          "env": {
+            "type": "object",
+            "description": "Workflow-scope environment variables applied to every step of this workflow. Overrides agent.env; overridden by step.env.",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         }
       }
@@ -514,6 +528,13 @@
           "description": "Control APIARY_SPAWN request handling (for type=agent)",
           "enum": ["auto", "await"],
           "default": "auto"
+        },
+        "env": {
+          "type": "object",
+          "description": "Step-scope environment variables. Highest-precedence explicit scope: overrides workflow.env and agent.env for the same key.",
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "on_pass": {
           "$ref": "#/definitions/StepNext"
