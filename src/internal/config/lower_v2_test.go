@@ -62,16 +62,23 @@ func TestLowerV2_ImplicitSequencing_V2Fields(t *testing.T) {
 		t.Fatalf("expected 3 steps, got %d", len(out.Steps))
 	}
 	// a: no prev
-	if len(out.Steps[0].DependsOn) != 0 {
-		t.Errorf("step a should have no depends_on, got %v", out.Steps[0].DependsOn)
+	if len(out.Steps[0].DependsOn) != 0 || len(out.Steps[0].SeqDependsOn) != 0 {
+		t.Errorf("step a should have no depends_on/seq_depends_on, got %v / %v",
+			out.Steps[0].DependsOn, out.Steps[0].SeqDependsOn)
 	}
-	// b: depends on a
-	if len(out.Steps[1].DependsOn) != 1 || out.Steps[1].DependsOn[0] != "a" {
-		t.Errorf("step b depends_on = %v, want [a]", out.Steps[1].DependsOn)
+	// b: implicit seq dep on a (via SeqDependsOn, not DependsOn)
+	if len(out.Steps[1].DependsOn) != 0 {
+		t.Errorf("step b should have no explicit depends_on, got %v", out.Steps[1].DependsOn)
 	}
-	// c: depends on b
-	if len(out.Steps[2].DependsOn) != 1 || out.Steps[2].DependsOn[0] != "b" {
-		t.Errorf("step c depends_on = %v, want [b]", out.Steps[2].DependsOn)
+	if len(out.Steps[1].SeqDependsOn) != 1 || out.Steps[1].SeqDependsOn[0] != "a" {
+		t.Errorf("step b seq_depends_on = %v, want [a]", out.Steps[1].SeqDependsOn)
+	}
+	// c: implicit seq dep on b
+	if len(out.Steps[2].DependsOn) != 0 {
+		t.Errorf("step c should have no explicit depends_on, got %v", out.Steps[2].DependsOn)
+	}
+	if len(out.Steps[2].SeqDependsOn) != 1 || out.Steps[2].SeqDependsOn[0] != "b" {
+		t.Errorf("step c seq_depends_on = %v, want [b]", out.Steps[2].SeqDependsOn)
 	}
 }
 
@@ -194,13 +201,13 @@ func TestLowerV2_GroupDissolvedInline(t *testing.T) {
 	if out.Steps[1].Condition == "" {
 		t.Error("implement should inherit the group's condition")
 	}
-	// implement depends on classify (group's predecessor).
-	if len(out.Steps[1].DependsOn) == 0 || out.Steps[1].DependsOn[0] != "classify" {
-		t.Errorf("implement depends_on = %v, want [classify]", out.Steps[1].DependsOn)
+	// implement has implicit seq dep on classify (group's predecessor).
+	if len(out.Steps[1].SeqDependsOn) == 0 || out.Steps[1].SeqDependsOn[0] != "classify" {
+		t.Errorf("implement seq_depends_on = %v, want [classify]", out.Steps[1].SeqDependsOn)
 	}
-	// review depends on implement (implicit sequencing within group).
-	if len(out.Steps[2].DependsOn) == 0 || out.Steps[2].DependsOn[0] != "implement" {
-		t.Errorf("review depends_on = %v, want [implement]", out.Steps[2].DependsOn)
+	// review has implicit seq dep on implement (within group).
+	if len(out.Steps[2].SeqDependsOn) == 0 || out.Steps[2].SeqDependsOn[0] != "implement" {
+		t.Errorf("review seq_depends_on = %v, want [implement]", out.Steps[2].SeqDependsOn)
 	}
 }
 

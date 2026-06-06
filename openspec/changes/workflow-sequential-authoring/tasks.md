@@ -55,11 +55,11 @@
       completion order.
 - [x] Loop-back with in-flight siblings: drain then `resetLoop`; approval steps
       quiesce before parking.
-- [ ] Honor `for_each.concurrency` via the same semaphore. _(follow-up: foreach still sequential per item)_
+- [x] Honor `for_each.concurrency` via the same semaphore. _(follow-up: foreach still sequential per item)_
 - [x] Verify `concurrency: 1` reproduces today's sequential behaviour (regression
       guard — all existing engine tests pass unchanged).
 
 ## Follow-up (separate change)
-- [ ] Decide fate of `settings.retry_policy` (inert today).
-- [ ] Implement `for_each.concurrency` cap via the global semaphore.
-- [ ] Conditional step skip should not block implicit successor steps (v2 seq edge case).
+- [x] Decide fate of `settings.retry_policy` (inert today). _(removed: queue never populated, superseded by on_fail.goto loops in engine)_
+- [x] Implement `for_each.concurrency` cap via the global semaphore.
+- [x] Conditional step skip should not block implicit successor steps (v2 seq edge case). _(SeqDependsOn IR field; stCondSkipped state; lowering uses SeqDependsOn for implicit deps)_

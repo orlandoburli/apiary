@@ -56,6 +56,50 @@ func TestDAG_ConditionSkipsStep(t *testing.T) {
 	}
 }
 
+// TestDAG_CondSkip_SeqSuccessorStillRuns verifies the v2 seq edge case: when a
+// step is condition-skipped but its successor is linked via SeqDependsOn (the
+// implicit dep added by the lowering pass), the successor still runs.
+func TestDAG_CondSkip_SeqSuccessorStillRuns(t *testing.T) {
+	cfg := baseCfg()
+	store := newFakeStore()
+	exec := &fakeExecutor{results: map[string]StepResult{}}
+	eng := testEngine(cfg, store, exec, &fakeSide{})
+
+	// Simulate a v2-lowered workflow: classify → implement (cond) → qa
+	// implement is condition-false (never runs); qa uses SeqDependsOn so it
+	// is not blocked by the cond-skipped implement.
+	wf := config.WorkflowConfig{ID: "v2-seq", Steps: []config.StepConfig{
+		{ID: "classify", Agent: "architect"},
+		{
+			ID: "implement", Agent: "backend-dev",
+			SeqDependsOn: []string{"classify"},
+			Condition:    `memory.track == "implement"`, // always false (nothing writes track)
+		},
+		{
+			ID: "qa", Agent: "architect",
+			SeqDependsOn: []string{"implement"},
+		},
+	}}
+
+	_, success, err := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	if err != nil {
+		t.Fatalf("RunInstance: %v", err)
+	}
+	if !success {
+		t.Fatal("expected success (cond-skipped seq step does not fail the workflow)")
+	}
+	ids := executedIDs(exec.seen)
+	if !contains(ids, "classify") {
+		t.Errorf("classify should run, got %v", ids)
+	}
+	if contains(ids, "implement") {
+		t.Errorf("implement should be skipped (condition false), got %v", ids)
+	}
+	if !contains(ids, "qa") {
+		t.Errorf("qa should run after cond-skipped implement (seq dep), got %v", ids)
+	}
+}
+
 // TestDAG_ConditionTrueRunsStep verifies that a step whose condition evaluates
 // true runs normally.
 func TestDAG_ConditionTrueRunsStep(t *testing.T) {
