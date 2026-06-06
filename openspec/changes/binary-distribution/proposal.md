@@ -51,6 +51,32 @@ All channels are fed from a **single `.goreleaser.yaml`**, so one tag push produ
 
 ---
 
+## Cost
+
+**v1 as specced is $0.** Apiary is an open-source public repo, so every channel and the CI itself are free:
+
+| Item | Cost | Notes |
+|---|---|---|
+| GitHub Releases, archives, checksums | Free | |
+| Homebrew tap / Scoop bucket (GitHub repos) | Free | |
+| winget submission (`microsoft/winget-pkgs` PR) | Free | |
+| AUR `apiary-bin` | Free | |
+| ghcr.io container packages | Free | public packages are free |
+| GitHub Actions CI (GoReleaser) | Free | **unlimited minutes for public repos**; only private repos burn quota |
+
+Shipping **unsigned** macOS and Windows binaries costs nothing. The tradeoff is UX friction, not money — Gatekeeper ("unidentified developer") on macOS and SmartScreen ("unknown publisher") on Windows. Homebrew installs largely sidestep Gatekeeper (brew strips the quarantine attribute); direct GitHub-Release downloads do not.
+
+**Cost only appears in the deferred signing change (below):**
+
+| Platform | Purchase | Rough cost |
+|---|---|---|
+| macOS notarization | Apple Developer Program (Developer ID cert + `notarytool`) | **$99/year** flat |
+| Windows signing | Authenticode cert from a CA; post-2023 OV needs a hardware token / cloud HSM, EV gives instant SmartScreen reputation | **OV ~$200–400/yr**, **EV ~$300–600/yr** (+ possible HSM fee) |
+
+Signing is independently adoptable: macOS-only ($99/yr) is a reasonable first step, leaving Windows unsigned until SmartScreen friction justifies the larger spend.
+
+---
+
 ## Out of Scope (deferred to follow-up changes)
 
 - **macOS notarization** (Apple Developer ID + `notarytool`) and **Windows Authenticode signing**. v1 ships **unsigned**. The docs MUST call out the Gatekeeper ("unidentified developer") and SmartScreen friction and the workaround (`xattr -d com.apple.quarantine`, "Run anyway"). Signing requires paid certificates and CI secret management — its own change.
