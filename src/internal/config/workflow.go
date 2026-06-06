@@ -71,6 +71,19 @@ type StepConfig struct {
 	Type      string   `yaml:"type,omitempty"` // agent(default)|split|approval|foreach|workflow
 	DependsOn []string `yaml:"depends_on,omitempty"`
 
+	// ── shared / cross-cutting ────────────────────────────────────
+	// Name is a human-readable label shown in logs and dashboards.
+	Name string `yaml:"name,omitempty"`
+	// Condition is a DAG IR expression (e.g. `memory.track == "implement"`).
+	// When it evaluates to false the step is skipped (and its dependents cascade).
+	// It is the lowered form of the v2 authored `if:` field.
+	Condition string `yaml:"condition,omitempty"`
+	// FailWhen is a DAG IR expression evaluated against the current memory plus
+	// this step's fresh structured output after the agent runs. True → logical
+	// rejection (treated as failure, eligible for on_fail.goto loop-back).
+	// Lowered form of v2 `reject_when:`.
+	FailWhen string `yaml:"fail_when,omitempty"`
+
 	// ── agent step ────────────────────────────────────────────────
 	Agent           string        `yaml:"agent,omitempty"`
 	Model           string        `yaml:"model,omitempty"` // overrides agent's model for this step

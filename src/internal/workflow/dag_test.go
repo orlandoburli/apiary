@@ -38,6 +38,16 @@ func (s *seqExecutor) ExecuteStep(_ context.Context, req StepRequest) StepResult
 
 func (s *seqExecutor) ran(stepID string) int { return s.calls[stepID] }
 
+func countSeen(seen []StepRequest, id string) int {
+	n := 0
+	for _, r := range seen {
+		if r.Step.ID == id {
+			n++
+		}
+	}
+	return n
+}
+
 func executedIDs(seen []StepRequest) []string {
 	out := make([]string, 0, len(seen))
 	for _, r := range seen {
