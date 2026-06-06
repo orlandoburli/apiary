@@ -79,7 +79,7 @@ func TestDAG_DiamondParallelJoin(t *testing.T) {
 		{ID: "D", Agent: "architect", DependsOn: []string{"B", "C"}},
 	}}
 
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if !success {
 		t.Fatal("expected success")
 	}
@@ -116,7 +116,7 @@ func TestDAG_SplitFirstMatch(t *testing.T) {
 		{ID: "junior", Agent: "backend-dev"},
 	}}
 
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if !success {
 		t.Fatal("expected success")
 	}
@@ -150,7 +150,7 @@ func TestDAG_SplitFallback(t *testing.T) {
 		{ID: "junior", Agent: "backend-dev"},
 	}}
 
-	_, _, _ = eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, _, _ = eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	ids := executedIDs(exec.seen)
 	if !contains(ids, "junior") || contains(ids, "senior") {
 		t.Errorf("expected fallback junior only, got %v", ids)
@@ -172,7 +172,7 @@ func TestDAG_SplitMultiFanOut(t *testing.T) {
 		{ID: "fe", Agent: "architect"},
 	}}
 
-	_, _, _ = eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1", Labels: []string{"backend", "frontend"}})
+	_, _, _ = eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1", Labels: []string{"backend", "frontend"}})
 	ids := executedIDs(exec.seen)
 	if !contains(ids, "be") || !contains(ids, "fe") {
 		t.Errorf("expected both branches via multi, got %v", ids)
@@ -196,7 +196,7 @@ func TestDAG_SplitSkipCascadesDownstream(t *testing.T) {
 		{ID: "b2", Agent: "architect", DependsOn: []string{"b"}},
 	}}
 
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1", Priority: "high"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1", Priority: "high"})
 	if !success {
 		t.Fatal("expected success")
 	}
@@ -225,7 +225,7 @@ func TestDAG_OnFailLoopSucceedsOnRetry(t *testing.T) {
 			OnFail: &config.StepOutcome{Goto: "implement", MaxRetries: 2}},
 	}}
 
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if !success {
 		t.Fatal("expected success after retry")
 	}
@@ -250,7 +250,7 @@ func TestDAG_OnFailLoopExhaustsRetries(t *testing.T) {
 			OnFail: &config.StepOutcome{Goto: "implement", MaxRetries: 1}},
 	}}
 
-	instID, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	instID, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if success {
 		t.Fatal("expected failure after exhausting retries")
 	}
@@ -279,7 +279,7 @@ func TestDAG_FailureWithoutLoopStopsGraph(t *testing.T) {
 		{ID: "deploy", Agent: "architect", DependsOn: []string{"build"}},
 	}}
 
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if success {
 		t.Fatal("expected failure")
 	}
@@ -300,7 +300,7 @@ func TestDAG_LinearChainOrder(t *testing.T) {
 		{ID: "b", Agent: "backend-dev", DependsOn: []string{"a"}},
 		{ID: "c", Agent: "architect", DependsOn: []string{"b"}},
 	}}
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if !success {
 		t.Fatal("expected success")
 	}

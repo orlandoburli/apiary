@@ -66,7 +66,7 @@ func TestConcurrentScheduler_IndependentStepsRunParallel(t *testing.T) {
 		{ID: "b", Agent: "architect"}, // no depends_on: independent from a
 	}}
 
-	_, success, err := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, err := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestConcurrentScheduler_Concurrency1IsSequential(t *testing.T) {
 		{ID: "c", Agent: "architect"},
 	}}
 
-	_, success, err := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, err := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestConcurrentScheduler_DepsPreventEarlyDispatch(t *testing.T) {
 		{ID: "b", Agent: "architect", DependsOn: []string{"a"}},
 	}}
 
-	_, success, err := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, err := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestParallelStep_AllJoin(t *testing.T) {
 		{ID: "after", Agent: "architect", DependsOn: []string{"par"}},
 	}}
 
-	_, success, err := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, err := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestParallelStep_AllJoinFailsIfAnyChildFails(t *testing.T) {
 		},
 	}}
 
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if success {
 		t.Fatal("expected failure (child-b failed, join=all)")
 	}
@@ -231,7 +231,7 @@ func TestParallelStep_AnyJoinPassesIfOneChildPasses(t *testing.T) {
 		{ID: "after", Agent: "architect", DependsOn: []string{"par"}},
 	}}
 
-	_, success, err := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, err := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestConcurrentScheduler_MemoryOrderDeterministic(t *testing.T) {
 		{ID: "c", Agent: "architect", DependsOn: []string{"a", "b"}},
 	}}
 
-	_, success, err := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, err := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}

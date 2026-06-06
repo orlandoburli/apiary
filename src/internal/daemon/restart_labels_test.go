@@ -27,7 +27,7 @@ func restartTestConfig() *config.Config {
 
 func TestControlLabels_DerivesFromRouteExclusions(t *testing.T) {
 	d := &Dispatcher{cfg: restartTestConfig()}
-	cell := model.Cell{Labels: []string{"agent:engineer", "in-progress", "bug", "area:backend"}}
+	cell := model.SourceItem{Labels: []string{"agent:engineer", "in-progress", "bug", "area:backend"}}
 
 	got := d.controlLabels(cell)
 
@@ -44,7 +44,7 @@ func TestControlLabels_DerivesFromRouteExclusions(t *testing.T) {
 
 func TestControlLabels_NoneWhenOnlyPlainLabels(t *testing.T) {
 	d := &Dispatcher{cfg: restartTestConfig()}
-	cell := model.Cell{Labels: []string{"bug", "area:backend", "prioridade:alta"}}
+	cell := model.SourceItem{Labels: []string{"bug", "area:backend", "prioridade:alta"}}
 	if got := d.controlLabels(cell); len(got) != 0 {
 		t.Errorf("controlLabels = %v, want none", got)
 	}
@@ -53,37 +53,37 @@ func TestControlLabels_NoneWhenOnlyPlainLabels(t *testing.T) {
 // fakeRestartSource implements the Adapter interface plus the optional
 // TaskPoller, LabelRemover, and StateSetter interfaces ForceRestart relies on.
 type fakeRestartSource struct {
-	cell     model.Cell
+	cell     model.SourceItem
 	removed  []string
 	stateSet string
 }
 
 func (f *fakeRestartSource) ID() string                                    { return "fake" }
 func (f *fakeRestartSource) Connect(context.Context, map[string]any) error { return nil }
-func (f *fakeRestartSource) Poll(context.Context, time.Time) ([]model.Cell, error) {
+func (f *fakeRestartSource) Poll(context.Context, time.Time) ([]model.SourceItem, error) {
 	return nil, nil
 }
-func (f *fakeRestartSource) Acknowledge(context.Context, model.Cell, model.AckAction) error {
+func (f *fakeRestartSource) Acknowledge(context.Context, model.SourceItem, model.AckAction) error {
 	return nil
 }
-func (f *fakeRestartSource) WriteResult(context.Context, model.Cell, model.RunResult) error {
+func (f *fakeRestartSource) WriteResult(context.Context, model.SourceItem, model.RunResult) error {
 	return nil
 }
 func (f *fakeRestartSource) WebhookHandler() http.Handler { return nil }
-func (f *fakeRestartSource) PollTask(context.Context, string) (model.Cell, error) {
+func (f *fakeRestartSource) PollTask(context.Context, string) (model.SourceItem, error) {
 	return f.cell, nil
 }
-func (f *fakeRestartSource) RemoveLabels(_ context.Context, _ model.Cell, labels []string) error {
+func (f *fakeRestartSource) RemoveLabels(_ context.Context, _ model.SourceItem, labels []string) error {
 	f.removed = append(f.removed, labels...)
 	return nil
 }
-func (f *fakeRestartSource) SetState(_ context.Context, _ model.Cell, state string) error {
+func (f *fakeRestartSource) SetState(_ context.Context, _ model.SourceItem, state string) error {
 	f.stateSet = state
 	return nil
 }
 
 func TestForceRestart_StripsControlLabels(t *testing.T) {
-	fake := &fakeRestartSource{cell: model.Cell{
+	fake := &fakeRestartSource{cell: model.SourceItem{
 		ID:     "42",
 		Labels: []string{"agent:engineer", "in-progress", "bug"},
 	}}

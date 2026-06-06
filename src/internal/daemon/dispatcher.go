@@ -443,7 +443,7 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, cellID string) error {
 	for _, sc := range d.cfg.Sources {
 		if adapter, ok := d.sources[sc.ID]; ok {
 			if ss, ok := adapter.(source.StateSetter); ok {
-				_ = ss.SetState(ctx, model.Cell{ID: cellID}, "todo")
+				_ = ss.SetState(ctx, model.SourceItem{ID: cellID}, "todo")
 			}
 		}
 	}
@@ -489,7 +489,7 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, cellID string) error {
 // can keep a cell from matching a route, so force-restart strips them to send the
 // cell back to the start of the flow. Derived from the live config — no
 // hardcoded label names.
-func (d *Dispatcher) controlLabels(cell model.Cell) []string {
+func (d *Dispatcher) controlLabels(cell model.SourceItem) []string {
 	var prefixes []string
 	excluded := map[string]bool{}
 	collect := func(m config.RouteMatch) {
@@ -816,7 +816,7 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 }
 
 // dispatch acknowledges, runs, and writes the result for a single cell.
-func (d *Dispatcher) dispatch(ctx context.Context, cell model.Cell, adapter source.Adapter, match router.Match) model.RunResult {
+func (d *Dispatcher) dispatch(ctx context.Context, cell model.SourceItem, adapter source.Adapter, match router.Match) model.RunResult {
 	// Workflow mode is the only dispatch path: every matched cell runs
 	// through the workflow engine (instances + step runs + memory). A plain
 	// route is synthesized into a single-step workflow by dispatchWorkflow.

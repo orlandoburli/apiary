@@ -67,7 +67,7 @@ func TestForeach_RunsOnePerItem(t *testing.T) {
 		Step: &config.StepConfig{Agent: "backend-dev", Prompt: "Fix {{ issue.file }}"},
 	})
 
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if !success {
 		t.Fatal("expected success")
 	}
@@ -95,7 +95,7 @@ func TestForeach_RenderedPromptReachesExecutor(t *testing.T) {
 		As:   "issue",
 		Step: &config.StepConfig{Agent: "backend-dev", Prompt: "Fix {{ issue.file }}"},
 	})
-	_, _, _ = eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, _, _ = eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 
 	var prompts []string
 	for _, req := range exec.seen {
@@ -122,7 +122,7 @@ func TestForeach_MaxItemsGuard(t *testing.T) {
 		MaxItems: 5,
 		Step:     &config.StepConfig{Agent: "backend-dev"},
 	})
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if success {
 		t.Fatal("expected failure when items exceed max_items")
 	}
@@ -149,7 +149,7 @@ func TestForeach_FailFast(t *testing.T) {
 		FailFast: true,
 		Step:     &config.StepConfig{Agent: "backend-dev"},
 	})
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if success {
 		t.Fatal("expected failure")
 	}
@@ -180,7 +180,7 @@ func TestForeach_AllPassDownstreamRuns(t *testing.T) {
 		ID: "summarize", Agent: "architect", DependsOn: []string{"fix-each"},
 	})
 
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if !success {
 		t.Fatal("expected success")
 	}
@@ -209,7 +209,7 @@ func TestForeach_ConcurrentItems(t *testing.T) {
 		Step:        &config.StepConfig{Agent: "backend-dev", Prompt: "Fix {{ issue.file }}"},
 	})
 
-	_, success, err := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, err := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestForeach_ConcurrentFailFast(t *testing.T) {
 		Step:        &config.StepConfig{Agent: "backend-dev"},
 	})
 
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if success {
 		t.Fatal("expected failure (item 0 failed with fail_fast)")
 	}
@@ -263,7 +263,7 @@ func TestForeach_InvalidItemsPathFails(t *testing.T) {
 
 	wf := foreachWorkflow(config.StepConfig{As: "i", Step: &config.StepConfig{Agent: "backend-dev"}})
 	wf.Steps[1].Items = "steps.plan.output.notarray" // not an array
-	_, success, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "c1"})
 	if success {
 		t.Fatal("expected failure when items path is not an array")
 	}

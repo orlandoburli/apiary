@@ -20,7 +20,7 @@ func evalExpr(t *testing.T, src string, ctx EvalContext) bool {
 }
 
 func TestExpr_CellFields(t *testing.T) {
-	ctx := EvalContext{Cell: model.Cell{
+	ctx := EvalContext{Cell: model.SourceItem{
 		Title: "hotfix login", Priority: "urgent", Type: "bug",
 		Labels: []string{"backend", "bug"}, SourceID: "main-plane", State: "todo",
 	}}
@@ -90,7 +90,7 @@ func TestExpr_StepFields(t *testing.T) {
 }
 
 func TestExpr_BooleanCombinators(t *testing.T) {
-	ctx := EvalContext{Cell: model.Cell{
+	ctx := EvalContext{Cell: model.SourceItem{
 		Priority: "urgent", Labels: []string{"feature"}, Type: "feature",
 	}}
 	cases := []struct {
@@ -145,7 +145,7 @@ func TestExpr_ParseErrors(t *testing.T) {
 }
 
 func TestExpr_EvalErrors(t *testing.T) {
-	ctx := EvalContext{Cell: model.Cell{Labels: []string{"a"}}}
+	ctx := EvalContext{Cell: model.SourceItem{Labels: []string{"a"}}}
 	// 'matches' on a list is an error.
 	e, _ := ParseExpr(`cell.labels matches ".*"`)
 	if _, err := e.Eval(ctx); err == nil {
@@ -169,7 +169,7 @@ func TestExpr_EvalErrors(t *testing.T) {
 }
 
 func TestExpr_SingleQuotes(t *testing.T) {
-	ctx := EvalContext{Cell: model.Cell{Priority: "high"}}
+	ctx := EvalContext{Cell: model.SourceItem{Priority: "high"}}
 	if !evalExpr(t, `cell.priority == 'high'`, ctx) {
 		t.Error("single-quoted strings should work")
 	}

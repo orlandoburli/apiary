@@ -177,7 +177,7 @@ func resumeHTTPStatus(err error) int {
 
 // cellForInstance rebuilds the cell to resume against: a fresh poll when the
 // source supports it, otherwise a minimal cell from the stored id/title.
-func (d *Dispatcher) cellForInstance(ctx context.Context, inst *db.WorkflowInstance) model.Cell {
+func (d *Dispatcher) cellForInstance(ctx context.Context, inst *db.WorkflowInstance) model.SourceItem {
 	if adapter, ok := d.sources[inst.SourceID]; ok {
 		if poller, ok := adapter.(source.TaskPoller); ok {
 			if c, err := poller.PollTask(ctx, inst.CellID); err == nil {
@@ -186,5 +186,5 @@ func (d *Dispatcher) cellForInstance(ctx context.Context, inst *db.WorkflowInsta
 		}
 	}
 	title, _ := d.db.GetTaskTitle(ctx, inst.CellID)
-	return model.Cell{ID: inst.CellID, SourceID: inst.SourceID, Title: title}
+	return model.SourceItem{ID: inst.CellID, SourceID: inst.SourceID, Title: title}
 }

@@ -40,7 +40,7 @@ func TestEngine_PersistsToRealSQLite(t *testing.T) {
 		OnComplete: config.OnComplete{SetState: "in_review"},
 	})
 
-	instID, success, err := eng.RunInstance(ctx, wf, model.Cell{ID: "PLANE-1", Title: "Fix it", SourceID: "main-plane"})
+	instID, success, err := eng.RunInstance(ctx, wf, model.SourceItem{ID: "PLANE-1", Title: "Fix it", SourceID: "main-plane"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestEngine_FailedStepPersistsFailedState(t *testing.T) {
 	eng := NewEngine(cfg, client, exec)
 
 	wf := synthWF(config.RouteConfig{ID: "r", Agent: "a"})
-	instID, success, _ := eng.RunInstance(ctx, wf, model.Cell{ID: "C1"})
+	instID, success, _ := eng.RunInstance(ctx, wf, model.SourceItem{ID: "C1"})
 
 	if success {
 		t.Error("expected failure")

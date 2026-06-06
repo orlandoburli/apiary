@@ -26,7 +26,7 @@ func TestToCell_MapsFields(t *testing.T) {
 		UpdatedAt: "2025-06-15T12:00:00Z",
 	}
 
-	cell := a.toCell(item)
+	cell := a.toSourceItem(item)
 
 	if cell.ID != "42" {
 		t.Errorf("ID = %q, want %q", cell.ID, "42")
@@ -70,7 +70,7 @@ func TestToCell_ClosedIssue(t *testing.T) {
 		Title:  "Done task",
 		State:  "closed",
 	}
-	cell := a.toCell(item)
+	cell := a.toSourceItem(item)
 	if cell.State != "closed" {
 		t.Errorf("State = %q, want %q", cell.State, "closed")
 	}
@@ -202,7 +202,7 @@ func TestRemoveLabels_DeletesEachLabel(t *testing.T) {
 	defer srv.Close()
 
 	a := &Adapter{id: "gh", owner: "o", repo: "r", client: newClient(srv.URL, "")}
-	cell := model.Cell{ID: "42", Labels: []string{"agent:engineer", "in-progress", "bug"}}
+	cell := model.SourceItem{ID: "42", Labels: []string{"agent:engineer", "in-progress", "bug"}}
 	if err := a.RemoveLabels(context.Background(), cell, []string{"agent:engineer", "in-progress"}); err != nil {
 		t.Fatalf("RemoveLabels: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestRemoveLabels_Ignores404(t *testing.T) {
 	defer srv.Close()
 
 	a := &Adapter{id: "gh", owner: "o", repo: "r", client: newClient(srv.URL, "")}
-	cell := model.Cell{ID: "42", Labels: []string{"in-progress"}}
+	cell := model.SourceItem{ID: "42", Labels: []string{"in-progress"}}
 	if err := a.RemoveLabels(context.Background(), cell, []string{"in-progress"}); err != nil {
 		t.Errorf("expected 404 to be ignored, got %v", err)
 	}

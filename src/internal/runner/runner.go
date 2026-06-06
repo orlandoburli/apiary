@@ -6,7 +6,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
-// Runner executes an agent runner for a given Cell.
+// Runner executes an agent runner for a given SourceItem.
 type Runner interface {
 	// ID returns the runner type key (e.g. "claude", "opencode").
 	ID() string

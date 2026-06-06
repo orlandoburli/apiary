@@ -95,12 +95,15 @@ type fakeSide struct {
 	hooks       []config.OnComplete
 }
 
-func (f *fakeSide) StateLock(_ context.Context, _ model.Cell) error { f.stateLocked = true; return nil }
-func (f *fakeSide) PostComment(_ context.Context, _ model.Cell, c string) error {
+func (f *fakeSide) StateLock(_ context.Context, _ model.SourceItem) error {
+	f.stateLocked = true
+	return nil
+}
+func (f *fakeSide) PostComment(_ context.Context, _ model.SourceItem, c string) error {
 	f.comments = append(f.comments, c)
 	return nil
 }
-func (f *fakeSide) ApplyHook(_ context.Context, _ model.Cell, h config.OnComplete) error {
+func (f *fakeSide) ApplyHook(_ context.Context, _ model.SourceItem, h config.OnComplete) error {
 	f.hooks = append(f.hooks, h)
 	return nil
 }
@@ -152,7 +155,7 @@ func TestEngine_SingleStepSuccess(t *testing.T) {
 		OnComplete: config.OnComplete{SetState: "in_review"},
 	})
 
-	instID, _, err := eng.RunInstance(context.Background(), wf, model.Cell{ID: "C1", Title: "Fix bug"})
+	instID, _, err := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "C1", Title: "Fix bug"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -193,7 +196,7 @@ func TestEngine_StepFailureMarksInstanceFailed(t *testing.T) {
 		OnComplete: config.OnComplete{SetState: "in_review"}})
 	wf.OnFail = &config.OnComplete{SetState: "blocked"}
 
-	instID, _, _ := eng.RunInstance(context.Background(), wf, model.Cell{ID: "C1"})
+	instID, _, _ := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "C1"})
 
 	if store.instances[instID].State != db.InstanceStateFailed {
 		t.Errorf("expected failed instance, got %s", store.instances[instID].State)
@@ -233,7 +236,7 @@ func TestEngine_SequentialMemoryThreading(t *testing.T) {
 		},
 	}
 
-	_, _, err := eng.RunInstance(context.Background(), wf, model.Cell{ID: "C1", Title: "Add auth"})
+	_, _, err := eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "C1", Title: "Add auth"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -266,7 +269,7 @@ func TestEngine_MemoryReadFalseSkipsInjection(t *testing.T) {
 	wf := config.WorkflowConfig{ID: "w", Steps: []config.StepConfig{
 		{ID: "s", Agent: "architect", Memory: &config.MemoryConfig{Read: &rd}},
 	}}
-	_, _, _ = eng.RunInstance(context.Background(), wf, model.Cell{ID: "C1", Title: "t"})
+	_, _, _ = eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "C1", Title: "t"})
 
 	if exec.seen[0].MemoryDoc != "" {
 		t.Errorf("expected empty memory doc when memory.read is false, got:\n%s", exec.seen[0].MemoryDoc)
@@ -282,7 +285,7 @@ func TestEngine_PerStepModelOverride(t *testing.T) {
 	wf := config.WorkflowConfig{ID: "w", Steps: []config.StepConfig{
 		{ID: "s", Agent: "backend-dev", Model: "claude-haiku-4-5"},
 	}}
-	_, _, _ = eng.RunInstance(context.Background(), wf, model.Cell{ID: "C1"})
+	_, _, _ = eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "C1"})
 
 	if exec.seen[0].Model != "claude-haiku-4-5" {
 		t.Errorf("expected step model override, got %q", exec.seen[0].Model)
@@ -297,7 +300,7 @@ func TestEngine_ResultCommentOnComplete(t *testing.T) {
 	eng := testEngine(cfg, store, exec, side)
 
 	wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
-	_, _, _ = eng.RunInstance(context.Background(), wf, model.Cell{ID: "C1", Title: "t"})
+	_, _, _ = eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "C1", Title: "t"})
 
 	if len(side.comments) != 1 {
 		t.Fatalf("expected 1 on_complete comment, got %d", len(side.comments))
@@ -324,7 +327,7 @@ func TestEngine_ResultCommentPerStep(t *testing.T) {
 			{ID: "implement", Agent: "backend-dev", DependsOn: []string{"plan"}},
 		},
 	}
-	_, _, _ = eng.RunInstance(context.Background(), wf, model.Cell{ID: "C1"})
+	_, _, _ = eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "C1"})
 
 	if len(side.comments) != 2 {
 		t.Fatalf("expected 2 per-step comments, got %d: %v", len(side.comments), side.comments)
@@ -343,7 +346,7 @@ func TestEngine_ResultCommentOff(t *testing.T) {
 	eng := testEngine(cfg, store, exec, side)
 
 	wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
-	_, _, _ = eng.RunInstance(context.Background(), wf, model.Cell{ID: "C1"})
+	_, _, _ = eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "C1"})
 
 	if len(side.comments) != 0 {
 		t.Errorf("expected no comments when result_comment off, got: %v", side.comments)
@@ -359,7 +362,7 @@ func TestEngine_StructuredOutputPersisted(t *testing.T) {
 	eng := testEngine(cfg, store, exec, &fakeSide{})
 
 	wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
-	_, _, _ = eng.RunInstance(context.Background(), wf, model.Cell{ID: "C1"})
+	_, _, _ = eng.RunInstance(context.Background(), wf, model.SourceItem{ID: "C1"})
 
 	sr := store.stepRuns[store.stepOrder[0]]
 	if !strings.Contains(sr.StructuredOutput, `"k":"v"`) {

@@ -11,7 +11,7 @@ import (
 
 // EvalContext provides the data a split condition is evaluated against.
 type EvalContext struct {
-	Cell   model.Cell
+	Cell   model.SourceItem
 	Memory map[string]string    // workflow-memory Step Data keys → rendered values
 	Steps  map[string]StepState // step id → terminal state info
 }
