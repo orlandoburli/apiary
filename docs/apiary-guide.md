@@ -302,15 +302,6 @@ routes:
 | `agent` | Target agent ID |
 | `on_complete.set_state` | State to set on source when done |
 | `on_complete.add_labels` | Labels to add on source when done |
-| `on_complete.assign_from_output` | Parse `APIARY-ASSIGN: <agent>` from agent output and add label |
-
-#### `on_complete` directives
-
-Agents can output directives that Apiary parses from their final response:
-
-| Directive | Action |
-|---|---|
-| `APIARY-ASSIGN: <agent-id>` | Adds `agent:<agent-id>` label to source, reassigns task |
 
 ### `settings`
 
