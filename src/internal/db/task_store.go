@@ -144,16 +144,22 @@ func (s *InternalTaskStore) IncrementOutstanding(ctx context.Context, id string,
 
 // DecrementOutstanding subtracts one from a task's outstanding workflow counter
 // (clamped at zero) and returns the new count. Called when a workflow instance
-// reaches a terminal state.
+// reaches a terminal state. The UPDATE ... RETURNING runs as a single atomic
+// statement so two sibling instances of the same task settling concurrently each
+// observe a distinct post-decrement count — exactly one of them sees zero — which
+// the engine relies on to fire the task completion hook exactly once.
 func (s *InternalTaskStore) DecrementOutstanding(ctx context.Context, id string) (int, error) {
-	if _, err := s.db.ExecContext(ctx, `
+	var n int
+	err := s.db.QueryRowContext(ctx, `
 		UPDATE internal_tasks
 		SET outstanding_workflows = MAX(outstanding_workflows - 1, 0), updated_at = ?
 		WHERE id = ?
-	`, time.Now(), id); err != nil {
-		return 0, err
+		RETURNING outstanding_workflows
+	`, time.Now(), id).Scan(&n)
+	if err == sql.ErrNoRows {
+		return 0, nil
 	}
-	return s.outstanding(ctx, id)
+	return n, err
 }
 
 func (s *InternalTaskStore) outstanding(ctx context.Context, id string) (int, error) {
