@@ -15,39 +15,32 @@ import (
 // steps), so depth 1 is the only legal level; this is a backstop.
 const maxSubWorkflowDepth = 1
 
-// runSubWorkflowStep executes a `type: workflow` step by running the referenced
-// workflow as a linked child instance, seeded with the parent's current memory.
-// The parent step passes iff the child instance completes successfully. The
-// child's memory is NOT merged back into the parent (sub-workflows are isolated).
-func (e *Engine) runSubWorkflowStep(ctx context.Context, r *dagRun, step config.StepConfig) bool {
-	if r.depth >= maxSubWorkflowDepth {
+// executeSubWorkflowStep runs a sub-workflow step without touching dagRun; it is
+// safe to call from a worker goroutine. memSnap is a snapshot of the parent's
+// memory taken on the scheduler goroutine before dispatch.
+func (e *Engine) executeSubWorkflowStep(
+	ctx context.Context, parentInstID string,
+	step config.StepConfig, cell model.Cell,
+	memSnap []MemoryStep, depth int, wfID string,
+) StepResult {
+	if depth >= maxSubWorkflowDepth {
 		aplog.Error("workflow %s: step %q: sub-workflow nesting beyond depth %d is not allowed",
-			r.wf.ID, step.ID, maxSubWorkflowDepth)
-		r.failStep(step.ID)
-		return true
+			wfID, step.ID, maxSubWorkflowDepth)
+		return StepResult{Success: false, Output: "sub-workflow nesting limit exceeded"}
 	}
 
 	child := e.findWorkflow(step.Workflow)
 	if child == nil {
-		aplog.Error("workflow %s: step %q: referenced workflow %q not found", r.wf.ID, step.ID, step.Workflow)
-		r.failStep(step.ID)
-		return true
+		aplog.Error("workflow %s: step %q: referenced workflow %q not found", wfID, step.ID, step.Workflow)
+		return StepResult{Success: false, Output: fmt.Sprintf("workflow %q not found", step.Workflow)}
 	}
 
-	seed := r.memSteps() // snapshot of the parent's memory at this point
-	_, success := e.runChildInstance(ctx, r.instID, *child, r.cell, seed, r.depth+1)
-
-	r.state[step.ID] = passFail(success)
-	r.stepStates[step.ID] = StepState{State: passFail(success)}
+	_, success := e.runChildInstance(ctx, parentInstID, *child, cell, memSnap, depth+1)
+	summary := ""
 	if success {
-		r.contrib[step.ID] = MemoryStep{
-			StepID:  step.ID,
-			Summary: fmt.Sprintf("sub-workflow %q completed", child.ID),
-		}
-		r.passedOrder = append(r.passedOrder, step.ID)
-		return false
+		summary = fmt.Sprintf("sub-workflow %q completed", child.ID)
 	}
-	return true
+	return StepResult{Success: success, Summary: summary}
 }
 
 // runChildInstance creates and runs a linked child workflow instance. It does
