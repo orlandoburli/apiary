@@ -1,0 +1,63 @@
+# GoReleaser config — Apiary binary distribution
+# Phase 1: cross-platform archives + checksums on each `v*` tag.
+# Later phases add nfpms (deb/rpm), dockers (ghcr.io), brews, scoops, winget, aurs.
+# Docs: https://goreleaser.com
+version: 2
+
+project_name: apiary
+
+before:
+  hooks:
+    - sh -c "cd src && go mod tidy"
+
+builds:
+  - id: apiary
+    dir: src # the Go module lives under src/ (mirrors the Makefile)
+    main: ./cmd/apiary
+    binary: apiary
+    env:
+      - CGO_ENABLED=0 # pure-Go SQLite (modernc.org/sqlite) — static cross-compile
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      # keep in sync with the Makefile's version injection
+      - -s -w
+      - -X github.com/orlandoburli/apiary/internal/version.Version={{ .Version }}
+
+archives:
+  - id: apiary
+    ids: [apiary]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "merge conflict"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: orlandoburli
+    name: apiary
+  draft: false
+  prerelease: auto # tags like v0.1.0-rc1 are marked pre-release automatically

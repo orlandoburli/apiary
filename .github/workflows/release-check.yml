@@ -1,0 +1,38 @@
+name: release-check
+
+# Validates the release pipeline on PRs without publishing anything:
+# lints .goreleaser.yaml and builds all artifacts in snapshot mode.
+on:
+  pull_request:
+    paths:
+      - ".goreleaser.yaml"
+      - ".github/workflows/release*.yml"
+      - "src/go.mod"
+      - "src/go.sum"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: check
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
