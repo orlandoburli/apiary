@@ -196,6 +196,99 @@ func (s *InternalTaskStore) ListTasksByState(ctx context.Context, state model.Ta
 	return out, rows.Err()
 }
 
+// ListTasks returns the most recent internal tasks across all states, newest
+// first. limit <= 0 defaults to 100. It backs the dashboard Tasks tab, which
+// surfaces the InternalTask as the primary unit (not per-execution rows).
+func (s *InternalTaskStore) ListTasks(ctx context.Context, limit int) ([]model.InternalTask, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
+		       COALESCE(input,''), state, COALESCE(metadata,''),
+		       COALESCE(outstanding_workflows,0), created_at, updated_at
+		FROM internal_tasks ORDER BY created_at DESC LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []model.InternalTask
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *task)
+	}
+	return out, rows.Err()
+}
+
+// ListChildTasks returns a task's direct children (spawned tasks), oldest first.
+// Backed by idx_internal_tasks_parent.
+func (s *InternalTaskStore) ListChildTasks(ctx context.Context, parentTaskID string) ([]model.InternalTask, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
+		       COALESCE(input,''), state, COALESCE(metadata,''),
+		       COALESCE(outstanding_workflows,0), created_at, updated_at
+		FROM internal_tasks WHERE parent_task_id = ? ORDER BY created_at ASC
+	`, parentTaskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []model.InternalTask
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *task)
+	}
+	return out, rows.Err()
+}
+
+// GetTaskAncestors returns the task's lineage from root to the task itself
+// (root first, the task last), walking parent_task_id via a recursive CTE. The
+// depth cap (32) is cheap insurance against an accidental cycle. For a root task
+// the slice has a single element (the task). Empty if the id is unknown.
+func (s *InternalTaskStore) GetTaskAncestors(ctx context.Context, id string) ([]model.InternalTask, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		WITH RECURSIVE anc(id, parent_task_id, title, description, input, state,
+		                    metadata, outstanding_workflows, created_at, updated_at, depth) AS (
+			SELECT id, parent_task_id, title, description, input, state,
+			       metadata, outstanding_workflows, created_at, updated_at, 0
+			FROM internal_tasks WHERE id = ?
+			UNION ALL
+			SELECT t.id, t.parent_task_id, t.title, t.description, t.input, t.state,
+			       t.metadata, t.outstanding_workflows, t.created_at, t.updated_at, anc.depth + 1
+			FROM internal_tasks t
+			JOIN anc ON t.id = anc.parent_task_id
+			WHERE anc.depth < 32
+		)
+		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
+		       COALESCE(input,''), state, COALESCE(metadata,''),
+		       COALESCE(outstanding_workflows,0), created_at, updated_at
+		FROM anc ORDER BY depth DESC
+	`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []model.InternalTask
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *task)
+	}
+	return out, rows.Err()
+}
+
 func scanTask(s scanner) (*model.InternalTask, error) {
 	var (
 		task      model.InternalTask
