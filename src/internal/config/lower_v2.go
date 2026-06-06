@@ -26,6 +26,10 @@ func LowerV2Workflow(wf WorkflowConfig) (WorkflowConfig, error) {
 	if err != nil {
 		return wf, fmt.Errorf("workflow %q: %w", wf.ID, err)
 	}
+	// Apply auto-wired memory.write fields to the steps that are actually emitted
+	// (lowerSteps built `lowered` as fresh copies, so wiring recorded during the
+	// pass must be replayed here rather than on the discarded stepByID copies).
+	lc.applyPendingWrites(lowered)
 	out := wf
 	out.Steps = lowered
 	return out, nil
@@ -38,6 +42,12 @@ func LowerV2Workflow(wf WorkflowConfig) (WorkflowConfig, error) {
 // lowerCtx holds the mutable state of one lowering pass.
 type lowerCtx struct {
 	stepByID map[string]StepConfig // original step id → raw v2 node
+	// pendingWrites accumulates memory.write fields that must be persisted by the
+	// emitting step, keyed by step id, in first-referenced order. They are applied
+	// to the lowered OUTPUT steps by applyPendingWrites — not to stepByID, whose
+	// StepConfig copies are discarded — so cross-step auto-wiring (step B's
+	// condition referencing step A's output) actually reaches the emitted config.
+	pendingWrites map[string][]string
 }
 
 // buildStepIndex builds a flat map of all step ids in the authored tree
@@ -99,7 +109,13 @@ func (lc *lowerCtx) lowerSteps(steps []StepConfig, prevID, inheritedCondition st
 			prevID = flat.ID
 		case len(s.SubSteps) > 0:
 			// Group: dissolve into children, applying the group's if: to all.
-			groupCond := composeCond(inheritedCondition, lowerExpr(s.If))
+			// Rewrite step-output shorthand so the guard the children inherit is a
+			// runtime-valid memory.* expression and the source field is auto-wired.
+			ownCond, err := lc.rewriteExpr(s.If, s.ID)
+			if err != nil {
+				return nil, fmt.Errorf("group %q if: %w", s.ID, err)
+			}
+			groupCond := composeCond(inheritedCondition, ownCond)
 			children, err := lc.lowerSteps(s.SubSteps, prevID, groupCond)
 			if err != nil {
 				return nil, err
@@ -137,8 +153,14 @@ func (lc *lowerCtx) lowerLeafStep(s StepConfig, prevID, inheritedCondition strin
 	}
 	out.Output = nil
 
-	// Lower if: → condition.
-	ownCond := lowerExpr(out.If)
+	// Lower if: → condition. Run it through rewriteExpr (not just lowerExpr) so
+	// step-output shorthand like `classify.track` becomes `memory.track` — the
+	// only accessor form the runtime expr engine accepts — and the referenced
+	// field is auto-wired into the emitting step's memory.write.
+	ownCond, err := lc.rewriteExpr(out.If, out.ID)
+	if err != nil {
+		return StepConfig{}, fmt.Errorf("step %q if: %w", out.ID, err)
+	}
 	out.Condition = composeCond(inheritedCondition, ownCond)
 	out.If = ""
 
@@ -188,7 +210,10 @@ func (lc *lowerCtx) lowerParallelStep(s StepConfig, prevID, inheritedCondition s
 	if prevID != "" {
 		out.DependsOn = []string{prevID}
 	}
-	ownCond := lowerExpr(s.If)
+	ownCond, err := lc.rewriteExpr(s.If, s.ID)
+	if err != nil {
+		return StepConfig{}, fmt.Errorf("parallel step %q if: %w", s.ID, err)
+	}
 	out.Condition = composeCond(inheritedCondition, ownCond)
 
 	// Lower children individually (no implicit chaining — they run concurrently).
@@ -220,7 +245,10 @@ func (lc *lowerCtx) lowerForeachStep(s StepConfig, prevID, inheritedCondition st
 	if prevID != "" {
 		out.DependsOn = []string{prevID}
 	}
-	ownCond := lowerExpr(s.If)
+	ownCond, err := lc.rewriteExpr(s.If, s.ID)
+	if err != nil {
+		return StepConfig{}, fmt.Errorf("for_each %q if: %w", s.ID, err)
+	}
 	out.Condition = composeCond(inheritedCondition, ownCond)
 
 	// Lower max: → max_items.
@@ -417,24 +445,62 @@ func (lc *lowerCtx) ensureMemoryWriteForExpr(expr string) {
 	}
 }
 
-// ensureMemoryWrite adds field to stepID's memory.write if not already present,
-// updating the step index in place.
+// ensureMemoryWrite records that stepID must persist field to workflow memory.
+// The write is staged in pendingWrites (deduplicated, first-referenced order) and
+// applied to the emitted steps by applyPendingWrites. Mutating stepByID here would
+// be lost: lowerSteps builds the output as separate StepConfig copies.
 func (lc *lowerCtx) ensureMemoryWrite(stepID, field string) {
-	s, ok := lc.stepByID[stepID]
-	if !ok {
+	if _, ok := lc.stepByID[stepID]; !ok {
 		return
 	}
-	if s.Memory == nil {
-		s.Memory = &MemoryConfig{}
+	if lc.pendingWrites == nil {
+		lc.pendingWrites = map[string][]string{}
 	}
-	for _, f := range s.Memory.Write {
+	for _, f := range lc.pendingWrites[stepID] {
 		if f == field {
-			lc.stepByID[stepID] = s
 			return
 		}
 	}
-	s.Memory.Write = append(s.Memory.Write, field)
-	lc.stepByID[stepID] = s
+	lc.pendingWrites[stepID] = append(lc.pendingWrites[stepID], field)
+}
+
+// applyPendingWrites walks the lowered output tree and merges each step's staged
+// memory.write fields (recorded by ensureMemoryWrite) into the step that is
+// actually emitted, creating a MemoryConfig when the step declared none.
+func (lc *lowerCtx) applyPendingWrites(steps []StepConfig) {
+	for i := range steps {
+		lc.applyPendingWritesToStep(&steps[i])
+	}
+}
+
+func (lc *lowerCtx) applyPendingWritesToStep(s *StepConfig) {
+	if fields := lc.pendingWrites[s.ID]; len(fields) > 0 {
+		if s.Memory == nil {
+			s.Memory = &MemoryConfig{}
+		}
+		for _, f := range fields {
+			if !memoryWrites(s.Memory, f) {
+				s.Memory.Write = append(s.Memory.Write, f)
+			}
+		}
+	}
+	// Recurse into every position a lowered step can hold children: dissolved
+	// groups land in SubSteps, parallel children too, and foreach bodies in Step.
+	lc.applyPendingWrites(s.SubSteps)
+	lc.applyPendingWrites(s.ParallelSteps)
+	if s.Step != nil {
+		lc.applyPendingWritesToStep(s.Step)
+	}
+}
+
+// memoryWrites reports whether m already persists field.
+func memoryWrites(m *MemoryConfig, field string) bool {
+	for _, f := range m.Write {
+		if f == field {
+			return true
+		}
+	}
+	return false
 }
 
 // parseForEachExpr parses a for_each expression like `${{ design.tasks }}`
