@@ -197,15 +197,17 @@ coexist. See the full annotated reference in the `workflow-mode` change specs
 | `id` | string | ✓ | Unique across all workflows and routes |
 | `description` | string | — | Shown in the TUI and logs |
 | `resume` | string | — | `allowed` \| `forbidden` \| `auto` (resume eligibility) |
-| `trigger` | object | ✓ | Same matcher as `routes[].match`, plus `priority` |
+| `trigger` | object | ✓ | Same matcher as `routes[].match`, plus `priority` and `exclusive` |
+| `trigger.priority` | int | — | Evaluation order among matching workflows — lower number first |
+| `trigger.exclusive` | bool | — | When this workflow matches, stop evaluating lower-priority triggers (it claims the task alone). Default `false`: a task **fans out** to every matching workflow (each runs as its own instance) |
 | `steps[]` | object[] | ✓ | Ordered steps forming the DAG |
-| `on_complete` / `on_fail` | object | — | Side-effects on terminal success/failure (`set_state`, `add_labels`) |
+| `on_complete` / `on_fail` | object | — | Per-workflow side-effects on terminal success/failure (`set_state`, `add_labels`) |
 
 **Step types** (`steps[].type`, default `agent`):
 
 | Type | Purpose | Key fields |
 |---|---|---|
-| `agent` | Invoke one agent | `agent`, `model`, `prompt`, `summary_prompt`, `output_schema`, `memory`, `depends_on`, `on_pass.next`, `on_fail.goto`/`max_retries` |
+| `agent` | Invoke one agent | `agent`, `model`, `prompt`, `summary_prompt`, `output_schema`, `memory`, `depends_on`, `on_pass.next`, `on_fail.goto`/`max_retries`, `publish`, `spawn` |
 | `split` | Conditional routing | `branches[].if` (expression) / `else`, `branches[].goto`, `multi` |
 | `approval` | Human checkpoint (suspends the instance) | `message`, `resume_on`, `abort_on`, `timeout` |
 | `foreach` | Fan-out over a prior step's array | `items`, `as`, `agent`, `max_items`, `fail_fast` |
@@ -213,6 +215,83 @@ coexist. See the full annotated reference in the `workflow-mode` change specs
 
 Split/approval conditions use a small expression language over `cell.*`,
 `memory.*`, and `steps.*` with `==`/`!=`/`contains`/`matches` and `and`/`or`/`not`.
+
+**Agent step write-back / fan-out fields:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `publish` | enum | `auto` | `auto`: write the step's `APIARY_PUBLISH` payload back to the task's source bindings as a comment. `off`: never write back, even if a payload is emitted. |
+| `spawn` | enum | `auto` | Controls an `APIARY_SPAWN` request the step emits. `auto`: fire-and-forget — the child task is created and dispatched, the step does not wait. `await`: block until the spawned task is terminal; a child failure fails this step. |
+
+### `tasks` (top-level completion hook)
+
+The optional top-level `tasks:` block fires **once per InternalTask** — when the
+**last** of the task's fanned-out workflows reaches a terminal state — as opposed
+to the per-workflow `on_complete`/`on_fail` hooks which fire once per workflow
+instance. It applies to every `SourceBinding` on the task.
+
+```yaml
+tasks:
+  on_complete:          # applied when ALL of the task's workflows succeeded
+    set_state: done
+    add_labels: [ai-done]
+  on_fail:              # applied when ANY of the task's workflows failed
+    set_state: blocked
+    add_labels: [ai-failed]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `on_complete` | object | Hook (`set_state`, `add_labels`) applied to every source binding when all workflows succeeded |
+| `on_fail` | object | Hook applied when any workflow failed |
+
+## Internal Task Model
+
+The **InternalTask** is the canonical, source-independent unit of work the engine
+operates on. A source item (a GitHub issue, a Plane work item) is normalised into
+an InternalTask by the **SourceBinder** (see the plugin-api spec), which records a
+**SourceBinding** linking the two. One task may fan out to several workflows and
+may **spawn** child tasks (lineage via `parent_task_id`), forming a tree that is
+independent of any source system. The dashboard surfaces the InternalTask as the
+primary unit, with its bindings, lineage, and workflow instances.
+
+`internal_tasks`
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | text (pk) | Sortable id |
+| `parent_task_id` | text | Set for spawned tasks (lineage); empty/NULL for root tasks |
+| `title` / `description` | text | Task content (kept in sync with the live source item for bound tasks) |
+| `input` | text (JSON) | Structured input passed by the spawner; NULL for source-bound tasks |
+| `state` | text | `registered` \| `running` \| `approval_waiting` \| `done` \| `failed` |
+| `metadata` | text (JSON) | Labels, priority, type, source, live source state (for trigger matching) |
+| `outstanding_workflows` | int | Workflows still running for the task; the completion hook fires when it reaches 0 |
+| `created_at` / `updated_at` | timestamp | |
+
+`source_bindings`
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | text (pk) | |
+| `task_id` | text | References `internal_tasks(id)` (one task → many bindings) |
+| `source_id` | text | e.g. `github`, `plane` |
+| `source_item_id` | text | Source-native item id |
+| `source_item_url` | text | Deep link for display |
+| `source_item_number` | text | Human reference, e.g. `#42`, `ERP-42` |
+| | | `UNIQUE(source_id, source_item_id)` |
+
+## Agent Output Markers
+
+Agents communicate structured results back to the engine by emitting marker
+blocks in their output. Markers are stripped from the visible output before it is
+displayed or written back.
+
+| Marker | Form | Purpose |
+|---|---|---|
+| `APIARY_OUTPUT:` | single line of JSON | Structured output validated against the step's `output_schema`; the last valid line wins |
+| `APIARY_SUMMARY_START` … `APIARY_SUMMARY_END` | block | The agent's short handoff note (the memory baton between steps) |
+| `APIARY_PUBLISH_BEGIN` … `APIARY_PUBLISH_END` | block | Write-back payload posted as a comment to the task's source bindings (gated by `step.publish`; ignored for binding-less tasks) |
+| `APIARY_SPAWN_BEGIN` … `APIARY_SPAWN_END` | block of JSON `{"workflow","title","input"}` | Requests a child InternalTask running the named workflow (internal fan-out; `parent_task_id` is set by the engine, never by the agent) |
 
 ## Environment Variable Interpolation
 
