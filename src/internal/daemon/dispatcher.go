@@ -610,6 +610,47 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(detail)
 	})
+	mux.HandleFunc("/tasks/history", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		// Either ?task=<internal-task-id> directly, or ?source=<id>&item=<num>
+		// (e.g. github + 1948) which is resolved to the bound task.
+		taskID := r.URL.Query().Get("task")
+		if taskID == "" {
+			source, item := r.URL.Query().Get("source"), r.URL.Query().Get("item")
+			if source == "" || item == "" {
+				http.Error(w, "provide ?task=<id> or ?source=<id>&item=<num>", http.StatusBadRequest)
+				return
+			}
+			if d.db == nil {
+				http.Error(w, "no database", http.StatusServiceUnavailable)
+				return
+			}
+			binding, err := d.db.SourceBindings().GetBindingBySourceItem(r.Context(), source, item)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if binding == nil {
+				http.Error(w, "no task bound to "+source+"/"+item, http.StatusNotFound)
+				return
+			}
+			taskID = binding.TaskID
+		}
+		hist, err := d.TaskHistory(r.Context(), taskID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if hist == nil {
+			http.Error(w, "task history not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(hist)
+	})
 	mux.HandleFunc("/resume/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/resume/")
 		if id == "" {
