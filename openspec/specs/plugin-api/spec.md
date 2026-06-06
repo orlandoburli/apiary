@@ -6,9 +6,15 @@ Apiary is extended through two plugin types: **Source Adapters** and **Runner Ad
 
 A Source Adapter connects Apiary to a task management system.
 
+> **Naming note:** the normalised task unit was renamed from `Cell` to
+> `SourceItem` in the internal-task-model change. A `SourceItem` represents a raw
+> item in the source system; once polled it is bound to a canonical
+> **InternalTask** by the `SourceBinder` (below). Older field/variable names like
+> `RunRequest.Cell` are retained, but their type is now `SourceItem`.
+
 ```go
-// SourceAdapter pulls tasks from an external task system.
-type SourceAdapter interface {
+// Adapter pulls tasks from an external task system.
+type Adapter interface {
     // ID returns the adapter type key (e.g. "plane", "jira", "linear").
     ID() string
 
@@ -17,14 +23,14 @@ type SourceAdapter interface {
 
     // Poll returns tasks matching the source's filter config since the last call.
     // Apiary calls this on the configured poll_interval.
-    Poll(ctx context.Context, since time.Time) ([]Cell, error)
+    Poll(ctx context.Context, since time.Time) ([]SourceItem, error)
 
-    // Acknowledge is called after a Cell has been dispatched to a worker.
+    // Acknowledge is called after a SourceItem has been dispatched to a worker.
     // Adapters use this to transition the task state or add a comment.
-    Acknowledge(ctx context.Context, cell Cell, action AckAction) error
+    Acknowledge(ctx context.Context, item SourceItem, action AckAction) error
 
     // WriteResult posts the agent run output back to the source task.
-    WriteResult(ctx context.Context, cell Cell, result RunResult) error
+    WriteResult(ctx context.Context, item SourceItem, result RunResult) error
 
     // WebhookHandler returns an http.Handler for push-mode sources.
     // Return nil for poll-only adapters.
@@ -32,12 +38,12 @@ type SourceAdapter interface {
 }
 ```
 
-### The `Cell` type
+### The `SourceItem` type
 
-`Cell` is a normalised, source-system-agnostic task unit.
+`SourceItem` is a normalised, source-system-agnostic task unit (formerly `Cell`).
 
 ```go
-type Cell struct {
+type SourceItem struct {
     ID          string            // native task ID in the source system
     SourceID    string            // apiary source id (e.g. "main-plane")
     Title       string
@@ -50,6 +56,49 @@ type Cell struct {
     Metadata    map[string]any    // adapter-specific extra fields
     CreatedAt   time.Time
     UpdatedAt   time.Time
+}
+```
+
+### The `SourceBinder` (binding layer)
+
+A `SourceBinder` normalises a polled `SourceItem` into the canonical
+**InternalTask** the engine runs on, creating a `SourceBinding` row on first sight
+and returning the existing task on every subsequent poll. This is what lets one
+internal task carry many source bindings, and lets spawned (binding-less) tasks
+exist with no source item at all. The default binder is built in; adapters do not
+implement it.
+
+```go
+// SourceBinder maps a SourceItem to its InternalTask (find-or-create).
+type SourceBinder interface {
+    // Bind returns the InternalTask for the given SourceItem, creating it (and
+    // its SourceBinding) on first sight and returning the existing one on every
+    // subsequent poll.
+    Bind(ctx context.Context, item SourceItem) (InternalTask, error)
+}
+
+// InternalTask is the canonical, source-independent unit of work.
+type InternalTask struct {
+    ID                   string         // sortable id
+    ParentTaskID         string         // set for spawned tasks (lineage); empty for roots
+    Title                string
+    Description          string
+    Input                map[string]any // structured input from the spawner; nil for source-bound tasks
+    State                string         // registered | running | approval_waiting | done | failed
+    Metadata             TaskMetadata   // labels, priority, type, source, live source state
+    OutstandingWorkflows int            // workflows still running; completion hook fires at 0
+    CreatedAt, UpdatedAt time.Time
+}
+
+// SourceBinding links a source item to an InternalTask (one task → many bindings).
+type SourceBinding struct {
+    ID               string
+    TaskID           string // references InternalTask.ID
+    SourceID         string // e.g. "github", "plane"
+    SourceItemID     string // source-native id
+    SourceItemURL    string
+    SourceItemNumber string // human ref, e.g. "#42", "ERP-42"
+    CreatedAt        time.Time
 }
 ```
 
@@ -108,11 +157,11 @@ implements `TaskPoller`; otherwise the instance stays parked.
 // TaskPoller fetches a single task's current state, including its comments.
 // Implemented by adapters that can host approval steps.
 type TaskPoller interface {
-    PollTask(ctx context.Context, cellID string) (Cell, error)
+    PollTask(ctx context.Context, sourceItemID string) (SourceItem, error)
 }
 ```
 
-`PollTask` populates `Cell.Comments` so the engine can evaluate approval
+`PollTask` populates `SourceItem.Comments` so the engine can evaluate approval
 conditions (`comment_contains`, `label_added`, `state_changed`):
 
 ```go
@@ -121,7 +170,7 @@ type Comment struct {
     Body      string
     CreatedAt time.Time
 }
-// Cell gains: Comments []Comment  // populated by TaskPoller; empty otherwise
+// SourceItem gains: Comments []Comment  // populated by TaskPoller; empty otherwise
 ```
 
 The built-in **GitHub** adapter implements `TaskPoller` (issue + comments).
@@ -141,7 +190,13 @@ WorkflowInstanceID string  // the owning instance id
 // RunResult, additional fields:
 StructuredOutput map[string]any // parsed APIARY_OUTPUT: JSON (per output_schema)
 Summary          string         // the agent's handoff summary (APIARY_SUMMARY block)
+PublishPayload   string         // APIARY_PUBLISH block; written back per step.publish
+SpawnRequest     *SpawnRequest  // APIARY_SPAWN request {workflow,title,input}; drives internal fan-out
 ```
+
+(`RunRequest.Cell` is a `SourceItem`.) The engine parses the `APIARY_PUBLISH` and
+`APIARY_SPAWN` markers out of the agent's raw output; see the marker reference in
+the config schema spec.
 
 ## Built-in Adapters (v1)
 
