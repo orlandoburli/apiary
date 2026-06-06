@@ -2,13 +2,17 @@
   "name": "vscode-apiary",
   "displayName": "Apiary Workflow Visualizer",
   "description": "Live visual preview of apiary.yaml workflow files",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "orlandoburli",
   "license": "AGPL-3.0",
   "icon": "icon.png",
+  "homepage": "https://orlandoburli.com.br/apiary/",
   "repository": {
     "type": "git",
     "url": "https://github.com/orlandoburli/apiary"
+  },
+  "bugs": {
+    "url": "https://github.com/orlandoburli/apiary/issues"
   },
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Visualization", "Other"],
