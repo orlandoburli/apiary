@@ -36,7 +36,7 @@ const (
 type dagRun struct {
 	instID string
 	wf     config.WorkflowConfig
-	cell   model.Cell
+	cell   model.SourceItem
 	depth  int          // nesting depth (0 = top-level; >0 = sub-workflow child)
 	seed   []MemoryStep // inherited memory (sub-workflow snapshot from the parent)
 
@@ -58,7 +58,7 @@ type dagRun struct {
 
 // initDAG builds the in-memory state for a workflow instance's step graph. seed
 // is inherited memory for a sub-workflow child; depth tracks nesting.
-func (e *Engine) initDAG(instID string, wf config.WorkflowConfig, cell model.Cell, seed []MemoryStep, depth int) *dagRun {
+func (e *Engine) initDAG(instID string, wf config.WorkflowConfig, cell model.SourceItem, seed []MemoryStep, depth int) *dagRun {
 	r := &dagRun{
 		instID:      instID,
 		wf:          wf,

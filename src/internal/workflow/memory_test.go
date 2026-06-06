@@ -8,7 +8,7 @@ import (
 )
 
 func TestMemoryBuilder_FullDocument(t *testing.T) {
-	cell := model.Cell{
+	cell := model.SourceItem{
 		Title:    "Fix user auth bug",
 		Labels:   []string{"backend", "bug"},
 		Priority: "high",
@@ -66,7 +66,7 @@ func TestMemoryBuilder_OnlyDeclaredFieldsWritten(t *testing.T) {
 			},
 		},
 	}
-	doc := MemoryBuilder{}.Build(model.Cell{Title: "t"}, steps)
+	doc := MemoryBuilder{}.Build(model.SourceItem{Title: "t"}, steps)
 	if !strings.Contains(doc, "complexity: high") {
 		t.Error("expected declared field complexity")
 	}
@@ -80,7 +80,7 @@ func TestMemoryBuilder_LastWriteWins(t *testing.T) {
 		{StepID: "a", WriteFields: []string{"status"}, Structured: map[string]any{"status": "draft"}},
 		{StepID: "b", WriteFields: []string{"status"}, Structured: map[string]any{"status": "final"}},
 	}
-	doc := MemoryBuilder{}.Build(model.Cell{Title: "t"}, steps)
+	doc := MemoryBuilder{}.Build(model.SourceItem{Title: "t"}, steps)
 	if !strings.Contains(doc, "status: final") {
 		t.Errorf("expected last write to win:\n%s", doc)
 	}
@@ -102,7 +102,7 @@ func TestMemoryBuilder_ValueRendering(t *testing.T) {
 			},
 		},
 	}
-	doc := MemoryBuilder{}.Build(model.Cell{Title: "t"}, steps)
+	doc := MemoryBuilder{}.Build(model.SourceItem{Title: "t"}, steps)
 	for _, want := range []string{"count: 3", "ratio: 0.5", "ok: true", `files: ["a.go","b.go"]`} {
 		if !strings.Contains(doc, want) {
 			t.Errorf("missing rendered value %q:\n%s", want, doc)
@@ -111,7 +111,7 @@ func TestMemoryBuilder_ValueRendering(t *testing.T) {
 }
 
 func TestMemoryBuilder_NoStepData(t *testing.T) {
-	doc := MemoryBuilder{}.Build(model.Cell{Title: "lonely"}, nil)
+	doc := MemoryBuilder{}.Build(model.SourceItem{Title: "lonely"}, nil)
 	if strings.Contains(doc, "[Step Data]") || strings.Contains(doc, "[Summaries]") {
 		t.Errorf("empty sections should be omitted:\n%s", doc)
 	}
@@ -127,7 +127,7 @@ func TestMemoryBuilder_TruncationDropsOldestSummaries(t *testing.T) {
 		{StepID: "middle", Summary: "MIDDLE " + big},
 		{StepID: "newest", Summary: "NEWEST " + big},
 	}
-	doc := MemoryBuilder{MaxChars: 800}.Build(model.Cell{Title: "t"}, steps)
+	doc := MemoryBuilder{MaxChars: 800}.Build(model.SourceItem{Title: "t"}, steps)
 
 	if len(doc) > 800 {
 		t.Errorf("doc exceeds MaxChars: %d", len(doc))
@@ -143,7 +143,7 @@ func TestMemoryBuilder_TruncationDropsOldestSummaries(t *testing.T) {
 
 func TestMemoryBuilder_CellNeverTruncated(t *testing.T) {
 	// Even with a tiny budget, the Cell section must be present.
-	doc := MemoryBuilder{MaxChars: 10}.Build(model.Cell{Title: "important"}, []MemoryStep{
+	doc := MemoryBuilder{MaxChars: 10}.Build(model.SourceItem{Title: "important"}, []MemoryStep{
 		{StepID: "s", Summary: strings.Repeat("y", 1000)},
 	})
 	if !strings.Contains(doc, "=== Workflow Memory ===") {

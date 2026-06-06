@@ -105,7 +105,7 @@ func TestMatchesFilters_AllLabelsRequired(t *testing.T) {
 	}
 }
 
-// ── toCell ────────────────────────────────────────────────────────────────────
+// ── toSourceItem ────────────────────────────────────────────────────────────────────
 
 func TestToCell_MapsFields(t *testing.T) {
 	a := &Adapter{
@@ -127,7 +127,7 @@ func TestToCell_MapsFields(t *testing.T) {
 		UpdatedAt:           "2025-06-01T12:00:00Z",
 	}
 
-	cell := a.toCell(item)
+	cell := a.toSourceItem(item)
 
 	if cell.ID != "item-uuid" {
 		t.Errorf("ID = %q, want %q", cell.ID, "item-uuid")
@@ -159,7 +159,7 @@ func TestToCell_UnknownLabelSkipped(t *testing.T) {
 		stateIDToName: map[string]string{},
 		labelIDToName: map[string]string{"l1": "known"},
 	}
-	cell := a.toCell(workItem{Labels: []string{"l1", "unknown-id"}})
+	cell := a.toSourceItem(workItem{Labels: []string{"l1", "unknown-id"}})
 	if len(cell.Labels) != 1 || cell.Labels[0] != "known" {
 		t.Errorf("expected only known label, got %v", cell.Labels)
 	}

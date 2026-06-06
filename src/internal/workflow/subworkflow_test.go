@@ -33,7 +33,7 @@ func TestSubWorkflow_ChildRunsAndLinks(t *testing.T) {
 	exec := &fakeExecutor{}
 	eng := testEngine(cfg, store, exec, &fakeSide{})
 
-	parentID, success, _ := eng.RunInstance(context.Background(), parent, model.Cell{ID: "c1"})
+	parentID, success, _ := eng.RunInstance(context.Background(), parent, model.SourceItem{ID: "c1"})
 	if !success {
 		t.Fatal("expected success")
 	}
@@ -78,7 +78,7 @@ func TestSubWorkflow_ChildFailureFailsParentStep(t *testing.T) {
 	exec := &fakeExecutor{results: map[string]StepResult{"check": {Success: false}}}
 	eng := testEngine(cfg, store, exec, &fakeSide{})
 
-	_, success, _ := eng.RunInstance(context.Background(), parent, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), parent, model.SourceItem{ID: "c1"})
 	if success {
 		t.Fatal("expected parent to fail when child fails")
 	}
@@ -96,7 +96,7 @@ func TestSubWorkflow_UnknownReferenceFails(t *testing.T) {
 	store := newFakeStore()
 	eng := testEngine(cfg, store, &fakeExecutor{}, &fakeSide{})
 
-	_, success, _ := eng.RunInstance(context.Background(), parent, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), parent, model.SourceItem{ID: "c1"})
 	if success {
 		t.Fatal("expected failure for unknown sub-workflow reference")
 	}
@@ -123,7 +123,7 @@ func TestSubWorkflow_ParentMemorySeedsChild(t *testing.T) {
 	}}
 	eng := testEngine(cfg, store, exec, &fakeSide{})
 
-	_, success, _ := eng.RunInstance(context.Background(), parent, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), parent, model.SourceItem{ID: "c1"})
 	if !success {
 		t.Fatal("expected success")
 	}
@@ -155,7 +155,7 @@ func TestSubWorkflow_NoNestingBeyondDepth(t *testing.T) {
 	store := newFakeStore()
 	eng := testEngine(cfg, store, &fakeExecutor{}, &fakeSide{})
 
-	_, success, _ := eng.RunInstance(context.Background(), parent, model.Cell{ID: "c1"})
+	_, success, _ := eng.RunInstance(context.Background(), parent, model.SourceItem{ID: "c1"})
 	if success {
 		t.Fatal("expected failure: nesting beyond one level must be refused")
 	}

@@ -99,11 +99,11 @@ func firstAgentStep(wf config.WorkflowConfig) string {
 	return wf.ID
 }
 
-// Route evaluates all rules against the Cell and returns the first match.
+// Route evaluates all rules against the SourceItem and returns the first match.
 // Returns (zero, false) if no rule matches.
-func (r *Router) Route(cell model.Cell) (Match, bool) {
+func (r *Router) Route(item model.SourceItem) (Match, bool) {
 	for _, route := range r.routes {
-		if r.matches(route, cell) {
+		if r.matches(route, item) {
 			// Agent-based routing: route.Agent is required; worker is for backward compat
 			if route.Agent != "" {
 				return Match{Route: route}, true
@@ -119,7 +119,7 @@ func (r *Router) Route(cell model.Cell) (Match, bool) {
 	return Match{}, false
 }
 
-func (r *Router) matches(route config.RouteConfig, cell model.Cell) bool {
+func (r *Router) matches(route config.RouteConfig, cell model.SourceItem) bool {
 	ok, _ := r.evaluate(route, cell)
 	return ok
 }
@@ -127,7 +127,7 @@ func (r *Router) matches(route config.RouteConfig, cell model.Cell) bool {
 // evaluate reports whether a route matches a cell and a human-readable reason.
 // On a miss the reason names the first condition that rejected the cell; on a
 // hit it summarises which conditions were satisfied.
-func (r *Router) evaluate(route config.RouteConfig, cell model.Cell) (bool, string) {
+func (r *Router) evaluate(route config.RouteConfig, cell model.SourceItem) (bool, string) {
 	m := route.Match
 
 	if m.Source != "" && cell.SourceID != m.Source {
@@ -218,7 +218,7 @@ func describeCriteria(m config.RouteMatch) string {
 // Explain evaluates every route against the cell in priority order and returns
 // the full decision trace plus the winning Match (if any). The winning route is
 // the first match; later routes are still reported as "not reached".
-func (r *Router) Explain(cell model.Cell) (Match, bool, []RouteTrace) {
+func (r *Router) Explain(cell model.SourceItem) (Match, bool, []RouteTrace) {
 	traces := make([]RouteTrace, 0, len(r.routes))
 	var winner Match
 	found := false

@@ -35,7 +35,7 @@ type MemoryBuilder struct {
 // Build assembles the memory document from the originating Cell and the ordered
 // list of completed step contributions. Later steps override earlier ones when
 // they write the same key (last-write-wins).
-func (b MemoryBuilder) Build(cell model.Cell, steps []MemoryStep) string {
+func (b MemoryBuilder) Build(cell model.SourceItem, steps []MemoryStep) string {
 	maxChars := b.MaxChars
 	if maxChars <= 0 {
 		maxChars = DefaultMemoryMaxChars

@@ -21,7 +21,7 @@ import (
 // steps are intentionally re-evaluated (they are side-effect-free and their
 // branch routing must re-activate the chosen target), while agent, foreach,
 // sub-workflow, and approval steps that passed are carried over untouched.
-func (e *Engine) ResumeInstance(ctx context.Context, instID string, wf config.WorkflowConfig, cell model.Cell, priorSteps []db.StepRun) (success bool, err error) {
+func (e *Engine) ResumeInstance(ctx context.Context, instID string, wf config.WorkflowConfig, cell model.SourceItem, priorSteps []db.StepRun) (success bool, err error) {
 	_ = e.store.UpdateWorkflowInstanceState(ctx, instID, db.InstanceStateRunning)
 
 	r := e.initDAG(instID, wf, cell, nil, 0)
