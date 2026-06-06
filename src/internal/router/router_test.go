@@ -19,7 +19,7 @@ func cfg(routes []config.RouteConfig, _ []config.WorkerConfig) *config.Config {
 		}
 		wfs = append(wfs, config.WorkflowConfig{
 			ID:      r.ID,
-			Trigger: &config.TriggerConfig{Priority: r.Priority, Match: r.Match},
+			Trigger: &config.TriggerConfig{Priority: r.Priority, Exclusive: r.Exclusive, Match: r.Match},
 			Steps:   []config.StepConfig{{ID: "run", Agent: agent}},
 		})
 	}

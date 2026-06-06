@@ -56,10 +56,10 @@ type Dispatcher struct {
 	// nil when no DB is configured (tests / dry-run without persistence).
 	binder source.SourceBinder
 
-	sem       chan struct{}            // poll concurrency (size 1)
-	agentSem  map[string]chan struct{} // per-agent dispatch concurrency
-	active    atomic.Int32
-	inFlight  sync.Map
+	sem        chan struct{}            // poll concurrency (size 1)
+	agentSem   map[string]chan struct{} // per-agent dispatch concurrency
+	active     atomic.Int32
+	inFlight   sync.Map
 	activeRuns sync.Map
 	runCancel  sync.Map
 
@@ -309,38 +309,18 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 			if _, loaded := d.inFlight.LoadOrStore(cell.ID, struct{}{}); loaded {
 				continue
 			}
-			d.bindItem(ctx, cell)
-			match, ok := d.router.Route(cell)
-			if !ok {
+			task, persisted := d.bindItem(ctx, cell)
+			matches := d.router.RouteAll(task)
+			if len(matches) == 0 {
 				aplog.Debug("  %q: no route matched (source=%q labels=%v)", cell.Title, cell.SourceID, cell.Labels)
 				d.inFlight.Delete(cell.ID)
 				continue
 			}
-
-			agentID := match.Route.Agent
-			sem := d.agentSem[agentID]
-			if sem != nil {
-				sem <- struct{}{}
-			}
-			d.active.Add(1)
-			wg.Add(1)
-
-			go func(id string, sem chan struct{}) {
-				defer func() {
-					if sem != nil {
-						<-sem
-					}
-					d.active.Add(-1)
-					d.inFlight.Delete(id)
-					wg.Done()
-				}()
-				result := d.dispatch(ctx, cell, adapter, match)
-				if !result.Success {
-					mu.Lock()
-					failedIDs = append(failedIDs, id)
-					mu.Unlock()
-				}
-			}(cell.ID, sem)
+			d.fanOut(ctx, cell, adapter, task, persisted, matches, &wg, func(id string) {
+				mu.Lock()
+				failedIDs = append(failedIDs, id)
+				mu.Unlock()
+			})
 		}
 	}
 
@@ -784,23 +764,51 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 			aplog.Debug("cell %s: already in-flight, skipping", cell.ID)
 			continue
 		}
-		d.bindItem(ctx, cell)
-		match, ok := d.router.Route(cell)
-		if !ok {
+		task, persisted := d.bindItem(ctx, cell)
+		matches := d.router.RouteAll(task)
+		if len(matches) == 0 {
 			aplog.Debug("cell %s (%q): no matching route, skipping", cell.ID, cell.Title)
 			d.inFlight.Delete(cell.ID)
 			continue
 		}
+		d.fanOut(ctx, cell, adapter, task, persisted, matches, nil, nil)
+	}
+}
 
-		aplog.Info("dispatching cell %s (%q) → worker %s [%s]",
-			cell.ID, cell.Title, match.Worker.ID, match.Worker.Model)
+// fanOut dispatches every workflow matched for a polled cell. One InternalTask
+// may match several triggers, so the cell fans out to N workflows. The task's
+// outstanding-workflow counter is bumped by len(matches) before any workflow
+// starts (so a completion hook can tell when all have finished); then one
+// dispatch goroutine is launched per match, each admitted through its agent's
+// semaphore and tracked as an active run. The cell's in-flight marker is cleared
+// only after every dispatch finishes. When wg is non-nil each dispatch joins it
+// (so RunOnce can wait); onFail, if set, is called with the cell ID per failure.
+func (d *Dispatcher) fanOut(ctx context.Context, cell model.SourceItem, adapter source.Adapter, task model.InternalTask, persisted bool, matches []router.Match, wg *sync.WaitGroup, onFail func(cellID string)) {
+	if len(matches) == 0 {
+		d.inFlight.Delete(cell.ID)
+		return
+	}
 
+	// Track outstanding workflows on the task up front, before any can complete.
+	if persisted && d.db != nil {
+		if _, err := d.db.InternalTasks().IncrementOutstanding(ctx, task.ID, len(matches)); err != nil {
+			aplog.Error("task %s: increment outstanding by %d: %v", task.ID, len(matches), err)
+		}
+	}
+
+	var inner sync.WaitGroup
+	for _, match := range matches {
+		match := match
 		agentID := match.Route.Agent
 		agentCh := d.agentSem[agentID]
 		if agentCh != nil {
 			agentCh <- struct{}{}
 		}
 		d.active.Add(1)
+		inner.Add(1)
+		if wg != nil {
+			wg.Add(1)
+		}
 
 		runID := d.nextRunID()
 		d.activeRuns.Store(runID, model.ActiveRun{
@@ -812,36 +820,73 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 			StartedAt: time.Now(),
 		})
 
-		go func() {
+		aplog.Info("dispatching cell %s (%q) → workflow %s [agent %s]",
+			cell.ID, cell.Title, match.Route.ID, agentID)
+
+		go func(runID string, match router.Match, agentCh chan struct{}) {
 			defer func() {
 				if agentCh != nil {
 					<-agentCh
 				}
 				d.active.Add(-1)
-				d.inFlight.Delete(cell.ID)
 				d.activeRuns.Delete(runID)
+				inner.Done()
+				if wg != nil {
+					wg.Done()
+				}
 			}()
-			d.dispatch(ctx, cell, adapter, match)
-		}()
+			result := d.dispatch(ctx, cell, adapter, match)
+			if !result.Success && onFail != nil {
+				onFail(cell.ID)
+			}
+		}(runID, match, agentCh)
+	}
+
+	// Release the in-flight marker once all of this cell's dispatches finish, so
+	// the cell can be re-polled (and re-routed against its refreshed task).
+	go func() {
+		inner.Wait()
+		d.inFlight.Delete(cell.ID)
+	}()
+}
+
+// transientTask builds an unpersisted InternalTask from a source item, mapping
+// the same routing-relevant attributes the SourceBinder would. It is the routing
+// target when no binder is configured (no DB) — routing still works, but there is
+// no task ID to track outstanding workflows against.
+func transientTask(cell model.SourceItem) model.InternalTask {
+	return model.InternalTask{
+		Title:       cell.Title,
+		Description: cell.Description,
+		State:       model.TaskStateRegistered,
+		Metadata: model.TaskMetadata{
+			Labels:   cell.Labels,
+			Priority: cell.Priority,
+			Type:     cell.Type,
+			Source:   cell.SourceID,
+			State:    cell.State,
+		},
 	}
 }
 
-// bindItem records a polled source item as an InternalTask + SourceBinding via
-// the binder. It is idempotent: re-polling the same item resolves to the same
-// task. Binding is independent of routing — an item with no matching route still
-// gets a registered task. A bind failure is logged, not fatal: Phase 3 still
-// dispatches off the SourceItem, so a missing task only affects the new task
-// registry, not the existing execution path. No-op when the binder is unset.
-func (d *Dispatcher) bindItem(ctx context.Context, cell model.SourceItem) {
+// bindItem records a polled source item as an InternalTask + SourceBinding via the
+// binder and returns the task to route on. It is idempotent: re-polling the same
+// item resolves to the same task, refreshed from the live item. With no binder (no
+// DB) it returns a transient, unpersisted task built from the item so routing
+// still works. persisted reports whether the task is DB-backed — only then can
+// outstanding_workflows be tracked. A bind failure is logged, not fatal: routing
+// falls back to a transient task.
+func (d *Dispatcher) bindItem(ctx context.Context, cell model.SourceItem) (task model.InternalTask, persisted bool) {
 	if d.binder == nil {
-		return
+		return transientTask(cell), false
 	}
 	task, err := d.binder.Bind(ctx, cell)
 	if err != nil {
 		aplog.Error("bind source item %s (%q): %v", cell.ID, cell.Title, err)
-		return
+		return transientTask(cell), false
 	}
 	aplog.Debug("bound source item %s → task %s [%s]", cell.ID, task.ID, task.State)
+	return task, true
 }
 
 // dispatch acknowledges, runs, and writes the result for a single cell.
@@ -980,12 +1025,12 @@ func (d *Dispatcher) registerAgentInConfig(workDir string, ac config.AgentConfig
 		"prompt":      "{file:./agents/" + ac.ID + ".md}",
 		"skills":      ac.Skills,
 		"permission": map[string]any{
-			"edit":  "allow",
-			"bash":  "allow",
-			"read":  "allow",
-			"glob":  "allow",
-			"grep":  "allow",
-			"task":  "allow",
+			"edit": "allow",
+			"bash": "allow",
+			"read": "allow",
+			"glob": "allow",
+			"grep": "allow",
+			"task": "allow",
 		},
 	}
 

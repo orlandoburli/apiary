@@ -110,6 +110,25 @@ func (s *InternalTaskStore) UpdateTaskState(ctx context.Context, id string, stat
 	return err
 }
 
+// UpdateTaskMetadata refreshes a source-bound task's title, description, and
+// routing metadata (labels, state, source, type, priority) from the live source
+// item. The SourceBinder calls it on every poll so Router.RouteAll matches the
+// current source state — the apiary handoff flow advances a task by mutating its
+// source item's labels, and routing must observe those changes. It does not touch
+// state, input, or the outstanding-workflow counter.
+func (s *InternalTaskStore) UpdateTaskMetadata(ctx context.Context, id, title, description string, meta model.TaskMetadata) error {
+	metaJSON, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("marshal task metadata: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE internal_tasks
+		SET title = ?, description = ?, metadata = ?, updated_at = ?
+		WHERE id = ?
+	`, title, nullStr(description), string(metaJSON), time.Now(), id)
+	return err
+}
+
 // IncrementOutstanding adds delta to a task's outstanding workflow counter and
 // returns the new count. The dispatcher uses this at fan-out time (delta = N).
 func (s *InternalTaskStore) IncrementOutstanding(ctx context.Context, id string, delta int) (int, error) {

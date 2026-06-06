@@ -58,6 +58,9 @@ func TestBind_NewItemCreatesTaskAndBinding(t *testing.T) {
 	if task.Metadata.Priority != "high" || task.Metadata.Type != "issue" || len(task.Metadata.Labels) != 2 {
 		t.Errorf("metadata not mapped: %#v", task.Metadata)
 	}
+	if task.Metadata.Source != item.SourceID {
+		t.Errorf("metadata.Source = %q, want %q", task.Metadata.Source, item.SourceID)
+	}
 	if task.Input != nil {
 		t.Errorf("source-bound task should have nil Input, got %#v", task.Input)
 	}
@@ -163,6 +166,103 @@ func TestBind_ConcurrentSameItemDeduplicates(t *testing.T) {
 	}
 	if len(registered) != 1 {
 		t.Errorf("expected exactly 1 task, got %d (orphan task created on race)", len(registered))
+	}
+}
+
+func TestBind_RefreshUpdatesRoutingMetadataOnRepoll(t *testing.T) {
+	ctx := context.Background()
+	c := newBinderTestDB(t)
+	binder := NewSourceBinder(c)
+
+	item := sampleItem()
+	item.State = "todo"
+	first, err := binder.Bind(ctx, item)
+	if err != nil {
+		t.Fatalf("first bind: %v", err)
+	}
+	if first.Metadata.State != "todo" {
+		t.Fatalf("metadata.State = %q, want todo", first.Metadata.State)
+	}
+
+	// The handoff flow mutates the source item: a new label and a state change.
+	// Re-polling must refresh the task's routing metadata so RouteAll re-routes.
+	item.Labels = []string{"bug", "apiary", "agent:engineer"}
+	item.State = "in_progress"
+	item.Title = "Fix the widget (updated)"
+	second, err := binder.Bind(ctx, item)
+	if err != nil {
+		t.Fatalf("second bind: %v", err)
+	}
+
+	if second.ID != first.ID {
+		t.Fatalf("refresh created a new task %q, want %q", second.ID, first.ID)
+	}
+	if second.Metadata.State != "in_progress" {
+		t.Errorf("returned task State = %q, want in_progress", second.Metadata.State)
+	}
+	if len(second.Metadata.Labels) != 3 {
+		t.Errorf("returned task labels not refreshed: %v", second.Metadata.Labels)
+	}
+	if second.Title != "Fix the widget (updated)" {
+		t.Errorf("returned task Title not refreshed: %q", second.Title)
+	}
+
+	// The refresh must be persisted, not just reflected in the return value.
+	stored, err := c.InternalTasks().GetTask(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if stored.Metadata.State != "in_progress" || len(stored.Metadata.Labels) != 3 || stored.Title != "Fix the widget (updated)" {
+		t.Errorf("refresh not persisted: %+v", stored)
+	}
+
+	// Still exactly one task and one binding — refresh updates in place.
+	bindings, err := c.SourceBindings().ListBindingsByTask(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("list bindings: %v", err)
+	}
+	if len(bindings) != 1 {
+		t.Errorf("expected exactly 1 binding, got %d", len(bindings))
+	}
+}
+
+func TestBind_RefreshPreservesStateAndCounter(t *testing.T) {
+	ctx := context.Background()
+	c := newBinderTestDB(t)
+	binder := NewSourceBinder(c)
+	item := sampleItem()
+
+	first, err := binder.Bind(ctx, item)
+	if err != nil {
+		t.Fatalf("first bind: %v", err)
+	}
+
+	// Simulate the dispatcher advancing the task: lifecycle state + outstanding
+	// counter. A subsequent refresh (label change) must not clobber either.
+	if err := c.InternalTasks().UpdateTaskState(ctx, first.ID, model.TaskStateRunning); err != nil {
+		t.Fatalf("update state: %v", err)
+	}
+	if _, err := c.InternalTasks().IncrementOutstanding(ctx, first.ID, 2); err != nil {
+		t.Fatalf("increment outstanding: %v", err)
+	}
+
+	item.Labels = []string{"bug", "apiary", "agent:engineer"}
+	if _, err := binder.Bind(ctx, item); err != nil {
+		t.Fatalf("refresh bind: %v", err)
+	}
+
+	stored, err := c.InternalTasks().GetTask(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if stored.State != model.TaskStateRunning {
+		t.Errorf("refresh clobbered lifecycle state: %q", stored.State)
+	}
+	if stored.OutstandingWorkflows != 2 {
+		t.Errorf("refresh clobbered outstanding counter: %d", stored.OutstandingWorkflows)
+	}
+	if len(stored.Metadata.Labels) != 3 {
+		t.Errorf("labels not refreshed: %v", stored.Metadata.Labels)
 	}
 }
 
