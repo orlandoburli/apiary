@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -246,6 +247,60 @@ func TestLowerV2_ParallelStepKept(t *testing.T) {
 	}
 	if checks.DependsOn[0] != "setup" {
 		t.Errorf("checks depends_on = %v, want [setup]", checks.DependsOn)
+	}
+}
+
+// TestLowerV2_ParallelDoubleLowerIdempotent guards the documented invariant that
+// LowerV2Workflow is idempotent: lowering an already-lowered workflow is a no-op.
+// A lowered parallel node has Type==parallel with its children in SubSteps; before
+// the fix, IsV2Step re-flagged it (len(SubSteps)>0) and lowerSteps dissolved it via
+// the group branch — silently dropping the concurrency and the join policy.
+func TestLowerV2_ParallelDoubleLowerIdempotent(t *testing.T) {
+	wf := WorkflowConfig{
+		ID: "par",
+		Steps: []StepConfig{
+			{ID: "setup", Agent: "ag"},
+			{
+				ID:   "checks",
+				Join: "all",
+				ParallelSteps: []StepConfig{
+					{ID: "tests", Agent: "ag"},
+					{ID: "docs", Agent: "ag"},
+				},
+			},
+		},
+	}
+	once, err := LowerV2Workflow(wf)
+	if err != nil {
+		t.Fatalf("first lower: %v", err)
+	}
+	// Lower the output of the first pass again — this is the idempotence check.
+	twice, err := LowerV2Workflow(once)
+	if err != nil {
+		t.Fatalf("second lower: %v", err)
+	}
+
+	if len(twice.Steps) != 2 {
+		t.Fatalf("double-lower changed step count: got %d %v, want 2 (parallel dissolved?)",
+			len(twice.Steps), stepIDList(twice.Steps))
+	}
+	checks := twice.Steps[1]
+	if checks.Type != StepTypeParallel {
+		t.Errorf("checks type after double-lower = %q, want parallel (parallel was dissolved into a group)", checks.Type)
+	}
+	if checks.Join != "all" {
+		t.Errorf("checks join after double-lower = %q, want all (join policy lost)", checks.Join)
+	}
+	if len(checks.SubSteps) != 2 {
+		t.Errorf("checks children after double-lower = %d, want 2", len(checks.SubSteps))
+	}
+	if len(checks.DependsOn) != 1 || checks.DependsOn[0] != "setup" {
+		t.Errorf("checks depends_on after double-lower = %v, want [setup]", checks.DependsOn)
+	}
+
+	// Strongest assertion: the second pass must reproduce the first pass exactly.
+	if !reflect.DeepEqual(once, twice) {
+		t.Errorf("double-lower not idempotent:\n once = %+v\ntwice = %+v", once.Steps, twice.Steps)
 	}
 }
 

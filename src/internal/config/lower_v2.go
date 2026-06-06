@@ -11,8 +11,11 @@ import (
 // (flat steps with depends_on, condition, fail_when, on_fail.goto, foreach,
 // type:workflow). The result is safe to hand directly to the engine.
 //
-// LowerV2Workflow is idempotent: a workflow that already uses only IR fields
-// and contains no v2 authored fields passes through unchanged.
+// LowerV2Workflow is idempotent: lowering its own output is a no-op. A workflow
+// that uses only IR fields passes through unchanged, and a lowered parallel node
+// (Type==parallel, children in SubSteps) is recognized as already-lowered rather
+// than re-dissolved into a sequential group — so re-validating an in-place-lowered
+// Config (Config.Validate mutates) preserves concurrency and the join policy.
 func LowerV2Workflow(wf WorkflowConfig) (WorkflowConfig, error) {
 	// Quick exit: no step uses v2 fields → nothing to do.
 	if !anyV2Steps(wf.Steps) {
@@ -92,10 +95,28 @@ func (lc *lowerCtx) lowerSteps(steps []StepConfig, prevID, inheritedCondition st
 		switch {
 		case s.ForEachExpr != "":
 			// v2 for_each: lower to StepTypeForeach (check before SubSteps since
-			// a foreach step also carries SubSteps as its body).
+			// a foreach step also carries SubSteps as its body). Checked before the
+			// already-lowered guard below so a node that (mistakenly) carries both
+			// type:foreach and for_each: is still lowered rather than passed through.
 			flat, err := lc.lowerForeachStep(s, prevID, inheritedCondition)
 			if err != nil {
 				return nil, err
+			}
+			out = append(out, flat)
+			prevID = flat.ID
+		case s.Type == StepTypeParallel || s.Type == StepTypeForeach:
+			// Already-lowered IR node (idempotent re-entry). Only the lowering pass
+			// sets these types; an authored parallel/foreach uses ParallelSteps /
+			// for_each: with Type unset. A lowered parallel keeps its children in
+			// SubSteps and a lowered foreach keeps its body in Step, so without this
+			// guard the parallel would fall through to the len(SubSteps)>0 group
+			// branch and be dissolved into a sequential chain — silently dropping
+			// concurrency and the join policy. Pass it through verbatim. (In the
+			// common case the early exit in LowerV2Workflow already short-circuits
+			// re-lowering; this covers a mixed config validated alongside raw v2.)
+			flat := s
+			if prevID != "" && len(flat.DependsOn) == 0 && len(flat.SeqDependsOn) == 0 {
+				flat.SeqDependsOn = []string{prevID}
 			}
 			out = append(out, flat)
 			prevID = flat.ID
