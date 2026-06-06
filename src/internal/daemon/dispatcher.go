@@ -500,9 +500,6 @@ func (d *Dispatcher) controlLabels(cell model.Cell) []string {
 			excluded[strings.ToLower(l)] = true
 		}
 	}
-	for _, r := range d.cfg.Routes {
-		collect(r.Match)
-	}
 	for _, wf := range d.cfg.Workflows {
 		if wf.Trigger != nil {
 			collect(wf.Trigger.Match)

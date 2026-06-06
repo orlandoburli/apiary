@@ -225,7 +225,6 @@ type WorkflowStepDef struct {
 	ID        string
 	Type      string
 	Agent     string
-	DependsOn []string
 	Condition string
 	Prompt    string
 }

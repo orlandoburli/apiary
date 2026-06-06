@@ -35,7 +35,7 @@ func TestEngine_PersistsToRealSQLite(t *testing.T) {
 	var store Store = client
 	eng := NewEngine(cfg, store, exec)
 
-	wf := SynthesizeWorkflow(config.RouteConfig{
+	wf := synthWF(config.RouteConfig{
 		ID: "backend-bugs", Agent: "backend-dev",
 		OnComplete: config.OnComplete{SetState: "in_review"},
 	})
@@ -100,7 +100,7 @@ func TestEngine_FailedStepPersistsFailedState(t *testing.T) {
 	exec := &fakeExecutor{results: map[string]StepResult{"run": {Success: false, Output: "boom"}}}
 	eng := NewEngine(cfg, client, exec)
 
-	wf := SynthesizeWorkflow(config.RouteConfig{ID: "r", Agent: "a"})
+	wf := synthWF(config.RouteConfig{ID: "r", Agent: "a"})
 	instID, success, _ := eng.RunInstance(ctx, wf, model.Cell{ID: "C1"})
 
 	if success {

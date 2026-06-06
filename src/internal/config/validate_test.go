@@ -15,10 +15,11 @@ func TestValidate_Valid(t *testing.T) {
 		Agents: []config.AgentConfig{
 			{ID: "a-1", Model: "claude-sonnet-4-6"},
 		},
-		Routes: []config.RouteConfig{
-			{ID: "r-1", Priority: 1, Agent: "a-1",
-				Match: config.RouteMatch{Source: "src-1"}},
-		},
+		Workflows: []config.WorkflowConfig{{
+			ID:      "wf-1",
+			Trigger: &config.TriggerConfig{Priority: 1, Match: config.RouteMatch{Source: "src-1"}},
+			Steps:   []config.StepConfig{{ID: "run", Agent: "a-1"}},
+		}},
 	}
 	if errs := cfg.Validate(); len(errs) != 0 {
 		t.Errorf("expected no errors, got: %v", errs)
@@ -84,30 +85,30 @@ func TestValidate_DuplicateWorkerID(t *testing.T) {
 	assertError(t, cfg, "duplicate id")
 }
 
-func TestValidate_RouteReferencesUnknownAgent(t *testing.T) {
+func TestValidate_WorkflowReferencesUnknownAgent(t *testing.T) {
 	cfg := &config.Config{
 		Version: "1",
 		Sources: []config.SourceConfig{{ID: "src-1", Type: "plane"}},
-		Agents: []config.AgentConfig{
-			{ID: "a-1", Model: "claude-sonnet-4-6"},
-		},
-		Routes: []config.RouteConfig{
-			{ID: "r-1", Priority: 1, Agent: "nonexistent",
-				Match: config.RouteMatch{Source: "src-1"}},
-		},
+		Agents:  []config.AgentConfig{{ID: "a-1", Model: "claude-sonnet-4-6"}},
+		Workflows: []config.WorkflowConfig{{
+			ID:      "wf-1",
+			Trigger: &config.TriggerConfig{Match: config.RouteMatch{Source: "src-1"}},
+			Steps:   []config.StepConfig{{ID: "run", Agent: "nonexistent"}},
+		}},
 	}
 	assertError(t, cfg, "not defined")
 }
 
-func TestValidate_RouteReferencesUnknownSource(t *testing.T) {
+func TestValidate_WorkflowReferencesUnknownSource(t *testing.T) {
 	cfg := &config.Config{
 		Version: "1",
 		Sources: []config.SourceConfig{{ID: "src-1", Type: "plane"}},
-		Workers: []config.WorkerConfig{{ID: "w-1", Runner: "cli", Model: "x"}},
-		Routes: []config.RouteConfig{
-			{ID: "r-1", Priority: 1, Worker: "w-1",
-				Match: config.RouteMatch{Source: "nonexistent"}},
-		},
+		Agents:  []config.AgentConfig{{ID: "a-1", Model: "claude-sonnet-4-6"}},
+		Workflows: []config.WorkflowConfig{{
+			ID:      "wf-1",
+			Trigger: &config.TriggerConfig{Match: config.RouteMatch{Source: "nonexistent"}},
+			Steps:   []config.StepConfig{{ID: "run", Agent: "a-1"}},
+		}},
 	}
 	assertError(t, cfg, "not defined")
 }

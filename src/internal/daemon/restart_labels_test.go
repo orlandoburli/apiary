@@ -14,12 +14,13 @@ import (
 func restartTestConfig() *config.Config {
 	return &config.Config{
 		Sources: []config.SourceConfig{{ID: "fake"}},
-		Routes: []config.RouteConfig{
-			{ID: "eng", Match: config.RouteMatch{
+		Workflows: []config.WorkflowConfig{
+			{ID: "eng", Trigger: &config.TriggerConfig{Match: config.RouteMatch{
 				Labels:        []string{"agent:engineer"},
 				ExcludeLabels: []string{"in-progress"},
-			}},
-			{ID: "classify", Match: config.RouteMatch{ExcludeLabelPrefix: "agent:"}},
+			}}, Steps: []config.StepConfig{{ID: "run", Agent: "engineer"}}},
+			{ID: "classify", Trigger: &config.TriggerConfig{Match: config.RouteMatch{ExcludeLabelPrefix: "agent:"}},
+				Steps: []config.StepConfig{{ID: "run", Agent: "investigator"}}},
 		},
 	}
 }

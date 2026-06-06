@@ -17,7 +17,6 @@ type Config struct {
 	Sources       []SourceConfig   `yaml:"sources"`
 	Agents        []AgentConfig    `yaml:"agents"`
 	Workers       []WorkerConfig   `yaml:"workers"`
-	Routes        []RouteConfig    `yaml:"routes"`
 	Workflows     []WorkflowConfig `yaml:"workflows"`
 	Settings      Settings         `yaml:"settings"`
 

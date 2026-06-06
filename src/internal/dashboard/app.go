@@ -1276,7 +1276,6 @@ func (a *App) fetchWorkflowsConfig() tea.Cmd {
 						ID:        step.ID,
 						Type:      stype,
 						Agent:     step.Agent,
-						DependsOn: step.DependsOn,
 						Condition: step.Condition,
 						Prompt:    step.Prompt,
 					})
@@ -3369,10 +3368,6 @@ func (a *App) renderWorkflowsTab(height int) string {
 				}
 
 				// Sub-lines: always rendered, height stable regardless of selection.
-				if len(step.DependsOn) > 0 {
-					bl = append(bl,
-						"    "+StyleMuted.Render("depends: ")+strings.Join(step.DependsOn, ", "))
-				}
 				if step.Condition != "" {
 					bl = append(bl,
 						"    "+StyleMuted.Render("if:      ")+truncate(step.Condition, rightW-16))

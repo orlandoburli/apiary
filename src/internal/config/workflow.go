@@ -72,11 +72,9 @@ type TriggerConfig struct {
 type StepConfig struct {
 	ID        string   `yaml:"id"`
 	Type      string   `yaml:"type,omitempty"` // agent(default)|split|approval|foreach|workflow
-	DependsOn []string `yaml:"depends_on,omitempty"`
-	// SeqDependsOn holds implicit sequential dependencies injected by the v2
-	// lowering pass. Unlike DependsOn, a condition-skipped SeqDependsOn dep
-	// is treated as satisfied — its successors can still run.
-	// Never set by hand; use DependsOn for explicit dependencies.
+	// DependsOn is set internally by the v2 lowering pass (parallel, foreach).
+	// It cannot be declared in YAML — the engine uses implicit sequential ordering.
+	DependsOn    []string `yaml:"-"`
 	SeqDependsOn []string `yaml:"seq_depends_on,omitempty"`
 
 	// ── shared / cross-cutting ────────────────────────────────────

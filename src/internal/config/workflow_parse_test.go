@@ -51,7 +51,6 @@ workflows:
           write: [complexity]
       - id: route
         type: split
-        depends_on: [plan]
         branches:
           - if: "memory.complexity == 'high'"
             goto: implement
@@ -59,18 +58,15 @@ workflows:
             goto: implement
       - id: implement
         agent: backend-dev
-        depends_on: [plan]
         memory:
           read: false
       - id: review
         agent: backend-dev
-        depends_on: [implement]
         on_fail:
           goto: implement
           max_retries: 2
       - id: fix-each
         type: foreach
-        depends_on: [plan]
         items: "steps.plan.output.issues"
         as: issue
         concurrency: 4
@@ -79,7 +75,6 @@ workflows:
           agent: backend-dev
       - id: human-approval
         type: approval
-        depends_on: [review]
         message: "Approve?"
         resume_on:
           comment_contains: "approve"
