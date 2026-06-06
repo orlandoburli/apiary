@@ -1,0 +1,678 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://apiary.orlandoburli.com.br/schema/apiary.json",
+  "title": "Apiary Configuration Schema",
+  "description": "JSON Schema for apiary.yaml workflow configuration files",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Configuration schema version (e.g., '1.0')",
+      "default": "1.0"
+    },
+    "runners": {
+      "type": "array",
+      "description": "Runner definitions for agent execution",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique runner identifier"
+          },
+          "type": {
+            "type": "string",
+            "description": "Execution mode: 'cli' or 'api'",
+            "enum": ["cli", "api"]
+          },
+          "provider": {
+            "type": "string",
+            "description": "Runner provider/adapter (e.g., 'claude', 'script', 'opencode')"
+          },
+          "config": {
+            "type": "object",
+            "description": "Runner-specific configuration",
+            "additionalProperties": true
+          },
+          "models": {
+            "type": "array",
+            "description": "Supported models for this runner",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "default_runner": {
+      "type": "string",
+      "description": "Default runner ID to use when not specified"
+    },
+    "sources": {
+      "type": "array",
+      "description": "Task sources (GitHub, Jira, Linear, etc.)",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique source identifier"
+          },
+          "type": {
+            "type": "string",
+            "description": "Source type (e.g., 'github', 'jira', 'linear')"
+          },
+          "config": {
+            "type": "object",
+            "description": "Source-specific configuration",
+            "additionalProperties": true
+          },
+          "poll_interval": {
+            "type": "string",
+            "description": "Polling interval (e.g., '5m', '30s'). Defaults to 60s",
+            "pattern": "^[0-9]+(s|m|h)$"
+          },
+          "filters": {
+            "type": "object",
+            "description": "Task filtering rules",
+            "additionalProperties": false,
+            "properties": {
+              "states": {
+                "type": "array",
+                "description": "Filter by task states",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "labels": {
+                "type": "array",
+                "description": "Filter by labels (tasks must have any of these)",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "jql": {
+                "type": "string",
+                "description": "Jira Query Language filter (for Jira sources)"
+              }
+            }
+          }
+        }
+      }
+    },
+    "agents": {
+      "type": "array",
+      "description": "Agent definitions",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "model"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique agent identifier"
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable agent description"
+          },
+          "model": {
+            "type": "string",
+            "description": "LLM model ID (e.g., 'claude-opus-4-8', 'claude-sonnet-4-6')"
+          },
+          "soul_file": {
+            "type": "string",
+            "description": "Path to agent persona/instructions file"
+          },
+          "skills": {
+            "type": "array",
+            "description": "Available skills for this agent",
+            "items": {
+              "type": "string"
+            }
+          },
+          "runner": {
+            "type": "string",
+            "description": "Runner ID for this agent (uses default_runner if not specified)"
+          },
+          "max_workers": {
+            "type": "integer",
+            "description": "Maximum concurrent workers for this agent",
+            "minimum": 1
+          },
+          "source_token": {
+            "type": "string",
+            "description": "Auth token environment variable for the source"
+          },
+          "source_email": {
+            "type": "string",
+            "description": "Email for source authentication"
+          },
+          "source_name": {
+            "type": "string",
+            "description": "Display name for the source"
+          }
+        }
+      }
+    },
+    "workers": {
+      "type": "array",
+      "description": "Worker definitions for task execution",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "runner", "model"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique worker identifier"
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable worker description"
+          },
+          "runner": {
+            "type": "string",
+            "description": "Runner ID for this worker"
+          },
+          "model": {
+            "type": "string",
+            "description": "LLM model ID"
+          },
+          "config": {
+            "type": "object",
+            "description": "Worker run-time configuration",
+            "additionalProperties": false,
+            "properties": {
+              "working_dir": {
+                "type": "string",
+                "description": "Working directory for execution"
+              },
+              "max_turns": {
+                "type": "integer",
+                "description": "Maximum interaction turns",
+                "minimum": 1
+              },
+              "system_prompt_append": {
+                "type": "string",
+                "description": "Additional system prompt instructions"
+              },
+              "env": {
+                "type": "object",
+                "description": "Environment variables",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "timeout": {
+                "type": "string",
+                "description": "Execution timeout (e.g., '30m', '1h'). Defaults to 30m",
+                "pattern": "^[0-9]+(s|m|h)$"
+              }
+            }
+          },
+          "runner_config": {
+            "type": "object",
+            "description": "Runner-specific configuration",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "workflows": {
+      "type": "array",
+      "description": "Workflow definitions",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "steps"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique workflow identifier"
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable workflow description"
+          },
+          "resume": {
+            "type": "string",
+            "description": "Resume policy for failed instances",
+            "enum": ["allowed", "forbidden", "auto"],
+            "default": "allowed"
+          },
+          "result_comment": {
+            "type": "string",
+            "description": "Result comment mode (deprecated, use APIARY_PUBLISH instead)",
+            "enum": ["on_complete", "per_step", "off"]
+          },
+          "trigger": {
+            "type": "object",
+            "description": "Task trigger configuration",
+            "additionalProperties": false,
+            "properties": {
+              "priority": {
+                "type": "integer",
+                "description": "Trigger priority (higher = earlier evaluation)"
+              },
+              "exclusive": {
+                "type": "boolean",
+                "description": "Stop trigger evaluation after this trigger matches",
+                "default": false
+              },
+              "match": {
+                "$ref": "#/definitions/RouteMatch"
+              }
+            }
+          },
+          "steps": {
+            "type": "array",
+            "description": "Workflow steps",
+            "items": {
+              "$ref": "#/definitions/StepConfig"
+            }
+          },
+          "on_complete": {
+            "$ref": "#/definitions/OnComplete"
+          },
+          "on_fail": {
+            "$ref": "#/definitions/OnComplete"
+          }
+        }
+      }
+    },
+    "settings": {
+      "type": "object",
+      "description": "Global settings",
+      "additionalProperties": false,
+      "properties": {
+        "concurrency": {
+          "type": "integer",
+          "description": "Maximum concurrent workflow instances",
+          "minimum": 1,
+          "default": 4
+        },
+        "log_level": {
+          "type": "string",
+          "description": "Logging level",
+          "enum": ["debug", "info", "warn", "error"],
+          "default": "info"
+        },
+        "state_lock": {
+          "type": "boolean",
+          "description": "Enable distributed state locking",
+          "default": false
+        },
+        "result_comment": {
+          "type": "boolean",
+          "description": "Enable result comments (deprecated)",
+          "default": false
+        },
+        "task_timeout": {
+          "type": "string",
+          "description": "Default task timeout (e.g., '2h'). Defaults to 120m",
+          "pattern": "^[0-9]+(s|m|h)$"
+        },
+        "telemetry": {
+          "type": "object",
+          "description": "Telemetry configuration",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable telemetry",
+              "default": false
+            },
+            "endpoint": {
+              "type": "string",
+              "description": "Telemetry endpoint URL",
+              "format": "uri"
+            }
+          }
+        }
+      }
+    },
+    "tasks": {
+      "type": "object",
+      "description": "Top-level task configuration hooks (fire once per InternalTask)",
+      "additionalProperties": false,
+      "properties": {
+        "on_complete": {
+          "$ref": "#/definitions/OnComplete"
+        },
+        "on_fail": {
+          "$ref": "#/definitions/OnComplete"
+        }
+      }
+    }
+  },
+  "definitions": {
+    "RouteMatch": {
+      "type": "object",
+      "description": "Task matching rules for routing/triggering",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Source ID to match"
+        },
+        "labels": {
+          "type": "array",
+          "description": "Match tasks with any of these labels",
+          "items": {
+            "type": "string"
+          }
+        },
+        "types": {
+          "type": "array",
+          "description": "Match tasks of these types",
+          "items": {
+            "type": "string"
+          }
+        },
+        "title_regex": {
+          "type": "string",
+          "description": "Match task titles against this regex"
+        },
+        "priority": {
+          "type": "array",
+          "description": "Match tasks with these priorities",
+          "items": {
+            "type": "string"
+          }
+        },
+        "states": {
+          "type": "array",
+          "description": "Match tasks in these states",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclude_labels": {
+          "type": "array",
+          "description": "Reject tasks carrying any of these labels",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclude_label_prefix": {
+          "type": "string",
+          "description": "Reject tasks with labels starting with this prefix"
+        }
+      }
+    },
+    "OnComplete": {
+      "type": "object",
+      "description": "Actions to take on workflow/task completion",
+      "additionalProperties": false,
+      "properties": {
+        "set_state": {
+          "type": "string",
+          "description": "Set task state to this value"
+        },
+        "add_labels": {
+          "type": "array",
+          "description": "Add these labels to the task",
+          "items": {
+            "type": "string"
+          }
+        },
+        "assign_from_output": {
+          "type": "boolean",
+          "description": "Parse APIARY-ASSIGN directive from agent output (removed, use APIARY_PUBLISH instead)",
+          "default": false
+        },
+        "assign_label_prefix": {
+          "type": "string",
+          "description": "Label prefix for AssignFromOutput (removed)",
+          "default": "agent:"
+        }
+      }
+    },
+    "StepConfig": {
+      "type": "object",
+      "description": "A workflow step (agent, split, approval, foreach, or sub-workflow)",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique step identifier within the workflow"
+        },
+        "type": {
+          "type": "string",
+          "description": "Step type",
+          "enum": ["agent", "split", "approval", "foreach", "workflow", "parallel"],
+          "default": "agent"
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable step name for logs and dashboards"
+        },
+        "condition": {
+          "type": "string",
+          "description": "DAG IR condition expression (e.g., 'memory.track == \"implement\"'). Skip step if false"
+        },
+        "fail_when": {
+          "type": "string",
+          "description": "DAG IR expression that triggers step failure if true. Re-evaluates after agent runs"
+        },
+        "seq_depends_on": {
+          "type": "array",
+          "description": "Step IDs that must complete before this step (v2 explicit sequencing)",
+          "items": {
+            "type": "string"
+          }
+        },
+        "agent": {
+          "type": "string",
+          "description": "Agent ID (for type=agent)"
+        },
+        "model": {
+          "type": "string",
+          "description": "Override agent's model for this step (for type=agent)"
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Task prompt for the agent (for type=agent)"
+        },
+        "summary_prompt": {
+          "type": "string",
+          "description": "Prompt to summarize agent output (for type=agent)"
+        },
+        "idempotent": {
+          "type": "boolean",
+          "description": "Mark step as idempotent for resume safety (for type=agent)",
+          "default": false
+        },
+        "output_schema": {
+          "$ref": "#/definitions/OutputSchema"
+        },
+        "on_missing_output": {
+          "type": "string",
+          "description": "Behavior when output_schema is declared but not satisfied",
+          "enum": ["warn", "fail", "ignore"],
+          "default": "warn"
+        },
+        "memory": {
+          "$ref": "#/definitions/MemoryConfig"
+        },
+        "publish": {
+          "type": "string",
+          "description": "Control APIARY_PUBLISH write-back to source bindings (for type=agent)",
+          "enum": ["auto", "off"],
+          "default": "auto"
+        },
+        "spawn": {
+          "type": "string",
+          "description": "Control APIARY_SPAWN request handling (for type=agent)",
+          "enum": ["auto", "await"],
+          "default": "auto"
+        },
+        "on_pass": {
+          "$ref": "#/definitions/StepNext"
+        },
+        "on_fail": {
+          "$ref": "#/definitions/StepOutcome"
+        },
+        "multi": {
+          "type": "boolean",
+          "description": "Execute branches in parallel (for type=split)",
+          "default": false
+        },
+        "branches": {
+          "type": "array",
+          "description": "Split branches (for type=split)",
+          "items": {
+            "$ref": "#/definitions/SplitBranch"
+          }
+        },
+        "message": {
+          "type": "string",
+          "description": "Approval message (for type=approval)"
+        },
+        "resume_on": {
+          "$ref": "#/definitions/ApprovalTrigger"
+        },
+        "abort_on": {
+          "$ref": "#/definitions/ApprovalTrigger"
+        },
+        "timeout": {
+          "type": "string",
+          "description": "Approval timeout (for type=approval)",
+          "pattern": "^[0-9]+(s|m|h)$"
+        },
+        "items": {
+          "type": "string",
+          "description": "DAG IR expression yielding items array (for type=foreach)"
+        },
+        "as": {
+          "type": "string",
+          "description": "Iteration variable name (for type=foreach)"
+        },
+        "concurrency": {
+          "type": "integer",
+          "description": "Concurrent iterations (for type=foreach)",
+          "minimum": 1
+        },
+        "max_items": {
+          "type": "integer",
+          "description": "Maximum items to iterate (for type=foreach)",
+          "minimum": 1
+        },
+        "fail_fast": {
+          "type": "boolean",
+          "description": "Stop on first iteration failure (for type=foreach)",
+          "default": false
+        },
+        "step": {
+          "$ref": "#/definitions/StepConfig",
+          "description": "Nested step to iterate (for type=foreach)"
+        },
+        "workflow": {
+          "type": "string",
+          "description": "Sub-workflow ID (for type=workflow)"
+        }
+      }
+    },
+    "OutputSchema": {
+      "type": "object",
+      "description": "JSON Schema for validating agent output",
+      "additionalProperties": true
+    },
+    "MemoryConfig": {
+      "type": "object",
+      "description": "Memory persistence for agent state",
+      "additionalProperties": false,
+      "properties": {
+        "persist": {
+          "type": "array",
+          "description": "Fields to persist from agent output",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "StepNext": {
+      "type": "object",
+      "description": "Actions on step success",
+      "additionalProperties": false,
+      "properties": {
+        "goto": {
+          "type": "string",
+          "description": "Jump to this step on success"
+        }
+      }
+    },
+    "StepOutcome": {
+      "type": "object",
+      "description": "Actions on step failure",
+      "additionalProperties": false,
+      "properties": {
+        "goto": {
+          "type": "string",
+          "description": "Jump to this step (e.g., retry loop) on failure"
+        },
+        "set_state": {
+          "type": "string",
+          "description": "Set task state on failure"
+        },
+        "add_labels": {
+          "type": "array",
+          "description": "Add labels on failure",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "SplitBranch": {
+      "type": "object",
+      "description": "A conditional branch in a split step",
+      "additionalProperties": false,
+      "required": ["id", "step"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique branch identifier"
+        },
+        "condition": {
+          "type": "string",
+          "description": "DAG IR condition to take this branch"
+        },
+        "step": {
+          "$ref": "#/definitions/StepConfig",
+          "description": "Step to execute in this branch"
+        }
+      }
+    },
+    "ApprovalTrigger": {
+      "type": "object",
+      "description": "Condition for approving/aborting",
+      "additionalProperties": false,
+      "properties": {
+        "labels": {
+          "type": "array",
+          "description": "Trigger when any of these labels are added",
+          "items": {
+            "type": "string"
+          }
+        },
+        "states": {
+          "type": "array",
+          "description": "Trigger when task enters any of these states",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "yaml.schemas": {
+    "${workspaceFolder}/schema/apiary.json": "apiary.yaml"
+  },
+  "yaml.validate": true,
+  "yaml.maxItemsComputed": 5000,
+  "[yaml]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": false
+  }
+}
