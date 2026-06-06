@@ -257,6 +257,15 @@ func (e *Engine) resultCommentMode(wf config.WorkflowConfig) string {
 	return config.ResultCommentOff
 }
 
+// concurrencyLimit returns the effective global concurrency cap from config.
+// If not set, defaults to 1 (sequential — preserves existing behaviour).
+func (e *Engine) concurrencyLimit() int {
+	if e.cfg.Settings.Concurrency > 0 {
+		return e.cfg.Settings.Concurrency
+	}
+	return 1
+}
+
 // findAgent returns the agent config by ID, or nil.
 func (e *Engine) findAgent(id string) *config.AgentConfig {
 	for i := range e.cfg.Agents {

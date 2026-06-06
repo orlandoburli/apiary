@@ -14,6 +14,7 @@ import (
 // step execution states within a DAG run.
 const (
 	stPending = "pending"
+	stRunning = "running" // dispatched to a worker goroutine, not yet complete
 	stPassed  = "passed"
 	stFailed  = "failed"
 	stSkipped = "skipped"
@@ -96,38 +97,234 @@ func (e *Engine) initDAG(instID string, wf config.WorkflowConfig, cell model.Cel
 	return r
 }
 
+// workerResult carries the execution outcome of a single step back to the
+// scheduler goroutine. Only the scheduler goroutine reads/writes dagRun state.
+type workerResult struct {
+	stepID  string
+	step    config.StepConfig
+	memSnap []MemoryStep // memory snapshot taken when the step was dispatched
+	res     StepResult
+	// parallelContribs is set for StepTypeParallel steps: the ordered list of
+	// memory contributions from its passed children (declaration order).
+	parallelContribs []MemoryStep
+	// foreachExitCode is the failed-item count for StepTypeForeach steps.
+	// Used to populate StepState.ExitCode (allows `steps.<id>.exit_code` in exprs).
+	foreachExitCode int
+}
+
 // driveDAG runs the scheduler until the graph completes, fails, or suspends at
-// an approval step. It honors depends_on ordering, split routing, on_fail.goto
-// loops, skip propagation, and per-step condition evaluation.
+// an approval step. It dispatches all runnable steps concurrently (bounded by
+// the global semaphore), processes results on the scheduler goroutine, and
+// handles split routing, on_fail.goto loops, and skip propagation.
 // It may be re-entered after an approval resolves.
 func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
+	sem := make(chan struct{}, e.concurrencyLimit())
+	resultCh := make(chan workerResult, len(r.order)+1)
+	inFlight := 0
+
+	// termFail is set when a step fails irrecoverably; we drain in-flight before
+	// returning outcomeFailed (so workers don't write to a closed channel).
+	termFail := false
+	// loopTarget is set when a step triggers on_fail.goto; we drain in-flight
+	// before calling resetLoop.
+	loopTarget := ""
+
+	dispatch := func() {
+		for _, id := range r.pickAllRunnable() {
+			step := r.byID[id]
+
+			// Per-step condition: evaluate on scheduler goroutine (reads dagRun).
+			if step.Condition != "" {
+				evalCtx := EvalContext{Cell: r.cell, Memory: r.memoryValues(), Steps: r.stepStates}
+				if e.conditionFalse(step.Condition, evalCtx) {
+					r.markSkipped(id)
+					aplog.Debug("workflow %s: step %q skipped (condition false)", r.wf.ID, id)
+					continue
+				}
+			}
+
+			// Split: synchronous, no I/O — apply inline on scheduler goroutine.
+			if step.StepType() == config.StepTypeSplit {
+				e.runSplitStep(r, step)
+				continue
+			}
+
+			// Approval: must drain in-flight first; handled after drain below.
+			if step.StepType() == config.StepTypeApproval {
+				// Mark as running so pickAllRunnable won't re-select it, but don't
+				// launch a worker — the approval is handled after drain.
+				r.state[id] = stRunning
+				inFlight++ // counts as "in-flight" so we drain before acting
+				resultCh <- workerResult{stepID: id, step: step, res: StepResult{Success: true}}
+				// The result will be processed below; it signals the approval path.
+				continue
+			}
+
+			// Concurrency gate: don't over-dispatch; wait for in-flight to drain.
+			// This also ensures declaration-order execution when concurrency=1.
+			if inFlight >= e.concurrencyLimit() {
+				break
+			}
+
+			// I/O-bound steps: dispatch to worker goroutine.
+			r.state[id] = stRunning
+			snap := r.memSteps()
+			contribSnap := r.contribSnapshot()
+			inFlight++
+			go func(step config.StepConfig, memSnap []MemoryStep, contribSnap map[string]MemoryStep) {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				var res StepResult
+				var parallelContribs []MemoryStep
+				var foreachExitCode int
+				switch step.StepType() {
+				case config.StepTypeParallel:
+					res, parallelContribs = e.runParallelStep(ctx, r.instID, step, r.cell, memSnap)
+				case config.StepTypeForeach:
+					var fr foreachResult
+					res, fr = e.executeForeachStep(ctx, r.instID, step, r.cell, memSnap, contribSnap, r.wf.ID)
+					foreachExitCode = fr.failed
+				case config.StepTypeWorkflow:
+					res = e.executeSubWorkflowStep(ctx, r.instID, step, r.cell, memSnap, r.depth, r.wf.ID)
+				default: // StepTypeAgent
+					res = e.runStep(ctx, r.instID, step, r.cell, memSnap)
+				}
+				resultCh <- workerResult{
+					stepID:           step.ID,
+					step:             step,
+					memSnap:          memSnap,
+					res:              res,
+					parallelContribs: parallelContribs,
+					foreachExitCode:  foreachExitCode,
+				}
+			}(step, snap, contribSnap)
+		}
+	}
+
 	for {
-		next := r.pickRunnable()
-		if next == "" {
+		// Dispatch only when not draining for a loop-back or terminal failure.
+		if !termFail && loopTarget == "" {
+			dispatch()
+		}
+
+		// Nothing in-flight: resolve pending control-flow or break.
+		if inFlight == 0 {
+			if termFail {
+				return outcomeFailed
+			}
+			if loopTarget != "" {
+				r.resetLoop(loopTarget)
+				loopTarget = ""
+				continue
+			}
 			if r.skipUnreachable() {
 				continue
 			}
-			break // nothing else can run
-		}
-		step := r.byID[next]
-
-		// Per-step condition: evaluate before running; false → skip + cascade.
-		if step.Condition != "" {
-			evalCtx := EvalContext{Cell: r.cell, Memory: r.memoryValues(), Steps: r.stepStates}
-			if e.conditionFalse(step.Condition, evalCtx) {
-				r.markSkipped(next)
-				aplog.Debug("workflow %s: step %q skipped (condition false)", r.wf.ID, next)
+			// A synchronous step (split) may have activated new steps this cycle.
+			// Re-check before declaring quiescence.
+			if len(r.pickAllRunnable()) > 0 {
 				continue
 			}
+			break
 		}
 
+		// Wait for one worker to finish.
+		wr := <-resultCh
+		inFlight--
+		step := wr.step
+
+		// Approval path: all in-flight drained by the time we get here since
+		// dispatch sends approvals immediately to resultCh.
 		if step.StepType() == config.StepTypeApproval {
+			// Wait for all other in-flight workers to finish first.
+			for inFlight > 0 {
+				<-resultCh
+				inFlight--
+			}
 			e.enterApproval(ctx, r, step)
 			return outcomeWaiting
 		}
-		if failed := e.runDAGStep(ctx, r, next); failed {
-			return outcomeFailed
+
+		res := wr.res
+
+		// on_missing_output: fail — declared output schema required structured output.
+		if res.Success && step.OutputSchema != nil &&
+			step.OnMissingOutput == config.OnMissingOutputFail &&
+			len(res.StructuredOutput) == 0 {
+			res.Success = false
+			aplog.Info("workflow %s: step %q failed: on_missing_output=fail and no structured output", r.wf.ID, step.ID)
 		}
+
+		// fail_when — evaluate on the scheduler goroutine after the agent runs.
+		if res.Success && step.FailWhen != "" {
+			transientMem := r.memoryValues()
+			for field, val := range res.StructuredOutput {
+				transientMem[field] = renderValue(val)
+			}
+			evalCtx := EvalContext{Cell: r.cell, Memory: transientMem, Steps: r.stepStates}
+			if e.conditionTrue(step.FailWhen, evalCtx) {
+				res.Success = false
+				aplog.Info("workflow %s: step %q rejected (fail_when matched)", r.wf.ID, step.ID)
+			}
+		}
+
+		ss := StepState{State: passFail(res.Success), Output: res.Output}
+		if step.StepType() == config.StepTypeForeach {
+			ss.ExitCode = wr.foreachExitCode
+		}
+		r.stepStates[step.ID] = ss
+
+		if e.resultCommentMode(r.wf) == config.ResultCommentPerStep && e.side != nil {
+			_ = e.side.PostComment(ctx, r.cell, perStepComment(step, res))
+		}
+
+		if res.Success {
+			r.state[step.ID] = stPassed
+			if step.StepType() == config.StepTypeParallel {
+				// Merge children's contributions into the outer DAG memory.
+				for _, c := range wr.parallelContribs {
+					r.contrib[c.StepID] = c
+				}
+				// The parallel step itself has no direct memory contribution;
+				// its children's contributions are now visible via r.contrib.
+			} else {
+				r.contrib[step.ID] = MemoryStep{
+					StepID:      step.ID,
+					WriteFields: step.MemoryWriteFields(),
+					Structured:  res.StructuredOutput,
+					Summary:     res.Summary,
+				}
+			}
+			r.passedOrder = append(r.passedOrder, step.ID)
+			if step.OnPass != nil && step.OnPass.Next != "" {
+				r.activated[step.OnPass.Next] = true
+			}
+			continue
+		}
+
+		// Failure: attempt on_fail.goto loop if retries remain.
+		if !termFail && loopTarget == "" &&
+			step.OnFail != nil && step.OnFail.Goto != "" &&
+			r.retries[step.ID] < step.OnFail.MaxRetries {
+			r.retries[step.ID]++
+			aplog.Info("workflow %s: step %q failed, looping back to %q (retry %d/%d)",
+				r.wf.ID, step.ID, step.OnFail.Goto, r.retries[step.ID], step.OnFail.MaxRetries)
+			// Mark the step as pending so it can re-run after the loop reset.
+			r.state[step.ID] = stPending
+			loopTarget = step.OnFail.Goto
+			// Drain remaining in-flight before resetting.
+			continue
+		}
+
+		// Irrecoverable failure.
+		aplog.Info("workflow %s: step %q failed permanently", r.wf.ID, step.ID)
+		if step.OnFail != nil && step.OnFail.Goto != "" {
+			aplog.Info("workflow %s: step %q exhausted %d retries", r.wf.ID, step.ID, step.OnFail.MaxRetries)
+		}
+		r.state[step.ID] = stFailed
+		termFail = true
+		loopTarget = "" // cancel any pending loop
+		// Drain remaining in-flight before returning.
 	}
 
 	// The instance fails if any step ended failed.
@@ -165,18 +362,19 @@ func (r *dagRun) resolveApproval(decision ApprovalDecision) {
 	}
 }
 
-// pickRunnable returns the next runnable step id (activated, pending, all
-// dependencies passed), in declaration order, or "" when none is ready.
-func (r *dagRun) pickRunnable() string {
+// pickAllRunnable returns the IDs of ALL currently runnable steps (activated,
+// pending, all dependencies passed), in declaration order.
+func (r *dagRun) pickAllRunnable() []string {
+	var ids []string
 	for _, id := range r.order {
 		if r.state[id] != stPending || !r.activated[id] {
 			continue
 		}
 		if r.depsPassed(id) {
-			return id
+			ids = append(ids, id)
 		}
 	}
-	return ""
+	return ids
 }
 
 func (r *dagRun) depsPassed(id string) bool {
@@ -256,28 +454,6 @@ func (r *dagRun) markSkipped(id string) {
 	}
 }
 
-// runDAGStep executes one step and updates graph state. Returns true if the
-// instance must fail (an agent step failed with no retry left).
-func (e *Engine) runDAGStep(ctx context.Context, r *dagRun, id string) bool {
-	step := r.byID[id]
-	switch step.StepType() {
-	case config.StepTypeSplit:
-		return e.runSplitStep(r, step)
-	case config.StepTypeAgent:
-		return e.runAgentDAGStep(ctx, r, step)
-	case config.StepTypeForeach:
-		return e.runForeachStep(ctx, r, step)
-	case config.StepTypeWorkflow:
-		return e.runSubWorkflowStep(ctx, r, step)
-	default:
-		// approval steps are not executed by this scheduler yet; treat as a
-		// no-op pass so they don't block the graph.
-		aplog.Debug("workflow %s: step %q type %q not yet executable, passing through", r.wf.ID, step.ID, step.StepType())
-		r.state[id] = stPassed
-		return false
-	}
-}
-
 // runSplitStep evaluates a split's branches and activates the chosen target(s),
 // skipping the rest.
 func (e *Engine) runSplitStep(r *dagRun, step config.StepConfig) bool {
@@ -327,75 +503,6 @@ func (e *Engine) runSplitStep(r *dagRun, step config.StepConfig) bool {
 	return false
 }
 
-// runAgentDAGStep runs an agent step, threading memory, and handles on_pass.next
-// activation and on_fail.goto loops.
-func (e *Engine) runAgentDAGStep(ctx context.Context, r *dagRun, step config.StepConfig) bool {
-	res := e.runStep(ctx, r.instID, step, r.cell, r.memSteps())
-
-	// on_missing_output: fail — treat as failure when the step declares an output
-	// schema, the policy is "fail", and no structured output was produced.
-	if res.Success && step.OutputSchema != nil &&
-		step.OnMissingOutput == config.OnMissingOutputFail &&
-		len(res.StructuredOutput) == 0 {
-		res.Success = false
-		aplog.Info("workflow %s: step %q failed: on_missing_output=fail and no structured output", r.wf.ID, step.ID)
-	}
-
-	// fail_when — evaluate after the agent runs; a true result is a logical
-	// rejection and is treated exactly like a normal failure (eligible for
-	// on_fail.goto loop-back).
-	if res.Success && step.FailWhen != "" {
-		transientMem := r.memoryValues()
-		for field, val := range res.StructuredOutput {
-			transientMem[field] = renderValue(val)
-		}
-		evalCtx := EvalContext{Cell: r.cell, Memory: transientMem, Steps: r.stepStates}
-		if e.conditionTrue(step.FailWhen, evalCtx) {
-			res.Success = false
-			aplog.Info("workflow %s: step %q rejected (fail_when matched)", r.wf.ID, step.ID)
-		}
-	}
-
-	r.stepStates[step.ID] = StepState{
-		State:  passFail(res.Success),
-		Output: res.Output,
-	}
-
-	if e.resultCommentMode(r.wf) == config.ResultCommentPerStep && e.side != nil {
-		_ = e.side.PostComment(ctx, r.cell, perStepComment(step, res))
-	}
-
-	if res.Success {
-		r.state[step.ID] = stPassed
-		r.contrib[step.ID] = MemoryStep{
-			StepID:      step.ID,
-			WriteFields: step.MemoryWriteFields(),
-			Structured:  res.StructuredOutput,
-			Summary:     res.Summary,
-		}
-		r.passedOrder = append(r.passedOrder, step.ID)
-		if step.OnPass != nil && step.OnPass.Next != "" {
-			r.activated[step.OnPass.Next] = true
-		}
-		return false
-	}
-
-	// Failure: attempt an on_fail.goto loop if retries remain.
-	if step.OnFail != nil && step.OnFail.Goto != "" {
-		if r.retries[step.ID] < step.OnFail.MaxRetries {
-			r.retries[step.ID]++
-			aplog.Info("workflow %s: step %q failed, looping back to %q (retry %d/%d)",
-				r.wf.ID, step.ID, step.OnFail.Goto, r.retries[step.ID], step.OnFail.MaxRetries)
-			r.resetLoop(step.OnFail.Goto)
-			return false
-		}
-		aplog.Info("workflow %s: step %q exhausted %d retries", r.wf.ID, step.ID, step.OnFail.MaxRetries)
-	}
-
-	r.state[step.ID] = stFailed
-	return true
-}
-
 // resetLoop resets the goto target and all its transitive dependents back to
 // pending so the branch re-runs, clearing their memory contributions.
 func (r *dagRun) resetLoop(target string) {
@@ -421,27 +528,37 @@ func (r *dagRun) resetLoop(target string) {
 		delete(r.stepStates, id)
 		delete(r.contrib, id)
 	}
-	// Rebuild passedOrder excluding reset steps.
-	kept := r.passedOrder[:0]
-	for _, id := range r.passedOrder {
-		if !reset[id] {
-			kept = append(kept, id)
+	// Rebuild passedOrder in declaration order excluding reset steps.
+	r.passedOrder = r.passedOrder[:0]
+	for _, id := range r.order {
+		if _, ok := r.contrib[id]; ok {
+			r.passedOrder = append(r.passedOrder, id)
 		}
 	}
-	r.passedOrder = kept
 }
 
 // memSteps returns the ordered memory contributions: inherited seed (for a
-// sub-workflow) first, then this run's passed steps.
+// sub-workflow) first, then this run's passed steps in declaration order.
+// Declaration order is deterministic regardless of goroutine completion order.
 func (r *dagRun) memSteps() []MemoryStep {
-	out := make([]MemoryStep, 0, len(r.seed)+len(r.passedOrder))
+	out := make([]MemoryStep, 0, len(r.seed)+len(r.contrib))
 	out = append(out, r.seed...)
-	for _, id := range r.passedOrder {
+	for _, id := range r.order {
 		if c, ok := r.contrib[id]; ok {
 			out = append(out, c)
 		}
 	}
 	return out
+}
+
+// contribSnapshot returns a shallow copy of the contrib map for safe use from
+// worker goroutines (reads the snapshot, not the live map).
+func (r *dagRun) contribSnapshot() map[string]MemoryStep {
+	snap := make(map[string]MemoryStep, len(r.contrib))
+	for k, v := range r.contrib {
+		snap[k] = v
+	}
+	return snap
 }
 
 // memoryValues returns the flattened Step Data map for expression evaluation
