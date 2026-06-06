@@ -65,6 +65,11 @@ type RunResult struct {
 	// Summary is the text extracted from the APIARY_SUMMARY_START/END markers,
 	// when present. Empty otherwise. The markers are stripped from Output.
 	Summary string
+	// PublishPayload is the text extracted from the APIARY_PUBLISH_BEGIN/END
+	// block, when present. Empty otherwise. The markers are stripped from
+	// Output. The workflow engine writes this back to the task's source
+	// bindings as a comment (the agent-driven replacement for result_comment).
+	PublishPayload string
 }
 
 type LogEntry struct {

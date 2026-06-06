@@ -66,6 +66,77 @@ var (
 	_ source.StateSetter = (*recordingAdapter)(nil)
 )
 
+// publishingRunner is a runner whose every step emits a fixed APIARY_PUBLISH
+// payload, so a test can assert the engine writes it back to the source binding.
+type publishingRunner struct{ payload string }
+
+func (r *publishingRunner) ID() string                     { return "publishing" }
+func (r *publishingRunner) Configure(map[string]any) error { return nil }
+func (r *publishingRunner) Run(context.Context, model.RunRequest) (model.RunResult, error) {
+	return model.RunResult{Success: true, PublishPayload: r.payload}, nil
+}
+
+// TestRunOnce_PublishWritesBackToBinding runs a workflow whose agent emits an
+// APIARY_PUBLISH payload and asserts the engine writes it back to the task's
+// source binding via the adapter (WriteResult), end-to-end (6.2.1, 6.4.1).
+func TestRunOnce_PublishWritesBackToBinding(t *testing.T) {
+	ctx := context.Background()
+	dbc, err := db.New(ctx, filepath.Join(t.TempDir(), "publish.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbc.Close() })
+
+	adapter := &recordingAdapter{items: []model.SourceItem{
+		{ID: "ISSUE-9", SourceID: "src", Number: "#9", Title: "Ship it", State: "todo"},
+	}}
+
+	cfg := &config.Config{
+		Version: "1",
+		Sources: []config.SourceConfig{{ID: "src", Type: "fake"}},
+		Agents:  []config.AgentConfig{{ID: "a", Model: "test/model"}},
+		// result_comment OFF so the only WriteResult comes from the publish payload.
+		Settings: config.Settings{StateLock: false, ResultComment: false},
+		Workflows: []config.WorkflowConfig{{
+			ID:      "wf-pub",
+			Trigger: &config.TriggerConfig{Priority: 10, Match: config.RouteMatch{Source: "src"}},
+			Steps:   []config.StepConfig{{ID: "run", Agent: "a"}},
+		}},
+	}
+
+	r, err := router.New(cfg)
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+
+	d := &Dispatcher{
+		cfg:         cfg,
+		db:          dbc,
+		router:      r,
+		sources:     map[string]source.Adapter{"src": adapter},
+		runners:     map[string]runnerpkg.Runner{"agent-a": &publishingRunner{payload: "## Result\nshipped"}},
+		agentRunner: map[string]string{"a": "claude"},
+		agentSem:    map[string]chan struct{}{},
+		stats:       map[string]*sourceStat{"src": {}},
+	}
+	d.binder = source.NewSourceBinder(dbc)
+
+	if err := d.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+
+	// The publish payload is written back to the bound source item exactly once.
+	if len(adapter.wrote) != 1 {
+		t.Fatalf("expected 1 publish WriteResult, got %d", len(adapter.wrote))
+	}
+	if adapter.wrote[0].ID != "ISSUE-9" || adapter.wrote[0].Number != "#9" {
+		t.Errorf("publish item = %+v, want source item ISSUE-9/#9 from binding", adapter.wrote[0])
+	}
+}
+
 // TestRunOnce_SideEffectsResolveViaBinding runs a single workflow against a
 // source-bound task and asserts every side effect (state_lock, result comment,
 // on_complete hook) reaches the adapter through the task's binding, carrying the

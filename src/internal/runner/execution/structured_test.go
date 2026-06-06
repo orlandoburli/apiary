@@ -18,7 +18,7 @@ func TestExtractStructured_OutputAndSummary(t *testing.T) {
 		`APIARY_OUTPUT: {"complexity":"high","action":"implement"}`,
 	}, "\n")
 
-	cleaned, structured, summary := extractStructured(raw)
+	cleaned, structured, summary, _ := extractStructured(raw)
 
 	if strings.Contains(cleaned, "APIARY_OUTPUT") || strings.Contains(cleaned, "APIARY_SUMMARY") {
 		t.Errorf("cleaned output still contains sentinels:\n%s", cleaned)
@@ -39,7 +39,10 @@ func TestExtractStructured_OutputAndSummary(t *testing.T) {
 
 func TestExtractStructured_NoSentinels(t *testing.T) {
 	raw := "Just a normal agent response.\nNothing structured here."
-	cleaned, structured, summary := extractStructured(raw)
+	cleaned, structured, summary, publish := extractStructured(raw)
+	if publish != "" {
+		t.Errorf("expected empty publish, got: %q", publish)
+	}
 	if cleaned != raw {
 		t.Errorf("cleaned should be unchanged, got: %q", cleaned)
 	}
@@ -57,7 +60,7 @@ func TestExtractStructured_LastOutputWins(t *testing.T) {
 		"some text",
 		`APIARY_OUTPUT: {"v":2}`,
 	}, "\n")
-	_, structured, _ := extractStructured(raw)
+	_, structured, _, _ := extractStructured(raw)
 	if structured == nil || structured["v"] != float64(2) {
 		t.Errorf("expected last APIARY_OUTPUT to win, got: %#v", structured)
 	}
@@ -65,7 +68,7 @@ func TestExtractStructured_LastOutputWins(t *testing.T) {
 
 func TestExtractStructured_InvalidJSONStrippedButNil(t *testing.T) {
 	raw := "real output\nAPIARY_OUTPUT: {not valid json}"
-	cleaned, structured, _ := extractStructured(raw)
+	cleaned, structured, _, _ := extractStructured(raw)
 	if structured != nil {
 		t.Errorf("expected nil structured for invalid JSON, got: %#v", structured)
 	}
@@ -77,9 +80,35 @@ func TestExtractStructured_InvalidJSONStrippedButNil(t *testing.T) {
 	}
 }
 
+func TestExtractStructured_PublishBlock(t *testing.T) {
+	raw := strings.Join([]string{
+		"Working on it.",
+		"APIARY_PUBLISH_BEGIN",
+		"## Result",
+		"Done. See the diff.",
+		"APIARY_PUBLISH_END",
+		"Trailing line.",
+	}, "\n")
+
+	cleaned, structured, summary, publish := extractStructured(raw)
+
+	if structured != nil || summary != "" {
+		t.Errorf("expected no structured/summary, got %#v / %q", structured, summary)
+	}
+	if strings.Contains(cleaned, "APIARY_PUBLISH") || strings.Contains(cleaned, "## Result") {
+		t.Errorf("publish block not stripped from cleaned output:\n%s", cleaned)
+	}
+	if !strings.Contains(cleaned, "Working on it.") || !strings.Contains(cleaned, "Trailing line.") {
+		t.Errorf("cleaned output dropped human text:\n%s", cleaned)
+	}
+	if publish != "## Result\nDone. See the diff." {
+		t.Errorf("publish payload parsed incorrectly: %q", publish)
+	}
+}
+
 func TestApplyStructured_MutatesResult(t *testing.T) {
 	result := model.RunResult{
-		Output: "done\nAPIARY_OUTPUT: {\"ok\":true}",
+		Output: "done\nAPIARY_OUTPUT: {\"ok\":true}\nAPIARY_PUBLISH_BEGIN\nposted\nAPIARY_PUBLISH_END",
 	}
 	applyStructured(&result)
 	if result.Output != "done" {
@@ -87,6 +116,9 @@ func TestApplyStructured_MutatesResult(t *testing.T) {
 	}
 	if result.StructuredOutput == nil || result.StructuredOutput["ok"] != true {
 		t.Errorf("structured not populated: %#v", result.StructuredOutput)
+	}
+	if result.PublishPayload != "posted" {
+		t.Errorf("publish payload not populated: %q", result.PublishPayload)
 	}
 }
 

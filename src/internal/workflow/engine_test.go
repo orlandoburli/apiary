@@ -224,6 +224,69 @@ func TestEngine_StepFailureMarksInstanceFailed(t *testing.T) {
 	}
 }
 
+// TestEngine_PublishWritesBackToBindings asserts that a step whose agent emits
+// an APIARY_PUBLISH payload writes it back via PostComment and records the step
+// run's publish_payload/publish_state (6.2.1, 6.2.2, 6.4.1).
+func TestEngine_PublishWritesBackToBindings(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Settings.ResultComment = false // isolate the publish comment from result_comment
+	store := newFakeStore()
+	store.bindings["C1"] = []model.SourceBinding{{TaskID: "C1", SourceID: "s1", SourceItemID: "ISSUE-1"}}
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"run": {Success: true, Output: "done", PublishPayload: "## Result\nshipped"},
+	}}
+	side := &fakeSide{}
+	eng := testEngine(cfg, store, exec, side)
+
+	wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+	_, _, err := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "C1", Title: "Fix"})
+	if err != nil {
+		t.Fatalf("RunInstance: %v", err)
+	}
+
+	if len(side.comments) != 1 || side.comments[0] != "## Result\nshipped" {
+		t.Fatalf("expected one publish comment %q, got %#v", "## Result\nshipped", side.comments)
+	}
+	sr := store.stepRuns[store.stepOrder[0]]
+	if sr.PublishState != db.PublishStateSent {
+		t.Errorf("expected publish_state %q, got %q", db.PublishStateSent, sr.PublishState)
+	}
+	if sr.PublishPayload != "## Result\nshipped" {
+		t.Errorf("expected publish_payload persisted, got %q", sr.PublishPayload)
+	}
+}
+
+// TestEngine_PublishSkippedWhenNoBindings asserts that a publish payload on a
+// task with no source bindings (e.g. a spawned task) is silently skipped: no
+// PostComment, no error, and publish_state recorded as skipped (6.2.1, 6.4.3).
+func TestEngine_PublishSkippedWhenNoBindings(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Settings.ResultComment = false
+	store := newFakeStore() // no bindings registered for C1
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"run": {Success: true, Output: "done", PublishPayload: "should not post"},
+	}}
+	side := &fakeSide{}
+	eng := testEngine(cfg, store, exec, side)
+
+	wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+	_, _, err := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "C1"})
+	if err != nil {
+		t.Fatalf("RunInstance: %v", err)
+	}
+
+	if len(side.comments) != 0 {
+		t.Errorf("expected no publish comment when task has no bindings, got %#v", side.comments)
+	}
+	sr := store.stepRuns[store.stepOrder[0]]
+	if sr.PublishState != db.PublishStateSkipped {
+		t.Errorf("expected publish_state %q, got %q", db.PublishStateSkipped, sr.PublishState)
+	}
+	if sr.PublishPayload != "should not post" {
+		t.Errorf("expected publish_payload persisted even when skipped, got %q", sr.PublishPayload)
+	}
+}
+
 func TestEngine_SequentialMemoryThreading(t *testing.T) {
 	cfg := baseCfg()
 	store := newFakeStore()
