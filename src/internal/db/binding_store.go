@@ -66,6 +66,13 @@ func (s *SourceBindingStore) GetBindingBySourceItem(ctx context.Context, sourceI
 	return b, err
 }
 
+// ListBindingsByTask returns all source bindings for a task, oldest first. It is
+// a Client-level convenience so the workflow engine can resolve a task's bindings
+// (for side-effect fan-out) through the same Store it already holds.
+func (c *Client) ListBindingsByTask(ctx context.Context, taskID string) ([]model.SourceBinding, error) {
+	return c.SourceBindings().ListBindingsByTask(ctx, taskID)
+}
+
 // ListBindingsByTask returns all source bindings for a task, oldest first.
 func (s *SourceBindingStore) ListBindingsByTask(ctx context.Context, taskID string) ([]model.SourceBinding, error) {
 	rows, err := s.db.QueryContext(ctx, `

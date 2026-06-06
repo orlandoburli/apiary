@@ -78,7 +78,8 @@ func labelPresent(cell model.SourceItem, label string) bool {
 // ParkedApproval describes an instance suspended at an approval step.
 type ParkedApproval struct {
 	InstanceID string
-	Cell       model.SourceItem
+	Task       model.InternalTask
+	Bindings   []model.SourceBinding
 	Step       config.StepConfig // the waiting approval step (resume_on/abort_on/timeout)
 	ParkedAt   time.Time
 }
@@ -91,7 +92,8 @@ func (e *Engine) ParkedApprovals() []ParkedApproval {
 	for id, r := range e.parked {
 		out = append(out, ParkedApproval{
 			InstanceID: id,
-			Cell:       r.cell,
+			Task:       r.task,
+			Bindings:   r.bindings,
 			Step:       r.byID[r.waitingStep],
 			ParkedAt:   r.parkedAt,
 		})
@@ -119,29 +121,38 @@ func (e *Engine) ResolveApproval(ctx context.Context, instanceID string, decisio
 	return e.settle(ctx, r, outcome), nil
 }
 
-// CheckParkedApprovals evaluates every parked instance against its live task
-// (fetched via poll) and resumes, aborts, or times it out as conditions dictate.
-// poll returns the current Cell for a (sourceID, cellID); when poll errors the
-// instance is left parked for the next cycle.
-func (e *Engine) CheckParkedApprovals(ctx context.Context, poll func(sourceID, cellID string) (model.SourceItem, error)) {
+// CheckParkedApprovals evaluates every parked instance against its live source
+// item(s) and resumes, aborts, or times it out as conditions dictate. The live
+// item is fetched per source binding (poll is keyed by source id + source item
+// id), so the TaskPoller adapter is resolved from the task's bindings rather than
+// a frozen SourceItem. The first binding whose live item satisfies a resume/abort
+// condition decides the instance; when poll errors for a binding it is skipped.
+// A binding-less (spawned) task cannot be resolved via a source and stays parked
+// until it times out.
+func (e *Engine) CheckParkedApprovals(ctx context.Context, poll func(sourceID, sourceItemID string) (model.SourceItem, error)) {
 	for _, p := range e.ParkedApprovals() {
 		if to := p.Step.ParsedTimeout(); to > 0 && e.now().Sub(p.ParkedAt) >= to {
 			aplog.Info("workflow: approval on instance %s timed out after %s — aborting", p.InstanceID, to)
 			_, _ = e.ResolveApproval(ctx, p.InstanceID, ApprovalAbort)
 			continue
 		}
-		cell, err := poll(p.Cell.SourceID, p.Cell.ID)
-		if err != nil {
-			aplog.Debug("workflow: poll task %s for approval check failed: %v", p.Cell.ID, err)
-			continue
-		}
-		switch EvaluateApproval(p.Step, cell) {
-		case ApprovalResume:
-			aplog.Info("workflow: approval on instance %s resumed", p.InstanceID)
-			_, _ = e.ResolveApproval(ctx, p.InstanceID, ApprovalResume)
-		case ApprovalAbort:
-			aplog.Info("workflow: approval on instance %s aborted by condition", p.InstanceID)
-			_, _ = e.ResolveApproval(ctx, p.InstanceID, ApprovalAbort)
+		for _, b := range p.Bindings {
+			item, err := poll(b.SourceID, b.SourceItemID)
+			if err != nil {
+				aplog.Debug("workflow: poll item %s/%s for approval check failed: %v", b.SourceID, b.SourceItemID, err)
+				continue
+			}
+			decision := EvaluateApproval(p.Step, item)
+			if decision == ApprovalResume {
+				aplog.Info("workflow: approval on instance %s resumed", p.InstanceID)
+				_, _ = e.ResolveApproval(ctx, p.InstanceID, ApprovalResume)
+				break
+			}
+			if decision == ApprovalAbort {
+				aplog.Info("workflow: approval on instance %s aborted by condition", p.InstanceID)
+				_, _ = e.ResolveApproval(ctx, p.InstanceID, ApprovalAbort)
+				break
+			}
 		}
 	}
 }

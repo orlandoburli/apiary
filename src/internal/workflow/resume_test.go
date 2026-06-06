@@ -39,7 +39,7 @@ func TestResume_SkipsCachedAndContinues(t *testing.T) {
 		{ID: "sr-impl", WorkflowInstanceID: instID, StepID: "implement", State: db.StepStateFailed},
 	}
 
-	success, err := eng.ResumeInstance(context.Background(), instID, linearWF(), model.SourceItem{ID: "c1"}, prior)
+	success, err := eng.ResumeInstance(context.Background(), instID, linearWF(), model.InternalTask{ID: "c1"}, prior)
 	if err != nil {
 		t.Fatalf("ResumeInstance: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestResume_CachedMemoryAvailableDownstream(t *testing.T) {
 		{ID: "sr-impl", WorkflowInstanceID: instID, StepID: "implement", State: db.StepStateFailed},
 	}
 
-	if _, err := eng.ResumeInstance(context.Background(), instID, linearWF(), model.SourceItem{ID: "c1"}, prior); err != nil {
+	if _, err := eng.ResumeInstance(context.Background(), instID, linearWF(), model.InternalTask{ID: "c1"}, prior); err != nil {
 		t.Fatalf("ResumeInstance: %v", err)
 	}
 
@@ -105,7 +105,7 @@ func TestResume_MarksPriorStepCached(t *testing.T) {
 		{ID: "sr-impl", WorkflowInstanceID: instID, StepID: "implement", State: db.StepStateFailed},
 	}
 
-	if _, err := eng.ResumeInstance(context.Background(), instID, linearWF(), model.SourceItem{ID: "c1"}, prior); err != nil {
+	if _, err := eng.ResumeInstance(context.Background(), instID, linearWF(), model.InternalTask{ID: "c1"}, prior); err != nil {
 		t.Fatalf("ResumeInstance: %v", err)
 	}
 	if sr := store.stepRuns["sr-plan"]; sr == nil || !sr.SkippedCached {
@@ -144,7 +144,7 @@ func TestResume_ReevaluatesSplit(t *testing.T) {
 		{ID: "sr-senior", WorkflowInstanceID: instID, StepID: "senior", State: db.StepStateFailed},
 	}
 
-	success, err := eng.ResumeInstance(context.Background(), instID, wf, model.SourceItem{ID: "c1"}, prior)
+	success, err := eng.ResumeInstance(context.Background(), instID, wf, model.InternalTask{ID: "c1"}, prior)
 	if err != nil {
 		t.Fatalf("ResumeInstance: %v", err)
 	}

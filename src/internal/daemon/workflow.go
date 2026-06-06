@@ -26,20 +26,21 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 	return d.engine
 }
 
-// dispatchWorkflow runs a matched cell through the workflow engine. The route is
+// dispatchWorkflow runs a matched task through the workflow engine. The route is
 // matched to a defined workflow when one shares the route's id; otherwise the
-// route is synthesized into a single-step workflow.
+// route is synthesized into a single-step workflow. cell is retained for logging
+// (the engine derives its own execution view from the task + its bindings).
 //
 // This is the dispatch path; it requires a run-history DB (the engine persists
 // instances and step runs).
-func (d *Dispatcher) dispatchWorkflow(ctx context.Context, cell model.SourceItem, adapter source.Adapter, match router.Match) model.RunResult {
+func (d *Dispatcher) dispatchWorkflow(ctx context.Context, cell model.SourceItem, task model.InternalTask, match router.Match) model.RunResult {
 	if d.db == nil {
 		aplog.Error("cell %s: workflow dispatch requires a run-history database", cell.ID)
 		return model.RunResult{Success: false}
 	}
 
 	wf := d.resolveWorkflow(match)
-	instID, success, err := d.workflowEngine().RunInstance(ctx, wf, cell)
+	instID, success, err := d.workflowEngine().RunInstance(ctx, wf, task)
 	if err != nil {
 		aplog.Error("cell %s: workflow run failed: %v", cell.ID, err)
 		return model.RunResult{Success: false, WorkerID: match.Route.Agent}
@@ -218,50 +219,81 @@ func (x *wfStepExecutor) finishExecution(ctx context.Context, exec *db.Execution
 	}
 }
 
-// wfSideEffects applies source-facing actions for a workflow instance. It
-// resolves the adapter per cell (via the cell's SourceID) so a single long-lived
-// engine can serve cells from any configured source.
+// wfSideEffects applies source-facing actions for a workflow instance. It fans
+// each action out across the task's source bindings, resolving the adapter per
+// binding (via binding.SourceID) so a single long-lived engine can serve tasks
+// bound to any configured source. A task with no bindings (spawned) is a no-op.
 type wfSideEffects struct {
 	d *Dispatcher
 }
 
-// adapterFor returns the source adapter that produced the cell, or nil.
-func (s *wfSideEffects) adapterFor(cell model.SourceItem) source.Adapter {
-	return s.d.sources[cell.SourceID]
+// sourceItemFromBinding reconstructs the SourceItem an adapter call needs from a
+// binding (source identity) plus the live task (content + routing attributes).
+func sourceItemFromBinding(task model.InternalTask, b model.SourceBinding) model.SourceItem {
+	return model.SourceItem{
+		ID:          b.SourceItemID,
+		SourceID:    b.SourceID,
+		Number:      b.SourceItemNumber,
+		URL:         b.SourceItemURL,
+		Title:       task.Title,
+		Description: task.Description,
+		Labels:      task.Metadata.Labels,
+		Type:        task.Metadata.Type,
+		Priority:    task.Metadata.Priority,
+		State:       task.Metadata.State,
+	}
 }
 
-func (s *wfSideEffects) StateLock(ctx context.Context, cell model.SourceItem) error {
-	adapter := s.adapterFor(cell)
-	if adapter == nil {
-		return fmt.Errorf("no adapter for source %q", cell.SourceID)
-	}
-	return adapter.Acknowledge(ctx, cell, model.AckActionInProgress)
-}
-
-func (s *wfSideEffects) PostComment(ctx context.Context, cell model.SourceItem, comment string) error {
-	adapter := s.adapterFor(cell)
-	if adapter == nil {
-		return fmt.Errorf("no adapter for source %q", cell.SourceID)
-	}
-	return adapter.WriteResult(ctx, cell, model.RunResult{Success: true, Output: comment})
-}
-
-func (s *wfSideEffects) ApplyHook(ctx context.Context, cell model.SourceItem, hook config.OnComplete) error {
-	adapter := s.adapterFor(cell)
-	if adapter == nil {
-		return fmt.Errorf("no adapter for source %q", cell.SourceID)
-	}
-	if len(hook.AddLabels) > 0 {
-		if la, ok := adapter.(source.LabelAdder); ok {
-			if err := la.AddLabels(ctx, cell, hook.AddLabels); err != nil {
-				aplog.Error("cell %s: add labels %v: %v", cell.ID, hook.AddLabels, err)
-			}
+func (s *wfSideEffects) StateLock(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding) error {
+	for _, b := range bindings {
+		adapter := s.d.sources[b.SourceID]
+		if adapter == nil {
+			aplog.Error("task %s: no adapter for source %q (state_lock)", task.ID, b.SourceID)
+			continue
+		}
+		item := sourceItemFromBinding(task, b)
+		if err := adapter.Acknowledge(ctx, item, model.AckActionInProgress); err != nil {
+			aplog.Error("item %s: state_lock: %v", item.ID, err)
 		}
 	}
-	if hook.SetState != "" {
-		if ss, ok := adapter.(source.StateSetter); ok {
-			if err := ss.SetState(ctx, cell, hook.SetState); err != nil {
-				aplog.Error("cell %s: set_state %q: %v", cell.ID, hook.SetState, err)
+	return nil
+}
+
+func (s *wfSideEffects) PostComment(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, comment string) error {
+	for _, b := range bindings {
+		adapter := s.d.sources[b.SourceID]
+		if adapter == nil {
+			aplog.Error("task %s: no adapter for source %q (post_comment)", task.ID, b.SourceID)
+			continue
+		}
+		item := sourceItemFromBinding(task, b)
+		if err := adapter.WriteResult(ctx, item, model.RunResult{Success: true, Output: comment}); err != nil {
+			aplog.Error("item %s: post_comment: %v", item.ID, err)
+		}
+	}
+	return nil
+}
+
+func (s *wfSideEffects) ApplyHook(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, hook config.OnComplete) error {
+	for _, b := range bindings {
+		adapter := s.d.sources[b.SourceID]
+		if adapter == nil {
+			aplog.Error("task %s: no adapter for source %q (apply_hook)", task.ID, b.SourceID)
+			continue
+		}
+		item := sourceItemFromBinding(task, b)
+		if len(hook.AddLabels) > 0 {
+			if la, ok := adapter.(source.LabelAdder); ok {
+				if err := la.AddLabels(ctx, item, hook.AddLabels); err != nil {
+					aplog.Error("item %s: add labels %v: %v", item.ID, hook.AddLabels, err)
+				}
+			}
+		}
+		if hook.SetState != "" {
+			if ss, ok := adapter.(source.StateSetter); ok {
+				if err := ss.SetState(ctx, item, hook.SetState); err != nil {
+					aplog.Error("item %s: set_state %q: %v", item.ID, hook.SetState, err)
+				}
 			}
 		}
 	}

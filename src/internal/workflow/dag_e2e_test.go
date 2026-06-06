@@ -104,7 +104,7 @@ func TestE2E_ClassifyImplementReviewQA(t *testing.T) {
 		t.Fatalf("LowerV2Workflow: %v", err)
 	}
 
-	instID, success, err := eng.RunInstance(ctx, lowered, model.SourceItem{ID: "issue-42"})
+	instID, success, err := eng.RunInstance(ctx, lowered, model.InternalTask{ID: "issue-42"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestE2E_V2ConditionSkipsTrack(t *testing.T) {
 		t.Fatalf("LowerV2Workflow: %v", err)
 	}
 
-	_, success, err := eng.RunInstance(ctx, lowered, model.SourceItem{ID: "c1"})
+	_, success, err := eng.RunInstance(ctx, lowered, model.InternalTask{ID: "c1"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
