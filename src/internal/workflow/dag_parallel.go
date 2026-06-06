@@ -25,6 +25,7 @@ type parallelChildResult struct {
 func (e *Engine) runParallelStep(
 	ctx context.Context, instID string,
 	step config.StepConfig, cell model.SourceItem,
+	task model.InternalTask, bindings []model.SourceBinding,
 	memSnap []MemoryStep,
 ) (StepResult, []MemoryStep) {
 	children := step.SubSteps
@@ -36,7 +37,7 @@ func (e *Engine) runParallelStep(
 
 	for i, child := range children {
 		go func(i int, child config.StepConfig) {
-			res := e.runStep(ctx, instID, child, cell, memSnap)
+			res := e.runStep(ctx, instID, child, cell, task, bindings, memSnap)
 			resultCh <- parallelChildResult{idx: i, step: child, res: res}
 		}(i, child)
 	}

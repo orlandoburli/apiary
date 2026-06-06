@@ -33,6 +33,7 @@ type foreachResult struct {
 func (e *Engine) executeForeachStep(
 	ctx context.Context, instID string,
 	step config.StepConfig, cell model.SourceItem,
+	task model.InternalTask, bindings []model.SourceBinding,
 	memSnap []MemoryStep, contribSnap map[string]MemoryStep,
 	wfID string, sem chan struct{},
 ) (StepResult, foreachResult) {
@@ -66,15 +67,16 @@ func (e *Engine) executeForeachStep(
 	}
 
 	if sem != nil && step.Concurrency > 1 {
-		return e.executeForeachConcurrent(ctx, instID, step, cell, memSnap, wfID, sem, items, as)
+		return e.executeForeachConcurrent(ctx, instID, step, cell, task, bindings, memSnap, wfID, sem, items, as)
 	}
-	return e.executeForeachSequential(ctx, instID, step, cell, memSnap, wfID, items, as)
+	return e.executeForeachSequential(ctx, instID, step, cell, task, bindings, memSnap, wfID, items, as)
 }
 
 // executeForeachSequential runs foreach items one at a time (original behaviour).
 func (e *Engine) executeForeachSequential(
 	ctx context.Context, instID string,
 	step config.StepConfig, cell model.SourceItem,
+	task model.InternalTask, bindings []model.SourceBinding,
 	memSnap []MemoryStep, wfID string,
 	items []any, as string,
 ) (StepResult, foreachResult) {
@@ -86,7 +88,7 @@ func (e *Engine) executeForeachSequential(
 		sub.DependsOn = nil
 		sub.Prompt = renderItemTemplate(step.Step.Prompt, as, item)
 
-		res := e.runStep(ctx, instID, sub, cell, memSnap)
+		res := e.runStep(ctx, instID, sub, cell, task, bindings, memSnap)
 		if res.Success {
 			fr.passed++
 		} else {
@@ -106,6 +108,7 @@ func (e *Engine) executeForeachSequential(
 func (e *Engine) executeForeachConcurrent(
 	ctx context.Context, instID string,
 	step config.StepConfig, cell model.SourceItem,
+	task model.InternalTask, bindings []model.SourceBinding,
 	memSnap []MemoryStep, wfID string,
 	sem chan struct{}, items []any, as string,
 ) (StepResult, foreachResult) {
@@ -146,7 +149,7 @@ func (e *Engine) executeForeachConcurrent(
 			sem <- struct{}{} // acquire global slot
 			defer func() { <-sem }()
 
-			res := e.runStep(ctx, instID, sub, cell, memSnap)
+			res := e.runStep(ctx, instID, sub, cell, task, bindings, memSnap)
 
 			mu.Lock()
 			if res.Success {
