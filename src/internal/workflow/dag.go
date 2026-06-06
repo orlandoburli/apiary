@@ -185,23 +185,23 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 				var foreachExitCode int
 				switch step.StepType() {
 				case config.StepTypeParallel:
-					res, parallelContribs = e.runParallelStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap)
+					res, parallelContribs = e.runParallelStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, r.wf.Env)
 				case config.StepTypeForeach:
 					var fr foreachResult
 					if step.Concurrency > 1 {
 						// Release our global slot so item goroutines can use all
 						// available slots. Re-acquire before the deferred release fires.
 						<-sem
-						res, fr = e.executeForeachStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, contribSnap, r.wf.ID, sem)
+						res, fr = e.executeForeachStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, contribSnap, r.wf.ID, sem, r.wf.Env)
 						sem <- struct{}{}
 					} else {
-						res, fr = e.executeForeachStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, contribSnap, r.wf.ID, nil)
+						res, fr = e.executeForeachStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, contribSnap, r.wf.ID, nil, r.wf.Env)
 					}
 					foreachExitCode = fr.failed
 				case config.StepTypeWorkflow:
 					res = e.executeSubWorkflowStep(ctx, r.instID, step, r.task, r.bindings, memSnap, r.depth, r.wf.ID)
 				default: // StepTypeAgent
-					res = e.runStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap)
+					res = e.runStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, r.wf.Env)
 				}
 				resultCh <- workerResult{
 					stepID:           step.ID,

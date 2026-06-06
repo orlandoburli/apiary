@@ -154,7 +154,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		StepID:             req.Step.ID,
 		WorkflowInstanceID: req.InstanceID,
 		WorkingDir:         "/",
-		Env:                agentIdentityEnv(req.Agent),
+		Env:                stepEnv(req.Agent, req.WorkflowEnv, req.Step.Env),
 		Timeout:            x.d.cfg.Settings.TaskTimeoutDuration(),
 	}
 
@@ -408,6 +408,31 @@ func agentIdentityEnv(agent config.AgentConfig) map[string]string {
 	if agent.SourceToken != "" {
 		env["GITHUB_TOKEN"] = agent.SourceToken
 		env["GH_TOKEN"] = agent.SourceToken
+	}
+	return env
+}
+
+// stepEnv composes the environment for one agent step. Layers are applied lowest
+// precedence first, so a later layer overrides the same key set by an earlier one:
+//
+//	agentIdentityEnv(agent)   identity base (git + source_token → GITHUB_TOKEN/GH_TOKEN)
+//	  ← agent.Env             agent-scope explicit env
+//	    ← wfEnv               workflow-scope explicit env
+//	      ← stepEnv           step-scope explicit env (highest precedence)
+//
+// The precedence is STEP > WORKFLOW > AGENT, above the identity base. An explicit
+// env value at any scope can therefore override the identity defaults (e.g. a
+// step setting its own GITHUB_TOKEN), which is a deliberate escape hatch.
+func stepEnv(agent config.AgentConfig, wfEnv, stepEnv map[string]string) map[string]string {
+	env := agentIdentityEnv(agent)
+	for k, v := range agent.Env {
+		env[k] = v
+	}
+	for k, v := range wfEnv {
+		env[k] = v
+	}
+	for k, v := range stepEnv {
+		env[k] = v
 	}
 	return env
 }

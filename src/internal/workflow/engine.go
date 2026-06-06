@@ -60,6 +60,10 @@ type StepRequest struct {
 	// Prompt is the step-level instruction (step.prompt) with any foreach item
 	// templates already rendered. The executor folds it into the agent's prompt.
 	Prompt string
+	// WorkflowEnv is the workflow-scope environment overlay (wf.Env) for the
+	// instance this step belongs to. The executor merges it between agent.env and
+	// step.env when building the subprocess environment.
+	WorkflowEnv map[string]string
 }
 
 // StepResult is the outcome of executing one agent step.
@@ -318,7 +322,7 @@ func (e *Engine) completeTask(ctx context.Context, r *dagRun, failed bool) {
 // publish write-back can reach the task's source bindings; they are passed by
 // value (not via dagRun) so the function stays safe to call from the parallel
 // and foreach worker goroutines.
-func (e *Engine) runStep(ctx context.Context, instID string, step config.StepConfig, cell model.SourceItem, task model.InternalTask, bindings []model.SourceBinding, memSteps []MemoryStep) StepResult {
+func (e *Engine) runStep(ctx context.Context, instID string, step config.StepConfig, cell model.SourceItem, task model.InternalTask, bindings []model.SourceBinding, memSteps []MemoryStep, wfEnv map[string]string) StepResult {
 	started := e.now()
 	sr := &db.StepRun{
 		ID:                 e.newID("sr"),
@@ -346,13 +350,14 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 		ag = *agent
 	}
 	res := e.exec.ExecuteStep(ctx, StepRequest{
-		InstanceID: instID,
-		Cell:       cell,
-		Step:       step,
-		Agent:      ag,
-		Model:      resolvedModel,
-		MemoryDoc:  memDoc,
-		Prompt:     step.Prompt,
+		InstanceID:  instID,
+		Cell:        cell,
+		Step:        step,
+		Agent:       ag,
+		Model:       resolvedModel,
+		MemoryDoc:   memDoc,
+		Prompt:      step.Prompt,
+		WorkflowEnv: wfEnv,
 	})
 
 	finished := e.now()
@@ -493,7 +498,6 @@ func (e *Engine) findAgent(id string) *config.AgentConfig {
 	}
 	return nil
 }
-
 
 func perStepComment(step config.StepConfig, res StepResult) string {
 	status := "✓ passed"
