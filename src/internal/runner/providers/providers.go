@@ -38,4 +38,10 @@ func init() {
 			AuthHeader: "Bearer ${OPENCODE_API_KEY}",
 		}
 	})
+
+	runner.Register("cursor-api", func() runner.Runner {
+		return &execution.CursorRunner{
+			BaseURL: "https://api.cursor.com",
+		}
+	})
 }
