@@ -42,10 +42,15 @@ Minimum shippable: tag → cross-platform archives + checksums on the GitHub Rel
 - [x] 4.3 Add `homebrew_casks` + `scoops` blocks (config landed ahead of the repos/token); wire `TAP_GITHUB_TOKEN` into `release.yml` (+ dummy in `release-check.yml`). `skip_upload: auto` → only stable tags publish. **Note:** `brews` (formula) is deprecated → used `homebrew_casks`, so install is `brew install --cask orlandoburli/tap/apiary`. Cask includes an `xattr` postflight to strip Gatekeeper quarantine (unsigned binary). Validated: snapshot writes `Casks/apiary.rb` (per-arch URLs+sha) and `scoop/apiary.json`.
 - [ ] 4.4 After 4.1+4.2: cut a **stable** tag (`v0.1.0`), then verify `brew install --cask orlandoburli/tap/apiary` (macOS + Linux) and `scoop install apiary`
 
-## Phase 5 — winget + AUR (fast-follow if deferred in 0.3)
+## Phase 5 — winget + AUR — DROPPED
 
-- [ ] 5.1 Fork `microsoft/winget-pkgs`; add `winget` block; verify the auto-opened PR
-- [ ] 5.2 Create AUR `apiary-bin`, register `AUR_KEY` deploy key, add `aurs` block; verify `PKGBUILD` publishes
+Decision (2026-06-06): **not pursued.** Windows is served by Scoop + direct
+download + WSL; Linux by deb/rpm + Docker + Homebrew. The extra setup cost
+(winget-pkgs fork + Microsoft review; AUR account + SSH deploy key) isn't worth
+it for the added coverage. Can be revived later if demand appears.
+
+- [~] 5.1 ~~winget~~ — dropped (Scoop + direct download cover Windows)
+- [~] 5.2 ~~AUR~~ — dropped (deb/rpm + Docker + Homebrew cover Linux)
 
 ## Phase 6 — Documentation
 
