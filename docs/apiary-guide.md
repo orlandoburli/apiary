@@ -214,8 +214,7 @@ sources:
 **Key behavior:**
 
 - Poll returns **ALL** matching issues every cycle. `inFlight` map prevents re-dispatch of already-running tasks.
-- PRs are NOT filtered out — they become Cells with `Type: "pull_request"`.
-- To route only PRs: `match.types: ["pull_request"]` in the route.
+- Pull requests are filtered out during polling (GitHub's `/issues` endpoint returns PRs too, but they are not work items). GitHub Cells are always `Type: "issue"`.
 
 #### Plane source
 
@@ -297,7 +296,7 @@ routes:
 | `priority` | Lower number = evaluated first |
 | `match.source` | Source ID to match |
 | `match.labels` | Cell must have ALL these labels |
-| `match.types` | Cell types to match (e.g. `[pull_request]`) |
+| `match.types` | Cell types to match (GitHub Cells are always `issue`) |
 | `match.states` | Cell states to match |
 | `match.exclude_label_prefix` | Exclude cells with labels starting with prefix (e.g. `agent:`) |
 | `agent` | Target agent ID |
@@ -312,9 +311,6 @@ Agents can output directives that Apiary parses from their final response:
 | Directive | Action |
 |---|---|
 | `APIARY-ASSIGN: <agent-id>` | Adds `agent:<agent-id>` label to source, reassigns task |
-| `APIARY-REVIEW: approve \| request-changes \| comment` | Submits a PR review (GitHub only) |
-
-PR review is standalone in the dispatcher (not via source adapter) — sources are for issue tracking, PRs are code review.
 
 ### `settings`
 
@@ -369,15 +365,6 @@ In detail view: `m` cycles model, `r` cycles runner, `w` cycles max_workers. Cha
 |---|---|
 | `w` | Toggle word wrap |
 | `←` / `→` | Horizontal scroll (when wrap is off) |
-
-## PR Review
-
-When an agent returns a response containing `APIARY-REVIEW: approve | request-changes | comment`, Apiary calls the GitHub API to submit a PR review on the pull request associated with the Cell.
-
-- Parsed from agent output via regex
-- Calls `POST /repos/{owner}/{repo}/pulls/{number}/reviews`
-- Uses agent's `source_token` if set
-- Independent of source adapter — works with any issue tracker via GitHub source
 
 ## Key Concepts
 

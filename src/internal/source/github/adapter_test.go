@@ -223,3 +223,31 @@ func TestRemoveLabels_Ignores404(t *testing.T) {
 		t.Errorf("expected 404 to be ignored, got %v", err)
 	}
 }
+
+// TestPoll_SkipsPullRequests verifies that pull requests returned by GitHub's
+// /issues endpoint (every PR is also an issue in the API) are not ingested as
+// tasks — only plain issues become SourceItems.
+func TestPoll_SkipsPullRequests(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[
+			{"number": 1, "title": "A real issue", "state": "open"},
+			{"number": 2, "title": "A pull request", "state": "open", "pull_request": {}}
+		]`))
+	}))
+	defer srv.Close()
+
+	a := &Adapter{id: "gh", owner: "o", repo: "r", client: newClient(srv.URL, "")}
+	items, err := a.Poll(context.Background(), time.Time{})
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1 (PR should be skipped): %+v", len(items), items)
+	}
+	if items[0].ID != "1" {
+		t.Errorf("ingested item ID = %q, want %q (the issue, not the PR)", items[0].ID, "1")
+	}
+	if items[0].Type != "issue" {
+		t.Errorf("Type = %q, want %q", items[0].Type, "issue")
+	}
+}

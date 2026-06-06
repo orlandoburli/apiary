@@ -103,6 +103,13 @@ func (a *Adapter) Poll(ctx context.Context, _ time.Time) ([]model.SourceItem, er
 
 	var cells []model.SourceItem
 	for _, item := range issues {
+		// GitHub's /issues endpoint also returns pull requests (every PR is an
+		// issue in the API). PRs are implementation artifacts, not work items,
+		// so we never ingest them as tasks.
+		if item.PullRequest != nil {
+			aplog.Debug("  #%d (%q): pull request, skipping", item.Number, item.Title)
+			continue
+		}
 		if !a.matchesFilters(item) {
 			continue
 		}
@@ -278,12 +285,7 @@ func (a *Adapter) toSourceItem(item issue) model.SourceItem {
 	createdAt, _ := time.Parse(time.RFC3339, item.CreatedAt)
 	updatedAt, _ := time.Parse(time.RFC3339, item.UpdatedAt)
 
-	cellType := "issue"
-	if item.PullRequest != nil {
-		cellType = "pull_request"
-	}
-
-	url := strings.Replace(item.HTMLURL, "/pull/", "/issues/", 1)
+	// Poll skips pull requests, so every ingested item is a plain issue.
 	return model.SourceItem{
 		ID:          fmt.Sprintf("%d", item.Number),
 		SourceID:    a.ID(),
@@ -291,9 +293,9 @@ func (a *Adapter) toSourceItem(item issue) model.SourceItem {
 		Title:       item.Title,
 		Description: item.Body,
 		Labels:      labels,
-		Type:        cellType,
+		Type:        "issue",
 		State:       item.State,
-		URL:         url,
+		URL:         item.HTMLURL,
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 	}
