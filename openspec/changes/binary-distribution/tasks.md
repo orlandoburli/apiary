@@ -10,19 +10,19 @@ Read `proposal.md` and `design.md` first. The cgo cross-compilation decision (Ph
 
 ## Phase 0 — Decisions (no code)
 
-- [ ] 0.1 Decide cgo cross-compile strategy: A (`goreleaser-cross`), B (native-runner matrix), or C (`zig cc`) — see design "cgo cross-compilation"
-- [ ] 0.2 Decide whether to first migrate `mattn/go-sqlite3` → `modernc.org/sqlite` (pure-Go) to avoid cgo cross-compile entirely — spike + test; if yes, it's a precursor change
-- [ ] 0.3 Decide v1 channel cut: confirm brew + scoop + releases + nfpm + docker; mark winget / AUR as v1 or fast-follow
-- [ ] 0.4 Decide `latest` Docker tag policy (stable-only vs every tag)
+- [x] 0.1 ~~Decide cgo cross-compile strategy~~ — **moot.** Chose to remove cgo entirely (0.2), so no osxcross/mingw/zig needed.
+- [x] 0.2 Migrate `mattn/go-sqlite3` → `modernc.org/sqlite` (pure-Go) — **done.** Isolated to `client.go` (driver name, `?_pragma=busy_timeout(5000)` DSN, `*sqlite.Error.Code()==SQLITE_CONSTRAINT_UNIQUE`); full test suite green; all 6 targets cross-compile with `CGO_ENABLED=0`.
+- [x] 0.3 v1 channel cut: brew + scoop + releases + nfpm + docker in v1; winget / AUR as fast-follow (Phase 5)
+- [ ] 0.4 Decide `latest` Docker tag policy (stable-only vs every tag) — defer to Phase 3
 
 ## Phase 1 — Release pipeline core (GitHub Releases)
 
 Minimum shippable: tag → cross-platform archives + checksums on the GitHub Release.
 
-- [ ] 1.1 Add `.goreleaser.yaml` with `builds`, `archives`, `checksums`, `release` blocks per chosen cgo strategy; ldflags set `internal/version.Version` to match the Makefile
-- [ ] 1.2 Add `.github/workflows/release.yml` (`on: push tags 'v*'`, `contents:write`), running `goreleaser release --clean`
-- [ ] 1.3 Add a PR check job: `goreleaser check` + `goreleaser release --snapshot --clean` (no publish) so config breakage is caught pre-tag
-- [ ] 1.4 Dry-run: cut a `v0.x.0-rc` pre-release; download each archive, run `apiary version`, confirm it prints the tag
+- [x] 1.1 Add `.goreleaser.yaml` with `builds`, `archives`, `checksums`, `release` blocks; ldflags set `internal/version.Version` to match the Makefile
+- [x] 1.2 Add `.github/workflows/release.yml` (`on: push tags 'v*'`, `contents:write`), running `goreleaser release --clean`
+- [x] 1.3 Add a PR check job (`release-check.yml`): `goreleaser check` + `goreleaser release --snapshot --clean` (no publish) so config breakage is caught pre-tag
+- [ ] 1.4 Dry-run: cut a `v0.x.0-rc` pre-release; download each archive, run `apiary version`, confirm it prints the tag *(local snapshot verified: 6 archives + checksums build, binary reports injected version; real tag still pending)*
 
 ## Phase 2 — Linux native packages
 
