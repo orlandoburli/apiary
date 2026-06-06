@@ -8,8 +8,9 @@ import (
 	"strings"
 	"time"
 
-	sqlite3 "github.com/mattn/go-sqlite3"
 	"github.com/orlandoburli/apiary/internal/model"
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type Client struct {
@@ -24,14 +25,14 @@ type execer interface {
 
 // New opens a SQLite database and initializes schema.
 func New(ctx context.Context, dbPath string) (*Client, error) {
-	// _busy_timeout lets a writer wait for a held lock instead of failing
+	// busy_timeout lets a writer wait for a held lock instead of failing
 	// immediately with SQLITE_BUSY — required for the concurrent SourceBinder
 	// path, where two pollers may bind the same item at once.
 	dsn := dbPath
 	if !strings.Contains(dsn, "?") {
-		dsn += "?_busy_timeout=5000"
+		dsn += "?_pragma=busy_timeout(5000)"
 	}
-	db, err := sql.Open("sqlite3", dsn)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -90,9 +91,9 @@ func (c *Client) CreateTaskWithBinding(ctx context.Context, task *model.Internal
 
 // isUniqueViolation reports whether err is a SQLite UNIQUE-constraint failure.
 func isUniqueViolation(err error) bool {
-	var se sqlite3.Error
+	var se *sqlite.Error
 	if errors.As(err, &se) {
-		return se.Code == sqlite3.ErrConstraint && se.ExtendedCode == sqlite3.ErrConstraintUnique
+		return se.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
 	}
 	return false
 }
