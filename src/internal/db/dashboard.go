@@ -246,8 +246,8 @@ func (c *Client) GetAgentStats(ctx context.Context) ([]AgentStats, error) {
 	return stats, nil
 }
 
-// parseSQLiteTime parses the timestamp formats SQLite/go-sqlite3 may emit for
-// aggregated time columns (which arrive as strings). Returns ok=false if none match.
+// parseSQLiteTime parses the timestamp formats SQLite may emit for aggregated
+// time columns (which arrive as strings). Returns ok=false if none match.
 func parseSQLiteTime(s string) (time.Time, bool) {
 	layouts := []string{
 		"2006-01-02 15:04:05.999999999-07:00",
