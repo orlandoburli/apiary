@@ -147,11 +147,11 @@ classifier `assign_from_output`) were intentionally dropped.
 
 ### 3.7 Tests
 
-- [ ] 3.7.1 Integration test: 3-step sequential workflow completes, memory populated correctly
-- [ ] 3.7.2 Integration test: parallel steps run concurrently, fan-in step waits for both
-- [ ] 3.7.3 Integration test: split routes to correct branch based on memory field
-- [ ] 3.7.4 Integration test: `on_fail.goto` loops back, respects `max_retries`
-- [ ] 3.7.5 Run full test suite: `go test ./...`
+- [x] 3.7.1 Integration test: 3-step sequential workflow completes, memory populated correctly
+- [x] 3.7.2 Integration test: parallel steps run concurrently, fan-in step waits for both
+- [x] 3.7.3 Integration test: split routes to correct branch based on memory field
+- [x] 3.7.4 Integration test: `on_fail.goto` loops back, respects `max_retries`
+- [x] 3.7.5 Run full test suite: `go test ./...`
 
 ---
 
