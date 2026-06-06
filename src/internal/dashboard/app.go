@@ -938,6 +938,7 @@ func (a *App) handleWorkflowsKey(key string) (tea.Model, tea.Cmd) {
 		} else {
 			if wt.StepIdx > 0 {
 				wt.StepIdx--
+				// StepScroll is adjusted by the renderer to keep StepIdx visible.
 			}
 		}
 	case "down", "j":
@@ -952,12 +953,14 @@ func (a *App) handleWorkflowsKey(key string) (tea.Model, tea.Cmd) {
 				steps := wt.Workflows[wt.SelectedIdx].Steps
 				if wt.StepIdx < len(steps)-1 {
 					wt.StepIdx++
+					// StepScroll is adjusted by the renderer to keep StepIdx visible.
 				}
 			}
 		}
 	case "enter", "right", "l":
 		wt.Focus = WorkflowsViewSteps
 		wt.StepIdx = 0
+		wt.StepScroll = 0
 	case "esc", "left", "h", "backspace":
 		wt.Focus = WorkflowsViewList
 	}
@@ -3295,7 +3298,9 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 }
 
 // renderWorkflowsTab renders the static workflow config navigation tab.
-// Layout: left list of workflows | right step tree for selected workflow.
+// Layout: left workflow list | right panel with all steps always fully expanded.
+// Every step always shows type, ID, agent, depends, if, and prompt — navigation
+// just moves the highlight; nothing is hidden or revealed by cursor movement.
 func (a *App) renderWorkflowsTab(height int) string {
 	wt := a.model.workflowsTab
 	if wt == nil || len(wt.Workflows) == 0 {
@@ -3309,89 +3314,137 @@ func (a *App) renderWorkflowsTab(height int) string {
 	// ── left panel: workflow list ───────────────────────────────────────────
 	var left strings.Builder
 	left.WriteString(StyleTableHeader.Render(fitLine("WORKFLOW", leftW)) + "\n")
-
 	for i, wf := range wt.Workflows {
 		selected := i == wt.SelectedIdx
 		label := truncate(wf.ID, leftW-4)
-		steps := fmt.Sprintf("[%d steps]", len(wf.Steps))
 		if selected && wt.Focus == WorkflowsViewList {
-			row := StyleSelectedRow.Render(fitLine(" ▶ "+label, leftW))
-			left.WriteString(row + "\n")
+			left.WriteString(StyleSelectedRow.Render(fitLine(" ▶ "+label, leftW)) + "\n")
 		} else if selected {
-			row := StyleAccent.Render(fitLine(" ● "+label, leftW-len(steps)-1)) + StyleMuted.Render(steps)
-			left.WriteString(fitLine(row, leftW) + "\n")
+			left.WriteString(StyleAccent.Render(fitLine(" ● "+label, leftW)) + "\n")
 		} else {
 			left.WriteString(fitLine("   "+label, leftW) + "\n")
 		}
 	}
 
-	// ── right panel: step definitions ──────────────────────────────────────
+	// ── right panel: all steps always fully expanded ────────────────────────
+	// Each step block has fixed height determined by its own data (not cursor),
+	// so j/k navigation never shifts or reflows any content.
 	var right strings.Builder
-	if wt.SelectedIdx < len(wt.Workflows) {
+	if wt.SelectedIdx >= len(wt.Workflows) {
+		// nothing to show
+	} else {
 		wf := wt.Workflows[wt.SelectedIdx]
-		desc := valueOr(wf.Description, StyleMuted.Render("(no description)"))
+		desc := valueOr(wf.Description, "(no description)")
+
+		// Header: 2 lines (title + divider).
 		right.WriteString(StyleValueStrong.Render(wf.ID) + "  " + StyleMuted.Render(desc) + "\n")
 		right.WriteString(StyleMuted.Render(strings.Repeat("─", rightW)) + "\n")
 
 		if len(wf.Steps) == 0 {
 			right.WriteString(StyleMuted.Render("  No steps defined.") + "\n")
-		}
+		} else {
+			// Build all step lines up-front so we can compute scroll.
+			type stepBlock struct {
+				lines []string
+				start int // line index within the body (after the 2-line header)
+			}
+			blocks := make([]stepBlock, 0, len(wf.Steps))
+			cursor := 0
 
-		// Each step renders exactly 1 line so the list height stays stable as the
-		// cursor moves. The selected step's detail (depends, if, prompt) is shown
-		// in a fixed section below the list separated by a horizontal rule.
-		var selectedStep *WorkflowStepDef
-		for i, step := range wf.Steps {
-			step := step
-			selected := i == wt.StepIdx && wt.Focus == WorkflowsViewSteps
-			if selected {
-				selectedStep = &step
-			}
-			typeLabel := styleStepType(step.Type)
-			stepLine := typeLabel + " " + StyleValueStrong.Render(step.ID)
-			if step.Agent != "" {
-				stepLine += "  " + StyleAccent.Render("→ "+step.Agent)
-			}
-			if selected {
-				right.WriteString(StyleSelectedRow.Render(fitLine("  "+ansi.Strip(stepLine), rightW)) + "\n")
-			} else {
-				right.WriteString(fitLine("  "+stepLine, rightW) + "\n")
-			}
-		}
+			for i, step := range wf.Steps {
+				selected := i == wt.StepIdx && wt.Focus == WorkflowsViewSteps
+				var bl []string
 
-		// Fixed detail section — always present below the list, so it never
-		// shifts the step rows above it.
-		right.WriteString(StyleMuted.Render(strings.Repeat("─", rightW)) + "\n")
-		if selectedStep != nil {
-			if len(selectedStep.DependsOn) > 0 {
-				right.WriteString("  " + StyleLabel.Render(pad("depends:", 9)) + " " + strings.Join(selectedStep.DependsOn, ", ") + "\n")
-			}
-			if selectedStep.Condition != "" {
-				right.WriteString("  " + StyleLabel.Render(pad("if:", 9)) + " " + truncate(selectedStep.Condition, rightW-14) + "\n")
-			}
-			if selectedStep.Prompt != "" {
-				lines := wrapPlain(selectedStep.Prompt, rightW-14)
-				for i, line := range lines {
-					if i == 0 {
-						right.WriteString("  " + StyleLabel.Render(pad("prompt:", 9)) + " " + line + "\n")
-					} else {
-						right.WriteString("             " + line + "\n")
-					}
-					if i >= 4 {
-						right.WriteString("             " + StyleMuted.Render("…") + "\n")
-						break
+				// Line 1: cursor glyph + type badge + ID + agent.
+				typeLabel := styleStepType(step.Type)
+				headline := typeLabel + " " + StyleValueStrong.Render(step.ID)
+				if step.Agent != "" {
+					headline += "  " + StyleAccent.Render("→ "+step.Agent)
+				}
+				if selected {
+					bl = append(bl,
+						StyleFocusedArrow.Render("▶")+" "+StyleSelectedRow.Render(fitLine(ansi.Strip(headline), rightW-2)))
+				} else {
+					bl = append(bl, fitLine("  "+headline, rightW))
+				}
+
+				// Sub-lines: always rendered, height stable regardless of selection.
+				if len(step.DependsOn) > 0 {
+					bl = append(bl,
+						"    "+StyleMuted.Render("depends: ")+strings.Join(step.DependsOn, ", "))
+				}
+				if step.Condition != "" {
+					bl = append(bl,
+						"    "+StyleMuted.Render("if:      ")+truncate(step.Condition, rightW-16))
+				}
+				if step.Prompt != "" {
+					promptW := rightW - 16
+					pLines := wrapPlain(step.Prompt, promptW)
+					for j, pl := range pLines {
+						if j == 0 {
+							bl = append(bl, "    "+StyleMuted.Render("prompt:  ")+pl)
+						} else {
+							bl = append(bl, "             "+pl)
+						}
+						if j >= 2 {
+							bl = append(bl, "             "+StyleMuted.Render("…"))
+							break
+						}
 					}
 				}
+
+				// Blank separator between steps (not after the last one).
+				if i < len(wf.Steps)-1 {
+					bl = append(bl, "")
+				}
+
+				blocks = append(blocks, stepBlock{lines: bl, start: cursor})
+				cursor += len(bl)
 			}
-			if len(selectedStep.DependsOn) == 0 && selectedStep.Condition == "" && selectedStep.Prompt == "" {
-				right.WriteString("  " + StyleMuted.Render("(no additional config for this step)") + "\n")
+
+			// Auto-scroll: keep the selected step visible in the body window.
+			// bodyRows = total visible lines minus the 2-line header.
+			bodyRows := height - 4 - 2
+			if bodyRows < 1 {
+				bodyRows = 1
 			}
-		} else {
-			right.WriteString("  " + StyleMuted.Render("navigate with j/k, then → or enter to inspect steps") + "\n")
+			if wt.Focus == WorkflowsViewSteps && wt.StepIdx < len(blocks) {
+				b := blocks[wt.StepIdx]
+				stepEnd := b.start + len(b.lines)
+				if b.start < wt.StepScroll {
+					wt.StepScroll = b.start
+				}
+				if stepEnd > wt.StepScroll+bodyRows {
+					wt.StepScroll = stepEnd - bodyRows
+				}
+			}
+			if wt.StepScroll < 0 {
+				wt.StepScroll = 0
+			}
+
+			// Flatten and window.
+			allLines := make([]string, 0, cursor)
+			for _, b := range blocks {
+				allLines = append(allLines, b.lines...)
+			}
+			lo := wt.StepScroll
+			hi := lo + bodyRows
+			if hi > len(allLines) {
+				hi = len(allLines)
+			}
+			for i := lo; i < hi; i++ {
+				right.WriteString(fitLine(allLines[i], rightW) + "\n")
+			}
+
+			// Scroll hint when content overflows.
+			if len(allLines) > bodyRows {
+				hint := fmt.Sprintf("(%d–%d / %d lines  j/k scroll)", lo+1, hi, len(allLines))
+				right.WriteString(StyleMuted.Render(fitLine(hint, rightW)) + "\n")
+			}
 		}
 	}
 
-	// Stitch side-by-side.
+	// Stitch left + right side-by-side.
 	leftLines := strings.Split(strings.TrimRight(left.String(), "\n"), "\n")
 	rightLines := strings.Split(strings.TrimRight(right.String(), "\n"), "\n")
 	maxLines := len(leftLines)
