@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	aplog "github.com/orlandoburli/apiary/internal/log"
@@ -97,7 +98,8 @@ func (e *Engine) initDAG(instID string, wf config.WorkflowConfig, cell model.Cel
 
 // driveDAG runs the scheduler until the graph completes, fails, or suspends at
 // an approval step. It honors depends_on ordering, split routing, on_fail.goto
-// loops, and skip propagation, and may be re-entered after an approval resolves.
+// loops, skip propagation, and per-step condition evaluation.
+// It may be re-entered after an approval resolves.
 func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 	for {
 		next := r.pickRunnable()
@@ -108,6 +110,17 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 			break // nothing else can run
 		}
 		step := r.byID[next]
+
+		// Per-step condition: evaluate before running; false → skip + cascade.
+		if step.Condition != "" {
+			evalCtx := EvalContext{Cell: r.cell, Memory: r.memoryValues(), Steps: r.stepStates}
+			if e.conditionFalse(step.Condition, evalCtx) {
+				r.markSkipped(next)
+				aplog.Debug("workflow %s: step %q skipped (condition false)", r.wf.ID, next)
+				continue
+			}
+		}
+
 		if step.StepType() == config.StepTypeApproval {
 			e.enterApproval(ctx, r, step)
 			return outcomeWaiting
@@ -319,6 +332,30 @@ func (e *Engine) runSplitStep(r *dagRun, step config.StepConfig) bool {
 func (e *Engine) runAgentDAGStep(ctx context.Context, r *dagRun, step config.StepConfig) bool {
 	res := e.runStep(ctx, r.instID, step, r.cell, r.memSteps())
 
+	// on_missing_output: fail — treat as failure when the step declares an output
+	// schema, the policy is "fail", and no structured output was produced.
+	if res.Success && step.OutputSchema != nil &&
+		step.OnMissingOutput == config.OnMissingOutputFail &&
+		len(res.StructuredOutput) == 0 {
+		res.Success = false
+		aplog.Info("workflow %s: step %q failed: on_missing_output=fail and no structured output", r.wf.ID, step.ID)
+	}
+
+	// fail_when — evaluate after the agent runs; a true result is a logical
+	// rejection and is treated exactly like a normal failure (eligible for
+	// on_fail.goto loop-back).
+	if res.Success && step.FailWhen != "" {
+		transientMem := r.memoryValues()
+		for field, val := range res.StructuredOutput {
+			transientMem[field] = renderValue(val)
+		}
+		evalCtx := EvalContext{Cell: r.cell, Memory: transientMem, Steps: r.stepStates}
+		if e.conditionTrue(step.FailWhen, evalCtx) {
+			res.Success = false
+			aplog.Info("workflow %s: step %q rejected (fail_when matched)", r.wf.ID, step.ID)
+		}
+	}
+
 	r.stepStates[step.ID] = StepState{
 		State:  passFail(res.Success),
 		Output: res.Output,
@@ -426,4 +463,47 @@ func passFail(success bool) string {
 		return stPassed
 	}
 	return stFailed
+}
+
+// conditionFalse reports whether expr evaluates to false (or fails to parse/eval).
+// Used for per-step condition checks: false → skip the step.
+func (e *Engine) conditionFalse(expr string, ctx EvalContext) bool {
+	result, err := e.evalExpr(expr, ctx)
+	if err != nil {
+		aplog.Error("workflow: condition eval error %q: %v (treating as false → skip)", expr, err)
+		return true
+	}
+	return !result
+}
+
+// conditionTrue reports whether expr evaluates to true.
+// Used for fail_when: true → logical rejection.
+func (e *Engine) conditionTrue(expr string, ctx EvalContext) bool {
+	result, err := e.evalExpr(expr, ctx)
+	if err != nil {
+		aplog.Error("workflow: fail_when eval error %q: %v (treating as false → not rejected)", expr, err)
+		return false
+	}
+	return result
+}
+
+// evalExpr parses and evaluates a condition expression. Strips optional ${{ }}
+// wrappers produced by the v2 authoring layer before parsing.
+func (e *Engine) evalExpr(src string, ctx EvalContext) (bool, error) {
+	src = stripExprDelimiters(src)
+	parsed, err := ParseExpr(src)
+	if err != nil {
+		return false, err
+	}
+	return parsed.Eval(ctx)
+}
+
+// stripExprDelimiters removes the optional "${{ … }}" wrapper from a v2
+// expression string, returning the bare expression body.
+func stripExprDelimiters(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "${{") && strings.HasSuffix(s, "}}") {
+		s = strings.TrimSpace(s[3 : len(s)-2])
+	}
+	return s
 }
