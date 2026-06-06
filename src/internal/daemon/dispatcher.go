@@ -766,6 +766,13 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 		}
 		task, persisted := d.bindItem(ctx, cell)
 		matches := d.router.RouteAll(task)
+		// Source-agnostic in-flight guard: drop any matched workflow that already
+		// has a non-terminal instance for this task, so a re-poll does not dispatch
+		// a duplicate while it runs or waits at an approval step. Replaces the
+		// label-based lock (state_lock / "in-progress"), which is source-specific.
+		if persisted && d.db != nil {
+			matches = d.dropActiveMatches(ctx, task.ID, matches)
+		}
 		if len(matches) == 0 {
 			aplog.Debug("cell %s (%q): no matching route, skipping", cell.ID, cell.Title)
 			d.inFlight.Delete(cell.ID)
@@ -891,6 +898,31 @@ func (d *Dispatcher) bindItem(ctx context.Context, cell model.SourceItem) (task 
 	}
 	aplog.Debug("bound source item %s → task %s [%s]", cell.ID, task.ID, task.State)
 	return task, true
+}
+
+// dropActiveMatches removes matches whose workflow already has a non-terminal
+// instance for this task (running or approval_waiting). It is the source-agnostic
+// in-flight guard: the in-memory inFlight marker is released when a workflow parks
+// at an approval step, so without this a later poll would dispatch a duplicate
+// while the instance is still waiting. Keyed on (task, workflow) so a completed
+// earlier workflow (e.g. triage) does not block the one a hand-off routes to.
+// Fail-closed: on a query error the match is dropped (skip this poll, retry next)
+// rather than risk a duplicate dispatch.
+func (d *Dispatcher) dropActiveMatches(ctx context.Context, taskID string, matches []router.Match) []router.Match {
+	out := make([]router.Match, 0, len(matches))
+	for _, m := range matches {
+		active, err := d.db.HasActiveInstanceForRoute(ctx, taskID, m.Route.ID)
+		if err != nil {
+			aplog.Error("in-flight check task %s workflow %s: %v — skipping this poll", taskID, m.Route.ID, err)
+			continue
+		}
+		if active {
+			aplog.Debug("task %s: workflow %s already active (running/approval_waiting), skipping re-dispatch", taskID, m.Route.ID)
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // dispatch acknowledges, runs, and writes the result for a single task.

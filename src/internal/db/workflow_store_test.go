@@ -124,6 +124,44 @@ func TestWorkflowInstance_ReconcileOrphans(t *testing.T) {
 	}
 }
 
+func TestHasActiveInstanceForRoute(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+
+	// task T1: triage already done; implementation running.
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t1-triage", WorkflowID: "triage", CellID: "1948", TaskID: "T1", State: InstanceStateDone})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t1-impl", WorkflowID: "implementation", CellID: "1948", TaskID: "T1", State: InstanceStateRunning})
+	// task T2: implementation parked at an approval step.
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t2-impl", WorkflowID: "implementation", CellID: "2000", TaskID: "T2", State: InstanceStateApprovalWaiting})
+	// task T3: implementation failed (terminal — eligible for retry, must NOT block).
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t3-impl", WorkflowID: "implementation", CellID: "3000", TaskID: "T3", State: InstanceStateFailed})
+
+	cases := []struct {
+		name       string
+		taskID     string
+		workflowID string
+		want       bool
+	}{
+		{"running blocks", "T1", "implementation", true},
+		{"approval_waiting blocks (the park gap)", "T2", "implementation", true},
+		{"done earlier workflow does not block hand-off", "T1", "triage", false},
+		{"different task not blocked", "T2", "triage", false},
+		{"failed is terminal, retry allowed", "T3", "implementation", false},
+		{"unknown task", "T9", "implementation", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := c.HasActiveInstanceForRoute(ctx, tc.taskID, tc.workflowID)
+			if err != nil {
+				t.Fatalf("HasActiveInstanceForRoute: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("HasActiveInstanceForRoute(%q,%q) = %v, want %v", tc.taskID, tc.workflowID, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWorkflowInstance_ListByTask(t *testing.T) {
 	ctx := context.Background()
 	c := newTestClient(t)

@@ -126,6 +126,26 @@ func (c *Client) HasFailedInstance(ctx context.Context, taskID string) (bool, er
 	return n > 0, err
 }
 
+// HasActiveInstanceForRoute reports whether the task already has a non-terminal
+// instance for the given workflow — running or approval_waiting. The dispatcher
+// uses it as a source-agnostic in-flight guard: it stops a later poll from
+// dispatching a duplicate while the workflow runs or, crucially, waits at an
+// approval step (where the in-memory inFlight marker has already been released).
+// Keyed on (task, workflow) so a completed earlier workflow (e.g. triage) does not
+// block the next one a hand-off routes to. terminal/interrupted states do not
+// block — they remain eligible for retry or manual resume.
+func (c *Client) HasActiveInstanceForRoute(ctx context.Context, taskID, workflowID string) (bool, error) {
+	var n int
+	err := c.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM workflow_instances
+		WHERE task_id = ? AND workflow_id = ? AND state IN (?, ?)
+	`, taskID, workflowID, InstanceStateRunning, InstanceStateApprovalWaiting).Scan(&n)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return n > 0, err
+}
+
 // ListWorkflowInstancesByState returns all instances in the given state, oldest first.
 func (c *Client) ListWorkflowInstancesByState(ctx context.Context, state string) ([]WorkflowInstance, error) {
 	rows, err := c.db.QueryContext(ctx, `
