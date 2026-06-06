@@ -67,11 +67,12 @@ type TasksTab struct {
 	History     []TaskItem // running + past tasks, newest first
 	SelectedIdx int
 
-	View           TaskView
-	Detail         *TaskItem             // populated when View == TaskViewDetail
-	DetailInstance *WorkflowInstanceItem // workflow instance for Detail, if any
-	Logs           []LogEntry            // populated when View == TaskViewLogs
-	LogScroll      int
+	View            TaskView
+	Detail          *TaskItem                // populated when View == TaskViewDetail
+	DetailInstance  *WorkflowInstanceItem    // workflow instance for Detail, if any
+	Logs            []LogEntry               // legacy flat stream (TaskViewLogs, legacy rows)
+	InstanceHistory []TaskHistorySegmentItem // per-instance history (TaskViewLogs, InternalTask rows)
+	LogScroll       int
 
 	// Workflow monitor sub-view (View == TaskViewWorkflow).
 	WorkflowInstance *WorkflowInstanceItem // instance being monitored
@@ -100,6 +101,16 @@ type WorkflowInstanceItem struct {
 	ResumedFrom      string // set when this instance resumed a prior one
 	CreatedAt        time.Time
 	Steps            []WorkflowStepItem
+}
+
+// TaskHistorySegmentItem is one workflow instance's slice of a task's history in
+// the Tasks tab: the instance (with its steps) plus the log lines scoped to that
+// instance's time window. Rendered as a labeled section in the repurposed logs
+// view so a multi-workflow task (e.g. investigator → implementation) reads
+// top-to-bottom as a chronological story.
+type TaskHistorySegmentItem struct {
+	Instance WorkflowInstanceItem
+	Logs     []LogEntry
 }
 
 // SourceBindingItem is a task's link to one source item (e.g. a GitHub issue or
