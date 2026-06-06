@@ -10,7 +10,6 @@ import (
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/source"
-	"github.com/orlandoburli/apiary/internal/workflow"
 )
 
 // Resume error sentinels. They map to CLI exit codes / HTTP statuses:
@@ -47,16 +46,10 @@ func resumableState(state string) bool {
 }
 
 // workflowByID resolves a workflow definition by id, covering both declared
-// workflows and plain routes (synthesized into single-step workflows).
 func (d *Dispatcher) workflowByID(id string) (config.WorkflowConfig, bool) {
 	for i := range d.cfg.Workflows {
 		if d.cfg.Workflows[i].ID == id {
 			return d.cfg.Workflows[i], true
-		}
-	}
-	for i := range d.cfg.Routes {
-		if d.cfg.Routes[i].ID == id {
-			return workflow.SynthesizeWorkflow(d.cfg.Routes[i]), true
 		}
 	}
 	return config.WorkflowConfig{}, false

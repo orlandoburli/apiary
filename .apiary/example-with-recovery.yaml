@@ -37,22 +37,28 @@ agents:
     skills: [code-review, testing]
     runner: claude-cli
 
-routes:
+workflows:
   - id: engineer-work
-    priority: 10
-    match:
-      source: project-erp
-      labels: [agent:engineer]
-    agent: engineer
+    trigger:
+      priority: 10
+      match:
+        source: project-erp
+        labels: [agent:engineer]
+    steps:
+      - id: run
+        agent: engineer
     on_complete:
       set_state: in review
 
   - id: review-work
-    priority: 20
-    match:
-      source: project-erp
-      labels: [agent:reviewer]
-    agent: reviewer
+    trigger:
+      priority: 20
+      match:
+        source: project-erp
+        labels: [agent:reviewer]
+    steps:
+      - id: run
+        agent: reviewer
     on_complete:
       set_state: done
 

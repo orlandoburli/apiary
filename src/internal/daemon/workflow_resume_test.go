@@ -47,16 +47,17 @@ func (errOther) Error() string { return "other" }
 
 func TestWorkflowByID(t *testing.T) {
 	d := &Dispatcher{cfg: &config.Config{
-		Workflows: []config.WorkflowConfig{{ID: "feature-development"}},
-		Routes:    []config.RouteConfig{{ID: "backend-bugs", Agent: "backend-dev"}},
+		Workflows: []config.WorkflowConfig{
+			{ID: "feature-development"},
+			{ID: "backend-bugs", Steps: []config.StepConfig{{ID: "run", Agent: "backend-dev"}}},
+		},
 	}}
 
 	if wf, ok := d.workflowByID("feature-development"); !ok || wf.ID != "feature-development" {
 		t.Errorf("declared workflow not resolved: %+v ok=%v", wf, ok)
 	}
-	// A plain route resolves to a synthesized single-step workflow.
 	if wf, ok := d.workflowByID("backend-bugs"); !ok || len(wf.Steps) != 1 {
-		t.Errorf("route not synthesized into a workflow: %+v ok=%v", wf, ok)
+		t.Errorf("workflow not resolved: %+v ok=%v", wf, ok)
 	}
 	if _, ok := d.workflowByID("ghost"); ok {
 		t.Error("unknown id should not resolve")

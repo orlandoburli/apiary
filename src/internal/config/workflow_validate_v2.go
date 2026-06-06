@@ -85,7 +85,7 @@ func validateV2Steps(ctx string, steps []StepConfig, siblingsBefore []string) []
 // primitives that conflict with v2 authored nesting.
 func hasV1Primitives(steps []StepConfig) bool {
 	for _, s := range steps {
-		// depends_on is the key v1 primitive — v2 uses implicit ordering instead.
+		// DependsOn is a v1 explicit DAG primitive.
 		if len(s.DependsOn) > 0 {
 			return true
 		}

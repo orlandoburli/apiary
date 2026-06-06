@@ -13,6 +13,18 @@ import (
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
+// synthWF converts a RouteConfig to an equivalent single-step WorkflowConfig.
+// Used only in tests; production code no longer has SynthesizeWorkflow.
+func synthWF(route config.RouteConfig) config.WorkflowConfig {
+	oc := route.OnComplete
+	return config.WorkflowConfig{
+		ID:         route.ID,
+		Trigger:    &config.TriggerConfig{Priority: route.Priority, Match: route.Match},
+		Steps:      []config.StepConfig{{ID: "run", Agent: route.Agent}},
+		OnComplete: &oc,
+	}
+}
+
 // fakeStore records instances and step runs in memory. Thread-safe so it can be
 // used from concurrent engine tests.
 type fakeStore struct {
@@ -135,7 +147,7 @@ func TestEngine_SingleStepSuccess(t *testing.T) {
 	side := &fakeSide{}
 	eng := testEngine(cfg, store, exec, side)
 
-	wf := SynthesizeWorkflow(config.RouteConfig{
+	wf := synthWF(config.RouteConfig{
 		ID: "backend-bugs", Priority: 10, Agent: "backend-dev",
 		OnComplete: config.OnComplete{SetState: "in_review"},
 	})
@@ -177,7 +189,7 @@ func TestEngine_StepFailureMarksInstanceFailed(t *testing.T) {
 	side := &fakeSide{}
 	eng := testEngine(cfg, store, exec, side)
 
-	wf := SynthesizeWorkflow(config.RouteConfig{ID: "r", Agent: "backend-dev",
+	wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev",
 		OnComplete: config.OnComplete{SetState: "in_review"}})
 	wf.OnFail = &config.OnComplete{SetState: "blocked"}
 
@@ -284,7 +296,7 @@ func TestEngine_ResultCommentOnComplete(t *testing.T) {
 	side := &fakeSide{}
 	eng := testEngine(cfg, store, exec, side)
 
-	wf := SynthesizeWorkflow(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+	wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
 	_, _, _ = eng.RunInstance(context.Background(), wf, model.Cell{ID: "C1", Title: "t"})
 
 	if len(side.comments) != 1 {
@@ -330,7 +342,7 @@ func TestEngine_ResultCommentOff(t *testing.T) {
 	side := &fakeSide{}
 	eng := testEngine(cfg, store, exec, side)
 
-	wf := SynthesizeWorkflow(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+	wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
 	_, _, _ = eng.RunInstance(context.Background(), wf, model.Cell{ID: "C1"})
 
 	if len(side.comments) != 0 {
@@ -346,7 +358,7 @@ func TestEngine_StructuredOutputPersisted(t *testing.T) {
 	}}
 	eng := testEngine(cfg, store, exec, &fakeSide{})
 
-	wf := SynthesizeWorkflow(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+	wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
 	_, _, _ = eng.RunInstance(context.Background(), wf, model.Cell{ID: "C1"})
 
 	sr := store.stepRuns[store.stepOrder[0]]
@@ -358,13 +370,13 @@ func TestEngine_StructuredOutputPersisted(t *testing.T) {
 	}
 }
 
-func TestSynthesizeWorkflow(t *testing.T) {
+func TestSynthWF(t *testing.T) {
 	route := config.RouteConfig{
 		ID: "backend-bugs", Priority: 10, Agent: "backend-dev",
 		Match:      config.RouteMatch{Source: "main-plane", Labels: []string{"bug"}},
 		OnComplete: config.OnComplete{SetState: "in_review"},
 	}
-	wf := SynthesizeWorkflow(route)
+	wf := synthWF(route)
 	if wf.ID != "backend-bugs" || len(wf.Steps) != 1 {
 		t.Fatalf("unexpected synthesized workflow: %+v", wf)
 	}

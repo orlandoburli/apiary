@@ -26,7 +26,6 @@ func (c *Config) validateWorkflows() []error {
 
 	agentIDs := c.agentIDSet()
 	sourceIDs := c.sourceIDSet()
-	routeIDs := c.routeIDSet()
 
 	// First pass: index workflows by ID and detect ID-level problems so later
 	// passes (sub-workflow references) can rely on the map.
@@ -39,9 +38,6 @@ func (c *Config) validateWorkflows() []error {
 		}
 		if seen[wf.ID] {
 			errs = append(errs, fmt.Errorf("workflows[%d]: duplicate id %q", i, wf.ID))
-		}
-		if routeIDs[wf.ID] {
-			errs = append(errs, fmt.Errorf("workflows[%d] %q: id conflicts with a route of the same id", i, wf.ID))
 		}
 		seen[wf.ID] = true
 		wfByID[wf.ID] = wf
@@ -416,11 +412,3 @@ func (c *Config) sourceIDSet() map[string]bool {
 	return set
 }
 
-// routeIDSet returns the set of defined route IDs.
-func (c *Config) routeIDSet() map[string]bool {
-	set := make(map[string]bool, len(c.Routes))
-	for _, r := range c.Routes {
-		set[r.ID] = true
-	}
-	return set
-}
