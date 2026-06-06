@@ -133,6 +133,34 @@ CREATE TABLE IF NOT EXISTS step_runs (
   FOREIGN KEY(workflow_instance_id) REFERENCES workflow_instances(id)
 );
 
+-- Canonical internal task registry: the source-independent unit of work.
+CREATE TABLE IF NOT EXISTS internal_tasks (
+  id TEXT PRIMARY KEY,                          -- ulid
+  parent_task_id TEXT,                          -- set for spawned tasks (lineage)
+  title TEXT NOT NULL,
+  description TEXT,
+  input TEXT,                                   -- JSON: structured input from spawner
+  state TEXT NOT NULL DEFAULT 'registered',     -- registered|running|approval_waiting|done|failed
+  metadata TEXT,                                -- JSON: labels, priority, type, etc.
+  outstanding_workflows INTEGER DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(parent_task_id) REFERENCES internal_tasks(id)
+);
+
+-- Links source items to InternalTasks (one-to-many, optional).
+CREATE TABLE IF NOT EXISTS source_bindings (
+  id TEXT PRIMARY KEY,                          -- ulid
+  task_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,                      -- e.g. "github", "plane"
+  source_item_id TEXT NOT NULL,                 -- source-native item ID
+  source_item_url TEXT,                         -- deep-link for display
+  source_item_number TEXT,                      -- human ref: "#42", "ERP-42"
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(task_id) REFERENCES internal_tasks(id),
+  UNIQUE(source_id, source_item_id)
+);
+
 -- Create indices
 CREATE INDEX IF NOT EXISTS idx_executions_task ON task_executions(task_id);
 CREATE INDEX IF NOT EXISTS idx_executions_retry ON task_executions(next_retry_at) WHERE status='failed';
@@ -145,6 +173,10 @@ CREATE INDEX IF NOT EXISTS idx_wf_instances_state ON workflow_instances(state);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_cell ON workflow_instances(cell_id);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_parent ON workflow_instances(parent_instance_id);
 CREATE INDEX IF NOT EXISTS idx_step_runs_instance ON step_runs(workflow_instance_id);
+CREATE INDEX IF NOT EXISTS idx_internal_tasks_state ON internal_tasks(state);
+CREATE INDEX IF NOT EXISTS idx_internal_tasks_parent ON internal_tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_source_bindings_task ON source_bindings(task_id);
+CREATE INDEX IF NOT EXISTS idx_source_bindings_item ON source_bindings(source_id, source_item_id);
 `
 
 // migrations are idempotent ALTER statements applied to databases created
@@ -168,6 +200,15 @@ var migrations = []string{
 	`ALTER TABLE task_executions ADD COLUMN cost_usd REAL DEFAULT 0.0`,
 	`ALTER TABLE task_executions ADD COLUMN workflow_instance_id TEXT`,
 	`ALTER TABLE task_executions ADD COLUMN step_id TEXT`,
+	// Internal Task Model: bind workflow instances to an InternalTask. Nullable
+	// during migration; source_item_id (cell_id) + source_id retained until a
+	// later phase drops them.
+	`ALTER TABLE workflow_instances ADD COLUMN task_id TEXT REFERENCES internal_tasks(id)`,
+	// Internal Task Model: per-step write-back (APIARY_PUBLISH) and internal
+	// fan-out (APIARY_SPAWN) tracking.
+	`ALTER TABLE step_runs ADD COLUMN publish_payload TEXT`,
+	`ALTER TABLE step_runs ADD COLUMN publish_state TEXT`,
+	`ALTER TABLE step_runs ADD COLUMN spawned_task_id TEXT REFERENCES internal_tasks(id)`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).

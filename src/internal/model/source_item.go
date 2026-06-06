@@ -2,12 +2,14 @@ package model
 
 import "time"
 
-// Cell is a normalized, source-system-agnostic task unit.
+// SourceItem is a normalized, source-system-agnostic view of a single item
+// returned by a source adapter's Poll. It lives only within the binding layer:
+// the SourceBinder translates a SourceItem into an InternalTask, after which the
+// task — not the SourceItem — travels forward into routing and execution.
 //
-// Deprecated: use SourceItem (source_item.go). Cell is retained only to keep
-// existing call sites compiling during the Internal Task Model migration and is
+// This is the canonical name; the legacy alias Cell (cell.go) is deprecated and
 // removed in Phase 2.
-type Cell struct {
+type SourceItem struct {
 	ID          string
 	SourceID    string
 	Number      string // human-facing reference, e.g. "ERP-42" or "#42"
@@ -26,18 +28,3 @@ type Cell struct {
 	// approval condition.
 	Comments []Comment
 }
-
-// Comment is a single comment on a source task, used to evaluate approval-step
-// resume/abort conditions (comment_contains).
-type Comment struct {
-	ID        string
-	Body      string
-	CreatedAt time.Time
-}
-
-type AckAction string
-
-const (
-	AckActionInProgress AckAction = "in_progress"
-	AckActionSkip       AckAction = "skip"
-)

@@ -2,7 +2,9 @@
 
 ## Ativas
 
-_(nenhuma change ativa no momento)_
+### internal-task-model
+
+InternalTask como unidade canônica de trabalho: sources viram binders (registram items, recebem output); fan-out de múltiplos workflows por task; write-back por step controlado pelo agente via `APIARY_PUBLISH`.
 
 ## Arquivadas
 
