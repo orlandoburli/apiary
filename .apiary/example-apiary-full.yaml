@@ -4,7 +4,7 @@ version: "1"
 # Define how agents will execute (CLI, API, custom gateway, etc.)
 runners:
   # Claude CLI runner (local development, no API keys needed)
-  - id: claude
+  - id: claude-cli
     type: cli
     provider: claude
     config:
