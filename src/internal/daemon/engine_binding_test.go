@@ -76,6 +76,24 @@ func (r *publishingRunner) Run(context.Context, model.RunRequest) (model.RunResu
 	return model.RunResult{Success: true, PublishPayload: r.payload}, nil
 }
 
+// spawningRunner emits an APIARY_SPAWN request once (for the first call), then
+// returns plain successes — so the parent step spawns a child while the child
+// workflow's own step does not recurse.
+type spawningRunner struct {
+	mu  sync.Mutex
+	req *model.SpawnRequest
+}
+
+func (r *spawningRunner) ID() string                     { return "spawning" }
+func (r *spawningRunner) Configure(map[string]any) error { return nil }
+func (r *spawningRunner) Run(context.Context, model.RunRequest) (model.RunResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	req := r.req
+	r.req = nil
+	return model.RunResult{Success: true, SpawnRequest: req}, nil
+}
+
 // TestRunOnce_PublishWritesBackToBinding runs a workflow whose agent emits an
 // APIARY_PUBLISH payload and asserts the engine writes it back to the task's
 // source binding via the adapter (WriteResult), end-to-end (6.2.1, 6.4.1).
@@ -215,5 +233,93 @@ func TestRunOnce_SideEffectsResolveViaBinding(t *testing.T) {
 	}
 	if len(adapter.states) != 1 || adapter.states[0] != "in_review" {
 		t.Errorf("on_complete set_state = %v, want [in_review]", adapter.states)
+	}
+}
+
+// TestRunOnce_SpawnCreatesChildTask runs a parent workflow whose agent emits an
+// APIARY_SPAWN request and asserts a child InternalTask is persisted with the
+// parent's id, end-to-end through the dispatcher's wired spawner (7.3.1).
+func TestRunOnce_SpawnCreatesChildTask(t *testing.T) {
+	ctx := context.Background()
+	dbc, err := db.New(ctx, filepath.Join(t.TempDir(), "spawn.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbc.Close() })
+
+	adapter := &recordingAdapter{items: []model.SourceItem{
+		{ID: "INC-1", SourceID: "src", Number: "#1", Title: "Incident", State: "todo"},
+	}}
+
+	cfg := &config.Config{
+		Version:  "1",
+		Sources:  []config.SourceConfig{{ID: "src", Type: "fake"}},
+		Agents:   []config.AgentConfig{{ID: "triage", Model: "test/model"}, {ID: "collector", Model: "test/model"}},
+		Settings: config.Settings{StateLock: false, ResultComment: false},
+		Workflows: []config.WorkflowConfig{
+			{
+				ID:      "wf-parent",
+				Trigger: &config.TriggerConfig{Priority: 10, Match: config.RouteMatch{Source: "src"}},
+				Steps:   []config.StepConfig{{ID: "triage", Agent: "triage", Spawn: config.SpawnAwait}},
+			},
+			{
+				// Named child workflow; no trigger (it is dispatched by name, not routing).
+				ID:    "collect-logs",
+				Steps: []config.StepConfig{{ID: "collect", Agent: "collector"}},
+			},
+		},
+	}
+
+	r, err := router.New(cfg)
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+
+	d := &Dispatcher{
+		cfg:     cfg,
+		db:      dbc,
+		router:  r,
+		sources: map[string]source.Adapter{"src": adapter},
+		runners: map[string]runnerpkg.Runner{
+			"agent-triage":    &spawningRunner{req: &model.SpawnRequest{WorkflowID: "collect-logs", Title: "Collect logs", Input: map[string]any{"severity": "high"}}},
+			"agent-collector": &countingRunner{},
+		},
+		agentRunner: map[string]string{"triage": "claude", "collector": "claude"},
+		agentSem:    map[string]chan struct{}{},
+		stats:       map[string]*sourceStat{"src": {}},
+	}
+	d.binder = source.NewSourceBinder(dbc)
+
+	if err := d.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	// The spawned child task must exist with the parent task as its parent and the
+	// input carried through. The parent is the source-bound task for INC-1.
+	tasks, err := dbc.InternalTasks().ListTasksByState(ctx, model.TaskStateRegistered)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	var child *model.InternalTask
+	for i := range tasks {
+		if tasks[i].ParentTaskID != "" {
+			child = &tasks[i]
+			break
+		}
+	}
+	if child == nil {
+		t.Fatalf("no spawned child task found among %d tasks", len(tasks))
+	}
+	if child.Title != "Collect logs" {
+		t.Errorf("child Title = %q, want Collect logs", child.Title)
+	}
+	if child.Input["severity"] != "high" {
+		t.Errorf("child Input = %#v, want severity=high", child.Input)
+	}
+
+	// The child's parent is the bound task for the polled source item.
+	parent, err := dbc.InternalTasks().GetTask(ctx, child.ParentTaskID)
+	if err != nil || parent == nil {
+		t.Fatalf("parent task %q not found: %v", child.ParentTaskID, err)
 	}
 }

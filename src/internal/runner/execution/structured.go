@@ -2,6 +2,7 @@ package execution
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/orlandoburli/apiary/internal/model"
@@ -16,21 +17,26 @@ const (
 	summaryEndMarker   = "APIARY_SUMMARY_END"
 	publishStartMarker = "APIARY_PUBLISH_BEGIN"
 	publishEndMarker   = "APIARY_PUBLISH_END"
+	spawnStartMarker   = "APIARY_SPAWN_BEGIN"
+	spawnEndMarker     = "APIARY_SPAWN_END"
 )
 
 // extractStructured scans an agent's raw output for the APIARY_OUTPUT: sentinel,
-// the APIARY_SUMMARY_START/END block, and the APIARY_PUBLISH_BEGIN/END block. It
-// returns the cleaned output (with those lines removed), the parsed structured
-// object (nil when absent or unparseable), the summary text (empty when absent),
-// and the publish payload (empty when absent). The last valid APIARY_OUTPUT line
-// wins; the publish block is taken verbatim between its markers.
-func extractStructured(output string) (cleaned string, structured map[string]any, summary, publish string) {
+// the APIARY_SUMMARY_START/END block, the APIARY_PUBLISH_BEGIN/END block, and the
+// APIARY_SPAWN_BEGIN/END block. It returns the cleaned output (with those lines
+// removed), the parsed structured object (nil when absent or unparseable), the
+// summary text, the publish payload, and the raw spawn payload (all empty when
+// absent). The last valid APIARY_OUTPUT line wins; block payloads are taken
+// verbatim between their markers.
+func extractStructured(output string) (cleaned string, structured map[string]any, summary, publish, spawn string) {
 	lines := strings.Split(output, "\n")
 	kept := make([]string, 0, len(lines))
 	var summaryLines []string
 	var publishLines []string
+	var spawnLines []string
 	inSummary := false
 	inPublish := false
+	inSpawn := false
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -43,10 +49,16 @@ func extractStructured(output string) (cleaned string, structured map[string]any
 			inPublish = true
 		case trimmed == publishEndMarker:
 			inPublish = false
+		case trimmed == spawnStartMarker:
+			inSpawn = true
+		case trimmed == spawnEndMarker:
+			inSpawn = false
 		case inSummary:
 			summaryLines = append(summaryLines, line)
 		case inPublish:
 			publishLines = append(publishLines, line)
+		case inSpawn:
+			spawnLines = append(spawnLines, line)
 		case strings.HasPrefix(trimmed, apiaryOutputPrefix):
 			jsonPart := strings.TrimSpace(strings.TrimPrefix(trimmed, apiaryOutputPrefix))
 			var obj map[string]any
@@ -62,19 +74,29 @@ func extractStructured(output string) (cleaned string, structured map[string]any
 	cleaned = strings.TrimSpace(strings.Join(kept, "\n"))
 	summary = strings.TrimSpace(strings.Join(summaryLines, "\n"))
 	publish = strings.TrimSpace(strings.Join(publishLines, "\n"))
-	return cleaned, structured, summary, publish
+	spawn = strings.TrimSpace(strings.Join(spawnLines, "\n"))
+	return cleaned, structured, summary, publish, spawn
 }
 
 // applyStructured post-processes a RunResult's Output, moving any structured
-// output, summary, and publish payload into their dedicated fields. Safe to call
-// for plain runs: when no sentinels are present, Output is unchanged and the new
-// fields stay nil/empty.
+// output, summary, publish payload, and spawn request into their dedicated
+// fields. Safe to call for plain runs: when no sentinels are present, Output is
+// unchanged and the new fields stay nil/empty. A malformed APIARY_SPAWN block
+// (invalid JSON) is surfaced via RunResult.SpawnError so the engine fails the step.
 func applyStructured(result *model.RunResult) {
-	cleaned, structured, summary, publish := extractStructured(result.Output)
+	cleaned, structured, summary, publish, spawn := extractStructured(result.Output)
 	result.Output = cleaned
 	result.StructuredOutput = structured
 	result.Summary = summary
 	result.PublishPayload = publish
+	if spawn != "" {
+		var req model.SpawnRequest
+		if err := json.Unmarshal([]byte(spawn), &req); err != nil {
+			result.SpawnError = fmt.Errorf("APIARY_SPAWN: invalid JSON: %w", err)
+		} else {
+			result.SpawnRequest = &req
+		}
+	}
 }
 
 // summaryInstruction returns the text appended to a prompt instructing the agent

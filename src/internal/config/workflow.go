@@ -35,6 +35,13 @@ const (
 	PublishOff  = "off"  // never write back, even if a payload is present
 )
 
+// Spawn modes for an agent step: how the engine treats an APIARY_SPAWN request
+// emitted by the agent.
+const (
+	SpawnAuto  = "auto"  // default: fire-and-forget — do not block on the child
+	SpawnAwait = "await" // block until the spawned task is terminal; child failure fails the step
+)
+
 // on_missing_output policy values for an agent step that declares output_schema.
 const (
 	OnMissingOutputWarn   = "warn"
@@ -116,6 +123,10 @@ type StepConfig struct {
 	// agent is written back to the task's source bindings: auto (default) | off.
 	// Empty inherits the auto default.
 	Publish string `yaml:"publish,omitempty"`
+	// Spawn controls how an APIARY_SPAWN request emitted by this step's agent is
+	// handled: auto (default, fire-and-forget) | await (block on the child).
+	// Empty inherits the auto default.
+	Spawn string `yaml:"spawn,omitempty"`
 
 	// ── split step ────────────────────────────────────────────────
 	Multi    bool          `yaml:"multi,omitempty"`

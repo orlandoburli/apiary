@@ -18,7 +18,7 @@ func TestExtractStructured_OutputAndSummary(t *testing.T) {
 		`APIARY_OUTPUT: {"complexity":"high","action":"implement"}`,
 	}, "\n")
 
-	cleaned, structured, summary, _ := extractStructured(raw)
+	cleaned, structured, summary, _, _ := extractStructured(raw)
 
 	if strings.Contains(cleaned, "APIARY_OUTPUT") || strings.Contains(cleaned, "APIARY_SUMMARY") {
 		t.Errorf("cleaned output still contains sentinels:\n%s", cleaned)
@@ -39,7 +39,7 @@ func TestExtractStructured_OutputAndSummary(t *testing.T) {
 
 func TestExtractStructured_NoSentinels(t *testing.T) {
 	raw := "Just a normal agent response.\nNothing structured here."
-	cleaned, structured, summary, publish := extractStructured(raw)
+	cleaned, structured, summary, publish, _ := extractStructured(raw)
 	if publish != "" {
 		t.Errorf("expected empty publish, got: %q", publish)
 	}
@@ -60,7 +60,7 @@ func TestExtractStructured_LastOutputWins(t *testing.T) {
 		"some text",
 		`APIARY_OUTPUT: {"v":2}`,
 	}, "\n")
-	_, structured, _, _ := extractStructured(raw)
+	_, structured, _, _, _ := extractStructured(raw)
 	if structured == nil || structured["v"] != float64(2) {
 		t.Errorf("expected last APIARY_OUTPUT to win, got: %#v", structured)
 	}
@@ -68,7 +68,7 @@ func TestExtractStructured_LastOutputWins(t *testing.T) {
 
 func TestExtractStructured_InvalidJSONStrippedButNil(t *testing.T) {
 	raw := "real output\nAPIARY_OUTPUT: {not valid json}"
-	cleaned, structured, _, _ := extractStructured(raw)
+	cleaned, structured, _, _, _ := extractStructured(raw)
 	if structured != nil {
 		t.Errorf("expected nil structured for invalid JSON, got: %#v", structured)
 	}
@@ -90,7 +90,7 @@ func TestExtractStructured_PublishBlock(t *testing.T) {
 		"Trailing line.",
 	}, "\n")
 
-	cleaned, structured, summary, publish := extractStructured(raw)
+	cleaned, structured, summary, publish, _ := extractStructured(raw)
 
 	if structured != nil || summary != "" {
 		t.Errorf("expected no structured/summary, got %#v / %q", structured, summary)
@@ -103,6 +103,52 @@ func TestExtractStructured_PublishBlock(t *testing.T) {
 	}
 	if publish != "## Result\nDone. See the diff." {
 		t.Errorf("publish payload parsed incorrectly: %q", publish)
+	}
+}
+
+func TestApplyStructured_SpawnBlock(t *testing.T) {
+	result := model.RunResult{
+		Output: strings.Join([]string{
+			"Decided to delegate.",
+			"APIARY_SPAWN_BEGIN",
+			`{"workflow":"collect-logs","title":"Collect logs","input":{"severity":"high"}}`,
+			"APIARY_SPAWN_END",
+		}, "\n"),
+	}
+	applyStructured(&result)
+
+	if result.Output != "Decided to delegate." {
+		t.Errorf("spawn block not stripped from output: %q", result.Output)
+	}
+	if result.SpawnError != nil {
+		t.Fatalf("unexpected spawn error: %v", result.SpawnError)
+	}
+	if result.SpawnRequest == nil {
+		t.Fatal("expected spawn request, got nil")
+	}
+	if result.SpawnRequest.WorkflowID != "collect-logs" || result.SpawnRequest.Title != "Collect logs" {
+		t.Errorf("spawn request parsed incorrectly: %#v", result.SpawnRequest)
+	}
+	if result.SpawnRequest.Input["severity"] != "high" {
+		t.Errorf("spawn input parsed incorrectly: %#v", result.SpawnRequest.Input)
+	}
+	// ParentTaskID is never taken from agent output (json:"-").
+	if result.SpawnRequest.ParentTaskID != "" {
+		t.Errorf("ParentTaskID should not be set from agent output, got %q", result.SpawnRequest.ParentTaskID)
+	}
+}
+
+func TestApplyStructured_SpawnInvalidJSON(t *testing.T) {
+	result := model.RunResult{
+		Output: "APIARY_SPAWN_BEGIN\n{not valid json}\nAPIARY_SPAWN_END",
+	}
+	applyStructured(&result)
+
+	if result.SpawnRequest != nil {
+		t.Errorf("expected nil spawn request for invalid JSON, got %#v", result.SpawnRequest)
+	}
+	if result.SpawnError == nil {
+		t.Fatal("expected spawn error for invalid JSON, got nil")
 	}
 }
 
