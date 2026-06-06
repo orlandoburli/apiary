@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -128,5 +129,51 @@ func TestWfStepExecutor_PublishPropagation(t *testing.T) {
 	})
 	if off.PublishPayload != "" {
 		t.Errorf("publish off: payload = %q, want cleared", off.PublishPayload)
+	}
+}
+
+// TestWfStepExecutor_SpawnPropagationAndError verifies the executor forwards a
+// parsed APIARY_SPAWN request to the engine, and turns a malformed block
+// (RunResult.SpawnError) into a failed step (7.2.1, 7.3.3).
+func TestWfStepExecutor_SpawnPropagationAndError(t *testing.T) {
+	ctx := context.Background()
+	dbc, err := db.New(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbc.Close() })
+
+	newExec := func(res model.RunResult) *wfStepExecutor {
+		d := &Dispatcher{
+			cfg:         &config.Config{},
+			db:          dbc,
+			runners:     map[string]runnerpkg.Runner{"agent-architect": &fakeRunner{result: res}},
+			agentRunner: map[string]string{"architect": "claude"},
+		}
+		return &wfStepExecutor{d: d}
+	}
+	step := config.StepConfig{ID: "plan", Agent: "architect"}
+
+	// Valid spawn request propagates to the engine.
+	okRes := newExec(model.RunResult{Success: true, SpawnRequest: &model.SpawnRequest{WorkflowID: "collect"}}).
+		ExecuteStep(ctx, workflow.StepRequest{InstanceID: "wf_1", Cell: model.SourceItem{ID: "c1"}, Step: step})
+	if !okRes.Success {
+		t.Fatalf("expected success, got %+v", okRes)
+	}
+	if okRes.SpawnRequest == nil || okRes.SpawnRequest.WorkflowID != "collect" {
+		t.Errorf("spawn request not propagated: %+v", okRes.SpawnRequest)
+	}
+
+	// Malformed spawn block → failed step with the error surfaced.
+	badRes := newExec(model.RunResult{Success: true, SpawnError: errors.New("invalid JSON")}).
+		ExecuteStep(ctx, workflow.StepRequest{InstanceID: "wf_2", Cell: model.SourceItem{ID: "c1"}, Step: step})
+	if badRes.Success {
+		t.Error("expected failed step for malformed spawn block")
+	}
+	if badRes.Err == nil {
+		t.Error("expected spawn error surfaced on the step result")
+	}
+	if badRes.SpawnRequest != nil {
+		t.Errorf("malformed spawn should yield no request, got %+v", badRes.SpawnRequest)
 	}
 }

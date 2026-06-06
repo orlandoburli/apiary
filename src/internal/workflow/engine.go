@@ -52,7 +52,10 @@ type StepResult struct {
 	// engine writes it back to the task's source bindings as a comment. The
 	// executor clears it when the step sets publish: off.
 	PublishPayload string
-	Err            error
+	// SpawnRequest is the parsed APIARY_SPAWN request the agent emitted, if any.
+	// The engine creates a child task and dispatches the named workflow.
+	SpawnRequest *model.SpawnRequest
+	Err          error
 }
 
 // StepExecutor performs the actual runner invocation for a single agent step.
@@ -80,11 +83,12 @@ type SideEffects interface {
 // Phase 2 it executes agent steps sequentially in declaration order (single-step
 // and linear chains); the DAG executor with splits/foreach arrives in Phase 3.
 type Engine struct {
-	cfg   *config.Config
-	store Store
-	exec  StepExecutor
-	side  SideEffects
-	mem   MemoryBuilder
+	cfg     *config.Config
+	store   Store
+	exec    StepExecutor
+	side    SideEffects
+	mem     MemoryBuilder
+	spawner WorkflowSpawner
 
 	now   func() time.Time
 	newID func(prefix string) string
@@ -107,6 +111,9 @@ func WithIDGen(gen func(prefix string) string) Option { return func(e *Engine) {
 
 // WithMemoryBuilder overrides the memory builder.
 func WithMemoryBuilder(b MemoryBuilder) Option { return func(e *Engine) { e.mem = b } }
+
+// WithSpawner sets the APIARY_SPAWN handler used to create child tasks.
+func WithSpawner(s WorkflowSpawner) Option { return func(e *Engine) { e.spawner = s } }
 
 // NewEngine builds an Engine. cfg, store, and exec are required.
 func NewEngine(cfg *config.Config, store Store, exec StepExecutor, opts ...Option) *Engine {
@@ -281,6 +288,9 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 			sr.StructuredOutput = string(data)
 		}
 	}
+	// Spawn handling runs before the pass/fail decision so a spawn failure (or an
+	// await on a failed child) fails the step.
+	e.spawnStep(ctx, task, step, &res, sr)
 	if res.Success {
 		sr.State = db.StepStatePassed
 	} else {
@@ -289,6 +299,47 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 	e.publishStep(ctx, task, bindings, res, sr)
 	_ = e.store.UpdateStepRun(ctx, sr)
 	return res
+}
+
+// spawnStep handles an agent-emitted APIARY_SPAWN request: it creates a child
+// InternalTask via the spawner, dispatches the named workflow, and records the
+// child id on the step run. By default (spawn: auto) it is fire-and-forget; with
+// spawn: await it blocks until the child reaches a terminal state and fails the
+// step if the child failed. A spawn request is only honored when the agent step
+// itself succeeded; a missing spawner, an unknown workflow, or a create failure
+// fails the step (never a silent no-op).
+func (e *Engine) spawnStep(ctx context.Context, task model.InternalTask, step config.StepConfig, res *StepResult, sr *db.StepRun) {
+	if res.SpawnRequest == nil || !res.Success {
+		return
+	}
+	if e.spawner == nil {
+		res.Success = false
+		res.Err = fmt.Errorf("step %q requested APIARY_SPAWN but no spawner is configured", step.ID)
+		return
+	}
+
+	req := *res.SpawnRequest
+	req.ParentTaskID = task.ID
+	child, err := e.spawner.Spawn(ctx, req)
+	if err != nil {
+		res.Success = false
+		res.Err = fmt.Errorf("spawn workflow %q: %w", req.WorkflowID, err)
+		return
+	}
+	sr.SpawnedTaskID = child.ID
+
+	if step.Spawn == config.SpawnAwait {
+		ok, werr := e.spawner.Await(ctx, child.ID)
+		if werr != nil {
+			res.Success = false
+			res.Err = fmt.Errorf("spawn await child %s: %w", child.ID, werr)
+			return
+		}
+		if !ok {
+			res.Success = false
+			res.Err = fmt.Errorf("spawned task %s failed", child.ID)
+		}
+	}
 }
 
 // publishStep writes an agent-emitted APIARY_PUBLISH payload back to the task's
