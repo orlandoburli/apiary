@@ -117,3 +117,49 @@ release:
     name: apiary
   draft: false
   prerelease: auto # tags like v0.1.0-rc1 are marked pre-release automatically
+
+# Homebrew (macOS + Linux). Pushes a cask to orlandoburli/homebrew-tap →
+#   brew install --cask orlandoburli/tap/apiary
+# (homebrew_casks replaces the deprecated `brews`/formula path for prebuilt
+# binaries.) Needs TAP_GITHUB_TOKEN (a PAT with contents:write on the tap repo);
+# the default GITHUB_TOKEN can't push to other repos.
+homebrew_casks:
+  - name: apiary
+    ids: [apiary]
+    repository:
+      owner: orlandoburli
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/orlandoburli/apiary"
+    description: "Task-driven agent orchestration harness (GitHub Issues, Plane, and other sources)."
+    commit_author:
+      name: goreleaser-bot
+      email: goreleaser-bot@users.noreply.github.com
+    skip_upload: auto # don't publish casks for prereleases / snapshots
+    # Unsigned binary: strip the Gatekeeper quarantine flag on install so macOS
+    # doesn't block it. (Proper notarization is a deferred follow-up.)
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/apiary"]
+          end
+
+# Scoop (Windows). Pushes a manifest to orlandoburli/scoop-bucket →
+#   scoop bucket add orlandoburli https://github.com/orlandoburli/scoop-bucket
+#   scoop install apiary
+scoops:
+  - name: apiary
+    ids: [apiary]
+    repository:
+      owner: orlandoburli
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/orlandoburli/apiary"
+    description: "Task-driven agent orchestration harness (GitHub Issues, Plane, and other sources)."
+    license: "AGPL-3.0"
+    commit_author:
+      name: goreleaser-bot
+      email: goreleaser-bot@users.noreply.github.com
+    skip_upload: auto # don't publish manifests for prereleases / snapshots
