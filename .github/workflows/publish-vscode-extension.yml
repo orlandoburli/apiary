@@ -1,0 +1,64 @@
+name: Publish VS Code Extension
+
+on:
+  # Trigger on version bump in tools/vscode-apiary/package.json
+  push:
+    branches:
+      - main
+    paths:
+      - 'tools/vscode-apiary/package.json'
+      - 'tools/vscode-apiary/src/**'
+      - 'tools/vscode-apiary/package-lock.json'
+
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        working-directory: tools/vscode-apiary
+        run: npm ci
+
+      - name: Build extension
+        working-directory: tools/vscode-apiary
+        run: npm run build
+
+      - name: Get version
+        id: version
+        working-directory: tools/vscode-apiary
+        run: |
+          VERSION=$(node -e "console.log(require('./package.json').version)")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+
+      - name: Publish to VS Code Marketplace
+        working-directory: tools/vscode-apiary
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: vsce publish -p $VSCE_PAT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: vscode-apiary-v${{ steps.version.outputs.version }}
+          body: |
+            # Apiary Workflow Visualizer v${{ steps.version.outputs.version }}
+
+            Published to [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=orlandoburli.vscode-apiary)
+
+            See the main apiary release notes for details.
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
