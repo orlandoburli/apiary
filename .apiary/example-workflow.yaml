@@ -1,12 +1,15 @@
 version: "1"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Example: Workflow Mode (experimental)
+# Example: Workflow Mode — v2 authoring syntax
 #
-# This sample shows how to route a task through a multi-step workflow.
-# A matched task runs through `steps` in dependency order, threading a small
-# enrichable "memory" baton between them. Approval steps suspend the instance
-# until a human responds on the task (GitHub issues support this via comments).
+# Steps are written in a nested sequential tree with `if:` guards and
+# `reject_when:`/`on_reject:` loops. The engine lowers this to a DAG IR before
+# execution, so all existing features (memory, approval, foreach, sub-workflows)
+# continue to work unchanged.
+#
+# Low-level primitives (`type: split`, `depends_on`, `goto`) are still available
+# for hand-tuned DAGs; do not mix them with v2 authoring in the same workflow.
 #
 # Inspect and resume instances from the CLI:
 #   apiary instances                 # list workflow instances
@@ -36,21 +39,25 @@ sources:
 
 agents:
   - id: investigator
-    description: "Classifies an issue by complexity"
+    description: "Classifies an issue by complexity and approach"
     soul_file: .apiary/souls/investigator.md
     model: claude-opus-4-8
   - id: engineer
-    description: "Implements the change"
+    description: "Implements the change described in memory"
     soul_file: .apiary/souls/engineer.md
     model: claude-sonnet-4-6
   - id: reviewer
-    description: "Reviews the change"
+    description: "Reviews the implementation and returns a verdict"
     soul_file: .apiary/souls/reviewer.md
+    model: claude-sonnet-4-6
+  - id: qa
+    description: "Runs quality checks and confirms the change is shippable"
+    soul_file: .apiary/souls/qa.md
     model: claude-sonnet-4-6
 
 workflows:
   - id: feature-development
-    description: "Plan → implement → human approval → review"
+    description: "Classify → implement → review (with retry loop) → QA"
     resume: allowed
     trigger:
       priority: 10
@@ -59,50 +66,59 @@ workflows:
         types: [feature, improvement]
 
     steps:
-      # 1) Classify and plan. Persist a couple of fields into workflow memory.
-      - id: plan
+      # ── 1. Classify ─────────────────────────────────────────────────────────
+      # Determine complexity and planned approach; persist both into memory.
+      - id: classify
         agent: investigator
         summary_prompt: "In 3-5 bullets: the approach, risks, and what the implementer needs."
-        output_schema:
+        output:
           type: object
           properties:
             complexity: {type: string, enum: [low, medium, high]}
-            approach: {type: string}
+            approach:   {type: string}
           required: [complexity, approach]
         memory:
           write: [complexity, approach]
 
-      # 2) Route on the planned complexity. High complexity needs sign-off.
-      - id: route
-        type: split
-        depends_on: [plan]
-        branches:
-          - if: 'memory.complexity == "high"'
-            goto: approve
-          - else: true
-            goto: implement
-
-      # 3) Human approval checkpoint (only reached for high-complexity work).
-      #    The engine posts `message` and parks the instance until a maintainer
-      #    comments "approve" (resume) or "reject" (abort), or the timeout fires.
+      # ── 2. High-complexity gate ──────────────────────────────────────────────
+      # An approval step guards high-complexity changes; low/medium skip straight
+      # to implementation. The `if:` condition is evaluated after classify runs.
       - id: approve
         type: approval
-        message: "High-complexity change planned. Comment `approve` to proceed or `reject` to stop."
+        if: ${{ memory.complexity == "high" }}
+        message: |
+          High-complexity change detected (complexity=${{ memory.complexity }}).
+          Comment `approve` to proceed or `reject` to stop.
         resume_on: {comment_contains: "approve"}
-        abort_on: {comment_contains: "reject"}
-        timeout: 24h
-        on_pass: {next: implement}
+        abort_on:  {comment_contains: "reject"}
+        timeout: 48h
 
-      # 4) Implement, then review. Both read the accumulated memory baton.
+      # ── 3. Implement ─────────────────────────────────────────────────────────
       - id: implement
         agent: engineer
-        depends_on: [plan]
-        prompt: "Implement the change following the approach captured in memory."
+        prompt: "Implement the change following the approach in memory."
 
+      # ── 4. Review with automatic retry loop ─────────────────────────────────
+      # The reviewer writes a `verdict` field. If it is "rejected" the engine
+      # loops back to implement and retries up to 2 times.
       - id: review
         agent: reviewer
-        depends_on: [implement]
-        prompt: "Review the implementation for correctness and conventions."
+        prompt: "Review the implementation for correctness, conventions, and the original issue."
+        output:
+          type: object
+          properties:
+            verdict:  {type: string, enum: [approved, rejected]}
+            feedback: {type: string}
+          required: [verdict]
+        reject_when: ${{ memory.verdict == "rejected" }}
+        on_reject:
+          restart_from: implement
+          max: 2
+
+      # ── 5. QA ────────────────────────────────────────────────────────────────
+      - id: qa-check
+        agent: qa
+        prompt: "Run quality checks on the implementation and confirm it is shippable."
 
     on_complete:
       set_state: in_review
