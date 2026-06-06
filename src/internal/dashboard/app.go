@@ -95,10 +95,12 @@ type workflowStepLogsMsg struct {
 // ── lifecycle ───────────────────────────────────────────────────────────────
 
 // Init initializes the app: enter alt-screen, fetch the first tab, start timer.
+// Workflows config is fetched eagerly so it is ready before the user navigates there.
 func (a *App) Init() tea.Cmd {
 	return tea.Batch(
 		tea.EnterAltScreen,
 		a.fetchActiveTab(),
+		a.fetchWorkflowsConfig(),
 		tickCmd(),
 	)
 }
@@ -3334,8 +3336,17 @@ func (a *App) renderWorkflowsTab(height int) string {
 		if len(wf.Steps) == 0 {
 			right.WriteString(StyleMuted.Render("  No steps defined.") + "\n")
 		}
+
+		// Each step renders exactly 1 line so the list height stays stable as the
+		// cursor moves. The selected step's detail (depends, if, prompt) is shown
+		// in a fixed section below the list separated by a horizontal rule.
+		var selectedStep *WorkflowStepDef
 		for i, step := range wf.Steps {
+			step := step
 			selected := i == wt.StepIdx && wt.Focus == WorkflowsViewSteps
+			if selected {
+				selectedStep = &step
+			}
 			typeLabel := styleStepType(step.Type)
 			stepLine := typeLabel + " " + StyleValueStrong.Render(step.ID)
 			if step.Agent != "" {
@@ -3343,22 +3354,40 @@ func (a *App) renderWorkflowsTab(height int) string {
 			}
 			if selected {
 				right.WriteString(StyleSelectedRow.Render(fitLine("  "+ansi.Strip(stepLine), rightW)) + "\n")
-				// Expand detail for selected step.
-				if len(step.DependsOn) > 0 {
-					right.WriteString("    " + StyleMuted.Render("depends: "+strings.Join(step.DependsOn, ", ")) + "\n")
-				}
-				if step.Condition != "" {
-					right.WriteString("    " + StyleMuted.Render("if: "+truncate(step.Condition, rightW-10)) + "\n")
-				}
-				if step.Prompt != "" {
-					right.WriteString("    " + StyleMuted.Render("prompt: "+truncate(step.Prompt, rightW-12)) + "\n")
-				}
 			} else {
 				right.WriteString(fitLine("  "+stepLine, rightW) + "\n")
-				if len(step.DependsOn) > 0 {
-					right.WriteString("    " + StyleMuted.Render("↳ needs: "+strings.Join(step.DependsOn, ", ")) + "\n")
+			}
+		}
+
+		// Fixed detail section — always present below the list, so it never
+		// shifts the step rows above it.
+		right.WriteString(StyleMuted.Render(strings.Repeat("─", rightW)) + "\n")
+		if selectedStep != nil {
+			if len(selectedStep.DependsOn) > 0 {
+				right.WriteString("  " + StyleLabel.Render(pad("depends:", 9)) + " " + strings.Join(selectedStep.DependsOn, ", ") + "\n")
+			}
+			if selectedStep.Condition != "" {
+				right.WriteString("  " + StyleLabel.Render(pad("if:", 9)) + " " + truncate(selectedStep.Condition, rightW-14) + "\n")
+			}
+			if selectedStep.Prompt != "" {
+				lines := wrapPlain(selectedStep.Prompt, rightW-14)
+				for i, line := range lines {
+					if i == 0 {
+						right.WriteString("  " + StyleLabel.Render(pad("prompt:", 9)) + " " + line + "\n")
+					} else {
+						right.WriteString("             " + line + "\n")
+					}
+					if i >= 4 {
+						right.WriteString("             " + StyleMuted.Render("…") + "\n")
+						break
+					}
 				}
 			}
+			if len(selectedStep.DependsOn) == 0 && selectedStep.Condition == "" && selectedStep.Prompt == "" {
+				right.WriteString("  " + StyleMuted.Render("(no additional config for this step)") + "\n")
+			}
+		} else {
+			right.WriteString("  " + StyleMuted.Render("navigate with j/k, then → or enter to inspect steps") + "\n")
 		}
 	}
 
