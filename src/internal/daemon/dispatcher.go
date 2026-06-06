@@ -663,6 +663,31 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
+	mux.HandleFunc("/workflows", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(d.WorkflowList())
+	})
+	mux.HandleFunc("/instances/stop/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		instanceID := strings.TrimPrefix(r.URL.Path, "/instances/stop/")
+		if instanceID == "" {
+			http.Error(w, "missing instance id", http.StatusBadRequest)
+			return
+		}
+		if err := d.StopInstance(ctx, instanceID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"stopped": instanceID})
+	})
 	mux.HandleFunc("/clearlogs/", func(w http.ResponseWriter, r *http.Request) {
 		cellID := strings.TrimPrefix(r.URL.Path, "/clearlogs/")
 		if cellID == "" {

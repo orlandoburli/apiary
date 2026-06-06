@@ -489,6 +489,41 @@ func (c *Client) GetTaskLogs(ctx context.Context, taskID string, limit int) ([]T
 	return logs, nil
 }
 
+// GetTaskLogsInRange returns log lines for a task within a time window, used to
+// isolate logs belonging to a specific workflow step run.
+func (c *Client) GetTaskLogsInRange(ctx context.Context, taskID string, from, to *time.Time) ([]TaskLogLine, error) {
+	q := `SELECT timestamp, level, message FROM task_logs WHERE task_id = ?`
+	args := []any{taskID}
+	if from != nil {
+		q += " AND timestamp >= ?"
+		args = append(args, from)
+	}
+	if to != nil {
+		q += " AND timestamp <= ?"
+		args = append(args, to)
+	}
+	q += " ORDER BY id ASC LIMIT 2000"
+
+	rows, err := c.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []TaskLogLine
+	for rows.Next() {
+		var l TaskLogLine
+		var level, msg sql.NullString
+		if err := rows.Scan(&l.Timestamp, &level, &msg); err != nil {
+			continue
+		}
+		l.Level = level.String
+		l.Message = msg.String
+		logs = append(logs, l)
+	}
+	return logs, nil
+}
+
 // LogEntry holds a log record.
 type ServiceLog struct {
 	Timestamp time.Time
