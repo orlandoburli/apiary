@@ -30,13 +30,19 @@ func NewSourceBindingStore(db *sql.DB) *SourceBindingStore {
 // generated and written back. A duplicate (source_id, source_item_id) violates
 // the unique constraint and surfaces as an error for the caller to handle.
 func (s *SourceBindingStore) CreateBinding(ctx context.Context, binding *model.SourceBinding) error {
+	return insertBinding(ctx, s.db, binding)
+}
+
+// insertBinding writes a binding row using the given executor (a *sql.DB or a
+// *sql.Tx), so it can participate in CreateTaskWithBinding's transaction.
+func insertBinding(ctx context.Context, ex execer, binding *model.SourceBinding) error {
 	if binding.ID == "" {
 		binding.ID = newID()
 	}
 	if binding.CreatedAt.IsZero() {
 		binding.CreatedAt = time.Now()
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := ex.ExecContext(ctx, `
 		INSERT INTO source_bindings
 		  (id, task_id, source_id, source_item_id, source_item_url, source_item_number, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
