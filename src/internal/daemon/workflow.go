@@ -154,7 +154,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		StepID:             req.Step.ID,
 		WorkflowInstanceID: req.InstanceID,
 		WorkingDir:         "/",
-		Env:                gitIdentityEnv(req.Agent),
+		Env:                agentIdentityEnv(req.Agent),
 		Timeout:            x.d.cfg.Settings.TaskTimeoutDuration(),
 	}
 
@@ -385,9 +385,17 @@ func readSoulFile(agent config.AgentConfig, cellID string) string {
 	return string(data)
 }
 
-// gitIdentityEnv returns the git author/committer identity env vars derived from
-// the agent's source identity, so commits use the agent's account.
-func gitIdentityEnv(agent config.AgentConfig) map[string]string {
+// agentIdentityEnv returns the environment that makes an agent subprocess act as
+// its own GitHub account: the git author/committer identity derived from the
+// agent's source identity (so commits are attributed correctly), plus the
+// agent's source token exported as GITHUB_TOKEN / GH_TOKEN (so any `gh` commands
+// the agent runs itself authenticate as the agent, not the daemon's inherited
+// default account). The `gh` CLI honours both variables; we set both for safety.
+//
+// These overlay os.Environ() at the call site (Env on the RunRequest, applied
+// after the inherited environment in the runner), so the agent's token wins over
+// any GITHUB_TOKEN the daemon inherited.
+func agentIdentityEnv(agent config.AgentConfig) map[string]string {
 	env := map[string]string{}
 	if agent.SourceName != "" {
 		env["GIT_AUTHOR_NAME"] = agent.SourceName
@@ -396,6 +404,10 @@ func gitIdentityEnv(agent config.AgentConfig) map[string]string {
 	if agent.SourceEmail != "" {
 		env["GIT_AUTHOR_EMAIL"] = agent.SourceEmail
 		env["GIT_COMMITTER_EMAIL"] = agent.SourceEmail
+	}
+	if agent.SourceToken != "" {
+		env["GITHUB_TOKEN"] = agent.SourceToken
+		env["GH_TOKEN"] = agent.SourceToken
 	}
 	return env
 }
