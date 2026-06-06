@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Background -->
+  <rect width="128" height="128" rx="24" fill="#1e1b16"/>
+
+  <defs>
+    <linearGradient id="cell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F6C046"/>
+      <stop offset="1" stop-color="#E8932B"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Outer hexagon -->
+  <polygon points="64,16 105,40 105,88 64,112 23,88 23,40"
+           fill="none" stroke="#E8932B" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- Top cell -->
+  <polygon points="64,38 73,43.5 73,54.5 64,60 55,54.5 55,43.5"
+           fill="url(#cell)"/>
+  <!-- Bottom-left cell -->
+  <polygon points="45,66 54,71.5 54,82.5 45,88 36,82.5 36,71.5"
+           fill="url(#cell)"/>
+  <!-- Bottom-right cell -->
+  <polygon points="83,66 92,71.5 92,82.5 83,88 74,82.5 74,71.5"
+           fill="url(#cell)"/>
+</svg>
