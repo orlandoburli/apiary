@@ -424,3 +424,73 @@ workflows:
 ```
 
 Notice the condition appears **once per track** (on the group), not on every step.
+
+## 10. Engine state machines & execution flow
+
+These reflect the actual engine (`workflow/dag.go` step states, `engine.go`
+`settle`, `db.InstanceState*` / `db.StepState*`) plus the v2 additions
+(`condition`, `reject_when`/`on_reject`).
+
+### Step lifecycle (state machine)
+
+```mermaid
+stateDiagram-v2
+  [*] --> pending
+  pending --> running: deps passed and if/condition true
+  pending --> skipped: if false, or a dependency skipped/failed
+  pending --> waiting: approval step parked
+  running --> passed: success and reject_when false
+  running --> failed: crash, or reject_when true
+  failed --> pending: on_reject.restart_from (retries left)
+  waiting --> passed: resume
+  waiting --> failed: abort or timeout
+  passed --> [*]
+  skipped --> [*]
+  failed --> [*]: no on_reject / retries exhausted
+```
+
+`failed --> pending` is the loop-back: `resetLoop` resets the `restart_from` target
+**and everything downstream of it** back to `pending` (clearing their memory
+contributions) so the branch re-runs; the per-step retry counter bounds it by `max`.
+
+### Workflow instance lifecycle (state machine)
+
+```mermaid
+stateDiagram-v2
+  [*] --> running
+  running --> approval_waiting: reached an approval step
+  approval_waiting --> running: resume
+  approval_waiting --> failed: abort or timeout
+  running --> done: all steps terminal, none failed
+  running --> failed: a step failed with no retry left
+  done --> [*]
+  failed --> [*]
+```
+
+`done`/`failed` fire `on_complete`/`on_fail` (result comment, `set_state`,
+`add_labels`); `approval_waiting` parks the instance until the poll loop resolves it.
+
+### Step execution flow (what one step does)
+
+```mermaid
+flowchart TD
+  A[scheduler picks a runnable step] --> B{if / condition true?}
+  B -->|no| SK[mark skipped → cascade to dependents]
+  B -->|yes| C[create step_run = running]
+  C --> D[resolve agent + model]
+  D --> E[build memory doc from passed steps]
+  E --> F["run agent via runner<br/>acquire global + per-agent semaphore"]
+  F --> G["extract structured output + summary<br/>(APIARY_OUTPUT / APIARY_SUMMARY)"]
+  G --> H{"success?<br/>exit == 0 AND reject_when false"}
+  H -->|yes| P["state = passed<br/>record memory contribution<br/>activate next / on_pass"]
+  H -->|no| Q{"on_reject / on_fail.goto<br/>and retries left?"}
+  Q -->|yes| R["resetLoop: restart_from + downstream → pending<br/>retry++"]
+  Q -->|no| FAIL[state = failed → instance fails]
+  P --> NEXT[re-evaluate runnable set]
+  R --> NEXT
+  SK --> NEXT
+```
+
+For a **parallel** step the same flow runs per child concurrently; the parent's
+pass/fail is then the `join` policy (`all`/`any`/`${{ expr }}`) over the children.
+For a **foreach** step it runs per item (bounded by the global semaphore).
