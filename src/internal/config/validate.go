@@ -104,6 +104,11 @@ func (c *Config) Validate() []error {
 		routeIDs[r.ID] = true
 	}
 
+	// Lower v2 authored workflows to DAG IR before validation so the validator
+	// sees only canonical StepConfig fields.
+	if err := LowerV2WorkflowInConfig(c); err != nil {
+		errs = append(errs, err)
+	}
 	errs = append(errs, c.validateWorkflows()...)
 
 	// Removed-directive and unknown-field checks on the raw text (no-op when the
