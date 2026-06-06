@@ -19,10 +19,13 @@ const cursorDefaultBaseURL = "https://api.cursor.com"
 // CursorRunner invokes a Cursor Cloud Agent via the Cursor Agents API.
 // It creates a new agent per task, streams the run via SSE, and returns
 // the final result text.
+//
+// The repository URL is derived automatically from the Cell's issue URL
+// (e.g. https://github.com/org/repo/issues/42 → https://github.com/org/repo),
+// so no repo_url config is needed.
 type CursorRunner struct {
 	BaseURL string // default: https://api.cursor.com
 	APIKey  string // Cursor API key (cursor_ prefix)
-	RepoURL string // GitHub repository URL for the agent workspace (optional)
 }
 
 func (r *CursorRunner) ID() string { return "cursor-api" }
@@ -33,9 +36,6 @@ func (r *CursorRunner) Configure(config map[string]any) error {
 	}
 	if v, ok := config["base_url"].(string); ok && v != "" {
 		r.BaseURL = v
-	}
-	if v, ok := config["repo_url"].(string); ok && v != "" {
-		r.RepoURL = v
 	}
 	if r.APIKey == "" {
 		return fmt.Errorf("cursor runner: api_key is required")
@@ -76,7 +76,7 @@ func (r *CursorRunner) Run(ctx context.Context, req model.RunRequest) (model.Run
 	}
 	defer close(heartbeatDone)
 
-	agentID, runID, err := r.createAgent(ctx, prompt, req.Model)
+	agentID, runID, err := r.createAgent(ctx, prompt, req.Model, repoURLFromCell(req.Cell.URL))
 	if err != nil {
 		return model.RunResult{
 			WorkerID: req.WorkerID,
@@ -101,16 +101,28 @@ func (r *CursorRunner) Run(ctx context.Context, req model.RunRequest) (model.Run
 	return result, nil
 }
 
+// repoURLFromCell extracts a GitHub repo URL from a Cell URL like
+// https://github.com/org/repo/issues/42 → https://github.com/org/repo.
+// Returns empty string if the URL doesn't match the expected pattern.
+func repoURLFromCell(cellURL string) string {
+	for _, segment := range []string{"/issues/", "/pull/"} {
+		if idx := strings.Index(cellURL, segment); idx != -1 {
+			return cellURL[:idx]
+		}
+	}
+	return ""
+}
+
 // createAgent posts to /v1/agents and returns the agent ID and initial run ID.
-func (r *CursorRunner) createAgent(ctx context.Context, prompt, modelID string) (agentID, runID string, err error) {
+func (r *CursorRunner) createAgent(ctx context.Context, prompt, modelID, repoURL string) (agentID, runID string, err error) {
 	body := map[string]any{
 		"prompt": map[string]string{"text": prompt},
 	}
 	if modelID != "" {
 		body["model"] = map[string]string{"id": modelID}
 	}
-	if r.RepoURL != "" {
-		body["repos"] = []map[string]string{{"url": r.RepoURL}}
+	if repoURL != "" {
+		body["repos"] = []map[string]string{{"url": repoURL}}
 	}
 
 	raw, err := json.Marshal(body)
