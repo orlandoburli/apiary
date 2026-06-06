@@ -1,5 +1,12 @@
 # Specification: Workflow Schema
 
+> **Authoring model superseded by `workflow-sequential-authoring`.** This document
+> describes the **engine IR / low-level form** — `depends_on`, `split`/`goto`,
+> reference-based `type: workflow`. The *authored* surface is now a **nested step
+> tree** (no hand-written `depends_on`/`uses:`; composition is nesting) which
+> **lowers to** the schema below. Keep this as the IR reference; write workflows in
+> the v2 form. The `trigger:` block and matching described here are unchanged by v2.
+
 Complete schema reference for the `workflows:` block in `apiary.yaml`. This is the canonical definition of how workflows, triggers, and steps fit together.
 
 ## Structure Overview
