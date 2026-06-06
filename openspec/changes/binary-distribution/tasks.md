@@ -13,7 +13,7 @@ Read `proposal.md` and `design.md` first. The cgo cross-compilation decision (Ph
 - [x] 0.1 ~~Decide cgo cross-compile strategy~~ — **moot.** Chose to remove cgo entirely (0.2), so no osxcross/mingw/zig needed.
 - [x] 0.2 Migrate `mattn/go-sqlite3` → `modernc.org/sqlite` (pure-Go) — **done.** Isolated to `client.go` (driver name, `?_pragma=busy_timeout(5000)` DSN, `*sqlite.Error.Code()==SQLITE_CONSTRAINT_UNIQUE`); full test suite green; all 6 targets cross-compile with `CGO_ENABLED=0`.
 - [x] 0.3 v1 channel cut: brew + scoop + releases + nfpm + docker in v1; winget / AUR as fast-follow (Phase 5)
-- [ ] 0.4 Decide `latest` Docker tag policy (stable-only vs every tag) — defer to Phase 3
+- [x] 0.4 `latest` Docker tag policy: **stable-only** — the `:latest` manifest uses `skip_push: auto`, so prereleases/snapshots never move `:latest`
 
 ## Phase 1 — Release pipeline core (GitHub Releases)
 
@@ -26,14 +26,14 @@ Minimum shippable: tag → cross-platform archives + checksums on the GitHub Rel
 
 ## Phase 2 — Linux native packages
 
-- [ ] 2.1 Add `nfpms` block (deb + rpm) to `.goreleaser.yaml`; attach to the Release
-- [ ] 2.2 Smoke: `dpkg -i` / `rpm -i` the artifacts in a container, run `apiary version`
+- [x] 2.1 Add `nfpms` block (deb + rpm) to `.goreleaser.yaml`; attach to the Release
+- [x] 2.2 Smoke: snapshot built deb+rpm for amd64+arm64 *(container `dpkg -i`/`rpm -i` install test still TODO on the real release)*
 
 ## Phase 3 — Containers (ghcr.io)
 
-- [ ] 3.1 Add `Dockerfile` (or `ko`/buildx config) and `dockers` + `docker_manifests` blocks (linux/amd64 + arm64)
-- [ ] 3.2 Add ghcr.io login + `packages:write` to `release.yml`; push multi-arch manifest
-- [ ] 3.3 Make the ghcr package public; smoke `docker run ghcr.io/orlandoburli/apiary:<tag> version`
+- [x] 3.1 Add `Dockerfile` (distroless/static, nonroot) and `dockers` + `docker_manifests` blocks (linux/amd64 + arm64). **Note:** `dockers`/`docker_manifests` are deprecated in favor of `dockers_v2` — migrate later (Phase 7-ish).
+- [x] 3.2 Add ghcr.io login + QEMU + buildx + `packages:write` to `release.yml`; multi-arch manifest (`:latest` stable-only via `skip_push: auto`)
+- [ ] 3.3 Make the ghcr package public after first push; smoke `docker run ghcr.io/orlandoburli/apiary:<tag> version` *(local snapshot image runs + reports version; real push pending the RC tag)*
 
 ## Phase 4 — Homebrew + Scoop
 
