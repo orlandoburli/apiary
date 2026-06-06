@@ -133,6 +133,66 @@ func TestLint_ExampleConfigsNoFalsePositives(t *testing.T) {
 	}
 }
 
+// TestLoad_ParsesTasksBlock verifies 8.1.1/8.1.2: the top-level tasks: block
+// parses into Config.Tasks with its on_complete/on_fail hooks, and the strict
+// unknown-field lint accepts the new keys (a clean load).
+func TestLoad_ParsesTasksBlock(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `version: "1"
+tasks:
+  on_complete:
+    set_state: done
+    add_labels: [resolved]
+  on_fail:
+    set_state: blocked
+`
+	path := filepath.Join(dir, "apiary.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Tasks == nil {
+		t.Fatal("expected Config.Tasks to be parsed, got nil")
+	}
+	if cfg.Tasks.OnComplete == nil || cfg.Tasks.OnComplete.SetState != "done" {
+		t.Errorf("tasks.on_complete parsed incorrectly: %+v", cfg.Tasks.OnComplete)
+	}
+	if cfg.Tasks.OnComplete == nil || len(cfg.Tasks.OnComplete.AddLabels) != 1 || cfg.Tasks.OnComplete.AddLabels[0] != "resolved" {
+		t.Errorf("tasks.on_complete.add_labels parsed incorrectly: %+v", cfg.Tasks.OnComplete)
+	}
+	if cfg.Tasks.OnFail == nil || cfg.Tasks.OnFail.SetState != "blocked" {
+		t.Errorf("tasks.on_fail parsed incorrectly: %+v", cfg.Tasks.OnFail)
+	}
+	// The new keys must not trip the strict unknown-field lint.
+	if errs := cfg.lint(); len(errs) != 0 {
+		t.Errorf("valid tasks: block should lint clean, got: %v", errs)
+	}
+}
+
+// TestLint_RemovedAssignUnderTasksHook verifies 8.1.3: the top-level tasks:
+// on_complete/on_fail hooks follow the same rules as per-workflow hooks, so the
+// removed assign_* directives are rejected there too. The removed-directive lint
+// matches on the leaf+parent key (assign_from_output under on_complete), so it
+// catches the directive regardless of whether on_complete sits under a workflow
+// or under the tasks: block.
+func TestLint_RemovedAssignUnderTasksHook(t *testing.T) {
+	raw := `version: "1"
+tasks:
+  on_complete:
+    assign_from_output: true
+`
+	errs := newRawConfig(raw).lint()
+	if len(errs) == 0 {
+		t.Fatal("expected an error for assign_from_output under tasks.on_complete, got none")
+	}
+	if !strings.Contains(joinErrs(errs), "assign_from_output") {
+		t.Errorf("error should name the directive: %q", joinErrs(errs))
+	}
+}
+
 func joinErrs(errs []error) string {
 	var b strings.Builder
 	for _, e := range errs {

@@ -295,20 +295,31 @@ func TestRunOnce_SpawnCreatesChildTask(t *testing.T) {
 	}
 
 	// The spawned child task must exist with the parent task as its parent and the
-	// input carried through. The parent is the source-bound task for INC-1.
-	tasks, err := dbc.InternalTasks().ListTasksByState(ctx, model.TaskStateRegistered)
-	if err != nil {
-		t.Fatalf("list tasks: %v", err)
-	}
+	// input carried through. The parent is the source-bound task for INC-1. The
+	// child is created synchronously at spawn but its lifecycle state is advanced
+	// asynchronously by the fire-and-forget run (Phase 8), so we search across all
+	// states rather than assuming it is still registered.
 	var child *model.InternalTask
-	for i := range tasks {
-		if tasks[i].ParentTaskID != "" {
-			child = &tasks[i]
+	for _, st := range []model.TaskState{
+		model.TaskStateRegistered, model.TaskStateRunning,
+		model.TaskStateApprovalWait, model.TaskStateDone, model.TaskStateFailed,
+	} {
+		tasks, err := dbc.InternalTasks().ListTasksByState(ctx, st)
+		if err != nil {
+			t.Fatalf("list tasks (%s): %v", st, err)
+		}
+		for i := range tasks {
+			if tasks[i].ParentTaskID != "" {
+				child = &tasks[i]
+				break
+			}
+		}
+		if child != nil {
 			break
 		}
 	}
 	if child == nil {
-		t.Fatalf("no spawned child task found among %d tasks", len(tasks))
+		t.Fatalf("no spawned child task found in any state")
 	}
 	if child.Title != "Collect logs" {
 		t.Errorf("child Title = %q, want Collect logs", child.Title)
@@ -321,5 +332,77 @@ func TestRunOnce_SpawnCreatesChildTask(t *testing.T) {
 	parent, err := dbc.InternalTasks().GetTask(ctx, child.ParentTaskID)
 	if err != nil || parent == nil {
 		t.Fatalf("parent task %q not found: %v", child.ParentTaskID, err)
+	}
+}
+
+// TestTaskCompletion_NoBindingsAppliesHookWithoutError covers 8.2.4: a task with
+// no source bindings (e.g. a spawned task) runs its workflow to completion and the
+// top-level tasks: on_complete hook is applied through the real wfSideEffects —
+// fanning out over zero bindings is a clean no-op, so there is nothing to apply
+// and no error. The outstanding counter drains to 0 and the task reaches done.
+func TestTaskCompletion_NoBindingsAppliesHookWithoutError(t *testing.T) {
+	ctx := context.Background()
+	dbc, err := db.New(ctx, filepath.Join(t.TempDir(), "nobind.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbc.Close() })
+
+	cfg := &config.Config{
+		Version:  "1",
+		Agents:   []config.AgentConfig{{ID: "collector", Model: "test/model"}},
+		Settings: config.Settings{StateLock: false, ResultComment: false},
+		Tasks: &config.TasksConfig{
+			OnComplete: &config.OnComplete{SetState: "closed", AddLabels: []string{"resolved"}},
+			OnFail:     &config.OnComplete{SetState: "blocked"},
+		},
+		Workflows: []config.WorkflowConfig{{
+			ID:    "collect",
+			Steps: []config.StepConfig{{ID: "collect", Agent: "collector"}},
+		}},
+	}
+
+	r, err := router.New(cfg)
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+
+	d := &Dispatcher{
+		cfg:         cfg,
+		db:          dbc,
+		router:      r,
+		sources:     map[string]source.Adapter{}, // no sources: nothing to fan a hook out to
+		runners:     map[string]runnerpkg.Runner{"agent-collector": &countingRunner{}},
+		agentRunner: map[string]string{"collector": "claude"},
+		agentSem:    map[string]chan struct{}{},
+		stats:       map[string]*sourceStat{},
+	}
+
+	// A binding-less task with one outstanding workflow, as the spawner would leave it.
+	task := model.InternalTask{ID: "T-spawned", Title: "Collect", State: model.TaskStateRegistered, Input: map[string]any{}}
+	if err := dbc.InternalTasks().CreateTask(ctx, &task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := dbc.InternalTasks().IncrementOutstanding(ctx, task.ID, 1); err != nil {
+		t.Fatalf("increment outstanding: %v", err)
+	}
+
+	_, success, err := d.workflowEngine().RunInstance(ctx, cfg.Workflows[0], task)
+	if err != nil {
+		t.Fatalf("RunInstance: %v", err)
+	}
+	if !success {
+		t.Fatalf("expected the workflow to succeed")
+	}
+
+	got, err := dbc.InternalTasks().GetTask(ctx, task.ID)
+	if err != nil || got == nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.OutstandingWorkflows != 0 {
+		t.Errorf("outstanding_workflows = %d, want 0", got.OutstandingWorkflows)
+	}
+	if got.State != model.TaskStateDone {
+		t.Errorf("task state = %q, want done", got.State)
 	}
 }

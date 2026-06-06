@@ -112,6 +112,20 @@ func (c *Client) GetWorkflowInstance(ctx context.Context, id string) (*WorkflowI
 	return inst, err
 }
 
+// HasFailedInstance reports whether any workflow instance bound to the given task
+// is in the failed state. The engine calls it when a task's last outstanding
+// workflow settles, to choose between the tasks: on_complete and on_fail hooks.
+func (c *Client) HasFailedInstance(ctx context.Context, taskID string) (bool, error) {
+	var n int
+	err := c.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM workflow_instances WHERE task_id = ? AND state = ?
+	`, taskID, InstanceStateFailed).Scan(&n)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return n > 0, err
+}
+
 // ListWorkflowInstancesByState returns all instances in the given state, oldest first.
 func (c *Client) ListWorkflowInstancesByState(ctx context.Context, state string) ([]WorkflowInstance, error) {
 	rows, err := c.db.QueryContext(ctx, `

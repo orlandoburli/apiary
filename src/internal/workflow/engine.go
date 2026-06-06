@@ -11,6 +11,7 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
+	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
@@ -27,6 +28,25 @@ type Store interface {
 // satisfies it; fake stores in tests that omit it simply yield no bindings.
 type bindingLister interface {
 	ListBindingsByTask(ctx context.Context, taskID string) ([]model.SourceBinding, error)
+}
+
+// TaskTracker is the optional capability the engine uses to apply the top-level
+// tasks: completion hook. When an instance reaches a terminal state the engine
+// decrements the task's outstanding-workflow counter; when it hits zero it flips
+// the task's lifecycle state and (if a tasks: block is configured) applies the
+// aggregate on_complete/on_fail hook. A nil tracker disables all of this — the
+// counter is left untouched and the task keeps its running state, matching the
+// pre-Phase-8 behaviour. The daemon's *db.Client-backed wiring satisfies it.
+type TaskTracker interface {
+	// DecrementOutstanding subtracts one from the task's outstanding-workflow
+	// counter and returns the new count. Must be atomic so concurrent sibling
+	// instances each see a distinct post-decrement value (exactly one sees zero).
+	DecrementOutstanding(ctx context.Context, taskID string) (int, error)
+	// HasFailedInstance reports whether any of the task's workflow instances
+	// failed, used to pick on_complete vs on_fail once the last one settles.
+	HasFailedInstance(ctx context.Context, taskID string) (bool, error)
+	// SetTaskState transitions the InternalTask to a terminal lifecycle state.
+	SetTaskState(ctx context.Context, taskID string, state model.TaskState) error
 }
 
 // StepRequest is the input to executing one agent step.
@@ -89,6 +109,7 @@ type Engine struct {
 	side    SideEffects
 	mem     MemoryBuilder
 	spawner WorkflowSpawner
+	tracker TaskTracker
 
 	now   func() time.Time
 	newID func(prefix string) string
@@ -114,6 +135,10 @@ func WithMemoryBuilder(b MemoryBuilder) Option { return func(e *Engine) { e.mem 
 
 // WithSpawner sets the APIARY_SPAWN handler used to create child tasks.
 func WithSpawner(s WorkflowSpawner) Option { return func(e *Engine) { e.spawner = s } }
+
+// WithTaskTracker sets the task completion tracker used to decrement the
+// outstanding-workflow counter and apply the top-level tasks: hook.
+func WithTaskTracker(t TaskTracker) Option { return func(e *Engine) { e.tracker = t } }
 
 // NewEngine builds an Engine. cfg, store, and exec are required.
 func NewEngine(cfg *config.Config, store Store, exec StepExecutor, opts ...Option) *Engine {
@@ -234,7 +259,58 @@ func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool
 	delete(e.parked, r.instID)
 	e.mu.Unlock()
 	e.applyCompletion(ctx, r, failed)
+	e.completeTask(ctx, r, failed)
 	return !failed
+}
+
+// completeTask decrements the task's outstanding-workflow counter now that this
+// instance has reached a terminal state and, when it was the last outstanding
+// workflow, transitions the task's lifecycle state and applies the top-level
+// tasks: on_complete/on_fail hook to every source binding. It is a no-op when no
+// TaskTracker is wired (the pre-Phase-8 default) or for a binding-less transient
+// task with no id. The aggregate outcome is failed if THIS instance failed or any
+// sibling instance of the task did (HasFailedInstance also covers this instance,
+// whose terminal state was just persisted above).
+func (e *Engine) completeTask(ctx context.Context, r *dagRun, failed bool) {
+	if e.tracker == nil || r.task.ID == "" {
+		return
+	}
+	remaining, err := e.tracker.DecrementOutstanding(ctx, r.task.ID)
+	if err != nil {
+		aplog.Error("task %s: decrement outstanding: %v", r.task.ID, err)
+		return
+	}
+	if remaining > 0 {
+		return
+	}
+
+	anyFailed := failed
+	if !anyFailed {
+		if hf, err := e.tracker.HasFailedInstance(ctx, r.task.ID); err != nil {
+			aplog.Error("task %s: check failed instances: %v", r.task.ID, err)
+		} else {
+			anyFailed = hf
+		}
+	}
+
+	finalState := model.TaskStateDone
+	if anyFailed {
+		finalState = model.TaskStateFailed
+	}
+	if err := e.tracker.SetTaskState(ctx, r.task.ID, finalState); err != nil {
+		aplog.Error("task %s: set state %s: %v", r.task.ID, finalState, err)
+	}
+
+	if e.cfg.Tasks == nil || e.side == nil {
+		return
+	}
+	hook := e.cfg.Tasks.OnComplete
+	if anyFailed {
+		hook = e.cfg.Tasks.OnFail
+	}
+	if hook != nil {
+		_ = e.side.ApplyHook(ctx, r.task, r.bindings, *hook)
+	}
 }
 
 // runStep executes one agent step, persisting its step run, and returns the

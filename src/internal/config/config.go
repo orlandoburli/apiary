@@ -21,6 +21,7 @@ type Config struct {
 	Workers       []WorkerConfig   `yaml:"workers"`
 	Workflows     []WorkflowConfig `yaml:"workflows"`
 	Settings      Settings         `yaml:"settings"`
+	Tasks         *TasksConfig     `yaml:"tasks"`
 
 	rawContent string // original YAML text before env expansion; used by Save()
 }
@@ -148,6 +149,18 @@ type OnComplete struct {
 	// AssignLabelPrefix is the label prefix used for AssignFromOutput. Defaults
 	// to "agent:" so the assigned label matches the agent:* route convention.
 	AssignLabelPrefix string `yaml:"assign_label_prefix"`
+}
+
+// TasksConfig is the top-level `tasks:` block. Its hooks fire once per
+// InternalTask — when the LAST of the task's fanned-out workflows reaches a
+// terminal state — as opposed to the per-workflow on_complete/on_fail hooks
+// which fire once per workflow instance. OnComplete applies when every instance
+// succeeded; OnFail applies when any instance failed. Both follow the same rules
+// as per-workflow hooks (set_state, add_labels; the removed assign_* directives
+// are rejected by lint).
+type TasksConfig struct {
+	OnComplete *OnComplete `yaml:"on_complete"`
+	OnFail     *OnComplete `yaml:"on_fail"`
 }
 
 type Settings struct {
