@@ -49,10 +49,10 @@ Minimum shippable: tag → cross-platform archives + checksums on the GitHub Rel
 
 ## Phase 6 — Documentation
 
-- [ ] 6.1 Rewrite README install section: per-platform commands (brew/scoop/winget/apt/rpm/docker/`go install`)
-- [ ] 6.2 Move clone-and-build instructions to `DEVELOPMENT.md`
-- [ ] 6.3 Add mkdocs **Install** page mirroring the README (update `mkdocs.yml` nav)
-- [ ] 6.4 Document the unsigned-binary Gatekeeper / SmartScreen workaround prominently (until signing lands)
+- [x] 6.1 README **Installation** section: brew cask / scoop / deb / rpm / docker / direct-download. **`go install` omitted** (dual-go.mod, OQ #5 decision); **winget omitted** until Phase 5 lands. Pre-alpha note: packaged channels go live at the first stable tag.
+- [x] 6.2 Clone-and-build already lives in `DEVELOPMENT.md` (#clone-and-build) — README links to it instead of duplicating.
+- [x] 6.3 `docs/installation.md` added + `mkdocs.yml` nav (after Home); validated via `mkdocs build`. Added a `DEVELOPMENT.md`→`development.md` sed rewrite to `pages.yml` for the copied README link.
+- [x] 6.4 Unsigned-binary Gatekeeper (`xattr -dr com.apple.quarantine`) + SmartScreen ("Run anyway") workaround documented in both README and the Install page.
 
 ## Phase 7 — Deferred (separate changes — do not implement here)
 

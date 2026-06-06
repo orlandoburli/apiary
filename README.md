@@ -61,6 +61,50 @@ routes:
 apiary run
 ```
 
+## Installation
+
+> **Pre-alpha.** Direct downloads, `.deb`/`.rpm`, and the Docker image are published on every release ([Releases](https://github.com/orlandoburli/apiary/releases)). The Homebrew and Scoop channels activate with the first **stable** tag (`v0.1.0`).
+
+**macOS / Linux — Homebrew**
+
+```sh
+brew install --cask orlandoburli/tap/apiary
+```
+
+**Windows — Scoop**
+
+```sh
+scoop bucket add orlandoburli https://github.com/orlandoburli/scoop-bucket
+scoop install apiary
+```
+
+**Linux — Debian/Ubuntu (`.deb`) or Fedora/RHEL (`.rpm`)**
+
+Download the package for your architecture from the [latest release](https://github.com/orlandoburli/apiary/releases/latest), then:
+
+```sh
+sudo dpkg -i apiary_*_linux_amd64.deb      # Debian/Ubuntu
+sudo rpm -i apiary_*_linux_amd64.rpm       # Fedora/RHEL
+```
+
+**Docker**
+
+```sh
+docker run --rm -v apiary-data:/data ghcr.io/orlandoburli/apiary:latest version
+```
+
+Multi-arch image (`linux/amd64`, `linux/arm64`). Persist state by mounting a volume at `/data`.
+
+**Direct download**
+
+Grab the archive for your OS/arch from the [latest release](https://github.com/orlandoburli/apiary/releases/latest) (`.tar.gz` for macOS/Linux, `.zip` for Windows), verify it against `checksums.txt`, extract, and put `apiary` on your `PATH`.
+
+> **Unsigned binaries.** Releases are not yet code-signed/notarized. On **macOS**, a direct-download binary is quarantined by Gatekeeper — clear it with `xattr -dr com.apple.quarantine ./apiary` (the Homebrew cask does this automatically). On **Windows**, SmartScreen may warn "unknown publisher" — choose *More info → Run anyway*. Signing is on the roadmap.
+
+**From source**
+
+See the [Development guide](DEVELOPMENT.md#clone-and-build) for building with the Go toolchain.
+
 ## Specifications
 
 All specs live in [`openspec/`](openspec/):
