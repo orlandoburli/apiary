@@ -124,6 +124,35 @@ func TestWorkflowInstance_ReconcileOrphans(t *testing.T) {
 	}
 }
 
+func TestWorkflowInstance_ListByTask(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Two instances for task T1 (fan-out), one for T2.
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "i1", WorkflowID: "wf-a", CellID: "c1", TaskID: "T1", State: InstanceStateDone, CreatedAt: base})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "i2", WorkflowID: "wf-b", CellID: "c1", TaskID: "T1", State: InstanceStateRunning, CreatedAt: base.Add(time.Minute)})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "i3", WorkflowID: "wf-c", CellID: "c2", TaskID: "T2", State: InstanceStateDone, CreatedAt: base.Add(2 * time.Minute)})
+
+	got, err := c.ListWorkflowInstancesByTask(ctx, "T1")
+	if err != nil {
+		t.Fatalf("ListWorkflowInstancesByTask: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d instances for T1, want 2", len(got))
+	}
+	// Newest first: i2 before i1.
+	if got[0].ID != "i2" || got[1].ID != "i1" {
+		t.Errorf("order = [%s %s], want newest-first [i2 i1]", got[0].ID, got[1].ID)
+	}
+	if got[0].TaskID != "T1" {
+		t.Errorf("TaskID = %q, want T1", got[0].TaskID)
+	}
+	if none, _ := c.ListWorkflowInstancesByTask(ctx, "missing"); len(none) != 0 {
+		t.Errorf("ListWorkflowInstancesByTask(unknown) = %d, want 0", len(none))
+	}
+}
+
 func TestStepRun_CRUD(t *testing.T) {
 	ctx := context.Background()
 	c := newTestClient(t)
