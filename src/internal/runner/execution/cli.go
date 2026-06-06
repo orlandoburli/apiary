@@ -337,16 +337,30 @@ func formatStreamLine(line string) (string, bool) {
 			out += "\n" + r
 		}
 		return out, true
+	// cursor agent CLI emits {"type":"completion","result":"...","is_error":false}
+	case "completion":
+		status := "success"
+		if ev.IsError {
+			status = "error"
+		}
+		out := fmt.Sprintf("[completion:%s]", status)
+		if r := strings.TrimSpace(ev.Result); r != "" {
+			out += "\n" + r
+		}
+		return out, true
 	}
 	return "", false
 }
 
 func finalResultText(line string) (string, bool) {
-	if !strings.Contains(line, `"type":"result"`) {
+	if !strings.Contains(line, `"type":"result"`) && !strings.Contains(line, `"type":"completion"`) {
 		return "", false
 	}
 	var ev streamEvent
-	if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &ev); err != nil || ev.Type != "result" {
+	if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &ev); err != nil {
+		return "", false
+	}
+	if ev.Type != "result" && ev.Type != "completion" {
 		return "", false
 	}
 	if strings.TrimSpace(ev.Result) == "" {
