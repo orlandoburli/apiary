@@ -2,19 +2,21 @@
 
 > Design only. Nothing implemented yet; this is the proposed build order.
 
-## Engine (minimal)
+## Engine (two small additions)
 - [ ] `fail_when` on the agent step: in `workflow/dag.go` `runAgentDAGStep`, derive
       `failed` from `!res.Success || eval(fail_when over this step's output)`.
+- [ ] Step-level `condition` (per-step `if:`): mark a step skipped when false in
+      scheduling (`pickRunnable`/`markSkipped`).
 - [ ] Eval context helper exposing the current step's fresh structured output
       (transient memory view) — reuse `EvalContext`/`ParseExpr` (`workflow/expr.go`).
 - [ ] Honor `on_missing_output: fail` together with `reject_when`.
 
 ## Authoring layer (lowering)
-- [ ] v2 parse: `if/then/else` blocks + implicit sequencing in `config` package.
-- [ ] Lowering pass v2 tree → `[]StepConfig` (sequence→`depends_on`,
-      `if`→`split`+`goto`, `on_reject`→`on_fail.goto`, `reject_when`→`fail_when`,
-      auto-wire `step.field` refs into `memory.write`).
-- [ ] Resolve join semantics after an `if` block (open question §7).
+- [ ] v2 parse: flat `steps:` with per-step `if:`, `name:`, `output:`,
+      `${{ … }}` expressions, implicit sequencing (`config` package).
+- [ ] Lowering pass v2 → `[]StepConfig` (sequence→`depends_on`, `if`→`condition`,
+      `on_reject`→`on_fail.goto`, `reject_when`→`fail_when`, auto-wire
+      `steps.x.outputs.y` refs into `memory.write`).
 
 ## Validation
 - [ ] Parse-check `if`/`reject_when` expressions; `restart_from` must be an earlier
