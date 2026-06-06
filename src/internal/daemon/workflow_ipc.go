@@ -192,29 +192,88 @@ func (d *Dispatcher) InstanceDetail(ctx context.Context, id string) (*InstanceDe
 		return nil, err
 	}
 	for _, s := range steps {
-		srv := StepRunView{
-			StepID:     s.StepID,
-			AgentID:    s.AgentID,
-			State:      s.State,
-			Duration:   stepDuration(s, now),
-			Cached:     s.SkippedCached,
-			Output:     s.Output,
-			Summary:    s.Summary,
-			StartedAt:  s.StartedAt,
-			FinishedAt: s.FinishedAt,
-		}
-		// Enrich with token/cost data via the step link columns.
-		if usage, err := d.db.GetStepUsage(ctx, id, s.StepID); err == nil && usage != nil {
-			srv.InputTokens = usage.InputTokens
-			srv.OutputTokens = usage.OutputTokens
-			srv.TotalTokens = usage.TotalTokens
-			srv.CostUSD = usage.CostUSD
-			srv.NumTurns = usage.NumTurns
-			srv.NumToolCalls = usage.NumToolCalls
-		}
-		detail.Steps = append(detail.Steps, srv)
+		detail.Steps = append(detail.Steps, d.stepRunView(ctx, id, s, now))
 	}
 	return detail, nil
+}
+
+// stepRunView maps a stored step run to its IPC view, enriching token/cost usage
+// via the step link columns. Shared by InstanceDetail and TaskHistory.
+func (d *Dispatcher) stepRunView(ctx context.Context, instanceID string, s db.StepRun, now time.Time) StepRunView {
+	srv := StepRunView{
+		StepID:     s.StepID,
+		AgentID:    s.AgentID,
+		State:      s.State,
+		Duration:   stepDuration(s, now),
+		Cached:     s.SkippedCached,
+		Output:     s.Output,
+		Summary:    s.Summary,
+		StartedAt:  s.StartedAt,
+		FinishedAt: s.FinishedAt,
+	}
+	if usage, err := d.db.GetStepUsage(ctx, instanceID, s.StepID); err == nil && usage != nil {
+		srv.InputTokens = usage.InputTokens
+		srv.OutputTokens = usage.OutputTokens
+		srv.TotalTokens = usage.TotalTokens
+		srv.CostUSD = usage.CostUSD
+		srv.NumTurns = usage.NumTurns
+		srv.NumToolCalls = usage.NumToolCalls
+	}
+	return srv
+}
+
+// TaskLogLineView is one log line scoped to a task-history segment's instance.
+type TaskLogLineView struct {
+	Timestamp time.Time `json:"timestamp"`
+	Level     string    `json:"level"`
+	Message   string    `json:"message"`
+}
+
+// TaskHistorySegmentView is one workflow instance's slice of a task's history:
+// the instance summary, its steps, and the logs scoped to its time window.
+type TaskHistorySegmentView struct {
+	Instance InstanceSummary   `json:"instance"`
+	Steps    []StepRunView     `json:"steps"`
+	Logs     []TaskLogLineView `json:"logs"`
+}
+
+// TaskHistoryResponse is the payload for GET /tasks/{id}/history.
+type TaskHistoryResponse struct {
+	TaskID   string                   `json:"task_id"`
+	Title    string                   `json:"title"`
+	Segments []TaskHistorySegmentView `json:"segments"`
+}
+
+// TaskHistory returns the full per-instance history for an InternalTask, oldest
+// instance first (each instance with its steps and time-windowed logs). Returns
+// (nil, nil) when the task has no workflow instances.
+func (d *Dispatcher) TaskHistory(ctx context.Context, internalTaskID string) (*TaskHistoryResponse, error) {
+	if d.db == nil {
+		return nil, nil
+	}
+	segs, err := d.db.GetTaskWorkflowHistory(ctx, internalTaskID)
+	if err != nil {
+		return nil, err
+	}
+	if len(segs) == 0 {
+		return nil, nil
+	}
+	now := time.Now()
+	// All instances of a task share one cell, so one title lookup covers them all.
+	title, _ := d.db.GetTaskTitle(ctx, segs[0].Instance.CellID)
+	resp := &TaskHistoryResponse{TaskID: internalTaskID, Title: title}
+	for _, seg := range segs {
+		view := db.WorkflowInstanceView{WorkflowInstance: seg.Instance, Title: title}
+		sv := TaskHistorySegmentView{Instance: instanceSummary(view, now)}
+		for _, s := range seg.Steps {
+			sv.Steps = append(sv.Steps, d.stepRunView(ctx, seg.Instance.ID, s, now))
+		}
+		for _, l := range seg.Logs {
+			sv.Logs = append(sv.Logs, TaskLogLineView{Timestamp: l.Timestamp, Level: l.Level, Message: l.Message})
+		}
+		resp.Segments = append(resp.Segments, sv)
+	}
+	return resp, nil
 }
 
 func instanceSummary(v db.WorkflowInstanceView, now time.Time) InstanceSummary {

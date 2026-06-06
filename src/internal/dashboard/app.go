@@ -71,6 +71,11 @@ type taskLogsMsg struct {
 	logs   []LogEntry
 	detail *TaskItem
 }
+type taskHistoryMsg struct {
+	taskID   string
+	segments []TaskHistorySegmentItem
+	detail   *TaskItem
+}
 type agentsDataMsg struct{ agents []AgentStatus }
 type agentActivityMsg struct {
 	agentID string
@@ -152,6 +157,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case taskLogsMsg:
 		if a.model.tasksTab != nil {
 			a.model.tasksTab.Logs = msg.logs
+			a.model.tasksTab.InstanceHistory = nil
+			a.model.tasksTab.Detail = msg.detail
+			a.model.tasksTab.LogScroll = 0
+			a.model.tasksTab.View = TaskViewLogs
+		}
+		a.model.loading = false
+
+	case taskHistoryMsg:
+		if a.model.tasksTab != nil {
+			a.model.tasksTab.InstanceHistory = msg.segments
+			a.model.tasksTab.Logs = nil
 			a.model.tasksTab.Detail = msg.detail
 			a.model.tasksTab.LogScroll = 0
 			a.model.tasksTab.View = TaskViewLogs
@@ -775,6 +791,7 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 		t.View = TaskViewList
 		t.Detail = nil
 		t.Logs = nil
+		t.InstanceHistory = nil
 		t.LogScroll = 0
 	case "d":
 		if row, ok := a.selectedTask(); ok {
@@ -782,15 +799,15 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 			return a, a.fetchTaskDetail(row.TaskID, row.InternalTaskID)
 		}
 	case "l", "enter":
-		if id, ok := a.selectedTaskID(); ok {
+		if row, ok := a.selectedTask(); ok {
 			a.model.loading = true
-			return a, a.fetchTaskLogs(id)
+			return a, a.fetchTaskHistory(row.InternalTaskID, row.TaskID)
 		}
 	case "r":
 		if row, ok := a.selectedTask(); ok {
 			a.model.loading = true
 			if t.View == TaskViewLogs {
-				return a, a.fetchTaskLogs(row.TaskID)
+				return a, a.fetchTaskHistory(row.InternalTaskID, row.TaskID)
 			}
 			return a, a.fetchTaskDetail(row.TaskID, row.InternalTaskID)
 		}
@@ -1857,41 +1874,107 @@ func (a *App) fetchTaskLogs(taskID string) tea.Cmd {
 		var detail *TaskItem
 		logs := make([]LogEntry, 0)
 		if dbConn != nil {
-			if r, err := dbConn.GetTaskDetail(ctx, taskID); err == nil && r != nil {
-				detail = &TaskItem{
-					TaskID:       r.TaskID,
-					Number:       r.Number,
-					URL:          r.URL,
-					Title:        r.Title,
-					Agent:        r.AgentID,
-					Model:        r.Model,
-					Runner:       r.Runner,
-					Status:       r.Status,
-					Attempt:      r.Attempt,
-					Duration:     time.Duration(r.DurationMs) * time.Millisecond,
-					StartedAt:    r.StartedAt,
-					CompletedAt:  r.CompletedAt,
-					Error:        r.Error,
-					InputTokens:  r.InputTokens,
-					OutputTokens: r.OutputTokens,
-					TotalTokens:  r.TotalTokens,
-					NumTurns:     r.NumTurns,
-					NumToolCalls: r.NumToolCalls,
-					CostUSD:      r.CostUSD,
-				}
-			}
+			detail = taskDetailItem(ctx, dbConn, taskID)
 			if rows, err := dbConn.GetTaskLogs(ctx, taskID, 5000); err == nil {
-				for _, l := range rows {
-					logs = append(logs, LogEntry{
-						Timestamp: l.Timestamp,
-						Level:     l.Level,
-						Message:   l.Message,
-					})
-				}
+				logs = mapLogLines(rows)
 			}
 		}
 		return taskLogsMsg{taskID: taskID, logs: logs, detail: detail}
 	}
+}
+
+// fetchTaskHistory loads the full per-instance history for the repurposed logs
+// view: every workflow instance bound to the InternalTask (e.g. investigator →
+// implementation), each with its steps and the logs scoped to its time window.
+// internalTaskID keys the history; drillKey hydrates the detail header. Falls back
+// to the flat log stream when there is no InternalTask id (legacy/pre-Phase-9 rows
+// or the Agents-tab drill-down).
+func (a *App) fetchTaskHistory(internalTaskID, drillKey string) tea.Cmd {
+	if internalTaskID == "" {
+		return a.fetchTaskLogs(drillKey)
+	}
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+
+		var detail *TaskItem
+		segments := make([]TaskHistorySegmentItem, 0)
+		if dbConn != nil {
+			detail = taskDetailItem(ctx, dbConn, drillKey)
+			if segs, err := dbConn.GetTaskWorkflowHistory(ctx, internalTaskID); err == nil {
+				now := time.Now()
+				for _, seg := range segs {
+					item := mapInstances([]db.WorkflowInstance{seg.Instance})[0]
+					item.Steps = mapStepRuns(seg.Steps, now)
+					if item.State == db.InstanceStateApprovalWaiting {
+						item.Message = "Awaiting human approval — reply on the task to resume or abort."
+					}
+					segments = append(segments, TaskHistorySegmentItem{
+						Instance: item,
+						Logs:     mapLogLines(seg.Logs),
+					})
+				}
+			}
+		}
+		return taskHistoryMsg{taskID: internalTaskID, segments: segments, detail: detail}
+	}
+}
+
+// taskDetailItem builds the detail-header TaskItem from the latest execution for a
+// (drill) cell id, or nil when none exists. Shared by the logs and history fetches.
+func taskDetailItem(ctx context.Context, dbConn *db.Client, taskID string) *TaskItem {
+	r, err := dbConn.GetTaskDetail(ctx, taskID)
+	if err != nil || r == nil {
+		return nil
+	}
+	return &TaskItem{
+		TaskID:       r.TaskID,
+		Number:       r.Number,
+		URL:          r.URL,
+		Title:        r.Title,
+		Agent:        r.AgentID,
+		Model:        r.Model,
+		Runner:       r.Runner,
+		Status:       r.Status,
+		Attempt:      r.Attempt,
+		Duration:     time.Duration(r.DurationMs) * time.Millisecond,
+		StartedAt:    r.StartedAt,
+		CompletedAt:  r.CompletedAt,
+		Error:        r.Error,
+		InputTokens:  r.InputTokens,
+		OutputTokens: r.OutputTokens,
+		TotalTokens:  r.TotalTokens,
+		NumTurns:     r.NumTurns,
+		NumToolCalls: r.NumToolCalls,
+		CostUSD:      r.CostUSD,
+	}
+}
+
+// mapLogLines converts db log rows into dashboard log entries.
+func mapLogLines(rows []db.TaskLogLine) []LogEntry {
+	out := make([]LogEntry, 0, len(rows))
+	for _, l := range rows {
+		out = append(out, LogEntry{Timestamp: l.Timestamp, Level: l.Level, Message: l.Message})
+	}
+	return out
+}
+
+// mapStepRuns converts db step-run rows into dashboard step items.
+func mapStepRuns(steps []db.StepRun, now time.Time) []WorkflowStepItem {
+	out := make([]WorkflowStepItem, 0, len(steps))
+	for _, s := range steps {
+		out = append(out, WorkflowStepItem{
+			StepID:   s.StepID,
+			Agent:    s.AgentID,
+			State:    s.State,
+			Duration: wfStepDuration(s, now),
+			Cached:   s.SkippedCached,
+			Output:   s.Output,
+			Summary:  s.Summary,
+		})
+	}
+	return out
 }
 
 func (a *App) fetchAgents() tea.Cmd {
@@ -2642,18 +2725,25 @@ func renderWorkflowSteps(inst *WorkflowInstanceItem) string {
 	}
 	b.WriteString("\n  " + StyleLabel.Render("Steps") + "\n")
 	for _, s := range inst.Steps {
-		state := s.State
-		if s.Cached {
-			state += " (cached)"
-		}
-		b.WriteString(fmt.Sprintf("    %s  %s  %s  %s\n",
-			wfStepGlyph(s.State),
-			pad(truncate(s.StepID, 16), 16),
-			pad(truncate(s.Agent, 16), 16),
-			StyleMuted.Render(pad(s.Duration, 8))+"  "+wfStateStyle(s.State).Render(state),
-		))
+		b.WriteString("    " + wfStepRow(s) + "\n")
 	}
 	return b.String()
+}
+
+// wfStepRow formats a single workflow step as one display row (glyph, step id,
+// agent, duration, state) without indentation or trailing newline, so callers can
+// place it in a panel or a flattened log-line list.
+func wfStepRow(s WorkflowStepItem) string {
+	state := s.State
+	if s.Cached {
+		state += " (cached)"
+	}
+	return fmt.Sprintf("%s  %s  %s  %s",
+		wfStepGlyph(s.State),
+		pad(truncate(s.StepID, 16), 16),
+		pad(truncate(s.Agent, 16), 16),
+		StyleMuted.Render(pad(s.Duration, 8))+"  "+wfStateStyle(s.State).Render(state),
+	)
 }
 
 func wfInstanceBadge(state string) string {
@@ -2718,7 +2808,7 @@ func taskDetailLabel(d *TaskItem) string {
 }
 
 func (a *App) renderTaskLogs(t *TasksTab, height int) string {
-	if len(t.Logs) == 0 {
+	if len(t.Logs) == 0 && len(t.InstanceHistory) == 0 {
 		label := "TASK LOGS"
 		if t.Detail != nil {
 			label = taskDetailLabel(t.Detail)
@@ -2764,7 +2854,54 @@ func (a *App) taskLogLines() []string {
 	if t == nil {
 		return nil
 	}
+	if len(t.InstanceHistory) > 0 {
+		return a.taskHistoryLines()
+	}
 	return a.logEntryLines(t.Logs)
+}
+
+// taskHistoryLines flattens the per-instance history into styled visual lines for
+// the repurposed logs view: each workflow instance becomes a labeled header, then
+// its step rows, then its time-scoped log lines — oldest instance first, so a
+// multi-workflow task reads top-to-bottom as a chronological story.
+func (a *App) taskHistoryLines() []string {
+	t := a.model.tasksTab
+	if t == nil {
+		return nil
+	}
+	sw := a.model.width - 8
+	if sw < 20 {
+		sw = 20
+	}
+	var out []string
+	for i, seg := range t.InstanceHistory {
+		if i > 0 {
+			out = append(out, "") // blank separator between instances
+		}
+		out = append(out, historySegmentHeader(seg.Instance))
+		if seg.Instance.State == db.InstanceStateApprovalWaiting && seg.Instance.Message != "" {
+			out = append(out, "  "+StyleWarning.Render("⏸ "+seg.Instance.Message))
+		}
+		for _, s := range seg.Instance.Steps {
+			out = append(out, "  "+wfStepRow(s))
+			if s.Summary != "" {
+				out = append(out, "      "+StyleMuted.Render(truncate(s.Summary, sw)))
+			}
+		}
+		out = append(out, a.logEntryLines(seg.Logs)...)
+	}
+	return out
+}
+
+// historySegmentHeader renders the section header for one workflow instance: a
+// state badge, the workflow id, and when it started.
+func historySegmentHeader(in WorkflowInstanceItem) string {
+	when := ""
+	if !in.CreatedAt.IsZero() {
+		when = StyleMuted.Render(" · " + in.CreatedAt.Format("01-02 15:04"))
+	}
+	return StyleMuted.Render("── ") + wfInstanceBadge(in.State) + " " +
+		StyleValueStrong.Render(valueOr(in.Workflow, "—")) + when + StyleMuted.Render(" ──")
 }
 
 // agentTaskLogLines renders the drill-down logs of the task selected in an
@@ -3269,8 +3406,8 @@ func (a *App) footerKeys() []fkey {
 	case "Agents":
 		if ag := a.model.agentsTab; ag != nil {
 			switch ag.View {
-		case AgentViewDetail:
-			return []fkey{{"esc", "back"}, {"l", "activity"}, {"m", "model"}, {"r", "runner"}, {"w", "workers"}, {"q", "quit"}}
+			case AgentViewDetail:
+				return []fkey{{"esc", "back"}, {"l", "activity"}, {"m", "model"}, {"r", "runner"}, {"w", "workers"}, {"q", "quit"}}
 			case AgentViewActivity:
 				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "logs"}, {"o", "open"}, {"pgup/dn", "page"}, {"q", "quit"}}
 			case AgentViewTaskLogs:
