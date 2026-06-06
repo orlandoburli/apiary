@@ -389,3 +389,94 @@ func stepIDList(steps []StepConfig) []string {
 	}
 	return ids
 }
+
+// memHasWrite reports whether a step's memory.write list contains field.
+func memHasWrite(m *MemoryConfig, field string) bool {
+	if m == nil {
+		return false
+	}
+	for _, f := range m.Write {
+		if f == field {
+			return true
+		}
+	}
+	return false
+}
+
+// TestLowerV2_GroupIfStepRefRewritesAndAutoWires covers the documented v2 example
+// (proposal §"Os dois fluxos-alvo"): a group guarded by `if: ${{ classify.track
+// == 'complex' }}`. The step-output shorthand must be rewritten to memory.* (so
+// the runtime expr engine accepts it) AND the referenced field must be auto-wired
+// into the emitting step's memory.write (so it is actually persisted at runtime).
+func TestLowerV2_GroupIfStepRefRewritesAndAutoWires(t *testing.T) {
+	wf := WorkflowConfig{
+		ID: "triage",
+		Steps: []StepConfig{
+			{ID: "classify", Agent: "investigator",
+				Output: &OutputSchema{Type: "object",
+					Properties: map[string]SchemaField{"track": {Type: "string"}}}},
+			{
+				ID: "complex-track",
+				If: `${{ classify.track == 'complex' }}`,
+				SubSteps: []StepConfig{
+					{ID: "design", Agent: "staff"},
+				},
+			},
+		},
+	}
+	out, err := LowerV2Workflow(wf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Group dissolved: classify + design.
+	if len(out.Steps) != 2 {
+		t.Fatalf("expected 2 flat steps, got %d: %v", len(out.Steps), stepIDList(out.Steps))
+	}
+	classify, design := out.Steps[0], out.Steps[1]
+
+	// Bug 1: the group's if: must lower to a runtime-valid condition (memory.*),
+	// not the bare step-ref shorthand the expr engine would reject.
+	if design.Condition != `memory.track == 'complex'` {
+		t.Errorf("design.Condition = %q, want %q", design.Condition, `memory.track == 'complex'`)
+	}
+
+	// Bug 2: the referenced field must be auto-wired into classify's memory.write
+	// on the EMITTED step, not a discarded copy.
+	if !memHasWrite(classify.Memory, "track") {
+		t.Errorf("classify.Memory.Write = %v, want it to contain %q", classify.MemoryWriteFields(), "track")
+	}
+}
+
+// TestLowerV2_LeafIfStepRefRewritesAndAutoWires is the leaf-step counterpart of
+// the group case: a leaf `if:` referencing an earlier step's output must rewrite
+// the same way and auto-wire the emitting step.
+func TestLowerV2_LeafIfStepRefRewritesAndAutoWires(t *testing.T) {
+	wf := WorkflowConfig{
+		ID: "triage",
+		Steps: []StepConfig{
+			{ID: "classify", Agent: "investigator",
+				Output: &OutputSchema{Type: "object",
+					Properties: map[string]SchemaField{"track": {Type: "string"}}}},
+			{ID: "design", Agent: "staff",
+				If: `${{ classify.track == 'complex' }}`},
+		},
+	}
+	out, err := LowerV2Workflow(wf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out.Steps) != 2 {
+		t.Fatalf("expected 2 flat steps, got %d: %v", len(out.Steps), stepIDList(out.Steps))
+	}
+	classify, design := out.Steps[0], out.Steps[1]
+
+	if design.Condition != `memory.track == 'complex'` {
+		t.Errorf("design.Condition = %q, want %q", design.Condition, `memory.track == 'complex'`)
+	}
+	if design.If != "" {
+		t.Errorf("design.If should be cleared after lowering, got %q", design.If)
+	}
+	if !memHasWrite(classify.Memory, "track") {
+		t.Errorf("classify.Memory.Write = %v, want it to contain %q", classify.MemoryWriteFields(), "track")
+	}
+}
