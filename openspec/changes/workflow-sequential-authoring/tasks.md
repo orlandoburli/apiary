@@ -38,13 +38,23 @@
 ## Composition (loops / sub-workflows / parallel)
 - [ ] `uses:` alias for sub-workflow steps (engine already supports `type: workflow`).
 - [ ] `for_each:`/`as:`/`max:` authored aliases → existing `type: foreach`
-      (`items`/`as`/`max_items`/`step`); loop already runs (serial).
-- [ ] Accept `parallel:` block in the parser (lowers to independent steps + join);
-      execute sequentially for now, clearly flagged as not-yet-concurrent.
+      (`items`/`as`/`max_items`/`step`).
+- [ ] `parallel:` block in the parser → independent steps + selective join
+      (next step `depends_on` all members).
 
-## Follow-up (separate changes)
-- [ ] **Concurrent scheduler + global `settings.concurrency` semaphore** — makes
-      `parallel:` truly parallel and `for_each.concurrency` real (the original
-      `concurrency-model` spec). Biggest lift; its own change after v2 + gates land.
-- [ ] Honor `for_each.concurrency` (bounded goroutines over items) on top of it.
+## Concurrency (in scope — §8e)
+- [ ] Concurrent scheduler: `pickAllRunnable()`; single scheduler goroutine owns
+      `dagRun` state; worker goroutines run agents and return results on a channel;
+      re-dispatch newly-unblocked steps until quiescent.
+- [ ] Global agent semaphore sized by `settings.concurrency` around every runner
+      invocation (plus per-agent `max_workers` as secondary cap).
+- [ ] Deterministic memory ordering: `passedOrder` by declaration order, not
+      completion order.
+- [ ] Loop-back with in-flight siblings: drain then `resetLoop`; approval steps
+      quiesce before parking.
+- [ ] Honor `for_each.concurrency` via the same semaphore.
+- [ ] Verify `concurrency: 1` reproduces today's sequential behaviour (regression
+      guard — all existing engine tests pass unchanged).
+
+## Follow-up (separate change)
 - [ ] Decide fate of `settings.retry_policy` (inert today).

@@ -41,9 +41,13 @@ para o engine de DAG já existente** (ele já faz sequência via ordem e loop vi
    engine. (É o que falta no Actions: "reprovou → refaz um step anterior".)
 5. **Composição (já no spec original):** `for_each:` (loop sobre itens-filho — GHA
    `strategy.matrix`), `uses:` (sub-workflow reutilizável — GHA reusable workflows)
-   e `parallel:` (fan-out + join — GHA jobs paralelos). Status honesto: foreach e
-   sub-workflow já existem no engine (foreach roda **serial**); **parallel não
-   existe** (o executor roda um step por vez). Ver design.md §8.
+   e `parallel:` (fan-out + join — GHA jobs paralelos). foreach e sub-workflow já
+   existem no engine; **parallel** é incluído nesta change. Ver design.md §8.
+6. **Execução concorrente (em escopo):** scheduler concorrente + semáforo global de
+   `settings.concurrency` — roda todos os steps prontos ao mesmo tempo, com teto
+   global de invocações de agente. É o `concurrency-model` original; torna
+   `parallel:` e `for_each.concurrency` reais. Aditivo: com `concurrency: 1` o
+   comportamento é idêntico ao executor sequencial de hoje. Ver design.md §8e.
 
 ### Os dois fluxos-alvo, na sintaxe nova
 
@@ -120,10 +124,8 @@ resto é açúcar de autoria que baixa para primitivas existentes (`depends_on`,
 
 ## Não-objetivos (desta change)
 
-- Reescrever o executor de DAG.
-- **Execução paralela real** (`parallel:` concorrente + semáforo global de
-  `concurrency`) e `for_each.concurrency` honrado — é o `concurrency-model` original,
-  o maior esforço; vira change própria **depois** da v2 sequencial + gates. Nesta
-  change `parallel:` é aceito mas roda serial (sinalizado, não é no-op silencioso).
+- Reescrever o executor de DAG **do zero** — o scheduler concorrente é evolução do
+  atual (mesmas estruturas/IR), não reescrita.
 - Loops gerais / `while` arbitrário além de `for_each` e do loop-back de gate.
 - Comando de migração automática da sintaxe antiga → v2.
+- Cancelamento de steps in-flight no loop-back (default: drenar e então resetar).

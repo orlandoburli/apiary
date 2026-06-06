@@ -75,9 +75,11 @@ Rules:
 - A real crash (agent exits non-zero) is still a failure independent of
   `reject_when`.
 
-## 3. Engine capabilities needed (two small additions)
+## 3. Engine capabilities needed
 
-Everything else is authoring-time lowering. The engine needs:
+Everything else is authoring-time lowering. The engine needs three additions; the
+first two are small and localized, the third (concurrency) is the substantial one
+and is now **in scope** (§8e).
 
 1. **`fail_when`** on the agent step. Today `Success = (cli exit == 0)`
    (`runner/execution/cli.go:197`). In `workflow/dag.go` `runAgentDAGStep`, after
@@ -92,9 +94,23 @@ Everything else is authoring-time lowering. The engine needs:
    **skipped** (cascading to dependents via existing `markSkipped`). This is the
    GHA `if:` semantics and is simpler than synthesizing a `split` per condition.
 
-Both are small and localized; the DAG executor is otherwise untouched.
+3. **Concurrent scheduler + global agent semaphore** (§8e) — runs all
+   currently-runnable steps at once and bounds total simultaneous agent invocations
+   by `settings.concurrency`. This is what makes `parallel:` and
+   `for_each.concurrency` real.
 
 ## 4. Lowering v2 → current DAG `StepConfig`
+
+```mermaid
+flowchart LR
+  yaml["authored v2 YAML<br/>steps + if + gates + for_each/uses/parallel"]
+  yaml --> parse[parse]
+  parse --> lower["lowering pass"]
+  lower --> ir["[]StepConfig (existing IR)<br/>depends_on · condition · split · fail_when · on_fail.goto · foreach · workflow"]
+  ir --> eng["DAG engine<br/>concurrent scheduler (§8e)"]
+  eng --> sem["global semaphore<br/>settings.concurrency"]
+  sem --> run["runner adapters → agents"]
+```
 
 The parser compiles the authored list into today's `[]StepConfig`:
 
@@ -171,7 +187,18 @@ iterates `items` and binds each to `as`, but the loop is a plain `for range` —
 ```
 Lowers to the existing `type: foreach` (`items`/`as`/`max_items`/`step`). Use case:
 Staff emits a `tasks` array → fan out an engineer run per task. **Work to do:**
-honor `concurrency` (bounded goroutines over items) — depends on §8d.
+honor `concurrency` (bounded goroutines over items) — depends on §8e.
+
+```mermaid
+flowchart TD
+  design["design · staff<br/>output: tasks[]"] --> fe[/"for_each task<br/>concurrency 4"/]
+  fe --> t1["engineer · task 1"]
+  fe --> t2["engineer · task 2"]
+  fe --> tn["engineer · task N"]
+  t1 --> j([join])
+  t2 --> j
+  tn --> j
+```
 
 ### b) Sub-workflows / sub-steps — `uses` (GHA reusable workflows)
 **Engine: built.** `StepTypeWorkflow` (`workflow/subworkflow.go`) runs another named
@@ -188,10 +215,9 @@ This is how a track becomes a reusable building block: define `implement-pipelin
 parse.
 
 ### c) Parallel steps — `parallel:` block (GHA parallel jobs)
-**Engine: NOT built.** `driveDAG`/`pickRunnable` runs one step at a time, so
-independent steps currently execute sequentially. True concurrency needs a
-concurrent scheduler bounded by a global agent semaphore (the unbuilt
-`concurrency-model` spec).
+**Engine: in scope** (scheduler design in §8e). `driveDAG`/`pickRunnable` runs one
+step at a time today; this change makes the executor run all ready steps
+concurrently, bounded by the global semaphore.
 
 ```yaml
 - parallel:                       # run these concurrently, join when all pass
@@ -200,22 +226,77 @@ concurrent scheduler bounded by a global agent semaphore (the unbuilt
 # steps after the block run once BOTH finished (selective join)
 ```
 Lowers to: block members share the upstream dep and have no order between them; the
-next step joins on all. **Biggest lift** — requires making the executor run ready
-steps on bounded goroutines and a global `settings.concurrency` semaphore around
-every agent invocation. Until built, `parallel:` could be accepted but executed
-sequentially (correct, not yet concurrent) — flagged so it's not a silent no-op.
+next step `depends_on` all of them (selective join — proceed only when all pass).
 
-### d) Concurrency model (prerequisite for true a + c)
+```mermaid
+flowchart TD
+  impl["implement · engineer"] --> fork{{parallel}}
+  fork --> tests["tests · qa"]
+  fork --> docs["docs · engineer"]
+  tests --> join{{join · all passed}}
+  docs --> join
+  join --> ship["ship · engineer"]
+```
+
+### d) Concurrency model
 Adopt the original `concurrency-model` decision: `settings.concurrency` is one
 global cap on simultaneous agent invocations across all instances, parallel steps,
 and foreach items. Every runner call acquires/releases one slot. This is what makes
 `for_each.concurrency` and `parallel:` safe (no 24-agents-on-one-workdir blowups).
+Per-agent `max_workers` remains as a secondary cap (acquire both).
 
-**Honest scope:** (b) is essentially free (alias). (a) needs concurrency honored.
-(c)+(d) are the real engineering — a concurrent scheduler + global semaphore — and
-should likely be their own change after the sequential v2 + gates land.
+### e) Concurrent scheduler design (the substantial piece)
+
+Turn the sequential loop into a concurrent one:
+
+- **`pickAllRunnable()`** replaces `pickRunnable()` — returns *every* step that is
+  activated, pending, condition-true, and deps-passed.
+- The driver launches each on a goroutine that acquires a **global semaphore**
+  (`settings.concurrency`) and its per-agent slot before invoking the runner, and
+  releases on completion. Results return on a channel.
+- A single **scheduler goroutine owns `dagRun` state**; worker goroutines only run
+  agents and send results back. The scheduler applies each result (set
+  passed/failed, split activation, `on_fail.goto` reset), then re-computes the
+  runnable set and dispatches newly-unblocked steps. No shared-state mutation off
+  the scheduler goroutine → no lock sprawl. (`dagRun` stays single-writer.)
+- **Termination:** done when nothing is running and nothing is runnable; then the
+  existing failed/skip logic decides the outcome.
+
+Concurrency-specific decisions:
+- **Deterministic memory ordering.** `passedOrder` must order by **declaration
+  order**, not completion order, so the memory document and last-write-wins are
+  reproducible regardless of who finishes first.
+- **Loop-back while siblings run.** If a step triggers `on_fail.goto`, the
+  scheduler stops dispatching new work, lets in-flight siblings finish (or cancels
+  them — decision below), applies `resetLoop`, then resumes. Default: **let
+  in-flight finish, then reset** (simpler, no cancellation races).
+- **Approval steps** force a quiesce: when an approval becomes runnable the
+  scheduler drains in-flight steps, then parks (`outcomeWaiting`) as today.
+- **`for_each.concurrency`** uses the same global semaphore for its item runs.
+
+Risk/cost: this is the largest part. It is additive — when `settings.concurrency`
+is 1, behaviour is identical to today's sequential executor, so existing tests and
+flows are unchanged; concurrency is opt-in by raising the cap and using `parallel:`.
+
+**Scope summary:** (b) ~free (alias); (a) easy (alias, real once §8e lands);
+(c)+(d)+(e) are the real engineering, now included in this change.
 
 ## 9. Worked example — the two target flows (authored form)
+
+```mermaid
+flowchart TD
+  classify["classify · investigator<br/>output: track"] --> dec{track?}
+  dec -->|complex| design["design · staff<br/>doc + split into sub-issues"] --> done([End])
+  dec -->|implement| implement["implement · engineer<br/>opens PR"]
+  implement --> review["review · reviewer<br/>verdict"]
+  review -->|approved| qa["qa · verdict"]
+  review -->|rejected| implement
+  qa -->|approved| done
+  qa -->|rejected| implement
+```
+
+The authored YAML (per-step `if:` + gates) that produces the flow above:
+
 
 ```yaml
 workflows:
