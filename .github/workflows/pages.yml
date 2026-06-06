@@ -31,6 +31,7 @@ jobs:
           cp DEVELOPMENT.md docs/development.md
           # Fix relative paths from root-level docs
           sed -i 's|docs/dashboard.md|dashboard.md|g' docs/index.md
+          sed -i 's|DEVELOPMENT.md|development.md|g' docs/index.md
           sed -i 's|docs/logo.svg|logo.svg|g' docs/index.md
           sed -i 's|docs/screenshots/|screenshots/|g' docs/index.md
           sed -i 's|openspec/specs/visao-geral/spec.md|https://github.com/orlandoburli/apiary/blob/main/openspec/specs/visao-geral/spec.md|g' docs/index.md
