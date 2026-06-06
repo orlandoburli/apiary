@@ -2,6 +2,10 @@
 
 ## Ativas
 
+### binary-distribution
+
+Publicação dos binários por release: GoReleaser dirigido por push de tag `v*` produz archives + checksums (GitHub Releases), Homebrew tap, Scoop bucket, winget, pacotes Linux (`.deb`/`.rpm` + AUR) e imagem OCI multi-arch (`ghcr.io`). Assinatura/notarização (macOS/Windows) fica fora do escopo v1. Restrição dominante: `mattn/go-sqlite3` exige cgo, então cross-compile precisa de toolchains C.
+
 ### internal-task-model
 
 InternalTask como unidade canônica de trabalho: sources viram binders (registram items, recebem output); fan-out de múltiplos workflows por task; write-back por step controlado pelo agente via `APIARY_PUBLISH`.
