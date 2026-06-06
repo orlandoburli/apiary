@@ -187,74 +187,70 @@ agents:
     model: opencode/gpt-5.4
     skills: [git-workflow, gitnexus-codebase]
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
-routes:
-  # === Claude-based agent routes ===
-  # Specific agent:* routes are evaluated first (lower priority number wins).
-  # The investigator is the LAST-RESORT fallback (see bottom) and only fires for
-  # an unassigned TODO.
-
-  # Complex issues → Staff for design analysis
+# ── Workflows ──────────────────────────────────────────────────────────────────
+# Single-agent workflows (formerly `routes:`) — each matches on the agent: label.
+workflows:
   - id: complex-design
-    priority: 10
-    match:
-      source: project-erp
-      labels: [agent:staff]
-    agent: staff
+    trigger:
+      priority: 10
+      match:
+        source: project-erp
+        labels: [agent:staff]
+    steps:
+      - id: run
+        agent: staff
     on_complete:
       set_state: in review
 
-  # Requirements → PO for specification
   - id: requirements-spec
-    priority: 15
-    match:
-      source: project-erp
-      labels: [agent:po]
-    agent: po
+    trigger:
+      priority: 15
+      match:
+        source: project-erp
+        labels: [agent:po]
+    steps:
+      - id: run
+        agent: po
     on_complete:
       set_state: in review
 
-  # Implementation → Engineer
   - id: engineer-implement
-    priority: 20
-    match:
-      source: project-erp
-      labels: [agent:engineer]
-    agent: engineer
+    trigger:
+      priority: 20
+      match:
+        source: project-erp
+        labels: [agent:engineer]
+    steps:
+      - id: run
+        agent: engineer
     on_complete:
       set_state: in review
 
-  # Code review → Reviewer
   - id: code-review
-    priority: 25
-    match:
-      source: project-erp
-      labels: [agent:reviewer]
-    agent: reviewer
+    trigger:
+      priority: 25
+      match:
+        source: project-erp
+        labels: [agent:reviewer]
+    steps:
+      - id: run
+        agent: reviewer
     on_complete:
       set_state: in review
 
-  # Testing → QA
   - id: qa-validate
-    priority: 30
-    match:
-      source: project-erp
-      labels: [agent:qa]
-    agent: qa
+    trigger:
+      priority: 30
+      match:
+        source: project-erp
+        labels: [agent:qa]
+    steps:
+      - id: run
+        agent: qa
     on_complete:
       set_state: done
 
-# (Classification + routing of brand-new issues is handled by the `triage`
-#  workflow below, not a route. The engine classifies and routes in a single
-#  instance via a `split` step — replacing the removed `assign_from_output`
-#  directive, which relabelled-and-repolled.)
-
-# ── Workflows ──────────────────────────────────────────────────────────────────
-# A new issue with no `agent:` label runs through `triage`: the investigator
-# classifies it (emitting a structured `agent` decision into workflow memory), a
-# `split` routes on that decision, and the chosen agent does the work — all in one
-# instance, no relabel-and-repoll.
-workflows:
+  # Triage — classify a new issue and route it to the right agent in one instance.
   - id: triage
     description: "Classify a new issue and route it to the right agent in one instance."
     resume: allowed
@@ -279,7 +275,6 @@ workflows:
 
       - id: route
         type: split
-        depends_on: [classify]
         branches:
           - if: 'memory.agent == "po"'
             goto: spec
@@ -294,27 +289,22 @@ workflows:
 
       - id: spec
         agent: po
-        depends_on: [route]
         prompt: "Produce the spec / acceptance criteria for this issue."
 
       - id: design
         agent: staff
-        depends_on: [route]
         prompt: "Design the solution and decompose it into smaller tasks."
 
       - id: implement
         agent: engineer
-        depends_on: [route]
         prompt: "Implement the change following project conventions."
 
       - id: review
         agent: reviewer
-        depends_on: [route]
         prompt: "Review the change for correctness and conventions."
 
       - id: validate
         agent: qa
-        depends_on: [route]
         prompt: "Validate the implementation against its acceptance criteria."
 
     on_complete:

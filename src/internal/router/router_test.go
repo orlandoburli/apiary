@@ -8,11 +8,24 @@ import (
 	"github.com/orlandoburli/apiary/internal/router"
 )
 
-func cfg(routes []config.RouteConfig, workers []config.WorkerConfig) *config.Config {
+func cfg(routes []config.RouteConfig, _ []config.WorkerConfig) *config.Config {
+	// Routes are now expressed as workflow triggers; convert for test compatibility.
+	// Worker-based routes are rewritten to agent-based (worker ID becomes agent ID).
+	wfs := make([]config.WorkflowConfig, 0, len(routes))
+	for _, r := range routes {
+		agent := r.Agent
+		if agent == "" {
+			agent = r.Worker // backward compat: treat worker ID as agent ID
+		}
+		wfs = append(wfs, config.WorkflowConfig{
+			ID:      r.ID,
+			Trigger: &config.TriggerConfig{Priority: r.Priority, Match: r.Match},
+			Steps:   []config.StepConfig{{ID: "run", Agent: agent}},
+		})
+	}
 	return &config.Config{
-		Version: "1",
-		Workers: workers,
-		Routes:  routes,
+		Version:   "1",
+		Workflows: wfs,
 	}
 }
 
@@ -350,13 +363,13 @@ func TestRoute_CombinedConditions(t *testing.T) {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func assertMatch(t *testing.T, ok bool, m router.Match, wantWorker string) {
+func assertMatch(t *testing.T, ok bool, m router.Match, wantAgent string) {
 	t.Helper()
 	if !ok {
 		t.Fatal("expected a match, got none")
 	}
-	if m.Worker.ID != wantWorker {
-		t.Errorf("matched worker = %q, want %q", m.Worker.ID, wantWorker)
+	if m.Route.Agent != wantAgent {
+		t.Errorf("matched agent = %q, want %q", m.Route.Agent, wantAgent)
 	}
 }
 
@@ -407,14 +420,18 @@ func TestRoute_WorkflowTriggerBecomesRoute(t *testing.T) {
 func TestRoute_ExplicitRouteWinsOverTriggerByPriority(t *testing.T) {
 	c := &config.Config{
 		Version: "1",
-		Routes: []config.RouteConfig{
-			agentRoute("direct-engineer", 10, "engineer", config.RouteMatch{Source: "src-a", Labels: []string{"agent:engineer"}}),
+		Workflows: []config.WorkflowConfig{
+			{
+				ID:      "direct-engineer",
+				Trigger: &config.TriggerConfig{Priority: 10, Match: config.RouteMatch{Source: "src-a", Labels: []string{"agent:engineer"}}},
+				Steps:   []config.StepConfig{{ID: "run", Agent: "engineer"}},
+			},
+			{
+				ID:      "triage",
+				Trigger: &config.TriggerConfig{Priority: 100, Match: config.RouteMatch{Source: "src-a", ExcludeLabelPrefix: "agent:"}},
+				Steps:   []config.StepConfig{{ID: "classify", Agent: "investigator"}},
+			},
 		},
-		Workflows: []config.WorkflowConfig{{
-			ID:      "triage",
-			Trigger: &config.TriggerConfig{Priority: 100, Match: config.RouteMatch{Source: "src-a", ExcludeLabelPrefix: "agent:"}},
-			Steps:   []config.StepConfig{{ID: "classify", Agent: "investigator"}},
-		}},
 	}
 	r, err := router.New(c)
 	if err != nil {

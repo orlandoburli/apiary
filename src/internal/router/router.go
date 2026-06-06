@@ -45,13 +45,11 @@ func New(cfg *config.Config) (*Router, error) {
 		workers[w.ID] = w
 	}
 
-	routes := make([]config.RouteConfig, 0, len(cfg.Routes)+len(cfg.Workflows))
-	routes = append(routes, cfg.Routes...)
-	// A workflow's trigger acts as a route whose id equals the workflow id, so the
-	// dispatcher (resolveWorkflow) can upgrade the match to the full multi-step
-	// definition. Plain routes still synthesize a single-step workflow. The agent
-	// is the workflow's first agent step — representative for semaphore admission
-	// and logging; routing itself only needs a non-empty agent and the id.
+	// Each workflow's trigger acts as a route whose id equals the workflow id, so
+	// the dispatcher (resolveWorkflow) can upgrade the match to the full multi-step
+	// definition. The agent is the workflow's first agent step — representative for
+	// semaphore admission and logging.
+	routes := make([]config.RouteConfig, 0, len(cfg.Workflows))
 	for _, wf := range cfg.Workflows {
 		if wf.Trigger == nil {
 			continue

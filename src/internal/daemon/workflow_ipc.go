@@ -53,12 +53,11 @@ type InstancesResponse struct {
 
 // WorkflowStepDef is one step in a workflow definition, for the Workflows tab.
 type WorkflowStepDef struct {
-	ID        string   `json:"id"`
-	Type      string   `json:"type"`
-	Agent     string   `json:"agent"`
-	DependsOn []string `json:"depends_on"`
-	Condition string   `json:"condition"`
-	Prompt    string   `json:"prompt"`
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Agent     string `json:"agent"`
+	Condition string `json:"condition"`
+	Prompt    string `json:"prompt"`
 }
 
 // WorkflowSummary is one workflow from the config, for the Workflows tab.
@@ -86,7 +85,6 @@ func (d *Dispatcher) WorkflowList() WorkflowListResponse {
 				ID:        step.ID,
 				Type:      resolveStepType(step),
 				Agent:     step.Agent,
-				DependsOn: step.DependsOn,
 				Condition: step.Condition,
 				Prompt:    step.Prompt,
 			}

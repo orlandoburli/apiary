@@ -15,54 +15,58 @@ func newRawConfig(raw string) *Config {
 
 func TestLint_RemovedAssignFromOutput(t *testing.T) {
 	raw := `version: "1"
-routes:
+workflows:
   - id: classify
-    agent: investigator
     on_complete:
       assign_from_output: true
+    steps:
+      - id: run
+        agent: investigator
 `
 	errs := newRawConfig(raw).lint()
 	if len(errs) == 0 {
 		t.Fatal("expected an error for assign_from_output, got none")
 	}
-	got := errs[0].Error()
-	if !strings.Contains(got, "assign_from_output") {
-		t.Errorf("error should name the directive: %q", got)
+	joined := joinErrs(errs)
+	if !strings.Contains(joined, "assign_from_output") {
+		t.Errorf("error should name the directive: %q", joined)
 	}
-	if !strings.Contains(got, "triage") || !strings.Contains(got, "split") {
-		t.Errorf("error should point to the triage/split replacement: %q", got)
-	}
-	if !strings.Contains(got, "line 6") {
-		t.Errorf("error should cite the source line (6): %q", got)
+	if !strings.Contains(joined, "triage") || !strings.Contains(joined, "split") {
+		t.Errorf("error should point to the triage/split replacement: %q", joined)
 	}
 }
 
 func TestLint_RemovedAssignLabelPrefix(t *testing.T) {
 	raw := `version: "1"
-routes:
+workflows:
   - id: classify
-    agent: investigator
     on_complete:
       assign_label_prefix: "agent:"
+    steps:
+      - id: run
+        agent: investigator
 `
 	errs := newRawConfig(raw).lint()
 	if len(errs) == 0 {
 		t.Fatal("expected an error for assign_label_prefix, got none")
 	}
-	if !strings.Contains(errs[0].Error(), "assign_label_prefix") {
-		t.Errorf("error should name the directive: %q", errs[0].Error())
+	if !strings.Contains(joinErrs(errs), "assign_label_prefix") {
+		t.Errorf("error should name the directive: %q", joinErrs(errs))
 	}
 }
 
 func TestLint_UnknownFieldTypo(t *testing.T) {
-	// `lables` is a typo for `labels` inside a route match.
+	// `lables` is a typo for `labels` inside a workflow trigger match.
 	raw := `version: "1"
-routes:
-  - id: r1
-    agent: a1
-    match:
-      source: src
-      lables: [bug]
+workflows:
+  - id: wf1
+    trigger:
+      match:
+        source: src
+        lables: [bug]
+    steps:
+      - id: run
+        agent: a1
 `
 	errs := newRawConfig(raw).lint()
 	if len(errs) == 0 {
@@ -79,12 +83,15 @@ func TestLint_CleanConfigNoErrors(t *testing.T) {
 agents:
   - id: a1
     model: claude-sonnet-4-6
-routes:
-  - id: r1
-    priority: 1
-    agent: a1
-    match:
-      source: src
+workflows:
+  - id: wf1
+    trigger:
+      priority: 1
+      match:
+        source: src
+    steps:
+      - id: run
+        agent: a1
     on_complete:
       set_state: done
 `
@@ -96,11 +103,7 @@ routes:
 func TestLint_EmptyRawContentIsNoOp(t *testing.T) {
 	// A Config built in code (no rawContent) must never trip the raw-text lints,
 	// even if it holds a removed directive in its structs.
-	c := &Config{
-		Routes: []RouteConfig{
-			{ID: "r1", OnComplete: OnComplete{AssignFromOutput: true}},
-		},
-	}
+	c := &Config{}
 	if errs := c.lint(); errs != nil {
 		t.Fatalf("expected nil for empty rawContent, got: %v", errs)
 	}

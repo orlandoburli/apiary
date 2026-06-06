@@ -276,17 +276,6 @@ func (e *Engine) findAgent(id string) *config.AgentConfig {
 	return nil
 }
 
-// SynthesizeWorkflow builds a single-step workflow equivalent to a plain route,
-// so routes and workflows execute through the same engine path.
-func SynthesizeWorkflow(route config.RouteConfig) config.WorkflowConfig {
-	oc := route.OnComplete
-	return config.WorkflowConfig{
-		ID:         route.ID,
-		Trigger:    &config.TriggerConfig{Priority: route.Priority, Match: route.Match},
-		Steps:      []config.StepConfig{{ID: "run", Agent: route.Agent}},
-		OnComplete: &oc,
-	}
-}
 
 func perStepComment(step config.StepConfig, res StepResult) string {
 	status := "✓ passed"

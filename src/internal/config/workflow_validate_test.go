@@ -114,15 +114,13 @@ func TestWorkflow_DuplicateID(t *testing.T) {
 	assertError(t, cfg, "duplicate id")
 }
 
-func TestWorkflow_IDConflictsWithRoute(t *testing.T) {
+func TestWorkflow_DuplicateIDDetected(t *testing.T) {
 	cfg := baseWorkflowConfig()
-	cfg.Routes = []config.RouteConfig{
-		{ID: "shared", Priority: 1, Agent: "architect", Match: config.RouteMatch{Source: "src-1"}},
-	}
 	cfg.Workflows = []config.WorkflowConfig{
 		{ID: "shared", Steps: []config.StepConfig{{ID: "s1", Agent: "architect"}}},
+		{ID: "shared", Steps: []config.StepConfig{{ID: "s1", Agent: "backend-dev"}}},
 	}
-	assertError(t, cfg, "conflicts with a route")
+	assertError(t, cfg, "duplicate id")
 }
 
 func TestWorkflow_InvalidResume(t *testing.T) {
@@ -695,9 +693,6 @@ func TestWorkflow_NoWorkflowsStillValid(t *testing.T) {
 		Version: "1",
 		Sources: []config.SourceConfig{{ID: "src-1", Type: "plane"}},
 		Agents:  []config.AgentConfig{{ID: "a-1", Model: "claude-sonnet-4-6"}},
-		Routes: []config.RouteConfig{
-			{ID: "r-1", Priority: 1, Agent: "a-1", Match: config.RouteMatch{Source: "src-1"}},
-		},
 	}
 	assertNoError(t, cfg)
 }

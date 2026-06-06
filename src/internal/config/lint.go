@@ -25,6 +25,19 @@ type removedDirective struct {
 // debugging a pipeline that quietly does nothing.
 var removedDirectives = []removedDirective{
 	{
+		path: "routes",
+		message: "`routes` was removed: task routing is now done exclusively through workflow " +
+			"triggers (`workflows[].trigger`). Replace each route with a workflow that has a " +
+			"`trigger:` block matching the same criteria.\n" +
+			"  See .apiary/example-workflow.yaml for the trigger pattern.",
+	},
+	{
+		path: "depends_on",
+		message: "`depends_on` was removed from step config: the v2 workflow engine uses " +
+			"implicit sequential ordering (steps run in the order they are declared). " +
+			"Remove the `depends_on` field — ordering is automatic.",
+	},
+	{
 		path: "on_complete.assign_from_output",
 		message: "`on_complete.assign_from_output` was removed: the workflow engine no longer " +
 			"relabels-and-repolls to hand a task off to another agent, so this directive does " +
