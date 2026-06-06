@@ -93,7 +93,7 @@ func newFanoutDispatcher(t *testing.T, workflows []config.WorkflowConfig) (*Disp
 	return d, runner, dbc
 }
 
-func outstandingForCell(t *testing.T, dbc *db.Client, sourceID, itemID string) int {
+func taskForCell(t *testing.T, dbc *db.Client, sourceID, itemID string) *model.InternalTask {
 	t.Helper()
 	ctx := context.Background()
 	binding, err := dbc.SourceBindings().GetBindingBySourceItem(ctx, sourceID, itemID)
@@ -110,7 +110,7 @@ func outstandingForCell(t *testing.T, dbc *db.Client, sourceID, itemID string) i
 	if task == nil {
 		t.Fatal("expected the bound task to exist")
 	}
-	return task.OutstandingWorkflows
+	return task
 }
 
 func TestRunOnce_FanOutTwoWorkflows(t *testing.T) {
@@ -126,8 +126,15 @@ func TestRunOnce_FanOutTwoWorkflows(t *testing.T) {
 	if got := runner.n.Load(); got != 2 {
 		t.Errorf("expected 2 workflow dispatches, runner ran %d time(s)", got)
 	}
-	if got := outstandingForCell(t, dbc, "src", "c1"); got != 2 {
-		t.Errorf("outstanding_workflows = %d, want 2", got)
+	// Both fanned-out workflows reached a terminal state, so the outstanding
+	// counter (bumped to 2 at fan-out) has drained back to 0 and the task has
+	// transitioned to done.
+	task := taskForCell(t, dbc, "src", "c1")
+	if task.OutstandingWorkflows != 0 {
+		t.Errorf("outstanding_workflows = %d, want 0 after both completed", task.OutstandingWorkflows)
+	}
+	if task.State != model.TaskStateDone {
+		t.Errorf("task state = %q, want done", task.State)
 	}
 }
 
@@ -144,7 +151,13 @@ func TestRunOnce_ExclusiveDispatchesOne(t *testing.T) {
 	if got := runner.n.Load(); got != 1 {
 		t.Errorf("exclusive trigger should dispatch once, runner ran %d time(s)", got)
 	}
-	if got := outstandingForCell(t, dbc, "src", "c1"); got != 1 {
-		t.Errorf("outstanding_workflows = %d, want 1", got)
+	// The single (exclusive) workflow completed, so the counter drained from 1
+	// back to 0 and the task is done.
+	task := taskForCell(t, dbc, "src", "c1")
+	if task.OutstandingWorkflows != 0 {
+		t.Errorf("outstanding_workflows = %d, want 0 after completion", task.OutstandingWorkflows)
+	}
+	if task.State != model.TaskStateDone {
+		t.Errorf("task state = %q, want done", task.State)
 	}
 }

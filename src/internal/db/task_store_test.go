@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/orlandoburli/apiary/internal/model"
@@ -92,6 +93,52 @@ func TestInternalTask_UpdateState(t *testing.T) {
 	got, _ := store.GetTask(ctx, task.ID)
 	if got.State != model.TaskStateRunning {
 		t.Errorf("state = %q, want running", got.State)
+	}
+}
+
+// TestInternalTask_DecrementOutstandingConcurrent locks in the race-free
+// guarantee the engine's completion hook relies on: when N sibling instances of
+// one task settle concurrently, the N atomic UPDATE ... RETURNING decrements each
+// return a distinct post-decrement count (the full 0..N-1 set), so exactly one
+// caller observes zero and fires the hook once. A non-atomic update-then-select
+// would let two callers both read zero.
+func TestInternalTask_DecrementOutstandingConcurrent(t *testing.T) {
+	ctx := context.Background()
+	store := newTestClient(t).InternalTasks()
+	task := &model.InternalTask{Title: "t"}
+	if err := store.CreateTask(ctx, task); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	const n = 16
+	if _, err := store.IncrementOutstanding(ctx, task.ID, n); err != nil {
+		t.Fatalf("increment: %v", err)
+	}
+
+	results := make([]int, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got, err := store.DecrementOutstanding(ctx, task.ID)
+			if err != nil {
+				t.Errorf("decrement: %v", err)
+				return
+			}
+			results[i] = got
+		}(i)
+	}
+	wg.Wait()
+
+	seen := make(map[int]int)
+	for _, r := range results {
+		seen[r]++
+	}
+	for v := 0; v < n; v++ {
+		if seen[v] != 1 {
+			t.Fatalf("count %d returned %d time(s), want exactly 1 — results=%v", v, seen[v], results)
+		}
 	}
 }
 

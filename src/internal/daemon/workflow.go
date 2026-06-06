@@ -22,7 +22,10 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 	d.engineOnce.Do(func() {
 		opts := []workflow.Option{workflow.WithSideEffects(&wfSideEffects{d: d})}
 		if d.db != nil {
-			opts = append(opts, workflow.WithSpawner(d.newSpawner()))
+			opts = append(opts,
+				workflow.WithSpawner(d.newSpawner()),
+				workflow.WithTaskTracker(dbTaskTracker{db: d.db}),
+			)
 		}
 		d.engine = workflow.NewEngine(d.cfg, d.db, &wfStepExecutor{d: d}, opts...)
 	})
@@ -47,6 +50,23 @@ func (d *Dispatcher) newSpawner() workflow.WorkflowSpawner {
 		return success, err
 	}
 	return workflow.NewDefaultSpawner(resolve, d.db.InternalTasks(), run, nil, nil)
+}
+
+// dbTaskTracker adapts *db.Client to workflow.TaskTracker, backing the top-level
+// tasks: completion hook. The outstanding-counter and task-state methods live on
+// the InternalTaskStore; HasFailedInstance queries the workflow_instances table.
+type dbTaskTracker struct{ db *db.Client }
+
+func (t dbTaskTracker) DecrementOutstanding(ctx context.Context, taskID string) (int, error) {
+	return t.db.InternalTasks().DecrementOutstanding(ctx, taskID)
+}
+
+func (t dbTaskTracker) HasFailedInstance(ctx context.Context, taskID string) (bool, error) {
+	return t.db.HasFailedInstance(ctx, taskID)
+}
+
+func (t dbTaskTracker) SetTaskState(ctx context.Context, taskID string, state model.TaskState) error {
+	return t.db.InternalTasks().UpdateTaskState(ctx, taskID, state)
 }
 
 // dispatchWorkflow runs a matched task through the workflow engine. The route is
