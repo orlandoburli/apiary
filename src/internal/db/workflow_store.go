@@ -172,6 +172,22 @@ func (c *Client) GetLatestInstanceByCell(ctx context.Context, cellID string) (*W
 	return inst, err
 }
 
+// ListWorkflowInstancesByTask returns every workflow instance bound to an
+// InternalTask, newest first. A task may fan out to several workflows (Phase 4),
+// so the dashboard lists all of them per task. Backed by idx_wf_instances_task.
+func (c *Client) ListWorkflowInstancesByTask(ctx context.Context, taskID string) ([]WorkflowInstance, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
+		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
+		FROM workflow_instances WHERE task_id = ? ORDER BY created_at DESC
+	`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanInstances(rows)
+}
+
 // LatestResumableInstance returns the most recent failed or interrupted
 // instance of a workflow, or (nil, nil) when none exists.
 func (c *Client) LatestResumableInstance(ctx context.Context, workflowID string) (*WorkflowInstance, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/orlandoburli/apiary/internal/model"
 )
@@ -281,4 +282,136 @@ func TestSourceBinding_UniqueConstraint(t *testing.T) {
 	if err := bindings.CreateBinding(ctx, dup); err == nil {
 		t.Error("expected unique-constraint error on duplicate (source_id, source_item_id)")
 	}
+}
+
+func TestInternalTask_ListTasks(t *testing.T) {
+	ctx := context.Background()
+	store := newTestClient(t).InternalTasks()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Three tasks in different states, inserted with increasing created_at.
+	for i, st := range []model.TaskState{model.TaskStateRegistered, model.TaskStateRunning, model.TaskStateDone} {
+		task := &model.InternalTask{
+			Title:     "t" + string(rune('A'+i)),
+			State:     st,
+			CreatedAt: base.Add(time.Duration(i) * time.Minute),
+		}
+		if err := store.CreateTask(ctx, task); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+	}
+
+	got, err := store.ListTasks(ctx, 100)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("ListTasks returned %d tasks, want 3 (across all states)", len(got))
+	}
+	// Newest first: tC (done) before tB (running) before tA (registered).
+	if got[0].Title != "tC" || got[1].Title != "tB" || got[2].Title != "tA" {
+		t.Errorf("ListTasks order = [%s %s %s], want newest-first [tC tB tA]", got[0].Title, got[1].Title, got[2].Title)
+	}
+
+	// limit is honored.
+	lim, err := store.ListTasks(ctx, 2)
+	if err != nil {
+		t.Fatalf("ListTasks(2): %v", err)
+	}
+	if len(lim) != 2 || lim[0].Title != "tC" {
+		t.Errorf("ListTasks(2) = %d rows starting %q, want 2 starting tC", len(lim), titleAt(lim, 0))
+	}
+}
+
+func TestInternalTask_ListChildTasks(t *testing.T) {
+	ctx := context.Background()
+	store := newTestClient(t).InternalTasks()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	parent := &model.InternalTask{Title: "parent", CreatedAt: base}
+	if err := store.CreateTask(ctx, parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	other := &model.InternalTask{Title: "other", CreatedAt: base}
+	if err := store.CreateTask(ctx, other); err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+	// Two children of parent (oldest-first expected), one child of other.
+	c1 := &model.InternalTask{Title: "child1", ParentTaskID: parent.ID, CreatedAt: base.Add(1 * time.Minute)}
+	c2 := &model.InternalTask{Title: "child2", ParentTaskID: parent.ID, CreatedAt: base.Add(2 * time.Minute)}
+	c3 := &model.InternalTask{Title: "child3", ParentTaskID: other.ID, CreatedAt: base.Add(3 * time.Minute)}
+	for _, c := range []*model.InternalTask{c1, c2, c3} {
+		if err := store.CreateTask(ctx, c); err != nil {
+			t.Fatalf("create child: %v", err)
+		}
+	}
+
+	kids, err := store.ListChildTasks(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("ListChildTasks: %v", err)
+	}
+	if len(kids) != 2 || kids[0].Title != "child1" || kids[1].Title != "child2" {
+		t.Fatalf("ListChildTasks(parent) = %d %v, want [child1 child2] oldest-first", len(kids), titles(kids))
+	}
+	if none, _ := store.ListChildTasks(ctx, parent.ID+"-missing"); len(none) != 0 {
+		t.Errorf("ListChildTasks(unknown) = %d, want 0", len(none))
+	}
+}
+
+func TestInternalTask_GetTaskAncestors(t *testing.T) {
+	ctx := context.Background()
+	store := newTestClient(t).InternalTasks()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Chain: root -> mid -> leaf
+	root := &model.InternalTask{Title: "root", CreatedAt: base}
+	if err := store.CreateTask(ctx, root); err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	mid := &model.InternalTask{Title: "mid", ParentTaskID: root.ID, CreatedAt: base.Add(time.Minute)}
+	if err := store.CreateTask(ctx, mid); err != nil {
+		t.Fatalf("create mid: %v", err)
+	}
+	leaf := &model.InternalTask{Title: "leaf", ParentTaskID: mid.ID, CreatedAt: base.Add(2 * time.Minute)}
+	if err := store.CreateTask(ctx, leaf); err != nil {
+		t.Fatalf("create leaf: %v", err)
+	}
+
+	anc, err := store.GetTaskAncestors(ctx, leaf.ID)
+	if err != nil {
+		t.Fatalf("GetTaskAncestors: %v", err)
+	}
+	// Root first, leaf last.
+	if len(anc) != 3 || anc[0].Title != "root" || anc[1].Title != "mid" || anc[2].Title != "leaf" {
+		t.Fatalf("GetTaskAncestors(leaf) = %v, want root-first [root mid leaf]", titles(anc))
+	}
+
+	// A root task is its own only ancestor.
+	rootAnc, err := store.GetTaskAncestors(ctx, root.ID)
+	if err != nil {
+		t.Fatalf("GetTaskAncestors(root): %v", err)
+	}
+	if len(rootAnc) != 1 || rootAnc[0].Title != "root" {
+		t.Errorf("GetTaskAncestors(root) = %v, want [root]", titles(rootAnc))
+	}
+
+	// Unknown id yields no rows.
+	if none, _ := store.GetTaskAncestors(ctx, "nope"); len(none) != 0 {
+		t.Errorf("GetTaskAncestors(unknown) = %d, want 0", len(none))
+	}
+}
+
+func titles(ts []model.InternalTask) []string {
+	out := make([]string, len(ts))
+	for i := range ts {
+		out[i] = ts[i].Title
+	}
+	return out
+}
+
+func titleAt(ts []model.InternalTask, i int) string {
+	if i < len(ts) {
+		return ts[i].Title
+	}
+	return ""
 }

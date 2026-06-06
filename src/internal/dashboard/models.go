@@ -91,12 +91,36 @@ type TasksTab struct {
 // WorkflowInstanceItem is a workflow instance bound to a task, with its steps,
 // shown in the Task Detail and workflow monitor views.
 type WorkflowInstanceItem struct {
-	ID       string
-	Workflow string
-	State    string // pending, running, approval_waiting, interrupted, done, failed
-	Message  string // approval message when State == approval_waiting
-	CellID   string // the task/cell this instance is bound to
-	Steps    []WorkflowStepItem
+	ID               string
+	Workflow         string
+	State            string // pending, running, approval_waiting, interrupted, done, failed
+	Message          string // approval message when State == approval_waiting
+	CellID           string // the task/cell this instance is bound to
+	ParentInstanceID string // set for sub-workflow instances
+	ResumedFrom      string // set when this instance resumed a prior one
+	CreatedAt        time.Time
+	Steps            []WorkflowStepItem
+}
+
+// SourceBindingItem is a task's link to one source item (e.g. a GitHub issue or
+// a Plane work item), shown in the Task Detail. A task may have several bindings;
+// spawned tasks have none.
+type SourceBindingItem struct {
+	SourceID   string // "github", "plane"
+	ItemNumber string // human ref, e.g. "#42", "ERP-42"
+	ItemURL    string // deep link to the item in its source UI
+	ItemID     string // source-native id
+}
+
+// TaskLineageItem is one node in a task's lineage: an ancestor on the breadcrumb
+// to root, or a direct child (spawned task). It carries enough to render a tree
+// node (title, state badge, whether it has a source binding, instance count).
+type TaskLineageItem struct {
+	TaskID        string
+	Title         string
+	State         string // InternalTask state: registered|running|approval_waiting|done|failed
+	HasBinding    bool
+	InstanceCount int
 }
 
 // WorkflowStepItem is one step row within a WorkflowInstanceItem.
@@ -118,7 +142,12 @@ type WorkflowStepItem struct {
 	FinishedAt   *time.Time
 }
 
-// TaskItem is one task row (its latest execution attempt).
+// TaskItem is one row in the Tasks tab. Since Phase 9 the list is keyed on the
+// canonical InternalTask (InternalTaskID), with the legacy execution fields
+// (Agent/Model/tokens/duration) hydrated on drill-down via DrillKey, which keys
+// the legacy task_executions/task_logs/workflow_instances-by-cell machinery.
+// It is also reused by the Agents tab, where it is built from a TaskHistoryItem
+// (taskItemFromHistory) and the InternalTask fields are left zero.
 type TaskItem struct {
 	TaskID       string
 	Number       string // human reference, e.g. "ERP-42"
@@ -127,7 +156,7 @@ type TaskItem struct {
 	Agent        string
 	Model        string
 	Runner       string
-	Status       string // running, success, failed
+	Status       string // execution status (running/success/failed) or InternalTask state
 	Attempt      int
 	Duration     time.Duration
 	StartedAt    *time.Time
@@ -139,6 +168,18 @@ type TaskItem struct {
 	NumTurns     int
 	NumToolCalls int
 	CostUSD      float64
+
+	// Internal task model (Phase 9). Populated when the row/detail comes from an
+	// InternalTask; zero-valued for legacy/Agents-tab rows.
+	InternalTaskID       string                 // canonical internal_tasks.id (primary identity)
+	DrillKey             string                 // legacy cell_id for executions/logs/monitor
+	ParentTaskID         string                 // empty for root tasks
+	ParentTitle          string                 // resolved parent title, for the breadcrumb
+	OutstandingWorkflows int                    // workflows still running for this task
+	Bindings             []SourceBindingItem    // source items bound to this task
+	Lineage              []TaskLineageItem      // ancestors root-first incl. self (detail only)
+	Children             []TaskLineageItem      // direct children / spawned tasks (detail only)
+	Instances            []WorkflowInstanceItem // all workflow instances for this task (detail only)
 }
 
 // AgentView is which sub-screen the Agents tab is showing.

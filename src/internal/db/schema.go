@@ -204,6 +204,10 @@ var migrations = []string{
 	// during migration; source_item_id (cell_id) + source_id retained until a
 	// later phase drops them.
 	`ALTER TABLE workflow_instances ADD COLUMN task_id TEXT REFERENCES internal_tasks(id)`,
+	// Index on the migration-added task_id column. Must live here (after the
+	// ALTER) rather than in the CREATE INDEX block, which runs before migrations.
+	// Backs the dashboard's "instances for a task" query (ListWorkflowInstancesByTask).
+	`CREATE INDEX IF NOT EXISTS idx_wf_instances_task ON workflow_instances(task_id)`,
 	// Internal Task Model: per-step write-back (APIARY_PUBLISH) and internal
 	// fan-out (APIARY_SPAWN) tracking.
 	`ALTER TABLE step_runs ADD COLUMN publish_payload TEXT`,

@@ -20,6 +20,7 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
+	"github.com/orlandoburli/apiary/internal/model"
 )
 
 // refreshInterval controls how often the active tab re-queries the database.
@@ -537,9 +538,9 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		switch a.model.ActiveTab() {
 		case "Tasks":
-			if id, ok := a.selectedTaskID(); ok {
+			if row, ok := a.selectedTask(); ok {
 				a.model.loading = true
-				return a, a.fetchTaskDetail(id)
+				return a, a.fetchTaskDetail(row.TaskID, row.InternalTaskID)
 			}
 		case "Agents":
 			// Detail uses the already-loaded stats — no DB round-trip needed.
@@ -776,9 +777,9 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 		t.Logs = nil
 		t.LogScroll = 0
 	case "d":
-		if id, ok := a.selectedTaskID(); ok {
+		if row, ok := a.selectedTask(); ok {
 			a.model.loading = true
-			return a, a.fetchTaskDetail(id)
+			return a, a.fetchTaskDetail(row.TaskID, row.InternalTaskID)
 		}
 	case "l", "enter":
 		if id, ok := a.selectedTaskID(); ok {
@@ -786,12 +787,12 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 			return a, a.fetchTaskLogs(id)
 		}
 	case "r":
-		if id, ok := a.selectedTaskID(); ok {
+		if row, ok := a.selectedTask(); ok {
 			a.model.loading = true
 			if t.View == TaskViewLogs {
-				return a, a.fetchTaskLogs(id)
+				return a, a.fetchTaskLogs(row.TaskID)
 			}
-			return a, a.fetchTaskDetail(id)
+			return a, a.fetchTaskDetail(row.TaskID, row.InternalTaskID)
 		}
 	case "up":
 		if t.View == TaskViewLogs && t.LogScroll > 0 {
@@ -996,13 +997,29 @@ func lastIndex(total int) int {
 	return total - 1
 }
 
-// selectedTaskID returns the task id under the cursor in the Tasks list.
-func (a *App) selectedTaskID() (string, bool) {
+// selectedTask returns the TaskItem under the cursor in the Tasks list. It
+// indexes the filtered/sorted view (what the user actually sees), not the raw
+// History — SelectedIdx tracks the filtered list.
+func (a *App) selectedTask() (*TaskItem, bool) {
 	t := a.model.tasksTab
-	if t == nil || t.SelectedIdx < 0 || t.SelectedIdx >= len(t.History) {
+	if t == nil {
+		return nil, false
+	}
+	rows := a.filteredTasks(t)
+	if t.SelectedIdx < 0 || t.SelectedIdx >= len(rows) {
+		return nil, false
+	}
+	return &rows[t.SelectedIdx], true
+}
+
+// selectedTaskID returns the drill key (legacy cell id) of the task under the
+// cursor in the Tasks list — what the execution/logs/workflow machinery keys on.
+func (a *App) selectedTaskID() (string, bool) {
+	row, ok := a.selectedTask()
+	if !ok {
 		return "", false
 	}
-	return t.History[t.SelectedIdx].TaskID, true
+	return row.TaskID, true
 }
 
 // focusedTaskURL returns the source URL of the task the user is currently
@@ -1018,8 +1035,8 @@ func (a *App) focusedTaskURL() (string, bool) {
 		if t.View == TaskViewDetail && t.Detail != nil {
 			return t.Detail.URL, t.Detail.URL != ""
 		}
-		if t.SelectedIdx >= 0 && t.SelectedIdx < len(t.History) {
-			u := t.History[t.SelectedIdx].URL
+		if rows := a.filteredTasks(t); t.SelectedIdx >= 0 && t.SelectedIdx < len(rows) {
+			u := rows[t.SelectedIdx].URL
 			return u, u != ""
 		}
 	case "Agents":
@@ -1048,8 +1065,8 @@ func (a *App) focusedTaskID() (string, bool) {
 		if t.View == TaskViewDetail && t.Detail != nil {
 			return t.Detail.TaskID, true
 		}
-		if t.SelectedIdx >= 0 && t.SelectedIdx < len(t.History) {
-			return t.History[t.SelectedIdx].TaskID, true
+		if rows := a.filteredTasks(t); t.SelectedIdx >= 0 && t.SelectedIdx < len(rows) {
+			return rows[t.SelectedIdx].TaskID, true
 		}
 	case "Agents":
 		ag := a.model.agentsTab
@@ -1406,6 +1423,14 @@ func (a *App) fetchActiveTab() tea.Cmd {
 		if t := a.model.tasksTab; t != nil && t.View == TaskViewWorkflow && t.WorkflowInstance != nil {
 			return a.refreshWorkflowMonitor(t.WorkflowInstance.ID, t.WorkflowInstance.CellID)
 		}
+		// Only refresh the list while the list itself is showing. While a detail
+		// or logs sub-view is open we must not refetch — re-sorting History under
+		// the cursor would make the SelectedIdx-keyed reload (r/d/l) target a
+		// different task than the one on screen. The sub-view content is static
+		// until the user reloads it; returning to the list resumes auto-refresh.
+		if t := a.model.tasksTab; t != nil && t.View != TaskViewList {
+			return nil
+		}
 		return a.fetchTasks()
 	case "Agents":
 		return a.fetchAgents()
@@ -1481,14 +1506,76 @@ func (a *App) fetchTasks() tea.Cmd {
 
 		items := make([]TaskItem, 0)
 		if dbConn != nil {
-			if rows, err := dbConn.GetTaskHistory(ctx, 100); err == nil {
-				for _, r := range rows {
-					items = append(items, taskItemFromHistory(r))
+			// Phase 9: the Tasks tab is keyed on the canonical InternalTask, not
+			// per-execution rows. Each row carries the internal id (for lineage /
+			// bindings / instances) plus a drill key (the primary binding's source
+			// item id, or the task id when binding-less) that the legacy
+			// detail/logs/monitor machinery resolves.
+			if tasks, err := dbConn.InternalTasks().ListTasks(ctx, 100); err == nil {
+				for _, tk := range tasks {
+					bindings, _ := dbConn.ListBindingsByTask(ctx, tk.ID)
+					items = append(items, taskItemFromInternal(tk, bindings))
 				}
 			}
 		}
 		return tasksDataMsg{items: items}
 	}
+}
+
+// taskItemFromInternal converts an InternalTask (plus its source bindings) into a
+// dashboard Tasks-tab row. Execution-scoped fields (Agent/Model/tokens/duration)
+// are left zero here and hydrated on drill-down; StartedAt/CompletedAt mirror the
+// task timestamps so the list's "when" column and time sort stay meaningful.
+func taskItemFromInternal(t model.InternalTask, bindings []model.SourceBinding) TaskItem {
+	created := t.CreatedAt
+	item := TaskItem{
+		TaskID:               drillKeyFor(t, bindings), // legacy machinery key (== DrillKey)
+		Title:                t.Title,
+		Status:               string(t.State),
+		StartedAt:            &created,
+		InternalTaskID:       t.ID,
+		DrillKey:             drillKeyFor(t, bindings),
+		ParentTaskID:         t.ParentTaskID,
+		OutstandingWorkflows: t.OutstandingWorkflows,
+		Bindings:             mapBindings(bindings),
+	}
+	if t.State == model.TaskStateDone || t.State == model.TaskStateFailed {
+		updated := t.UpdatedAt
+		item.CompletedAt = &updated
+	}
+	if len(bindings) > 0 {
+		item.Number = bindings[0].SourceItemNumber
+		item.URL = bindings[0].SourceItemURL
+	}
+	return item
+}
+
+// drillKeyFor returns the key the legacy task_executions/task_logs/workflow_instances
+// (by cell_id) machinery uses for a task: the primary binding's source item id when
+// bound, otherwise the task's own id (which the engine uses as the cell id for
+// binding-less spawned tasks).
+func drillKeyFor(t model.InternalTask, bindings []model.SourceBinding) string {
+	if len(bindings) > 0 {
+		return bindings[0].SourceItemID
+	}
+	return t.ID
+}
+
+// mapBindings converts model.SourceBinding rows into dashboard view-models.
+func mapBindings(bindings []model.SourceBinding) []SourceBindingItem {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]SourceBindingItem, 0, len(bindings))
+	for _, b := range bindings {
+		out = append(out, SourceBindingItem{
+			SourceID:   b.SourceID,
+			ItemNumber: b.SourceItemNumber,
+			ItemURL:    b.SourceItemURL,
+			ItemID:     b.SourceItemID,
+		})
+	}
+	return out
 }
 
 // taskItemFromHistory converts a DB history row into a dashboard TaskItem.
@@ -1583,7 +1670,12 @@ func (a *App) fetchAgentTaskLogs(taskID string) tea.Cmd {
 	}
 }
 
-func (a *App) fetchTaskDetail(taskID string) tea.Cmd {
+// fetchTaskDetail loads the detail panel for a task. drillKey is the legacy
+// cell id used by the execution/logs/workflow-instance machinery; internalTaskID
+// is the canonical InternalTask id used to augment the panel with source
+// bindings, lineage (ancestors + children), and the full list of workflow
+// instances. internalTaskID may be empty for legacy/agent-drilled rows.
+func (a *App) fetchTaskDetail(drillKey, internalTaskID string) tea.Cmd {
 	dbConn := a.dbConn
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
@@ -1591,7 +1683,7 @@ func (a *App) fetchTaskDetail(taskID string) tea.Cmd {
 
 		var detail *TaskItem
 		if dbConn != nil {
-			if r, err := dbConn.GetTaskDetail(ctx, taskID); err == nil && r != nil {
+			if r, err := dbConn.GetTaskDetail(ctx, drillKey); err == nil && r != nil {
 				detail = &TaskItem{
 					TaskID:       r.TaskID,
 					Number:       r.Number,
@@ -1614,11 +1706,97 @@ func (a *App) fetchTaskDetail(taskID string) tea.Cmd {
 					CostUSD:      r.CostUSD,
 				}
 			}
+			if internalTaskID != "" {
+				detail = a.augmentTaskDetail(ctx, dbConn, detail, drillKey, internalTaskID)
+			}
 		}
 
-		instance := a.fetchWorkflowInstance(ctx, dbConn, taskID)
-		return taskDetailMsg{taskID: taskID, detail: detail, instance: instance}
+		instance := a.fetchWorkflowInstance(ctx, dbConn, drillKey)
+		return taskDetailMsg{taskID: drillKey, detail: detail, instance: instance}
 	}
+}
+
+// augmentTaskDetail enriches a task detail with InternalTask data: parent/
+// outstanding counters, source bindings, the lineage breadcrumb (ancestors,
+// root-first), spawned children, and every workflow instance bound to the task.
+// When the task has no execution row yet (e.g. a registered task that never ran)
+// it synthesizes a minimal detail from the InternalTask so the panel still
+// renders. Returns the (possibly newly-created) detail, or the input unchanged
+// when the InternalTask is gone.
+func (a *App) augmentTaskDetail(ctx context.Context, dbConn *db.Client, detail *TaskItem, drillKey, internalTaskID string) *TaskItem {
+	tk, err := dbConn.InternalTasks().GetTask(ctx, internalTaskID)
+	if err != nil || tk == nil {
+		return detail
+	}
+	if detail == nil {
+		created := tk.CreatedAt
+		detail = &TaskItem{
+			TaskID:    drillKey,
+			Title:     tk.Title,
+			Status:    string(tk.State),
+			StartedAt: &created,
+		}
+	}
+	detail.InternalTaskID = tk.ID
+	detail.DrillKey = drillKey
+	detail.ParentTaskID = tk.ParentTaskID
+	detail.OutstandingWorkflows = tk.OutstandingWorkflows
+	// Show the InternalTask lifecycle state so the detail Status matches the list
+	// (Phase 9's primary unit). Per-execution/instance outcomes remain visible in
+	// the Workflow Instances section below.
+	detail.Status = string(tk.State)
+
+	if b, _ := dbConn.ListBindingsByTask(ctx, internalTaskID); len(b) > 0 {
+		detail.Bindings = mapBindings(b)
+	}
+	if anc, _ := dbConn.InternalTasks().GetTaskAncestors(ctx, internalTaskID); len(anc) > 0 {
+		detail.Lineage = mapLineage(ctx, dbConn, anc)
+		if len(anc) >= 2 { // the node just before self (self is last) is the parent
+			detail.ParentTitle = anc[len(anc)-2].Title
+		}
+	}
+	if kids, _ := dbConn.InternalTasks().ListChildTasks(ctx, internalTaskID); len(kids) > 0 {
+		detail.Children = mapLineage(ctx, dbConn, kids)
+	}
+	if insts, _ := dbConn.ListWorkflowInstancesByTask(ctx, internalTaskID); len(insts) > 0 {
+		detail.Instances = mapInstances(insts)
+	}
+	return detail
+}
+
+// mapLineage converts InternalTask rows into lineage nodes, enriching each with
+// whether it has a source binding and how many workflow instances it has (bounded
+// fan-out per node, run in the background fetch command).
+func mapLineage(ctx context.Context, dbConn *db.Client, tasks []model.InternalTask) []TaskLineageItem {
+	out := make([]TaskLineageItem, 0, len(tasks))
+	for _, t := range tasks {
+		node := TaskLineageItem{TaskID: t.ID, Title: t.Title, State: string(t.State)}
+		if b, _ := dbConn.ListBindingsByTask(ctx, t.ID); len(b) > 0 {
+			node.HasBinding = true
+		}
+		if insts, _ := dbConn.ListWorkflowInstancesByTask(ctx, t.ID); len(insts) > 0 {
+			node.InstanceCount = len(insts)
+		}
+		out = append(out, node)
+	}
+	return out
+}
+
+// mapInstances converts db workflow-instance rows into dashboard view-models.
+func mapInstances(insts []db.WorkflowInstance) []WorkflowInstanceItem {
+	out := make([]WorkflowInstanceItem, 0, len(insts))
+	for _, in := range insts {
+		out = append(out, WorkflowInstanceItem{
+			ID:               in.ID,
+			Workflow:         in.WorkflowID,
+			State:            in.State,
+			CellID:           in.CellID,
+			ParentInstanceID: in.ParentInstanceID,
+			ResumedFrom:      in.ResumedFrom,
+			CreatedAt:        in.CreatedAt,
+		})
+	}
+	return out
 }
 
 // fetchWorkflowInstance loads the workflow instance (and its steps) bound to a
@@ -2320,6 +2498,12 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	row("Task ID", StyleValueStrong.Render(d.TaskID))
 	row("Title", valueOr(d.Title, "—"))
 	row("Status", taskStatusBadge(d.Status))
+	if d.OutstandingWorkflows > 0 {
+		row("Outstanding", fmt.Sprintf("%d workflow(s) running", d.OutstandingWorkflows))
+	}
+	if d.ParentTitle != "" {
+		row("Parent", StyleMuted.Render(d.ParentTitle))
+	}
 	row("Agent", valueOr(d.Agent, "—"))
 	row("Model", valueOr(d.Model, "—"))
 	row("Runner", valueOr(d.Runner, "—"))
@@ -2341,8 +2525,103 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	if t.DetailInstance != nil {
 		b.WriteString(renderWorkflowSteps(t.DetailInstance))
 	}
+	b.WriteString(renderSourceBindings(d))
+	b.WriteString(renderTaskLineage(d))
+	b.WriteString(renderTaskInstances(d))
 	label := taskDetailLabel(d)
 	return a.box(label, b.String(), height)
+}
+
+// renderSourceBindings renders a task's source bindings (9.1.2): one row per
+// bound source item showing its number, source id, and deep link. Empty when the
+// task has no bindings (e.g. a spawned task).
+func renderSourceBindings(d *TaskItem) string {
+	if len(d.Bindings) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n  " + StyleLabel.Render("Source Bindings") + "\n")
+	for _, sb := range d.Bindings {
+		b.WriteString(fmt.Sprintf("    %s  %s  %s\n",
+			StyleAccent.Render(pad(valueOr(sb.ItemNumber, "—"), 10)),
+			StyleMuted.Render(pad(sb.SourceID, 10)),
+			StyleInfo.Render(sb.ItemURL),
+		))
+	}
+	return b.String()
+}
+
+// renderTaskLineage renders a task's lineage (9.1.3 + 9.2): a root→self
+// breadcrumb of ancestors and a tree of direct children. Each child node shows a
+// state badge, a binding indicator, its title, and its workflow-instance count
+// (9.2.2). Empty when the task is a root with no children.
+func renderTaskLineage(d *TaskItem) string {
+	var b strings.Builder
+	if len(d.Lineage) > 1 { // a single-element lineage is just the task itself
+		parts := make([]string, 0, len(d.Lineage))
+		for i, n := range d.Lineage {
+			title := valueOr(n.Title, n.TaskID)
+			if i == len(d.Lineage)-1 {
+				parts = append(parts, StyleValueStrong.Render(title)) // self, last
+			} else {
+				parts = append(parts, StyleMuted.Render(title))
+			}
+		}
+		b.WriteString("\n  " + StyleLabel.Render("Lineage") + "  " + strings.Join(parts, StyleMuted.Render(" > ")) + "\n")
+	}
+	if len(d.Children) > 0 {
+		b.WriteString("\n  " + StyleLabel.Render(fmt.Sprintf("Children (%d)", len(d.Children))) + "\n")
+		for _, c := range d.Children {
+			b.WriteString("    " + lineageNodeRow(c) + "\n")
+		}
+	}
+	return b.String()
+}
+
+// lineageNodeRow renders one lineage tree node: state badge, binding indicator
+// (● when the task has a source binding), title, and instance count.
+func lineageNodeRow(n TaskLineageItem) string {
+	bind := StyleFooterDim.Render("·")
+	if n.HasBinding {
+		bind = StyleAccent.Render("●")
+	}
+	return fmt.Sprintf("%s %s %s  %s",
+		taskStatusBadge(n.State),
+		bind,
+		valueOr(n.Title, n.TaskID),
+		StyleMuted.Render(fmt.Sprintf("(%d inst)", n.InstanceCount)),
+	)
+}
+
+// renderTaskInstances renders every workflow instance bound to a task (9.1.4):
+// a task may fan out to several workflows, so all instances are listed with their
+// state, workflow id, creation time, and a resumed/sub-workflow marker.
+func renderTaskInstances(d *TaskItem) string {
+	if len(d.Instances) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n  " + StyleLabel.Render(fmt.Sprintf("Workflow Instances (%d)", len(d.Instances))) + "\n")
+	for _, in := range d.Instances {
+		when := "—"
+		if !in.CreatedAt.IsZero() {
+			when = in.CreatedAt.Format("01-02 15:04")
+		}
+		marker := ""
+		switch {
+		case in.ResumedFrom != "":
+			marker = StyleMuted.Render(" (resumed)")
+		case in.ParentInstanceID != "":
+			marker = StyleMuted.Render(" (sub)")
+		}
+		b.WriteString(fmt.Sprintf("    %s  %s  %s%s\n",
+			wfInstanceBadge(in.State),
+			pad(truncate(in.Workflow, 18), 18),
+			StyleMuted.Render(when),
+			marker,
+		))
+	}
+	return b.String()
 }
 
 // renderWorkflowSteps renders the step-progress panel for a task that ran
@@ -3082,19 +3361,26 @@ func padLeft(s string, width int) string {
 	return s
 }
 
-// taskStatusBadge renders a colored, fixed-width status label.
+// taskStatusBadge renders a colored, fixed-width status label. It handles both
+// legacy execution statuses (success/failed/running, used by the Agents tab) and
+// InternalTask lifecycle states (registered/running/approval_waiting/done/failed,
+// used by the Tasks tab since Phase 9). The longer internal states are shown with
+// short synonyms so the badge stays within its 8-char column.
 func taskStatusBadge(status string) string {
-	label := pad(valueOr(status, "—"), 8)
+	label, style := status, StyleMuted
 	switch status {
-	case "success":
-		return StyleSuccess.Render(label)
+	case "success", "done":
+		style = StyleSuccess
 	case "failed":
-		return StyleError.Render(label)
+		style = StyleError
 	case "running":
-		return StyleWarning.Render(label)
-	default:
-		return StyleMuted.Render(label)
+		style = StyleWarning
+	case "approval_waiting":
+		label, style = "approval", StyleWarning
+	case "registered":
+		label, style = "queued", StyleMuted
 	}
+	return style.Render(pad(valueOr(label, "—"), 8))
 }
 
 // taskWhen returns a short "when" description for a task list row.
