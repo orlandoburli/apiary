@@ -34,11 +34,13 @@ const (
 // dagRun holds the mutable state of one workflow instance's step graph as the
 // scheduler walks it.
 type dagRun struct {
-	instID string
-	wf     config.WorkflowConfig
-	cell   model.SourceItem
-	depth  int          // nesting depth (0 = top-level; >0 = sub-workflow child)
-	seed   []MemoryStep // inherited memory (sub-workflow snapshot from the parent)
+	instID   string
+	wf       config.WorkflowConfig
+	task     model.InternalTask    // the unit of work this instance runs against
+	bindings []model.SourceBinding // task's source bindings (side-effect targets)
+	cell     model.SourceItem      // execution view derived from task + primary binding
+	depth    int                   // nesting depth (0 = top-level; >0 = sub-workflow child)
+	seed     []MemoryStep          // inherited memory (sub-workflow snapshot from the parent)
 
 	byID  map[string]config.StepConfig
 	order []string // step ids in declaration order (deterministic scheduling)
@@ -56,13 +58,16 @@ type dagRun struct {
 	parkedAt    time.Time // when the current approval parked (for timeout)
 }
 
-// initDAG builds the in-memory state for a workflow instance's step graph. seed
+// initDAG builds the in-memory state for a workflow instance's step graph. The
+// execution view (cell) is projected from the task + its primary binding. seed
 // is inherited memory for a sub-workflow child; depth tracks nesting.
-func (e *Engine) initDAG(instID string, wf config.WorkflowConfig, cell model.SourceItem, seed []MemoryStep, depth int) *dagRun {
+func (e *Engine) initDAG(instID string, wf config.WorkflowConfig, task model.InternalTask, bindings []model.SourceBinding, seed []MemoryStep, depth int) *dagRun {
 	r := &dagRun{
 		instID:      instID,
 		wf:          wf,
-		cell:        cell,
+		task:        task,
+		bindings:    bindings,
+		cell:        sourceItemView(task, bindings),
 		depth:       depth,
 		seed:        seed,
 		byID:        map[string]config.StepConfig{},
@@ -194,7 +199,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 					}
 					foreachExitCode = fr.failed
 				case config.StepTypeWorkflow:
-					res = e.executeSubWorkflowStep(ctx, r.instID, step, r.cell, memSnap, r.depth, r.wf.ID)
+					res = e.executeSubWorkflowStep(ctx, r.instID, step, r.task, r.bindings, memSnap, r.depth, r.wf.ID)
 				default: // StepTypeAgent
 					res = e.runStep(ctx, r.instID, step, r.cell, memSnap)
 				}
@@ -284,7 +289,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 		r.stepStates[step.ID] = ss
 
 		if e.resultCommentMode(r.wf) == config.ResultCommentPerStep && e.side != nil {
-			_ = e.side.PostComment(ctx, r.cell, perStepComment(step, res))
+			_ = e.side.PostComment(ctx, r.task, r.bindings, perStepComment(step, res))
 		}
 
 		if res.Success {
@@ -350,7 +355,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 // aborts it via the engine's approval handling.
 func (e *Engine) enterApproval(ctx context.Context, r *dagRun, step config.StepConfig) {
 	if e.side != nil && step.Message != "" {
-		_ = e.side.PostComment(ctx, r.cell, step.Message)
+		_ = e.side.PostComment(ctx, r.task, r.bindings, step.Message)
 	}
 	r.state[step.ID] = stWaiting
 	r.waitingStep = step.ID

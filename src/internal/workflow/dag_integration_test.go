@@ -81,7 +81,7 @@ func TestDAGIntegration_SequentialMemory(t *testing.T) {
 		},
 	}
 
-	instID, success, err := eng.RunInstance(ctx, wf, model.SourceItem{ID: "T-1", Title: "Add feature"})
+	instID, success, err := eng.RunInstance(ctx, wf, model.InternalTask{ID: "T-1", Title: "Add feature"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestDAGIntegration_DiamondFanIn(t *testing.T) {
 		},
 	}
 
-	instID, success, err := eng.RunInstance(ctx, wf, model.SourceItem{ID: "T-2"})
+	instID, success, err := eng.RunInstance(ctx, wf, model.InternalTask{ID: "T-2"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestDAGIntegration_SplitByMemoryField(t *testing.T) {
 		},
 	}
 
-	instID, success, err := eng.RunInstance(ctx, wf, model.SourceItem{ID: "T-3"})
+	instID, success, err := eng.RunInstance(ctx, wf, model.InternalTask{ID: "T-3"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestDAGIntegration_OnFailLoopBackAndRetry(t *testing.T) {
 		},
 	}
 
-	instID, success, err := eng.RunInstance(ctx, wf, model.SourceItem{ID: "T-4"})
+	instID, success, err := eng.RunInstance(ctx, wf, model.InternalTask{ID: "T-4"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestDAGIntegration_OnFailMaxRetriesExhausted(t *testing.T) {
 		},
 	}
 
-	instID, success, err := eng.RunInstance(ctx, wf, model.SourceItem{ID: "T-5"})
+	instID, success, err := eng.RunInstance(ctx, wf, model.InternalTask{ID: "T-5"})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}

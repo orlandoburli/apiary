@@ -40,7 +40,7 @@ func TestEngine_PersistsToRealSQLite(t *testing.T) {
 		OnComplete: config.OnComplete{SetState: "in_review"},
 	})
 
-	instID, success, err := eng.RunInstance(ctx, wf, model.SourceItem{ID: "PLANE-1", Title: "Fix it", SourceID: "main-plane"})
+	instID, success, err := eng.RunInstance(ctx, wf, model.InternalTask{ID: "PLANE-1", Title: "Fix it", Metadata: model.TaskMetadata{Source: "main-plane"}})
 	if err != nil {
 		t.Fatalf("RunInstance: %v", err)
 	}
@@ -58,6 +58,9 @@ func TestEngine_PersistsToRealSQLite(t *testing.T) {
 	}
 	if inst.WorkflowID != "backend-bugs" || inst.CellID != "PLANE-1" || inst.SourceID != "main-plane" {
 		t.Errorf("instance fields wrong: %+v", inst)
+	}
+	if inst.TaskID != "PLANE-1" {
+		t.Errorf("instance task_id = %q, want PLANE-1", inst.TaskID)
 	}
 
 	// Step run persisted with structured output + summary.
@@ -101,7 +104,7 @@ func TestEngine_FailedStepPersistsFailedState(t *testing.T) {
 	eng := NewEngine(cfg, client, exec)
 
 	wf := synthWF(config.RouteConfig{ID: "r", Agent: "a"})
-	instID, success, _ := eng.RunInstance(ctx, wf, model.SourceItem{ID: "C1"})
+	instID, success, _ := eng.RunInstance(ctx, wf, model.InternalTask{ID: "C1"})
 
 	if success {
 		t.Error("expected failure")

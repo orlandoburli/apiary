@@ -21,10 +21,11 @@ import (
 // steps are intentionally re-evaluated (they are side-effect-free and their
 // branch routing must re-activate the chosen target), while agent, foreach,
 // sub-workflow, and approval steps that passed are carried over untouched.
-func (e *Engine) ResumeInstance(ctx context.Context, instID string, wf config.WorkflowConfig, cell model.SourceItem, priorSteps []db.StepRun) (success bool, err error) {
+func (e *Engine) ResumeInstance(ctx context.Context, instID string, wf config.WorkflowConfig, task model.InternalTask, priorSteps []db.StepRun) (success bool, err error) {
 	_ = e.store.UpdateWorkflowInstanceState(ctx, instID, db.InstanceStateRunning)
 
-	r := e.initDAG(instID, wf, cell, nil, 0)
+	bindings := e.bindingsFor(ctx, task.ID)
+	r := e.initDAG(instID, wf, task, bindings, nil, 0)
 	e.seedResume(ctx, r, priorSteps)
 
 	aplog.Info("workflow %s: resuming instance %s (%d cached step(s))", wf.ID, instID, len(r.passedOrder))

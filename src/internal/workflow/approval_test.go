@@ -57,7 +57,7 @@ func TestApproval_SuspendsAtApprovalStep(t *testing.T) {
 	side := &fakeSide{}
 	eng := testEngine(cfg, store, exec, side)
 
-	instID, success, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.SourceItem{ID: "c1"})
+	instID, success, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.InternalTask{ID: "c1"})
 	if success {
 		t.Fatal("a parked instance should not report success")
 	}
@@ -87,7 +87,7 @@ func TestApproval_ResumeContinuesWorkflow(t *testing.T) {
 	exec := &fakeExecutor{}
 	eng := testEngine(cfg, store, exec, &fakeSide{})
 
-	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.SourceItem{ID: "c1"})
+	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.InternalTask{ID: "c1"})
 
 	success, err := eng.ResolveApproval(context.Background(), instID, ApprovalResume)
 	if err != nil {
@@ -114,7 +114,7 @@ func TestApproval_AbortFailsWorkflow(t *testing.T) {
 	exec := &fakeExecutor{}
 	eng := testEngine(cfg, store, exec, &fakeSide{})
 
-	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.SourceItem{ID: "c1"})
+	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.InternalTask{ID: "c1"})
 
 	success, _ := eng.ResolveApproval(context.Background(), instID, ApprovalAbort)
 	if success {
@@ -141,7 +141,8 @@ func TestApproval_CheckResumesOnComment(t *testing.T) {
 	exec := &fakeExecutor{}
 	eng := testEngine(cfg, store, exec, &fakeSide{})
 
-	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.SourceItem{ID: "c1", SourceID: "s1"})
+	store.bindings["c1"] = []model.SourceBinding{{TaskID: "c1", SourceID: "s1", SourceItemID: "c1"}}
+	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.InternalTask{ID: "c1"})
 
 	// Poll returns a cell with an approving comment.
 	poll := func(sourceID, cellID string) (model.SourceItem, error) {
@@ -171,7 +172,7 @@ func TestApproval_CheckTimesOut(t *testing.T) {
 		WithIDGen(func(p string) string { return p + "-1" }),
 	)
 
-	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.SourceItem{ID: "c1", SourceID: "s1"})
+	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.InternalTask{ID: "c1"})
 
 	// Advance clock past 48h; poll returns nothing actionable.
 	clock = time.Unix(0, 0).Add(49 * time.Hour)
@@ -190,7 +191,8 @@ func TestApproval_CheckWaitsWhenNoSignal(t *testing.T) {
 	store := newFakeStore()
 	eng := testEngine(cfg, store, &fakeExecutor{}, &fakeSide{})
 
-	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.SourceItem{ID: "c1", SourceID: "s1"})
+	store.bindings["c1"] = []model.SourceBinding{{TaskID: "c1", SourceID: "s1", SourceItemID: "c1"}}
+	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.InternalTask{ID: "c1"})
 
 	poll := func(sourceID, cellID string) (model.SourceItem, error) {
 		return model.SourceItem{ID: cellID, Comments: []model.Comment{{Body: "still thinking"}}}, nil
