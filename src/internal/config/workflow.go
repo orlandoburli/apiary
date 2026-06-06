@@ -64,8 +64,12 @@ func (w WorkflowConfig) ResumePolicy() string {
 // TriggerConfig selects which tasks start a workflow. It mirrors route matching:
 // priority ordering plus a RouteMatch condition.
 type TriggerConfig struct {
-	Priority int        `yaml:"priority"`
-	Match    RouteMatch `yaml:"match"`
+	Priority int `yaml:"priority"`
+	// Exclusive, when true, stops trigger evaluation after this trigger matches:
+	// no lower-priority trigger is considered. Use it for a terminal classifier or
+	// catch-all that must own a task alone rather than fan out alongside others.
+	Exclusive bool       `yaml:"exclusive"`
+	Match     RouteMatch `yaml:"match"`
 }
 
 // StepConfig is one node in a workflow graph. The active fields depend on Type.
