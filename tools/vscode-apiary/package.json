@@ -3,7 +3,8 @@
   "displayName": "Apiary Workflow Visualizer",
   "description": "Live visual preview of apiary.yaml workflow files",
   "version": "0.1.0",
-  "publisher": "apiary",
+  "publisher": "orlandoburli",
+  "license": "AGPL-3.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/orlandoburli/apiary"
