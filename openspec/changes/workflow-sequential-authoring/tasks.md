@@ -11,17 +11,20 @@
       (transient memory view) — reuse `EvalContext`/`ParseExpr` (`workflow/expr.go`).
 - [ ] Honor `on_missing_output: fail` together with `reject_when`.
 
-## Authoring layer (lowering)
-- [ ] v2 parse: flat `steps:` with per-step `if:`, `name:`, `output:`,
-      `${{ … }}` expressions, implicit sequencing (`config` package).
-- [ ] Lowering pass v2 → `[]StepConfig` (sequence→`depends_on`, `if`→`condition`,
-      `on_reject`→`on_fail.goto`, `reject_when`→`fail_when`, auto-wire
-      `steps.x.outputs.y` refs into `memory.write`).
+## Authoring layer (nested tree + lowering)
+- [ ] v2 parse: **nested step tree** — leaf (`agent:`), group (`steps:`), parallel
+      (`parallel:` + `join`), loop (`for_each:`+`as:`+`steps:`); per-step/group
+      `if:`, `name:`, `output:`, `${{ … }}` expressions (`config` package).
+- [ ] Lowering pass tree → `[]StepConfig`: nesting/order→`depends_on`,
+      group→sub-chain (or anon `type: workflow`), `parallel`+`join`→concurrent
+      children + computed outcome, `for_each`→`type: foreach` (anon sub-workflow
+      body if >1 step), `if`→`condition`, `on_reject`→`on_fail.goto`,
+      `reject_when`→`fail_when`, auto-wire `steps.x.outputs.y` refs into `memory.write`.
 
 ## Validation
-- [ ] Parse-check `if`/`reject_when` expressions; `restart_from` must be an earlier
-      step; `step.field` must be declared in that step's `output`.
-- [ ] Reject ambiguous mix of `if:` blocks and manual `goto` in one flow.
+- [ ] Parse-check `if`/`reject_when`/`join` expressions; `restart_from` must be an
+      earlier sibling; `step.field` must be declared in that step's `output`.
+- [ ] Reject ambiguous mix of authored nesting and hand-written `goto` in one flow.
 - [ ] Warn on `reject_when` without `on_reject`.
 
 ## Examples, souls, docs
@@ -35,12 +38,12 @@
 - [ ] Engine tests for `fail_when` pass/reject/loop-back/retry-exhaustion.
 - [ ] End-to-end: classify→implement→review(reject→loop)→qa→done.
 
-## Composition (loops / sub-workflows / parallel)
-- [ ] `uses:` alias for sub-workflow steps (engine already supports `type: workflow`).
-- [ ] `for_each:`/`as:`/`max:` authored aliases → existing `type: foreach`
-      (`items`/`as`/`max_items`/`step`).
-- [ ] `parallel:` block in the parser → independent steps + selective join
-      (next step `depends_on` all members).
+## Composition (nested sub-steps / loops / parallel)
+- [ ] Nested `steps:` group (inline sub-workflow) — sub-chain or anon `type: workflow`.
+- [ ] `for_each:`+`as:`+nested `steps:` body → `type: foreach`; multi-step body via
+      anon sub-workflow (or widen `foreach.step` to a list — decide at impl).
+- [ ] `parallel:` step with `join` policy (`all`/`any`/`${{ expr }}`); the parallel
+      step's outcome = the join; successor depends on the parallel step.
 
 ## Concurrency (in scope — §8e)
 - [ ] Concurrent scheduler: `pickAllRunnable()`; single scheduler goroutine owns

@@ -23,31 +23,32 @@ loop-back em reprovação — não são expressáveis de forma natural.
 
 ## O que muda (superfície de autoria)
 
-Uma camada de autoria **inspirada no GitHub Actions** (`steps:` plano e ordenado,
-`if:` por step, expressões `${{ … }}`, `steps.<id>.outputs.<field>`), que **compila
-para o engine de DAG já existente** (ele já faz sequência via ordem e loop via
-`on_fail.goto`):
+Uma **árvore de steps aninhada** (inspirada no GitHub Actions para steps/`if:`/
+`${{ … }}`, mas com **composição por aninhamento visual**, não por referência), que
+**compila para o engine de DAG já existente**:
 
-1. **Sequência implícita.** Steps numa lista rodam **na ordem declarada**. Sem
-   `depends_on` para o caso comum.
-2. **`if:` por step (estilo GitHub Actions)**, no lugar de `split`/`goto`. Step com
-   `if:` falso é pulado; ramificação = steps com condições complementares. Sem
-   `then/else`, sem join explícito (o step seguinte sem `if:` simplesmente roda).
-3. **Referência a saída por id de step:** `${{ steps.review.outputs.verdict }}`
-   (abreviado `review.verdict`) — sem `memory.write` manual.
-4. **Gates de aprovação:** `reject_when: <expr>` + `on_reject: { restart_from: <step>, max: N }`.
+1. **Sequência implícita.** Steps numa lista `steps:` rodam **na ordem declarada**.
+   Sem `depends_on` na autoria.
+2. **Composição = aninhamento visual.** Se um step tem sub-steps, paralelo ou loop,
+   esses steps ficam **dentro** dele. Sem `uses:`/referência e sem `depends_on`
+   entre steps — a indentação *é* o fluxo. Mais fácil de ler.
+3. **Ramificação = grupo guardado.** `if:` num grupo roda/pula a subárvore inteira
+   (track complexo vs track de implementação) — a condição aparece **uma vez por
+   track**, não repetida em cada step.
+4. **Paralelo é explícito.** Só roda concorrente o que estiver aninhado num step
+   `parallel:`, e **esse step decide o desfecho (join)**: `all` (default) / `any` /
+   `${{ expr }}`. O sucesso do step paralelo = o join, alimentando o próximo step e
+   `on_reject`.
+5. **Loop sobre itens-filho:** `for_each:` + `as:` com **corpo aninhado** (`steps:`)
+   rodando por item (GHA `strategy.matrix`).
+6. **Gates de aprovação:** `reject_when: <expr>` + `on_reject: { restart_from: <step>, max: N }`.
    O agente emite um veredito estruturado; o step "reprova" logicamente e o fluxo
-   volta para um step anterior (loop-back), reaproveitando o mecanismo de retry do
-   engine. (É o que falta no Actions: "reprovou → refaz um step anterior".)
-5. **Composição (já no spec original):** `for_each:` (loop sobre itens-filho — GHA
-   `strategy.matrix`), `uses:` (sub-workflow reutilizável — GHA reusable workflows)
-   e `parallel:` (fan-out + join — GHA jobs paralelos). foreach e sub-workflow já
-   existem no engine; **parallel** é incluído nesta change. Ver design.md §8.
-6. **Execução concorrente (em escopo):** scheduler concorrente + semáforo global de
-   `settings.concurrency` — roda todos os steps prontos ao mesmo tempo, com teto
-   global de invocações de agente. É o `concurrency-model` original; torna
-   `parallel:` e `for_each.concurrency` reais. Aditivo: com `concurrency: 1` o
-   comportamento é idêntico ao executor sequencial de hoje. Ver design.md §8e.
+   volta para um step-irmão anterior (loop-back). (É o que falta no Actions.)
+7. **Referência a saída por id:** `${{ steps.review.outputs.verdict }}` (abreviado
+   `review.verdict`) — sem `memory.write` manual.
+8. **Execução concorrente (em escopo):** scheduler concorrente + semáforo global de
+   `settings.concurrency`. Aditivo: com `concurrency: 1` o comportamento é idêntico
+   ao executor sequencial de hoje. Ver design.md §8e.
 
 ### Os dois fluxos-alvo, na sintaxe nova
 
@@ -61,54 +62,55 @@ workflows:
         agent: investigator
         output: { track: { enum: [implement, complex] } }   # decisão estruturada
 
-      # Complexo: Staff documenta a solução e quebra em sub-issues → Fim.
-      # (as sub-issues são issues novas e voltam pelo `triage`.)
-      - id: design
-        agent: staff
+      # Track complexo: Staff documenta + quebra em sub-issues → Fim. (Grupo
+      # guardado: o if: cobre a subárvore toda.)
+      - id: complex-track
         if: ${{ classify.track == 'complex' }}
+        steps:
+          - { id: design, agent: staff }
 
-      # Implementação: sequência real, não um único agente.
-      - id: implement
-        agent: engineer                          # implementa + abre PR
+      # Track de implementação: grupo aninhado, sequência real.
+      - id: implement-track
         if: ${{ classify.track == 'implement' }}
+        steps:
+          - { id: implement, agent: engineer }     # implementa + abre PR
 
-      - id: review
-        agent: reviewer                          # aprova / reprova o PR
-        if: ${{ classify.track == 'implement' }}
-        output: { verdict: { enum: [approved, rejected] } }
-        reject_when: ${{ review.verdict == 'rejected' }}
-        on_reject: { restart_from: implement, max: 3 }
+          - id: review
+            agent: reviewer                        # aprova / reprova o PR
+            output: { verdict: { enum: [approved, rejected] } }
+            reject_when: ${{ review.verdict == 'rejected' }}
+            on_reject: { restart_from: implement, max: 3 }
 
-      - id: qa
-        agent: qa                                # testa, aprova / reprova
-        if: ${{ classify.track == 'implement' }}
-        output: { verdict: { enum: [approved, rejected] } }
-        reject_when: ${{ qa.verdict == 'rejected' }}
-        on_reject: { restart_from: implement, max: 3 }
+          - id: qa
+            agent: qa                              # testa, aprova / reprova
+            output: { verdict: { enum: [approved, rejected] } }
+            reject_when: ${{ qa.verdict == 'rejected' }}
+            on_reject: { restart_from: implement, max: 3 }
 
     on_complete: { set_state: closed }
     on_fail:     { add_labels: [needs-attention] }   # esgotou os retries → humano
 ```
 
 Compare com a sintaxe atual (split + goto + depends_on + memory.write): o fluxo
-acima é lido de cima para baixo como um job do GitHub Actions, a ramificação é
-`if:` por step, e o loop de reprovação é uma linha.
+acima é lido de cima para baixo, a ramificação é um **grupo guardado** por `if:`, e
+o loop de reprovação é uma linha.
 
 ## Compila para o engine atual (sem reescrita)
 
-| Superfície nova            | Lowering no DAG atual                                  |
-|----------------------------|-------------------------------------------------------|
-| ordem dos steps (sequência)| `depends_on` = step anterior                           |
-| `if:` por step             | `condition` no step (pulado quando falso)              |
-| `steps.x.outputs.y` / `x.y`| reescrito p/ `memory.y` (parser auto-adiciona ao `memory.write` do step x) |
-| `reject_when`              | `fail_when` (Success derivado de expressão sobre a saída)|
-| `on_reject.restart_from`   | `on_fail.goto` + `max_retries` (já reseta e re-roda)   |
+| Superfície nova (aninhada)  | Lowering no DAG atual                                  |
+|-----------------------------|-------------------------------------------------------|
+| ordem dentro de `steps:`    | `depends_on` = step-irmão anterior                     |
+| grupo (`steps:` aninhado)   | sub-cadeia inline (ou sub-workflow anônimo p/ isolar)  |
+| `parallel:` + `join`        | filhos concorrentes; desfecho do step = `join` (`all`/`any`/`${{ }}`) |
+| `for_each:` + `steps:`      | `type: foreach` com corpo aninhado (sub-workflow anônimo se >1 step) |
+| `if:` em qualquer step/grupo| `condition` no step (pula a subárvore quando falso)    |
+| `steps.x.outputs.y` / `x.y` | reescrito p/ `memory.y` (parser auto-adiciona ao `memory.write` do step x) |
+| `reject_when` / `on_reject` | `fail_when` / `on_fail.goto` + `max_retries`           |
 
-São **duas** capacidades novas de engine, ambas pequenas: `fail_when` (hoje
-`Success = (exit == 0)`, cli.go:197 — derivar o resultado da saída estruturada) e
-`condition` por step (pular quando o `if:` é falso, estilo GitHub Actions). Todo o
-resto é açúcar de autoria que baixa para primitivas existentes (`depends_on`,
-`on_fail.goto`).
+São **três** capacidades novas de engine: `fail_when` e `condition` (ambas pequenas)
+e o **scheduler concorrente + semáforo global** (o esforço maior, §8e). Todo o resto
+é açúcar de autoria que baixa para primitivas existentes (`depends_on`, `foreach`,
+`type: workflow`, `on_fail.goto`).
 
 ## Escopo / decisões em aberto
 

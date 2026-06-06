@@ -6,55 +6,94 @@
 ## 0. Inspiration: GitHub Actions
 
 The authored surface follows the GitHub Actions `steps:` model, which already
-matches the requested feel: a flat, ordered list that runs top-to-bottom, each
-step optionally guarded by `if:`, with outputs referenced across steps.
+matches the requested feel: an ordered `steps:` list that runs top-to-bottom, each
+step optionally guarded by `if:`, with outputs referenced across steps. We borrow
+that feel but **diverge on composition**: Actions is flat, whereas here sub-steps,
+parallel, and loops are **nested inside a parent step** (§1) — more readable, no
+references.
 
 | GitHub Actions            | Apiary v2                              |
 |---------------------------|---------------------------------------|
-| `steps:` (ordered)        | `steps:` (ordered, implicit sequence) |
-| `uses:` / `run:`          | `agent:`                              |
+| `steps:` (ordered, flat)  | `steps:` (ordered, **nestable** tree) |
+| `uses:` / `run:`          | `agent:` (leaf); composition is nesting, not `uses:` |
 | `with:`                   | `prompt:` (per-step instruction)      |
 | `id:`, `name:`            | `id:`, `name:`                        |
-| `if: ${{ … }}`            | `if: ${{ … }}` (skip when false)      |
+| `if: ${{ … }}`            | `if: ${{ … }}` on a step **or a whole group** |
 | step outputs (`$GITHUB_OUTPUT`) | `output:` schema, filled from `APIARY_OUTPUT` |
 | `${{ steps.x.outputs.y }}`| `${{ steps.x.outputs.y }}` (short: `x.y`) |
 | `github`, `env` contexts  | `cell`, `workflow` contexts           |
+| `strategy.matrix`         | nested `for_each:` + `as:` + `steps:` |
+| parallel jobs             | explicit `parallel:` step with a `join` outcome |
 | `continue-on-error`       | `reject_when` + `on_reject` (richer: loop-back) |
 
-Where Actions stops (it has no "reject → redo an earlier step"), we add the gate
-primitives in §2.
+Where Actions stops (no "reject → redo an earlier step", flat steps only), we add
+nested composition (§1, §8) and the gate primitives (§2).
 
-## 1. Authoring model
+## 1. Authoring model — a nested step tree
 
-`steps:` is a flat **ordered list**. Each step:
+`steps:` is an **ordered tree**. Composition is **visual nesting**, never
+references or `depends_on`: if a step has sub-steps, runs things in parallel, or
+loops, those steps live **inside** it. The indentation *is* the control flow — you
+read the whole pipeline top-to-bottom without chasing ids.
 
+A step is one of four kinds:
+
+**Leaf — an agent step**
 ```yaml
-- id: review                 # optional; required only if referenced
+- id: review                 # optional; required only if referenced by an expr
   name: Review the PR        # optional, human label
   agent: reviewer
   prompt: "..."              # optional per-step instruction
-  if: ${{ steps.classify.outputs.track == 'implement' }}   # optional guard
-  output:                    # structured-output schema; fields become outputs
-    verdict: { enum: [approved, rejected] }
-  reject_when: ${{ steps.review.outputs.verdict == 'rejected' }}
+  if: ${{ classify.track == 'implement' }}   # optional guard
+  output: { verdict: { enum: [approved, rejected] } }   # structured output
+  reject_when: ${{ review.verdict == 'rejected' }}
   on_reject: { restart_from: implement, max: 3 }
 ```
 
+**Group — sequential sub-steps** (this is "sub-workflow", inline)
+```yaml
+- id: implement-track
+  if: ${{ classify.track == 'implement' }}   # guard the whole group
+  steps:                                      # run in order, nested
+    - { id: implement, agent: engineer }
+    - { id: review,    agent: reviewer, reject_when: ..., on_reject: { restart_from: implement } }
+    - { id: qa,        agent: qa }
+```
+
+**Parallel — concurrent sub-steps**
+```yaml
+- id: checks
+  parallel:                                   # run nested steps at once; join after
+    - { id: tests, agent: qa }
+    - { id: docs,  agent: engineer }
+```
+
+**Loop — sub-steps per child item**
+```yaml
+- id: build-tasks
+  for_each: ${{ design.tasks }}               # array from a prior step's output
+  as: task
+  concurrency: 4                              # optional; items at once
+  steps:                                      # nested body runs per item
+    - { id: impl,   agent: engineer, prompt: "Implement: ${{ task.title }}" }
+    - { id: verify, agent: qa }
+```
+
 Rules:
-- **Implicit sequencing.** Step *N* runs after step *N-1*. Declaration order =
-  execution order. No `depends_on` in the authored form.
-- **Per-step `if:`** (GHA-style). Evaluated before the step runs; false → the step
-  is **skipped** and the sequence continues. Branching is expressed by giving steps
-  complementary conditions (the "implement" steps carry
-  `if: …track == 'implement'`; the "complex" step carries `if: …track ==
-  'complex'`). No `then/else` blocks, no `goto`, and **no explicit join** — a step
-  after a branch simply omits `if:` and runs next.
-- **Outputs & references.** Declaring `output:` makes a step's fields addressable
-  as `${{ steps.<id>.outputs.<field> }}`, with `<id>.<field>` as a short alias.
-  No manual `memory.write`.
+- **Implicit sequencing.** Within any `steps:` list, step *N* runs after step *N-1*.
+  Declaration order = execution order. No `depends_on` in the authored form.
+- **Nesting = composition.** A group/parallel/loop step *contains* its children;
+  there is no `uses:`/reference and no cross-step `depends_on`. Reuse, if needed,
+  is by copying a group or (future) a top-level template — not by reference, to keep
+  the YAML self-contained and readable.
+- **`if:` guards any step**, including a whole group — so branching is "a guarded
+  group" (the complex track vs the implement track), not a condition repeated on
+  every line. A skipped group skips all its children.
+- **Outputs & references.** Declaring `output:` makes a step's fields addressable as
+  `${{ steps.<id>.outputs.<field> }}` (short `<id>.<field>`). No manual `memory.write`.
 - **Expressions** use `${{ … }}` over contexts `steps`, `cell`, `workflow`.
-- A step with an unmet `if:` and everything depending on its output skips too
-  (handled by the engine skip-cascade).
+- **Gates** (`reject_when`/`on_reject`) work on any leaf step; `restart_from`
+  targets an earlier sibling in the same `steps:` list (§2).
 
 ## 2. Approval / reject gates (beyond Actions)
 
@@ -103,30 +142,41 @@ and is now **in scope** (§8e).
 
 ```mermaid
 flowchart LR
-  yaml["authored v2 YAML<br/>steps + if + gates + for_each/uses/parallel"]
-  yaml --> parse[parse]
-  parse --> lower["lowering pass"]
-  lower --> ir["[]StepConfig (existing IR)<br/>depends_on · condition · split · fail_when · on_fail.goto · foreach · workflow"]
+  yaml["authored v2 YAML<br/>nested step tree: steps / parallel / for_each + if + gates"]
+  yaml --> parse[parse → step tree]
+  parse --> lower["lowering pass<br/>flatten tree"]
+  lower --> ir["[]StepConfig (existing IR)<br/>depends_on · condition · fail_when · on_fail.goto · foreach · workflow"]
   ir --> eng["DAG engine<br/>concurrent scheduler (§8e)"]
   eng --> sem["global semaphore<br/>settings.concurrency"]
   sem --> run["runner adapters → agents"]
 ```
 
-The parser compiles the authored list into today's `[]StepConfig`:
+The parser builds a **step tree** and a lowering pass flattens it to today's
+`[]StepConfig`. The author never sees `depends_on`/`goto`/`split`; nesting and order
+carry all the structure.
 
-| v2 (authored)                 | Lowered form |
+| v2 (authored, nested)         | Lowered form |
 |-------------------------------|--------------|
-| order (implicit sequence)     | `depends_on: [<previous step id>]` |
-| per-step `if: ${{ … }}`       | step-level `condition` (§3.2) |
-| `${{ steps.x.outputs.y }}` / `x.y` | rewritten to the flat `memory.y` lookup; parser adds `y` to step *x*'s `memory.write` (field names unique per workflow; else qualify) |
+| order within a `steps:` list  | `depends_on: [<previous sibling id>]` |
+| **group** (`steps:` nested)   | inline as a sub-chain: first child `depends_on` the group's predecessor, the group's successor `depends_on` the last child (or → an anonymous `type: workflow` sub-run when isolation is wanted) |
+| **parallel** (`parallel:` + `join`) | children all `depends_on` the predecessor and run concurrently (§8e); the parallel step's outcome = the `join` policy (`all`/`any`/`${{ expr }}`) evaluated over child results; successor `depends_on` the parallel step |
+| **loop** (`for_each:` + `steps:`) | `type: foreach` whose per-item body is the nested steps (anonymous sub-workflow when the body has >1 step; today's `foreach.step` is single → extend to a step list or wrap) |
+| `if: ${{ … }}` on any step    | step-level `condition` (§3.2); on a group/parallel/loop it guards the whole subtree (children skip-cascade) |
+| `${{ steps.x.outputs.y }}` / `x.y` | flat `memory.y` lookup; parser adds `y` to step *x*'s `memory.write` (field names unique per workflow; else qualify) |
 | `output: {…}`                 | `output_schema: {…}` (alias) |
-| `reject_when`                 | `fail_when` (§3.1) |
-| `on_reject: {restart_from, max}` | `on_fail: {goto: restart_from, max_retries: max}` |
+| `reject_when` / `on_reject`   | `fail_when` (§3.1) / `on_fail: {goto: restart_from, max_retries: max}` |
 
-`split`/`goto` are **not** emitted by the lowering — branching is per-step
-`condition`. (`split` remains a valid hand-authored low-level primitive; see §6.)
-Because lowering targets existing structures, current engine tests keep passing and
-v2 is verified by asserting the lowered DAG matches a golden `[]StepConfig`.
+`split`/`goto`/`depends_on` are **not** authored — branching is a guarded group,
+sequence is nesting order. They remain valid hand-written low-level primitives
+(§6). Because lowering targets existing structures, current engine tests keep
+passing and v2 is verified by asserting the lowered DAG matches a golden
+`[]StepConfig`.
+
+**Engine note:** the one place the existing IR is thin is multi-step `foreach`
+bodies — `config.StepConfig.Step` is a single `*StepConfig`. The loop lowering
+either (a) wraps a multi-step body in an anonymous sub-workflow (reuses
+`type: workflow`), or (b) `foreach.step` is widened to a step list. Decide at
+implementation; (a) reuses more existing machinery.
 
 ## 5. Reject feedback survives the loop (via the PR, not memory)
 
@@ -142,23 +192,31 @@ work and sidesteps the memory reset. Souls are written accordingly.
 
 ## 6. Backward compatibility
 
-- `depends_on`, `split`/`branches`/`goto` remain valid — the low-level form the v2
+- `depends_on`, `split`/`branches`/`goto` remain valid — the low-level IR the v2
   surface lowers to. Existing configs run unchanged.
-- `depends_on` is **kept as an advanced escape hatch** for non-linear/diamond flows
-  (decision r1); the default authored surface is sequence + per-step `if:`.
-- v2 is additive. A flow may not mix authored `if:`/sequence with hand-written
-  `goto` (validation rejects the ambiguous mix).
+- The authored surface is **nesting + order + `if:`**; `depends_on`/`split`/`goto`
+  are not authored (only emitted by lowering, or hand-written as an advanced escape
+  hatch).
+- v2 is additive. A flow may not mix authored nesting with hand-written `goto`
+  (validation rejects the ambiguous mix).
 - Docs/examples move to v2; `split`/`depends_on` documented as low-level.
 
 ## 7. Decisions (review round 1) & remaining questions
 
 Resolved:
-1. **Branching = per-step `if:`** (GHA-style); no `then/else` blocks. This also
-   resolves the earlier "join after a block" question — there are no blocks, so a
-   post-branch step just omits `if:` (implicit any-passed continuation).
-2. **`depends_on` kept as advanced** escape hatch.
-3. **Step-scoped references** `${{ steps.<id>.outputs.<field> }}` (short `<id>.<field>`).
-4. **`output:`** adopted as the authored key (alias of `output_schema:`).
+1. **Composition = visual nesting** (round 2). A step that has sub-steps, parallels,
+   or loops *contains* them; no `uses:`/reference, no authored `depends_on`. Nesting
+   and order carry all structure.
+2. **Branching = a guarded nested group** — `if:` on a group runs/skips the whole
+   subtree (the complex track vs the implement track). `if:` on a single step still
+   works for one-off guards. (Supersedes the round-1 "per-step `if:` only" idea.)
+3. **Parallelism is explicit** — only steps nested under a `parallel:` step run
+   concurrently, and that step owns its **join outcome** (`all` default / `any` /
+   `${{ expr }}`); its success = the join, feeding the next step and `on_reject`.
+4. **`depends_on`/`split`/`goto` are not authored** — they remain only as the
+   lowered IR and as advanced hand-written escape hatches.
+5. **Step-scoped references** `${{ steps.<id>.outputs.<field> }}` (short `<id>.<field>`).
+6. **`output:`** adopted as the authored key (alias of `output_schema:`).
 
 Remaining (decide at implementation):
 - Whether to support the `${{ … }}` delimiter literally or accept bare expressions
@@ -167,66 +225,83 @@ Remaining (decide at implementation):
 - Field-name collisions when two steps emit the same output field — qualify by step
   id in the lowered `memory` namespace if it ever happens.
 
-## 8. Composition: loops, parallel, sub-workflows (GHA-inspired)
+## 8. Composition: nested sub-steps, loops, parallel
 
-All three were in the original `workflow-mode` spec. Status and v2 surface:
+Composition is **visual nesting** — a composite step contains its children; no
+`uses:`/reference, no `depends_on`. All three lower onto existing engine structures.
 
-### a) Loop over child items — `for_each` (GHA `strategy.matrix`)
-**Engine: built, but serial.** `StepTypeForeach` exists (`workflow/foreach.go`); it
-iterates `items` and binds each to `as`, but the loop is a plain `for range` — the
-`concurrency` field is parsed and **ignored** today.
+### a) Sub-steps — a nested `steps:` group (inline "sub-workflow")
+**Engine: built** (`StepTypeWorkflow`/sub-chain). A group step holds an ordered
+`steps:` list that runs as a unit. This replaces the reference-based `uses:` — the
+sub-pipeline lives where it's used.
 
 ```yaml
-- id: implement-tasks
-  for_each: ${{ steps.design.outputs.tasks }}   # array from a prior step's output
-  as: task
-  agent: engineer
-  prompt: "Implement: ${{ task.title }}"
-  max: 20            # cap (lowers to foreach max_items)
-  concurrency: 4     # run N items at once  ← needs engine to honor it
+- id: implement-track
+  if: ${{ classify.track == 'implement' }}    # guard the whole group
+  steps:
+    - { id: implement, agent: engineer }
+    - { id: review,    agent: reviewer, reject_when: ..., on_reject: { restart_from: implement } }
+    - { id: qa,        agent: qa }
 ```
-Lowers to the existing `type: foreach` (`items`/`as`/`max_items`/`step`). Use case:
-Staff emits a `tasks` array → fan out an engineer run per task. **Work to do:**
-honor `concurrency` (bounded goroutines over items) — depends on §8e.
+Lowers to the children chained by `depends_on` (or an anonymous `type: workflow`
+sub-run for isolation). A guarded group skips all its children when `if:` is false.
+
+### b) Loop over child items — nested `for_each` (GHA `strategy.matrix`)
+**Engine: built, but serial.** `StepTypeForeach` exists (`workflow/foreach.go`); it
+iterates `items` bound to `as`, but the loop is a plain `for range` — `concurrency`
+is parsed and **ignored** today. The loop body is a **nested `steps:` list**, not a
+single step.
+
+```yaml
+- id: build-tasks
+  for_each: ${{ design.tasks }}   # array from a prior step's output
+  as: task
+  max: 20            # cap (lowers to foreach max_items)
+  concurrency: 4     # run N items at once  ← needs engine to honor it (§8e)
+  steps:             # nested body runs per item
+    - { id: impl,   agent: engineer, prompt: "Implement: ${{ task.title }}" }
+    - { id: verify, agent: qa }
+```
+Use case: Staff emits a `tasks` array → fan out the nested body per task. Multi-step
+body lowers via an anonymous sub-workflow (§4 engine note); `concurrency` needs §8e.
 
 ```mermaid
 flowchart TD
-  design["design · staff<br/>output: tasks[]"] --> fe[/"for_each task<br/>concurrency 4"/]
-  fe --> t1["engineer · task 1"]
-  fe --> t2["engineer · task 2"]
-  fe --> tn["engineer · task N"]
-  t1 --> j([join])
-  t2 --> j
-  tn --> j
+  design["design · staff<br/>output: tasks[]"] --> fe[/"for_each task · concurrency 4"/]
+  subgraph body["nested body (per item)"]
+    impl["engineer · impl"] --> verify["qa · verify"]
+  end
+  fe --> impl
+  verify --> j([join])
 ```
 
-### b) Sub-workflows / sub-steps — `uses` (GHA reusable workflows)
-**Engine: built.** `StepTypeWorkflow` (`workflow/subworkflow.go`) runs another named
-workflow as a step (one level of nesting), inheriting memory.
+### c) Parallel steps — an explicit `parallel:` step with a join outcome
+**Engine: in scope** (scheduler design in §8e). Parallelism is never implicit: you
+**declare** a step whose children run concurrently, and that step decides its own
+**outcome** from the children's results. Nothing runs in parallel unless you nest it
+under a `parallel:` step.
 
 ```yaml
-- id: ship
-  uses: implement-pipeline        # call another workflow by id
-  if: ${{ classify.track == 'implement' }}
+- id: checks
+  parallel:                         # children run concurrently
+    - { id: tests, agent: qa,       output: { ok: { type: boolean } } }
+    - { id: docs,  agent: engineer, output: { ok: { type: boolean } } }
+  join: all                         # outcome policy (default: all)
+  # join options:
+  #   all                  → step passes iff every child passed   (default)
+  #   any                  → passes iff at least one child passed
+  #   ${{ expr }}          → custom: passes iff the expr is true
+  #                          e.g. join: ${{ tests.ok && docs.ok }}
+  on_reject: { restart_from: implement, max: 3 }   # react to a failed join
 ```
-This is how a track becomes a reusable building block: define `implement-pipeline`
-(engineer→review→qa) once, `uses:` it from `triage` and elsewhere. Lowers to
-`type: workflow, workflow: implement-pipeline`. v2 work is just the `uses:` alias +
-parse.
 
-### c) Parallel steps — `parallel:` block (GHA parallel jobs)
-**Engine: in scope** (scheduler design in §8e). `driveDAG`/`pickRunnable` runs one
-step at a time today; this change makes the executor run all ready steps
-concurrently, bounded by the global semaphore.
-
-```yaml
-- parallel:                       # run these concurrently, join when all pass
-    - { id: tests, agent: qa,       prompt: "Run the test suite." }
-    - { id: docs,  agent: engineer, prompt: "Update the docs." }
-# steps after the block run once BOTH finished (selective join)
-```
-Lowers to: block members share the upstream dep and have no order between them; the
-next step `depends_on` all of them (selective join — proceed only when all pass).
+The `parallel:` step is itself a normal step: its **success/fail is the `join`
+result**, so the next step runs only when the join passed, and `reject_when`/
+`on_reject` work on it like any gate. Lowering: children all `depends_on` the
+parallel step's predecessor and run concurrently (§8e); the parallel step's outcome
+is computed from the children per `join`; the successor `depends_on` the parallel
+step. So the join is **explicit and owned by the step**, not an implicit
+"next step depends on all".
 
 ```mermaid
 flowchart TD
@@ -286,17 +361,26 @@ flows are unchanged; concurrency is opt-in by raising the cap and using `paralle
 ```mermaid
 flowchart TD
   classify["classify · investigator<br/>output: track"] --> dec{track?}
-  dec -->|complex| design["design · staff<br/>doc + split into sub-issues"] --> done([End])
-  dec -->|implement| implement["implement · engineer<br/>opens PR"]
-  implement --> review["review · reviewer<br/>verdict"]
-  review -->|approved| qa["qa · verdict"]
-  review -->|rejected| implement
+  dec -->|complex| complexg
+  dec -->|implement| implg
+  subgraph complexg["complex-track (guarded group)"]
+    design["design · staff<br/>doc + split into sub-issues"]
+  end
+  subgraph implg["implement-track (guarded group)"]
+    implement["implement · engineer<br/>opens PR"]
+    review["review · reviewer<br/>verdict"]
+    qa["qa · verdict"]
+    implement --> review
+    review -->|approved| qa
+    review -->|rejected| implement
+    qa -->|rejected| implement
+  end
+  design --> done([End])
   qa -->|approved| done
-  qa -->|rejected| implement
 ```
 
-The authored YAML (per-step `if:` + gates) that produces the flow above:
-
+The authored YAML — two **guarded nested groups**, one per track (the `if:` guards
+the whole group; gates loop back to a sibling inside the group):
 
 ```yaml
 workflows:
@@ -310,33 +394,33 @@ workflows:
         output: { track: { enum: [implement, complex] } }
 
       # Complex track → Staff documents + splits into sub-issues, then End.
-      - id: design
-        name: Design & decompose
-        agent: staff
+      - id: complex-track
         if: ${{ classify.track == 'complex' }}
+        steps:
+          - { id: design, name: Design & decompose, agent: staff }
 
       # Implementation track → Engineer → Reviewer → QA, reject loops back.
-      - id: implement
-        name: Implement & open PR
-        agent: engineer
+      - id: implement-track
         if: ${{ classify.track == 'implement' }}
+        steps:
+          - { id: implement, name: Implement & open PR, agent: engineer }
 
-      - id: review
-        name: Review the PR
-        agent: reviewer
-        if: ${{ classify.track == 'implement' }}
-        output: { verdict: { enum: [approved, rejected] } }
-        reject_when: ${{ review.verdict == 'rejected' }}
-        on_reject: { restart_from: implement, max: 3 }
+          - id: review
+            name: Review the PR
+            agent: reviewer
+            output: { verdict: { enum: [approved, rejected] } }
+            reject_when: ${{ review.verdict == 'rejected' }}
+            on_reject: { restart_from: implement, max: 3 }
 
-      - id: qa
-        name: QA validation
-        agent: qa
-        if: ${{ classify.track == 'implement' }}
-        output: { verdict: { enum: [approved, rejected] } }
-        reject_when: ${{ qa.verdict == 'rejected' }}
-        on_reject: { restart_from: implement, max: 3 }
+          - id: qa
+            name: QA validation
+            agent: qa
+            output: { verdict: { enum: [approved, rejected] } }
+            reject_when: ${{ qa.verdict == 'rejected' }}
+            on_reject: { restart_from: implement, max: 3 }
 
     on_complete: { set_state: closed }
     on_fail:     { add_labels: [needs-attention] }
 ```
+
+Notice the condition appears **once per track** (on the group), not on every step.
