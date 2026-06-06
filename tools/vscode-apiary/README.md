@@ -25,6 +25,22 @@ You can also trigger it manually via the editor title bar icon or:
 Cmd+Shift+P → Apiary: Show Workflow Preview
 ```
 
+## Development & Publishing
+
+### Building Locally
+
+```bash
+npm install
+npm run build      # Compile TypeScript to dist/extension.js
+npm run watch      # Rebuild on file changes
+```
+
+### Publishing to Marketplace
+
+**Automatic:** Changes to `src/**` or version bump in `package.json` trigger GitHub Actions to publish automatically.
+
+**Manual:** See [PUBLISH.md](./PUBLISH.md) for instructions.
+
 ## About Apiary
 
 [Apiary](https://orlandoburli.com.br/apiary/) is an open-source AI agent orchestration system that dispatches work to Claude, OpenCode, and other LLM runners based on GitHub Issues, Plane tasks, and other sources.
