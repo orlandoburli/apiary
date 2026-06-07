@@ -182,12 +182,19 @@ type TasksConfig struct {
 }
 
 type Settings struct {
-	Concurrency   int       `yaml:"concurrency"`
-	LogLevel      string    `yaml:"log_level"`
-	StateLock     bool      `yaml:"state_lock"`
-	ResultComment bool      `yaml:"result_comment"`
-	TaskTimeout   string    `yaml:"task_timeout"`
-	Telemetry     Telemetry `yaml:"telemetry"`
+	Concurrency   int    `yaml:"concurrency"`
+	LogLevel      string `yaml:"log_level"`
+	StateLock     bool   `yaml:"state_lock"`
+	ResultComment bool   `yaml:"result_comment"`
+	TaskTimeout   string `yaml:"task_timeout"`
+	// MaxAttempts caps how many consecutive FAILED workflow instances a single
+	// (task, workflow) pair may accumulate before the dispatcher stops
+	// re-dispatching it and applies the workflow's on_fail hook. Rate-limited
+	// runs are recorded as success (they fail over), so they do not count. This
+	// is an internal backstop independent of source-side labels — it stops
+	// runaway loops even for workflows with no on_fail. Default 3; <=0 disables.
+	MaxAttempts int       `yaml:"max_attempts"`
+	Telemetry   Telemetry `yaml:"telemetry"`
 }
 
 func (s *Settings) TaskTimeoutDuration() time.Duration {
@@ -447,6 +454,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Settings.LogLevel == "" {
 		cfg.Settings.LogLevel = "info"
+	}
+	if cfg.Settings.MaxAttempts == 0 {
+		cfg.Settings.MaxAttempts = 3
 	}
 	warnDeprecatedResultComment(&cfg)
 	return &cfg, nil
