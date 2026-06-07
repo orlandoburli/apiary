@@ -201,7 +201,19 @@ const (
 	AgentViewDetail
 	AgentViewActivity
 	AgentViewTaskLogs
+	AgentViewFiles       // list of files related to the agent (soul + skills)
+	AgentViewFileContent // viewer for one selected related file
 )
+
+// AgentFileItem is one file related to an agent — its soul prompt or one of its
+// skills — shown in the agent's Files sub-view. Path is resolved relative to the
+// working directory; Missing marks a configured file that could not be found.
+type AgentFileItem struct {
+	Kind    string // "soul" or "skill"
+	Name    string // display name (skill id, or the soul file's base name)
+	Path    string // resolved filesystem path
+	Missing bool   // true when the file does not exist / is unreadable
+}
 
 // AgentsTab shows agent status and performance with detail/activity sub-views.
 type AgentsTab struct {
@@ -218,6 +230,15 @@ type AgentsTab struct {
 	LogsTask   *TaskItem   // task detail for the logs header
 	TaskLogs   []LogEntry
 	TaskLogIdx int // vertical scroll within TaskLogs (visual lines)
+
+	// Related files (soul + skills) for the agent in Detail.
+	Files       []AgentFileItem // populated when View == AgentViewFiles
+	FilesIdx    int             // cursor within Files
+	FileName    string          // display name of the file open in AgentViewFileContent
+	FilePath    string          // resolved path of the open file
+	FileContent string          // raw contents of the open file ("" until loaded)
+	FileErr     string          // read error message, if any
+	FileScroll  int             // vertical scroll within the open file (visual lines)
 }
 
 type AgentStatus struct {
@@ -239,6 +260,7 @@ type AgentStatus struct {
 	RunnerType     string
 	Model          string
 	SoulFile       string
+	Skills         []string // skill ids declared on the agent config
 	Description    string
 	SourceName     string // git author name from agent config
 	SourceEmail    string // git author email from agent config

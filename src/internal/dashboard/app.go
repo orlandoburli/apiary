@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -633,6 +634,60 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// File content viewer has its own scroll key map.
+	if ag.View == AgentViewFileContent {
+		lines := a.agentFileLines()
+		switch key {
+		case "esc", "backspace", "h", "left":
+			ag.View = AgentViewFiles
+			ag.FileContent = ""
+			ag.FileErr = ""
+			ag.FileScroll = 0
+		case "up":
+			if ag.FileScroll > 0 {
+				ag.FileScroll--
+			}
+		case "down":
+			if ag.FileScroll < lastIndex(len(lines)) {
+				ag.FileScroll++
+			}
+		case "g", "home":
+			ag.FileScroll = 0
+		case "G", "end":
+			ag.FileScroll = lastIndex(len(lines))
+		case "pgup", "ctrl+u":
+			ag.FileScroll = clampScroll(ag.FileScroll-a.pageSize(), len(lines))
+		case "pgdown", "ctrl+d", " ":
+			ag.FileScroll = clampScroll(ag.FileScroll+a.pageSize(), len(lines))
+		}
+		return a, nil
+	}
+
+	// Related-files list has its own navigation key map.
+	if ag.View == AgentViewFiles {
+		switch key {
+		case "esc", "backspace", "h", "left":
+			ag.View = AgentViewDetail
+			ag.Files = nil
+			ag.FilesIdx = 0
+		case "up":
+			if ag.FilesIdx > 0 {
+				ag.FilesIdx--
+			}
+		case "down":
+			if ag.FilesIdx < lastIndex(len(ag.Files)) {
+				ag.FilesIdx++
+			}
+		case "g", "home":
+			ag.FilesIdx = 0
+		case "G", "end":
+			ag.FilesIdx = lastIndex(len(ag.Files))
+		case "enter", "l", "right":
+			a.openSelectedAgentFile()
+		}
+		return a, nil
+	}
+
 	switch key {
 	case "esc", "backspace", "h", "left":
 		ag.View = AgentViewList
@@ -643,6 +698,13 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 		if a2, ok := a.selectedAgent(); ok {
 			ag.Detail = a2
 			ag.View = AgentViewDetail
+		}
+	case "f":
+		// From the detail view: open the agent's related files (soul + skills).
+		if ag.View == AgentViewDetail && ag.Detail != nil {
+			ag.Files = a.buildAgentFiles(ag.Detail)
+			ag.FilesIdx = 0
+			ag.View = AgentViewFiles
 		}
 	case "l", "enter":
 		// From the list/detail: open the agent's activity. From the activity
@@ -2008,6 +2070,7 @@ func (a *App) fetchAgents() tea.Cmd {
 					RunnerType:  ac.Runner,
 					Model:       ac.Model,
 					SoulFile:    ac.SoulFile,
+					Skills:      ac.Skills,
 					Description: ac.Description,
 					SourceName:  ac.SourceName,
 					SourceEmail: ac.SourceEmail,
@@ -2980,6 +3043,10 @@ func (a *App) renderAgentsTab(height int) string {
 		return a.renderAgentActivity(ag, height)
 	case AgentViewTaskLogs:
 		return a.renderAgentTaskLogs(ag, height)
+	case AgentViewFiles:
+		return a.renderAgentFiles(ag, height)
+	case AgentViewFileContent:
+		return a.renderAgentFileContent(ag, height)
 	default:
 		return a.renderAgentList(ag, height)
 	}
@@ -3097,6 +3164,15 @@ func (a *App) renderAgentDetail(ag *AgentsTab, height int) string {
 	if d.SoulFile != "" {
 		row("Soul file", d.SoulFile)
 	}
+	if len(d.Skills) > 0 {
+		row("Skills", strings.Join(d.Skills, ", "))
+	}
+	// Related-files hint: how many files (soul + skills) can be inspected, and
+	// the key that opens the navigable list.
+	if nFiles := len(a.buildAgentFiles(d)); nFiles > 0 {
+		hint := fmt.Sprintf("%d file(s) — press %s to browse", nFiles, StyleAccent.Render("f"))
+		row("Related files", StyleMuted.Render(hint))
+	}
 	if d.SourceName != "" || d.SourceEmail != "" {
 		id := d.SourceName
 		if d.SourceEmail != "" {
@@ -3137,6 +3213,150 @@ func (a *App) renderAgentDetail(ag *AgentsTab, height int) string {
 		}
 	}
 	return a.box("AGENT DETAILS — "+d.ID, b.String(), height)
+}
+
+// buildAgentFiles returns the files related to an agent — its soul prompt and
+// each configured skill — with paths resolved relative to the working directory
+// (where the dashboard runs, the same root the dispatcher reads them from).
+// Files that cannot be found are kept in the list and flagged Missing so the
+// user sees a misconfiguration rather than a silently shorter list.
+func (a *App) buildAgentFiles(d *AgentStatus) []AgentFileItem {
+	if d == nil {
+		return nil
+	}
+	var files []AgentFileItem
+	if d.SoulFile != "" {
+		files = append(files, AgentFileItem{
+			Kind:    "soul",
+			Name:    filepath.Base(d.SoulFile),
+			Path:    d.SoulFile,
+			Missing: !fileExists(d.SoulFile),
+		})
+	}
+	for _, skill := range d.Skills {
+		path := filepath.Join(".claude", "skills", skill, "SKILL.md")
+		files = append(files, AgentFileItem{
+			Kind:    "skill",
+			Name:    skill,
+			Path:    path,
+			Missing: !fileExists(path),
+		})
+	}
+	return files
+}
+
+// fileExists reports whether path names a readable regular file.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// openSelectedAgentFile reads the file under the cursor in the Files list into
+// the model and switches to the content viewer. Read errors are stored on the
+// model (FileErr) and rendered in place rather than aborting the view switch.
+func (a *App) openSelectedAgentFile() {
+	ag := a.model.agentsTab
+	if ag == nil || ag.FilesIdx < 0 || ag.FilesIdx >= len(ag.Files) {
+		return
+	}
+	f := ag.Files[ag.FilesIdx]
+	ag.FileName = f.Name
+	ag.FilePath = f.Path
+	ag.FileContent = ""
+	ag.FileErr = ""
+	ag.FileScroll = 0
+	data, err := os.ReadFile(f.Path)
+	if err != nil {
+		ag.FileErr = err.Error()
+	} else {
+		ag.FileContent = string(data)
+	}
+	ag.View = AgentViewFileContent
+}
+
+// agentFileLines returns the open file's contents wrapped to the box inner width
+// for scrolling and rendering.
+func (a *App) agentFileLines() []string {
+	ag := a.model.agentsTab
+	if ag == nil {
+		return nil
+	}
+	inner := a.model.width - 2
+	if inner < 1 {
+		inner = 1
+	}
+	return wrapPlain(ag.FileContent, inner)
+}
+
+func (a *App) renderAgentFiles(ag *AgentsTab, height int) string {
+	name := "—"
+	if ag.Detail != nil {
+		name = ag.Detail.ID
+	}
+	if len(ag.Files) == 0 {
+		return a.box("AGENT FILES — "+name, StyleMuted.Render("No soul or skill files configured for this agent.")+"\n", height)
+	}
+
+	const (
+		cursorW = 2
+		kindW   = 6
+	)
+	inner := a.model.width - 2
+	nameW := inner - cursorW - kindW - 4
+	if nameW < 10 {
+		nameW = 10
+	}
+
+	var b strings.Builder
+	for i, f := range ag.Files {
+		selected := i == ag.FilesIdx
+		kind := pad(f.Kind, kindW)
+		label := f.Name
+		if f.Missing {
+			label += "  " + StyleError.Render("(missing)")
+		}
+		label = pad(truncate(label, nameW), nameW)
+		path := StyleMuted.Render(f.Path)
+		cursor := "  "
+		if selected {
+			cursor = StyleFocusedArrow.Render("▶") + " "
+			kind = StyleSelectedRow.Render(kind)
+			label = StyleSelectedRow.Render(label)
+		} else {
+			kind = StyleAccent.Render(kind)
+		}
+		b.WriteString(cursor + " " + kind + "  " + label + "  " + path + "\n")
+	}
+	return a.box("AGENT FILES — "+name, b.String(), height)
+}
+
+func (a *App) renderAgentFileContent(ag *AgentsTab, height int) string {
+	title := "FILE — " + valueOr(ag.FileName, ag.FilePath)
+	if ag.FileErr != "" {
+		body := StyleError.Render("Could not read "+ag.FilePath+":") + "\n" + StyleMuted.Render(ag.FileErr) + "\n"
+		return a.box(title, body, height)
+	}
+
+	lines := a.agentFileLines()
+	if len(lines) == 0 {
+		return a.box(title, StyleMuted.Render("(empty file)")+"\n", height)
+	}
+
+	rows := height - 2 // top + bottom borders
+	if rows < 1 {
+		rows = 1
+	}
+	start := clampScroll(ag.FileScroll, len(lines))
+	end := start + rows
+	if end > len(lines) {
+		end = len(lines)
+	}
+
+	var b strings.Builder
+	for i := start; i < end; i++ {
+		b.WriteString(lines[i] + "\n")
+	}
+	return a.box(title, b.String(), height)
 }
 
 func (a *App) renderAgentActivity(ag *AgentsTab, height int) string {
@@ -3407,11 +3627,15 @@ func (a *App) footerKeys() []fkey {
 		if ag := a.model.agentsTab; ag != nil {
 			switch ag.View {
 			case AgentViewDetail:
-				return []fkey{{"esc", "back"}, {"l", "activity"}, {"m", "model"}, {"r", "runner"}, {"w", "workers"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"f", "files"}, {"l", "activity"}, {"m", "model"}, {"r", "runner"}, {"w", "workers"}, {"q", "quit"}}
 			case AgentViewActivity:
 				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "logs"}, {"o", "open"}, {"pgup/dn", "page"}, {"q", "quit"}}
 			case AgentViewTaskLogs:
 				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"o", "open"}, {"home/end", "ends"}, {"r", "reload"}, {"q", "quit"}}
+			case AgentViewFiles:
+				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "view"}, {"q", "quit"}}
+			case AgentViewFileContent:
+				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"pgup/dn", "page"}, {"home/end", "ends"}, {"q", "quit"}}
 			}
 		}
 		return []fkey{{"↑/↓", "select"}, {"enter/l", "activity"}, {"d", "details"}, {"tab", "switch"}, {"r", "refresh"}, {"q", "quit"}}
@@ -3452,6 +3676,14 @@ func (a *App) footerStatus(updated string) string {
 			case AgentViewTaskLogs:
 				if n := len(a.agentTaskLogLines()); n > 0 {
 					pos = fmt.Sprintf("line %d/%d   ", ag.TaskLogIdx+1, n)
+				}
+			case AgentViewFiles:
+				if n := len(ag.Files); n > 0 {
+					pos = fmt.Sprintf("file %d/%d   ", ag.FilesIdx+1, n)
+				}
+			case AgentViewFileContent:
+				if n := len(a.agentFileLines()); n > 0 {
+					pos = fmt.Sprintf("line %d/%d   ", ag.FileScroll+1, n)
 				}
 			}
 		}

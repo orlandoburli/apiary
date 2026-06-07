@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -237,6 +239,84 @@ func TestAgentActivityDrillToLogs(t *testing.T) {
 	send("esc")
 	if a.model.agentsTab.View != AgentViewActivity {
 		t.Fatalf("esc from task logs → view %d, want AgentViewActivity", a.model.agentsTab.View)
+	}
+}
+
+func TestAgentRelatedFilesFlow(t *testing.T) {
+	// buildAgentFiles resolves paths relative to the working directory, so run
+	// the test from a temp dir laid out like a real project.
+	dir := t.TempDir()
+	t.Chdir(dir)
+	soulPath := filepath.Join("souls", "engineer.md")
+	if err := os.MkdirAll(filepath.Dir(soulPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(soulPath, []byte("# Engineer soul\nbe excellent"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skillPath := filepath.Join(".claude", "skills", "git-workflow", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("# git-workflow skill\nuse worktrees"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newTestApp(90, 20)
+	a.model.activeTab = 2 // Agents
+	a.model.agentsTab.Agents = []AgentStatus{
+		{ID: "engineer", Status: "active", MaxWorkers: 2, SoulFile: soulPath, Skills: []string{"git-workflow", "ghost-skill"}},
+	}
+	a.model.agentsTab.Detail = &a.model.agentsTab.Agents[0]
+	a.model.agentsTab.View = AgentViewDetail
+
+	// buildAgentFiles lists soul + every skill; the missing one is flagged.
+	files := a.buildAgentFiles(a.model.agentsTab.Detail)
+	if len(files) != 3 {
+		t.Fatalf("buildAgentFiles → %d files, want 3", len(files))
+	}
+	if files[0].Kind != "soul" || files[0].Missing {
+		t.Errorf("file[0] = %+v, want present soul", files[0])
+	}
+	if files[1].Name != "git-workflow" || files[1].Missing {
+		t.Errorf("file[1] = %+v, want present skill git-workflow", files[1])
+	}
+	if files[2].Name != "ghost-skill" || !files[2].Missing {
+		t.Errorf("file[2] = %+v, want missing skill ghost-skill", files[2])
+	}
+
+	send := func(key string) { a.handleKeyMsg(keyPress(key)) }
+
+	// f opens the files list; it renders framed.
+	send("f")
+	if a.model.agentsTab.View != AgentViewFiles {
+		t.Fatalf("f → view %d, want AgentViewFiles", a.model.agentsTab.View)
+	}
+	assertFramed(t, a.renderAgentsTab(14), 90)
+
+	// ↓ then enter opens the second file's content.
+	send("down")
+	send("enter")
+	if a.model.agentsTab.View != AgentViewFileContent {
+		t.Fatalf("enter → view %d, want AgentViewFileContent", a.model.agentsTab.View)
+	}
+	if !strings.Contains(a.model.agentsTab.FileContent, "git-workflow skill") {
+		t.Errorf("FileContent = %q, want git-workflow skill body", a.model.agentsTab.FileContent)
+	}
+	out := stripANSI(a.renderAgentsTab(14))
+	if !strings.Contains(out, "use worktrees") {
+		t.Errorf("file viewer should show the file body; got:\n%s", out)
+	}
+	assertFramed(t, a.renderAgentsTab(14), 90)
+
+	// esc walks back: content → files → detail.
+	send("esc")
+	if a.model.agentsTab.View != AgentViewFiles {
+		t.Fatalf("esc from content → view %d, want AgentViewFiles", a.model.agentsTab.View)
+	}
+	send("esc")
+	if a.model.agentsTab.View != AgentViewDetail {
+		t.Fatalf("esc from files → view %d, want AgentViewDetail", a.model.agentsTab.View)
 	}
 }
 
