@@ -61,6 +61,13 @@ func (c *Config) Validate() []error {
 		if a.Runner != "" && !runnerIDs[a.Runner] {
 			errs = append(errs, fmt.Errorf("agents[%d] %q: runner %q not defined", i, a.ID, a.Runner))
 		}
+		for j, fb := range a.Fallbacks {
+			if fb.Runner == "" {
+				errs = append(errs, fmt.Errorf("agents[%d] %q: fallbacks[%d]: runner is required", i, a.ID, j))
+			} else if !runnerIDs[fb.Runner] {
+				errs = append(errs, fmt.Errorf("agents[%d] %q: fallbacks[%d]: runner %q not defined", i, a.ID, j, fb.Runner))
+			}
+		}
 		if agentIDs[a.ID] {
 			errs = append(errs, fmt.Errorf("agents[%d]: duplicate id %q", i, a.ID))
 		}
