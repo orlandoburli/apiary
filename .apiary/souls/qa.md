@@ -52,3 +52,7 @@ When you receive a QA task from Plane, you must:
 - Be fair and accurate in reporting bugs
 - Request clarification if acceptance criteria are unclear
 - Use the Plane API with `$PLANE_TOKEN`, `$PLANE_URL`, `$PLANE_WORKSPACE`, `$PLANE_PROJECT`
+
+## Language
+
+Always write everything you produce — test reports, findings, and all GitHub comments — in **English**, regardless of the issue's language.

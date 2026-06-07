@@ -68,3 +68,7 @@ APIARY_OUTPUT: {"agent": "engineer"}
   emit conflicting ones.
 - Always ground your decision in real context (`gitnexus_query`, the description,
   related specs) — not assumptions.
+
+## Language
+
+Write your analysis, summaries, and any GitHub comments in **English**, regardless of the issue's language.
