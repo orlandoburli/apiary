@@ -239,6 +239,15 @@ type AgentsTab struct {
 	FileContent string          // raw contents of the open file ("" until loaded)
 	FileErr     string          // read error message, if any
 	FileScroll  int             // vertical scroll within the open file (visual lines)
+	FileRaw     bool            // show raw text instead of rendered markdown (toggle)
+
+	// Memoized display lines for the open file, so glamour rendering happens once
+	// per (width, mode) rather than on every keystroke. Invalidated by comparing
+	// fileLinesWidth/fileLinesRaw against the current width and FileRaw.
+	fileLines      []string
+	fileLinesWidth int
+	fileLinesRaw   bool
+	fileLinesValid bool
 }
 
 type AgentStatus struct {

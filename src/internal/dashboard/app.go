@@ -16,6 +16,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
@@ -643,6 +644,13 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 			ag.FileContent = ""
 			ag.FileErr = ""
 			ag.FileScroll = 0
+			ag.invalidateFileLines()
+		case "t":
+			// Toggle between rendered markdown and raw text. Reset scroll since
+			// the line count changes between modes.
+			ag.FileRaw = !ag.FileRaw
+			ag.FileScroll = 0
+			ag.invalidateFileLines()
 		case "up":
 			if ag.FileScroll > 0 {
 				ag.FileScroll--
@@ -3265,6 +3273,8 @@ func (a *App) openSelectedAgentFile() {
 	ag.FileContent = ""
 	ag.FileErr = ""
 	ag.FileScroll = 0
+	ag.FileRaw = false
+	ag.invalidateFileLines()
 	data, err := os.ReadFile(f.Path)
 	if err != nil {
 		ag.FileErr = err.Error()
@@ -3274,8 +3284,27 @@ func (a *App) openSelectedAgentFile() {
 	ag.View = AgentViewFileContent
 }
 
-// agentFileLines returns the open file's contents wrapped to the box inner width
-// for scrolling and rendering.
+// invalidateFileLines drops the memoized display lines so the next
+// agentFileLines call re-renders (after a toggle, resize, or file change).
+func (ag *AgentsTab) invalidateFileLines() {
+	ag.fileLines = nil
+	ag.fileLinesValid = false
+}
+
+// isMarkdownFile reports whether path looks like a markdown document by extension.
+func isMarkdownFile(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".md", ".markdown", ".mdown", ".mkd":
+		return true
+	default:
+		return false
+	}
+}
+
+// agentFileLines returns the open file's display lines wrapped to the box inner
+// width. Markdown files are rendered with glamour unless raw mode is on; other
+// files (or a render failure) fall back to plain wrapping. The result is
+// memoized per (width, raw mode) so glamour runs once, not on every keystroke.
 func (a *App) agentFileLines() []string {
 	ag := a.model.agentsTab
 	if ag == nil {
@@ -3285,7 +3314,62 @@ func (a *App) agentFileLines() []string {
 	if inner < 1 {
 		inner = 1
 	}
-	return wrapPlain(ag.FileContent, inner)
+	if ag.fileLinesValid && ag.fileLinesWidth == inner && ag.fileLinesRaw == ag.FileRaw {
+		return ag.fileLines
+	}
+
+	var lines []string
+	if !ag.FileRaw && isMarkdownFile(ag.FilePath) {
+		if rendered, err := renderMarkdown(ag.FileContent, inner); err == nil {
+			// glamour emits its own wrapping + a trailing blank line; trim it and
+			// hard-wrap any over-long line so the box border stays aligned.
+			lines = clampToWidth(strings.Split(strings.TrimRight(rendered, "\n"), "\n"), inner)
+		}
+	}
+	if lines == nil {
+		lines = wrapPlain(ag.FileContent, inner)
+	}
+
+	ag.fileLines = lines
+	ag.fileLinesWidth = inner
+	ag.fileLinesRaw = ag.FileRaw
+	ag.fileLinesValid = true
+	return lines
+}
+
+// renderMarkdown renders markdown to ANSI-styled terminal text wrapped to width.
+// It uses glamour's auto style so it adapts to the terminal background.
+func renderMarkdown(src string, width int) (string, error) {
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return "", err
+	}
+	return r.Render(src)
+}
+
+// clampToWidth hard-wraps any line whose visible width exceeds w, splitting on
+// runes while preserving ANSI styling so colored markdown never overflows the
+// box border. Lines already within width pass through untouched.
+func clampToWidth(lines []string, w int) []string {
+	if w < 1 {
+		w = 1
+	}
+	out := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		if lipgloss.Width(ln) <= w {
+			out = append(out, ln)
+			continue
+		}
+		for lipgloss.Width(ln) > w {
+			out = append(out, ansi.Truncate(ln, w, ""))
+			ln = ansi.TruncateLeft(ln, w, "")
+		}
+		out = append(out, ln)
+	}
+	return out
 }
 
 func (a *App) renderAgentFiles(ag *AgentsTab, height int) string {
@@ -3332,6 +3416,9 @@ func (a *App) renderAgentFiles(ag *AgentsTab, height int) string {
 
 func (a *App) renderAgentFileContent(ag *AgentsTab, height int) string {
 	title := "FILE — " + valueOr(ag.FileName, ag.FilePath)
+	if ag.FileRaw && isMarkdownFile(ag.FilePath) {
+		title += " (raw)"
+	}
 	if ag.FileErr != "" {
 		body := StyleError.Render("Could not read "+ag.FilePath+":") + "\n" + StyleMuted.Render(ag.FileErr) + "\n"
 		return a.box(title, body, height)
@@ -3635,7 +3722,15 @@ func (a *App) footerKeys() []fkey {
 			case AgentViewFiles:
 				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "view"}, {"q", "quit"}}
 			case AgentViewFileContent:
-				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"pgup/dn", "page"}, {"home/end", "ends"}, {"q", "quit"}}
+				keys := []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"pgup/dn", "page"}, {"home/end", "ends"}}
+				if isMarkdownFile(ag.FilePath) {
+					label := "raw"
+					if ag.FileRaw {
+						label = "rendered"
+					}
+					keys = append(keys, fkey{"t", label})
+				}
+				return append(keys, fkey{"q", "quit"})
 			}
 		}
 		return []fkey{{"↑/↓", "select"}, {"enter/l", "activity"}, {"d", "details"}, {"tab", "switch"}, {"r", "refresh"}, {"q", "quit"}}
