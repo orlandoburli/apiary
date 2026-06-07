@@ -316,11 +316,17 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 			return source.CIStatus{Status: "pending"}, nil // No PR found yet; still pending
 		}
 
-		// Fetch the PR details
+		// Fetch the PR details. A failure here is NOT "pending": we found a real PR
+		// but can't read it. Surface it as an error so the caller logs it instead of
+		// masking a permanent problem (e.g. a token lacking Pull requests: Read,
+		// which returns 403) as an endless wait.
 		prPath = fmt.Sprintf("/repos/%s/%s/pulls/%d", a.owner, a.repo, prNumber)
 		prBody, err = a.client.get(ctx, prPath)
 		if err != nil {
-			return source.CIStatus{Status: "pending"}, nil
+			if isAuthError(err) {
+				return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: cannot read PR #%d for issue %s — the configured token likely lacks 'Pull requests: Read' (and 'Contents: Read'): %w", prNumber, cellID, err)
+			}
+			return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: fetching PR #%d for issue %s: %w", prNumber, cellID, err)
 		}
 	}
 
@@ -422,6 +428,17 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 	}
 
 	return source.CIStatus{Status: overall, URL: pr.HTMLURL, Checks: checks}, nil
+}
+
+// isAuthError reports whether a client error is a GitHub authorization failure
+// (401 Unauthorized or 403 Forbidden) — typically a missing token permission,
+// which is permanent until the token is fixed (not a transient blip to retry past).
+func isAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "status 401") || strings.Contains(msg, "status 403")
 }
 
 func normalizeGitHubStatus(s string) string {
