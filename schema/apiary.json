@@ -31,7 +31,7 @@
           },
           "provider": {
             "type": "string",
-            "description": "Runner provider/adapter (e.g., 'claude', 'script', 'opencode')"
+            "description": "Runner provider/adapter (e.g., 'claude', 'opencode', 'cursor')"
           },
           "config": {
             "type": "object",
