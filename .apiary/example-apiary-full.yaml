@@ -135,6 +135,12 @@ agents:
     runner: claude-cli
     model: claude-sonnet-4-6
     skills: [git-workflow, e2e-before-pr, gitnexus-codebase, handler-error-logging, changelog-contexto]
+    # Rate-limit failover chain: if claude-cli is rejected by the 5h session
+    # limit, retry on these runners (in order) until one isn't rate-limited.
+    # `runner` must be defined above; `model` is optional (omitted = its default).
+    fallbacks:
+      - {runner: opencode-go-cli}
+      - {runner: opencode-zen-cli}
 
   - id: reviewer
     description: "Reviewer — performs code review and quality checks"
@@ -376,6 +382,9 @@ settings:
   log_level: info
   state_lock: true
   result_comment: true
+  # Stop re-dispatching a (task, workflow) after this many consecutive failed
+  # instances (rate-limited runs fail over and don't count). <=0 disables.
+  max_attempts: 3
 
 # ── Task completion hook (internal-task-model) ───────────────────────────────────
 # Fires once per InternalTask, when the LAST of its fanned-out workflows reaches a
