@@ -279,30 +279,28 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 	prPath := fmt.Sprintf("/repos/%s/%s/pulls/%s", a.owner, a.repo, cellID)
 	prBody, err := a.client.get(ctx, prPath)
 
-	// If direct lookup fails, search for a PR that references this issue.
+	// If direct lookup fails, find PR by branch name (agent/task-<issue>).
 	if err != nil {
-		query := fmt.Sprintf("repo:%s/%s type:pr Ref #%s in:body", a.owner, a.repo, cellID)
-		searchPath := fmt.Sprintf("/search/issues?q=%s&sort=created&order=desc", url.QueryEscape(query))
-		searchBody, searchErr := a.client.get(ctx, searchPath)
-		if searchErr != nil {
+		branchName := fmt.Sprintf("agent/task-%s", cellID)
+		prListPath := fmt.Sprintf("/repos/%s/%s/pulls?state=open&head=%s", a.owner, a.repo, branchName)
+		prListBody, prListErr := a.client.get(ctx, prListPath)
+		if prListErr != nil {
 			return source.CIStatus{Status: "pending"}, nil // No PR found yet; still pending
 		}
 
-		var searchResult struct {
-			Items []struct {
-				Number int `json:"number"`
-			} `json:"items"`
+		var prList []struct {
+			Number int `json:"number"`
 		}
-		if err := json.Unmarshal(searchBody, &searchResult); err != nil {
+		if err := json.Unmarshal(prListBody, &prList); err != nil {
 			return source.CIStatus{Status: "pending"}, nil
 		}
 
-		if len(searchResult.Items) == 0 {
+		if len(prList) == 0 {
 			return source.CIStatus{Status: "pending"}, nil // No PR found yet; still pending
 		}
 
-		// Use the first (most recent) PR found
-		prPath = fmt.Sprintf("/repos/%s/%s/pulls/%d", a.owner, a.repo, searchResult.Items[0].Number)
+		// Use the first PR found (should only be one)
+		prPath = fmt.Sprintf("/repos/%s/%s/pulls/%d", a.owner, a.repo, prList[0].Number)
 		prBody, err = a.client.get(ctx, prPath)
 		if err != nil {
 			return source.CIStatus{Status: "pending"}, nil
