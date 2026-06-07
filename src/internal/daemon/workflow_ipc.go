@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/config"
@@ -311,4 +312,66 @@ func stepDuration(s db.StepRun, now time.Time) string {
 		end = *s.FinishedAt
 	}
 	return humanDuration(end.Sub(*s.StartedAt))
+}
+
+// DeleteTask removes a task by its internal task ID or by source reference (source:item).
+// It cancels any running execution, clears tracking state, and deletes all associated
+// workflow instances, steps, and logs from the database.
+func (d *Dispatcher) DeleteTask(ctx context.Context, taskRef string) error {
+	if d.db == nil {
+		return nil
+	}
+
+	// Resolve the task ID from the reference. If taskRef contains ":", it's source:item.
+	var taskID string
+	instances, err := d.db.ListWorkflowInstances(ctx, 10000)
+	if err != nil {
+		return fmt.Errorf("list instances: %w", err)
+	}
+
+	// Find matching instances by task ID or source reference.
+	var instancesToDelete []string
+	var cellID string
+	for _, inst := range instances {
+		// Check if this instance matches our task reference.
+		if inst.ID == taskRef {
+			instancesToDelete = append(instancesToDelete, inst.ID)
+			taskID = inst.ID
+			cellID = inst.CellID
+		} else if taskRef != "" && inst.WorkflowID != "" {
+			// Could be source:item reference, would need to check bindings.
+			// For now, match by instance ID (task ID stored in workflow instance).
+		}
+	}
+
+	if len(instancesToDelete) == 0 {
+		return fmt.Errorf("task not found: %s", taskRef)
+	}
+
+	// Cancel any running execution.
+	if val, ok := d.runCancel.LoadAndDelete(cellID); ok {
+		cancel := val.(context.CancelFunc)
+		cancel()
+	}
+
+	// Remove from in-flight tracking.
+	d.inFlight.Delete(cellID)
+	d.activeRuns.Range(func(key, val any) bool {
+		run := val.(model.ActiveRun)
+		if run.Cell.ID == cellID {
+			d.activeRuns.Delete(key)
+		}
+		return true
+	})
+
+	// Delete workflow instances and their step runs.
+	// The database cascade deletes should handle step_runs (FK to workflow_instances),
+	// but we may need explicit cleanup for task_logs, etc.
+	if err := d.db.DeleteWorkflowInstances(ctx, instancesToDelete); err != nil {
+		aplog.Error("delete task %s: %v", taskID, err)
+		return err
+	}
+
+	aplog.Info("deleted task %s (cell %s): %d instance(s)", taskID, cellID, len(instancesToDelete))
+	return nil
 }

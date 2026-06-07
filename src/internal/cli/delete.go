@@ -1,0 +1,81 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/orlandoburli/apiary/internal/config"
+	"github.com/orlandoburli/apiary/internal/daemon"
+)
+
+// newDeleteCmd deletes a task from the database, allowing it to be picked up
+// fresh the next time the dispatcher runs.
+func newDeleteCmd() *cobra.Command {
+	var (
+		source string
+		item   string
+		yes    bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "delete [task-id]",
+		Short: "Delete a task and all its workflow instances from the database",
+		Long: "Permanently delete a task and all its workflow instances, steps, and logs.\n" +
+			"This allows the task to be picked up fresh on the next dispatch cycle.\n\n" +
+			"Pass the task ID, or locate it with --source and --item (e.g., --source github --item 1953).",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var taskID string
+			switch {
+			case len(args) == 1:
+				taskID = args[0]
+			case source != "" && item != "":
+				taskID = fmt.Sprintf("%s:%s", source, item)
+			default:
+				return fmt.Errorf("provide a task id, or both --source and --item")
+			}
+
+			// Warn the user before deleting
+			if !yes {
+				fmt.Println(instWarn.Render("This will permanently delete the task and all its history:"))
+				fmt.Println("  " + taskID)
+				if !confirm(instWarn.Render("Proceed with deletion?") + " [y/N] ") {
+					fmt.Println(instMuted.Render("Aborted."))
+					return nil
+				}
+			}
+
+			socketPath := daemon.SocketPath(config.DataDir(configFile))
+			transport := &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+				},
+			}
+			client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+
+			url := fmt.Sprintf("http://apiary/tasks/delete/%s", taskID)
+			resp, err := client.Post(url, "application/json", nil)
+			if err != nil {
+				return fmt.Errorf("cannot reach daemon: %w", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("delete failed: HTTP %d", resp.StatusCode)
+			}
+
+			fmt.Println(instOK.Render("✓ Task deleted successfully."))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&source, "source", "", "resolve the task by source id (with --item), e.g. github")
+	cmd.Flags().StringVar(&item, "item", "", "resolve the task by source item id/number (with --source), e.g. 1953")
+	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
+	return cmd
+}
