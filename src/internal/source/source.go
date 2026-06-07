@@ -66,6 +66,25 @@ type TaskPoller interface {
 	PollTask(ctx context.Context, cellID string) (model.SourceItem, error)
 }
 
+// CIStatus represents the result of a CI status check. Used by poll steps waiting
+// for CI to complete.
+type CIStatus struct {
+	Status string // "passed", "failed", "pending"
+	URL    string // Link to the CI run
+	Checks []struct {
+		Name   string // Check name (e.g., "test", "lint")
+		Status string // "passed", "failed", "pending", "skipped"
+	}
+}
+
+// CIStatusPoller is an optional interface that sources may implement to check the
+// current CI status of a PR or branch. The workflow engine uses it for poll steps
+// that wait for CI to complete. Sources that do not implement it cannot host poll
+// steps with kind: "ci".
+type CIStatusPoller interface {
+	PollCIStatus(ctx context.Context, cellID string) (CIStatus, error)
+}
+
 // Factory creates a new, unconfigured Adapter instance.
 type Factory func() Adapter
 

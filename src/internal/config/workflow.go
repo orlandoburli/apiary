@@ -9,6 +9,7 @@ const (
 	StepTypeApproval = "approval"
 	StepTypeForeach  = "foreach"
 	StepTypeWorkflow = "workflow"
+	StepTypePoll     = "poll"
 	// StepTypeParallel is emitted by the v2 lowering pass for `parallel:` steps.
 	// Children run concurrently (§8e); the step's outcome = the join policy.
 	StepTypeParallel = "parallel"
@@ -144,6 +145,10 @@ type StepConfig struct {
 	AbortOn  *ApprovalTrigger `yaml:"abort_on,omitempty"`
 	Timeout  string           `yaml:"timeout,omitempty"`
 
+	// ── poll step ─────────────────────────────────────────────────
+	// PollConfig holds configuration for polling-based steps (e.g., wait for CI).
+	PollConfig *PollConfig `yaml:"poll,omitempty"`
+
 	// ── foreach step ──────────────────────────────────────────────
 	Items       string      `yaml:"items,omitempty"`
 	As          string      `yaml:"as,omitempty"`
@@ -267,6 +272,54 @@ type ApprovalTrigger struct {
 // IsEmpty reports whether the trigger declares no condition at all.
 func (t ApprovalTrigger) IsEmpty() bool {
 	return t.CommentContains == "" && t.LabelAdded == "" && t.StateChanged == ""
+}
+
+// PollConfig configures a poll step that actively checks the CI status or other
+// external state at regular intervals until a condition is met or a timeout occurs.
+type PollConfig struct {
+	// Kind specifies what to poll: "ci" for GitHub/GitLab CI status.
+	Kind string `yaml:"kind,omitempty"`
+	// CheckInterval is how often to query the status (e.g., "30s"). Defaults to 1m.
+	CheckInterval string `yaml:"check_interval,omitempty"`
+	// MaxDuration is the total timeout for polling (e.g., "2h"). Defaults to 2h.
+	MaxDuration string `yaml:"max_duration,omitempty"`
+	// FailIfNotPassed, when true, rejects the step if CI is not green. Defaults to true.
+	FailIfNotPassed *bool `yaml:"fail_if_not_passed,omitempty"`
+	// RemoveLabel, when set, removes this label from the task before polling begins.
+	// Used to reset stale labels from previous runs.
+	RemoveLabel string `yaml:"remove_label,omitempty"`
+}
+
+// ParsedCheckInterval returns the check interval duration, defaulting to 1 minute.
+func (p *PollConfig) ParsedCheckInterval() time.Duration {
+	if p == nil || p.CheckInterval == "" {
+		return time.Minute
+	}
+	d, _ := time.ParseDuration(p.CheckInterval)
+	if d <= 0 {
+		return time.Minute
+	}
+	return d
+}
+
+// ParsedMaxDuration returns the maximum polling duration, defaulting to 2 hours.
+func (p *PollConfig) ParsedMaxDuration() time.Duration {
+	if p == nil || p.MaxDuration == "" {
+		return 2 * time.Hour
+	}
+	d, _ := time.ParseDuration(p.MaxDuration)
+	if d <= 0 {
+		return 2 * time.Hour
+	}
+	return d
+}
+
+// ShouldFailIfNotPassed returns whether to reject the step on non-green CI, defaulting to true.
+func (p *PollConfig) ShouldFailIfNotPassed() bool {
+	if p == nil || p.FailIfNotPassed == nil {
+		return true
+	}
+	return *p.FailIfNotPassed
 }
 
 // OutputSchema is the supported JSON Schema subset for structured step output.

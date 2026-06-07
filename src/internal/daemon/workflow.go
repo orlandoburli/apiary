@@ -27,6 +27,18 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 				workflow.WithTaskTracker(dbTaskTracker{db: d.db}),
 			)
 		}
+		// Wire up CI status polling for poll steps.
+		opts = append(opts, workflow.WithCIStatusChecker(func(ctx context.Context, sourceID, sourceItemID string) (source.CIStatus, error) {
+			adapter, ok := d.sources[sourceID]
+			if !ok {
+				return source.CIStatus{}, fmt.Errorf("source %q not found", sourceID)
+			}
+			poller, ok := adapter.(source.CIStatusPoller)
+			if !ok {
+				return source.CIStatus{}, fmt.Errorf("source %q does not support CI status polling", sourceID)
+			}
+			return poller.PollCIStatus(ctx, sourceItemID)
+		}))
 		d.engine = workflow.NewEngine(d.cfg, d.db, &wfStepExecutor{d: d}, opts...)
 	})
 	return d.engine

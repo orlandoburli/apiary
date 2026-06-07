@@ -45,3 +45,31 @@ type labelListRequest struct {
 type labelCreateRequest struct {
 	Name string `json:"name"`
 }
+
+// PR (pull request) details for checking CI status.
+type pullRequest struct {
+	Number  int    `json:"number"`
+	HTMLURL string `json:"html_url"`
+	Head    struct {
+		SHA string `json:"sha"`
+	} `json:"head"`
+}
+
+// commitStatus is the combined status of a commit.
+type commitStatus struct {
+	State    string `json:"state"`
+	Statuses []struct {
+		Context string `json:"context"`
+		State   string `json:"state"`
+		URL     string `json:"target_url"`
+	} `json:"statuses"`
+}
+
+// checkRunsResponse contains check runs for a commit.
+type checkRunsResponse struct {
+	CheckRuns []struct {
+		Name       string `json:"name"`
+		Conclusion string `json:"conclusion"`
+		Status     string `json:"status"`
+	} `json:"check_runs"`
+}

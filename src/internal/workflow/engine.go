@@ -13,6 +13,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/db"
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
+	"github.com/orlandoburli/apiary/internal/source"
 )
 
 // Store persists workflow instances and step runs. *db.Client satisfies it.
@@ -106,6 +107,10 @@ type SideEffects interface {
 // runs, threads workflow memory between steps, and applies side effects. In
 // Phase 2 it executes agent steps sequentially in declaration order (single-step
 // and linear chains); the DAG executor with splits/foreach arrives in Phase 3.
+// CIStatusChecker is called by poll steps to check the current CI status of a PR/branch.
+// It returns a CIStatus or an error if the check fails (transient or permanent).
+type CIStatusChecker func(ctx context.Context, sourceID, sourceItemID string) (source.CIStatus, error)
+
 type Engine struct {
 	cfg     *config.Config
 	store   Store
@@ -114,6 +119,7 @@ type Engine struct {
 	mem     MemoryBuilder
 	spawner WorkflowSpawner
 	tracker TaskTracker
+	ciChecker CIStatusChecker
 
 	now   func() time.Time
 	newID func(prefix string) string
@@ -143,6 +149,9 @@ func WithSpawner(s WorkflowSpawner) Option { return func(e *Engine) { e.spawner 
 // WithTaskTracker sets the task completion tracker used to decrement the
 // outstanding-workflow counter and apply the top-level tasks: hook.
 func WithTaskTracker(t TaskTracker) Option { return func(e *Engine) { e.tracker = t } }
+
+// WithCIStatusChecker sets the CI status checker used by poll steps.
+func WithCIStatusChecker(checker CIStatusChecker) Option { return func(e *Engine) { e.ciChecker = checker } }
 
 // NewEngine builds an Engine. cfg, store, and exec are required.
 func NewEngine(cfg *config.Config, store Store, exec StepExecutor, opts ...Option) *Engine {
