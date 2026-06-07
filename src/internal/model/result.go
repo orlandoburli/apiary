@@ -78,6 +78,17 @@ type RunResult struct {
 	// SpawnError is set when an APIARY_SPAWN block was present but its body was
 	// not valid JSON. The workflow executor turns this into a failed step.
 	SpawnError error
+
+	// RateLimited is true when the provider rejected the run because of a
+	// usage/rate limit (e.g. Claude's 5-hour session limit). Such a run does no
+	// real work — it may even exit 0 with a "you've hit your session limit"
+	// message, so Success alone cannot be trusted. The dispatcher uses this to
+	// back off until RateLimitResetsAt instead of counting the run as a genuine
+	// success or failure.
+	RateLimited bool
+	// RateLimitResetsAt is when the provider's limit resets, when the provider
+	// reported it (zero otherwise). Only meaningful when RateLimited is true.
+	RateLimitResetsAt time.Time
 }
 
 type LogEntry struct {
