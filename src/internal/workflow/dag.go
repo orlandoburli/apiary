@@ -376,6 +376,21 @@ func (r *dagRun) resolveApproval(decision ApprovalDecision) {
 	}
 }
 
+// firstRunnableApproval returns the id of the first approval step that is
+// currently runnable (activated, not yet resolved, dependencies satisfied), in
+// declaration order. It identifies which approval step a rehydrated instance is
+// parked at: an approval step never persists a step run of its own, so after the
+// cached passed steps are restored the waiting approval is simply the next
+// runnable approval. Returns false when none is runnable.
+func (r *dagRun) firstRunnableApproval() (string, bool) {
+	for _, id := range r.pickAllRunnable() {
+		if r.byID[id].StepType() == config.StepTypeApproval {
+			return id, true
+		}
+	}
+	return "", false
+}
+
 // pickAllRunnable returns the IDs of ALL currently runnable steps (activated,
 // pending, all dependencies passed), in declaration order.
 func (r *dagRun) pickAllRunnable() []string {

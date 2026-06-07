@@ -34,10 +34,33 @@ func (e *Engine) ResumeInstance(ctx context.Context, instID string, wf config.Wo
 }
 
 // seedResume restores the graph state of already-passed steps so a resumed run
-// continues from the first incomplete step. It returns nothing; on completion
+// continues from the first incomplete step, and marks each carried-over step run
+// as skipped_cached (display only). It returns nothing; on completion
 // r.passedOrder/contrib/stepStates reflect the cached steps.
 func (e *Engine) seedResume(ctx context.Context, r *dagRun, priorSteps []db.StepRun) {
+	for _, sr := range e.restoreCachedSteps(r, priorSteps) {
+		// Record that this run was carried over a resume (display only).
+		if !sr.SkippedCached {
+			sr.SkippedCached = true
+			_ = e.store.UpdateStepRun(ctx, &sr)
+		}
+	}
+}
+
+// restoreCachedSteps replays already-passed steps into the in-memory graph so a
+// run continues from the first incomplete step. It is purely in-memory and
+// persists nothing, so it is safe both for resume (which then marks the
+// carried-over steps skipped_cached) and for rehydrating an approval-parked
+// instance after a restart (which must NOT rewrite step-run display flags). It
+// returns the passed step runs it restored, in input order (including duplicates
+// produced by on_fail.goto retry loops), so the caller can mark them if desired.
+//
+// Splits carry no side effects and must re-route; they are left pending so
+// driveDAG re-runs them and re-activates the chosen branch target against the
+// restored memory. Failed/running/pending steps re-run.
+func (e *Engine) restoreCachedSteps(r *dagRun, priorSteps []db.StepRun) []db.StepRun {
 	seen := map[string]bool{}
+	var restored []db.StepRun
 	for i := range priorSteps {
 		sr := priorSteps[i]
 		if sr.State != db.StepStatePassed {
@@ -47,9 +70,6 @@ func (e *Engine) seedResume(ctx context.Context, r *dagRun, priorSteps []db.Step
 		if !ok {
 			continue // step no longer exists in the workflow definition
 		}
-		// Splits carry no side effects and must re-route; let driveDAG re-run
-		// them so the chosen branch target is re-activated against restored
-		// memory. Leaving them pending is correct and free.
 		if step.StepType() == config.StepTypeSplit {
 			continue
 		}
@@ -75,10 +95,7 @@ func (e *Engine) seedResume(ctx context.Context, r *dagRun, priorSteps []db.Step
 			r.activated[step.OnPass.Next] = true
 		}
 
-		// Record that this run was carried over a resume (display only).
-		if !sr.SkippedCached {
-			sr.SkippedCached = true
-			_ = e.store.UpdateStepRun(ctx, &sr)
-		}
+		restored = append(restored, sr)
 	}
+	return restored
 }
