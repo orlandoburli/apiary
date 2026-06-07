@@ -42,6 +42,12 @@ type App struct {
 	dbConn     *db.Client
 	socketPath string
 	cfg        *config.Config
+
+	// logMDCache memoizes glamour-rendered markdown log messages, keyed by the
+	// message text. glamour is expensive, so each distinct message renders once;
+	// the cache is dropped whenever the render width changes (logMDWidth).
+	logMDCache map[string][]string
+	logMDWidth int
 }
 
 func New(dbConn *db.Client, socketPath string, cfg *config.Config) *App {
@@ -3001,7 +3007,7 @@ func (a *App) logEntryLines(logs []LogEntry) []string {
 	for _, entry := range logs {
 		ts := StyleMuted.Render(entry.Timestamp.Format("15:04:05"))
 		level := levelStyle(entry.Level).Render(fmt.Sprintf("%-5s", entry.Level))
-		wrapped := wrapPlain(entry.Message, msgWidth)
+		wrapped := a.logMessageLines(entry.Message, msgWidth)
 		if len(wrapped) == 0 {
 			wrapped = []string{""}
 		}
@@ -3014,6 +3020,61 @@ func (a *App) logEntryLines(logs []LogEntry) []string {
 		}
 	}
 	return out
+}
+
+// logMessageLines renders a log message to display lines at the given content
+// width. Messages that look like markdown (agent outputs — headings, lists,
+// bold, code fences) are rendered with glamour and memoized; everything else
+// (operational one-liners) falls back to plain wrapping. Rendered output is
+// clamped so it never overflows the column.
+func (a *App) logMessageLines(msg string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	if !looksLikeMarkdown(msg) {
+		return wrapPlain(msg, width)
+	}
+
+	// Cache is width-scoped; drop it wholesale when the width changes.
+	if a.logMDCache == nil || a.logMDWidth != width {
+		a.logMDCache = make(map[string][]string)
+		a.logMDWidth = width
+	}
+	if lines, ok := a.logMDCache[msg]; ok {
+		return lines
+	}
+
+	lines := wrapPlain(msg, width) // fallback if glamour errors
+	if rendered, err := renderMarkdown(msg, width); err == nil {
+		lines = clampToWidth(strings.Split(strings.TrimRight(rendered, "\n"), "\n"), width)
+	}
+	a.logMDCache[msg] = lines
+	return lines
+}
+
+// looksLikeMarkdown is a cheap heuristic: only multi-line messages with at least
+// one markdown marker (heading, list item, blockquote, code fence, table, or
+// bold) are treated as markdown. Single-line operational logs stay plain.
+func looksLikeMarkdown(s string) bool {
+	if !strings.Contains(s, "\n") {
+		return false
+	}
+	for _, ln := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(ln)
+		switch {
+		case strings.HasPrefix(t, "#"),
+			strings.HasPrefix(t, "- "),
+			strings.HasPrefix(t, "* "),
+			strings.HasPrefix(t, "> "),
+			strings.HasPrefix(t, "```"),
+			strings.HasPrefix(t, "|"):
+			return true
+		}
+		if strings.Contains(t, "**") {
+			return true
+		}
+	}
+	return false
 }
 
 // wrapPlain splits s on newlines and hard-wraps each line to width runes,
@@ -3629,7 +3690,7 @@ func (a *App) logVisualLines() []string {
 		msg := entry.Message
 
 		if l.Wrap {
-			wrapped := wrapPlain(msg, msgWidth)
+			wrapped := a.logMessageLines(msg, msgWidth)
 			if len(wrapped) == 0 {
 				wrapped = []string{""}
 			}
