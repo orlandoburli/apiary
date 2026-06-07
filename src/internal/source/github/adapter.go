@@ -274,16 +274,39 @@ func (a *Adapter) RemoveLabels(ctx context.Context, cell model.SourceItem, names
 // combined status and check runs for the PR and synthesizes an overall status.
 // Implements source.CIStatusPoller.
 func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CIStatus, error) {
-	// cellID is the issue number. We need to find the associated PR to get the commit SHA.
-	// For GitHub, issues and PRs share the same number space, so we can use the same endpoint.
-
-	// First, get the PR to find the head commit SHA.
+	// cellID is the issue number. Find the associated PR.
+	// First try direct lookup (in case issue number == PR number).
 	prPath := fmt.Sprintf("/repos/%s/%s/pulls/%s", a.owner, a.repo, cellID)
 	prBody, err := a.client.get(ctx, prPath)
+
+	// If direct lookup fails, search for a PR that references this issue.
 	if err != nil {
-		// If it's not a PR, try to find an associated PR for this issue.
-		// This is a fallback for issues that might be linked to a PR.
-		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: fetching PR %s: %w", cellID, err)
+		query := fmt.Sprintf("repo:%s/%s type:pr Ref #%s in:body", a.owner, a.repo, cellID)
+		searchPath := fmt.Sprintf("/search/issues?q=%s&sort=created&order=desc", url.QueryEscape(query))
+		searchBody, searchErr := a.client.get(ctx, searchPath)
+		if searchErr != nil {
+			return source.CIStatus{Status: "pending"}, nil // No PR found yet; still pending
+		}
+
+		var searchResult struct {
+			Items []struct {
+				Number int `json:"number"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(searchBody, &searchResult); err != nil {
+			return source.CIStatus{Status: "pending"}, nil
+		}
+
+		if len(searchResult.Items) == 0 {
+			return source.CIStatus{Status: "pending"}, nil // No PR found yet; still pending
+		}
+
+		// Use the first (most recent) PR found
+		prPath = fmt.Sprintf("/repos/%s/%s/pulls/%d", a.owner, a.repo, searchResult.Items[0].Number)
+		prBody, err = a.client.get(ctx, prPath)
+		if err != nil {
+			return source.CIStatus{Status: "pending"}, nil
+		}
 	}
 
 	var pr pullRequest
