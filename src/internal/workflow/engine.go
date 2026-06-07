@@ -73,6 +73,11 @@ type StepResult struct {
 	Output           string
 	StructuredOutput map[string]any
 	Summary          string
+	// Pending is set only by poll steps to signal "no terminal result yet —
+	// park the instance and re-check on a later poll cycle" (as opposed to a
+	// pass or a fail). The scheduler suspends the run at the poll step instead
+	// of marking it passed/failed. Ignored for all other step types.
+	Pending bool
 	// PublishPayload is the APIARY_PUBLISH text the agent emitted, if any. The
 	// engine writes it back to the task's source bindings as a comment. The
 	// executor clears it when the step sets publish: off.
@@ -255,7 +260,15 @@ func sourceItemView(task model.InternalTask, bindings []model.SourceBinding) mod
 // instance completed successfully (false for failed or waiting).
 func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool {
 	if outcome == outcomeWaiting {
-		_ = e.store.UpdateWorkflowInstanceState(ctx, r.instID, db.InstanceStateApprovalWaiting)
+		// A run suspends at either an approval step or a poll step; persist the
+		// matching waiting state so the right rehydration path picks it up after a
+		// restart (approval_waiting → rehydrateParkedApprovals, poll_waiting →
+		// rehydrateParkedPolls).
+		waitState := db.InstanceStateApprovalWaiting
+		if r.byID[r.waitingStep].StepType() == config.StepTypePoll {
+			waitState = db.InstanceStatePollWaiting
+		}
+		_ = e.store.UpdateWorkflowInstanceState(ctx, r.instID, waitState)
 		e.mu.Lock()
 		e.parked[r.instID] = r
 		e.mu.Unlock()

@@ -2833,6 +2833,8 @@ func wfInstanceBadge(state string) string {
 		return StyleWarning.Render("running")
 	case db.InstanceStateApprovalWaiting:
 		return StyleWarning.Render("approval_waiting")
+	case db.InstanceStatePollWaiting:
+		return StyleWarning.Render("poll_waiting")
 	case db.InstanceStateInterrupted:
 		return StyleError.Render("interrupted")
 	default:

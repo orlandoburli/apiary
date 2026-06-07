@@ -97,6 +97,53 @@ func (d *Dispatcher) rehydrateParkedApprovals(ctx context.Context) {
 	}
 }
 
+// rehydrateParkedPolls reconstructs workflow instances persisted in the
+// poll_waiting state and re-registers them in the engine's in-memory parked set,
+// so the polling loop's poll check (checkPolls → CheckParkedPolls) re-checks them
+// after a daemon restart. It mirrors rehydrateParkedApprovals: the parked set
+// lives only in memory and is empty on a fresh process, and
+// ReconcileOrphanWorkflowInstances deliberately leaves poll_waiting rows untouched
+// (interrupting them would lose the wait). Called once at startup, after the orphan
+// reconcile and before the poll loops start.
+func (d *Dispatcher) rehydrateParkedPolls(ctx context.Context) {
+	if d.db == nil {
+		return
+	}
+	instances, err := d.db.ListWorkflowInstancesByState(ctx, db.InstanceStatePollWaiting)
+	if err != nil {
+		aplog.Warn("rehydrate parked polls: list instances: %v", err)
+		return
+	}
+	if len(instances) == 0 {
+		return
+	}
+
+	engine := d.workflowEngine()
+	rehydrated := 0
+	for i := range instances {
+		inst := instances[i]
+		wf, ok := d.workflowByID(inst.WorkflowID)
+		if !ok {
+			aplog.Warn("rehydrate parked poll %s: workflow %q no longer defined — leaving parked", inst.ID, inst.WorkflowID)
+			continue
+		}
+		steps, err := d.db.ListStepRuns(ctx, inst.ID)
+		if err != nil {
+			aplog.Warn("rehydrate parked poll %s: list step runs: %v", inst.ID, err)
+			continue
+		}
+		task := d.taskForInstance(ctx, &inst)
+		if err := engine.RehydratePoll(ctx, inst.ID, wf, task, steps); err != nil {
+			aplog.Warn("rehydrate parked poll %s: %v", inst.ID, err)
+			continue
+		}
+		rehydrated++
+	}
+	if rehydrated > 0 {
+		aplog.Info("rehydrated %d parked poll instance(s) from a previous run", rehydrated)
+	}
+}
+
 // newSpawner builds the WorkflowSpawner backing the APIARY_SPAWN marker: it
 // resolves a named workflow from config, persists the child InternalTask, and
 // runs the workflow through this dispatcher's engine. A nil DB disables spawning
@@ -187,6 +234,16 @@ func (d *Dispatcher) checkApprovals(ctx context.Context) {
 		}
 		return poller.PollTask(ctx, cellID)
 	})
+}
+
+// checkPolls drives the engine's parked-poll re-checks (CI status) once per poll
+// cycle. The engine re-checks via its wired CIStatusChecker, so this needs no
+// per-call poller argument. A nil DB/engine (no run-history) disables it.
+func (d *Dispatcher) checkPolls(ctx context.Context) {
+	if d.db == nil || d.engine == nil {
+		return
+	}
+	d.engine.CheckParkedPolls(ctx)
 }
 
 // wfStepExecutor adapts the dispatcher's runner machinery to the workflow
