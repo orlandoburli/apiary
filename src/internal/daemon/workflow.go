@@ -173,32 +173,59 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		}
 	}
 
-	// Record a task_executions row for this step so the dashboard (Tasks
-	// history, Usage/cost, agent stats, live "running" status) observes
-	// workflow steps the same way it observed legacy single-shot runs. Each
-	// step is one execution; usage and PID/heartbeat are wired through.
-	exec := x.beginExecution(ctx, req)
-	if exec != nil {
-		execID := exec.ID
-		rr.SetPID = func(pid int) { _ = x.d.db.SetPID(ctx, execID, pid) }
-		rr.Heartbeat = func() { _ = x.d.db.SendHeartbeat(ctx, execID) }
-	}
+	// Run chain: the agent's primary runner first, then its rate-limit failover
+	// chain. A candidate whose runner type is currently paused by a provider rate
+	// limit is skipped (unless it is the last resort). Each attempt is its own
+	// task_executions row — recorded the same way legacy single-shot runs were —
+	// so the dashboard (Tasks history, Usage/cost, agent stats, live "running")
+	// shows the failover. usage and PID/heartbeat are wired through per attempt.
+	candidates := append([]runnerCandidate{{
+		adapter:    ra,
+		runnerType: x.d.agentRunner[req.Step.Agent],
+		model:      req.Model,
+	}}, x.d.agentFallbacks[req.Step.Agent]...)
 
-	runCtx, cancel := context.WithTimeout(ctx, rr.Timeout)
-	// Register the cancel func so `apiary restart` / ForceRestart can interrupt
-	// an in-flight step. A single key per cell mirrors legacy behaviour.
-	x.d.runCancel.Store(req.Cell.ID, cancel)
-	defer func() {
+	var res model.RunResult
+	for i, c := range candidates {
+		last := i == len(candidates)-1
+		if !last && x.d.runnerPausedUntil(c.runnerType).After(time.Now()) {
+			aplog.Info("[%s] runner %q paused by rate limit, skipping to fallback", req.Cell.ID, c.runnerType)
+			continue
+		}
+
+		rr.Model = c.model
+		exec := x.beginExecution(ctx, req, c.model, c.runnerType)
+		if exec != nil {
+			execID := exec.ID
+			rr.SetPID = func(pid int) { _ = x.d.db.SetPID(ctx, execID, pid) }
+			rr.Heartbeat = func() { _ = x.d.db.SendHeartbeat(ctx, execID) }
+		}
+
+		runCtx, cancel := context.WithTimeout(ctx, rr.Timeout)
+		// Register the cancel func so `apiary restart` / ForceRestart can interrupt
+		// an in-flight step. A single key per cell mirrors legacy behaviour.
+		x.d.runCancel.Store(req.Cell.ID, cancel)
+		out, err := c.adapter.Run(runCtx, rr)
 		cancel()
 		x.d.runCancel.Delete(req.Cell.ID)
-	}()
+		if err != nil && out.Error == nil {
+			out.Error = err
+		}
+		x.finishExecution(ctx, exec, out)
+		res = out
 
-	res, err := ra.Run(runCtx, rr)
-	if err != nil && res.Error == nil {
-		res.Error = err
+		// On a provider rate-limit rejection, pause this runner type until it
+		// resets and fail over to the next candidate. Not a genuine failure — the
+		// run did no work — so we do not return it while a fallback remains.
+		if out.RateLimited {
+			x.d.pauseRunner(c.runnerType, out.RateLimitResetsAt)
+			if !last {
+				aplog.Info("[%s] runner %q rate-limited, failing over to next runner", req.Cell.ID, c.runnerType)
+				continue
+			}
+		}
+		break
 	}
-
-	x.finishExecution(ctx, exec, res)
 
 	// publish: off suppresses write-back before the engine ever sees the payload,
 	// even when the agent emitted an APIARY_PUBLISH block.
@@ -227,7 +254,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 // beginExecution creates the task_executions row for a step run, or returns nil
 // when no run-history DB is configured. The attempt number continues the cell's
 // execution history so retries/steps accumulate rather than reset.
-func (x *wfStepExecutor) beginExecution(ctx context.Context, req workflow.StepRequest) *db.Execution {
+func (x *wfStepExecutor) beginExecution(ctx context.Context, req workflow.StepRequest, model, runnerType string) *db.Execution {
 	if x.d.db == nil {
 		return nil
 	}
@@ -235,9 +262,8 @@ func (x *wfStepExecutor) beginExecution(ctx context.Context, req workflow.StepRe
 	if last, _ := x.d.db.GetLastExecution(ctx, req.Cell.ID); last != nil {
 		attempt = last.Attempt + 1
 	}
-	runnerType := x.d.agentRunner[req.Step.Agent]
 	exec, err := x.d.db.CreateExecution(ctx, req.Cell.ID, req.Step.Agent, req.Cell.Title,
-		req.Cell.Number, req.Cell.URL, req.Model, runnerType, attempt)
+		req.Cell.Number, req.Cell.URL, model, runnerType, attempt)
 	if err != nil {
 		aplog.Error("cell %s: create execution record: %v", req.Cell.ID, err)
 		return nil

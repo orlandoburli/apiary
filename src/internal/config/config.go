@@ -80,6 +80,20 @@ type AgentConfig struct {
 	// this agent, in any workflow. It is the lowest-precedence explicit env scope
 	// (below workflow.env and step.env), layered on top of the identity overlay.
 	Env map[string]string `yaml:"env,omitempty"`
+	// Fallbacks is an ordered chain of alternative runner/model pairs to try when
+	// the primary runner is rejected by a provider rate limit (e.g. Claude's
+	// 5-hour session limit). The dispatcher pauses the rejected runner type until
+	// it resets and retries the step on the next non-paused fallback. Empty means
+	// no failover (the step fails / waits for the limit to reset).
+	Fallbacks []FallbackConfig `yaml:"fallbacks,omitempty"`
+}
+
+// FallbackConfig is one entry in an agent's rate-limit failover chain. Runner
+// must reference a defined runner id; Model is optional (empty uses that
+// runner's default model).
+type FallbackConfig struct {
+	Runner string `yaml:"runner"`
+	Model  string `yaml:"model,omitempty"`
 }
 
 type WorkerConfig struct {
