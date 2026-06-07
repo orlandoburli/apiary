@@ -51,12 +51,15 @@ agents:
     runner: claude
     model: claude-sonnet-4-6
 
-routes:
+workflows:
   - id: implement
-    priority: 10
-    match:
-      source: my-repo
-    agent: engineer
+    trigger:
+      priority: 10
+      match:
+        source: my-repo
+    steps:
+      - id: run
+        agent: engineer
     on_complete:
       set_state: closed
 
@@ -82,7 +85,7 @@ apiary dashboard     # watch in another terminal
 │              │  write    │                   │   result     │            │
 └──────────────┘           │  ┌─────────────┐  │              └────────────┘
                            │  │   Router    │  │
-                           │  │ (routes.*)  │  │
+                           │  │ (triggers)  │  │
                            │  └─────────────┘  │
                            │  ┌─────────────┐  │
                            │  │ SQLite store │  │
@@ -263,12 +266,10 @@ agents:
     fallbacks:
       - {runner: opencode-go, model: opencode-go/deepseek-v4-pro}
       - {runner: cursor, model: composer-2.5-fast}
-
-    # Per-agent route overrides
-    match:
-      source: my-repo
-      labels: [agent:engineer]
 ```
+
+Which tasks reach this agent is decided by a [workflow `trigger`](#workflows), not the
+agent itself.
 
 | Field | Required | Description |
 |---|---|---|
@@ -285,33 +286,39 @@ agents:
 | `fallbacks` | no | Ordered list of `{runner, model}` to fail over to when the primary runner hits a provider rate limit. `runner` must be a defined runner id; `model` is optional (empty = that runner's default). See [Rate limits & resilience](#rate-limits--resilience) |
 | `env` | no | Agent-scope environment variables (map). Lowest-precedence explicit scope — see [Environment variables](#environment-variables) |
 
-### `routes`
+### `workflows`
 
-Match rules that decide which agent handles each task. Lower `priority` is evaluated first.
+A workflow fires when its `trigger` matches a task, then runs its `steps` in order.
+Lower trigger `priority` is evaluated first. The simplest workflow has a single step —
+that one-step form replaces what used to be a `route`.
 
 ```yaml
-routes:
+workflows:
   - id: complex-design
-    priority: 10
-    match:
-      source: project-erp
-      labels: [agent:staff]
-    agent: staff
+    trigger:
+      priority: 10
+      match:
+        source: project-erp
+        labels: [agent:staff]
+    steps:
+      - id: run
+        agent: staff
     on_complete:
       set_state: in review
 ```
 
 | Field | Description |
 |---|---|
-| `priority` | Lower number = evaluated first |
-| `match.source` | Source ID to match |
-| `match.labels` | Cell must have ALL these labels |
-| `match.types` | Cell types to match (GitHub Cells are always `issue`) |
-| `match.states` | Cell states to match |
-| `match.exclude_label_prefix` | Exclude cells with labels starting with prefix (e.g. `agent:`) |
-| `agent` | Target agent ID |
-| `on_complete.set_state` | State to set on source when done |
-| `on_complete.add_labels` | Labels to add on source when done |
+| `trigger.priority` | Lower number = evaluated first |
+| `trigger.match.source` | Source ID to match |
+| `trigger.match.labels` | Task must have ALL these labels |
+| `trigger.match.types` | Task types to match (GitHub tasks are always `issue`) |
+| `trigger.match.states` | Task states to match |
+| `trigger.match.exclude_label_prefix` | Exclude tasks with labels starting with prefix (e.g. `agent:`) |
+| `steps[].agent` | Agent that runs this step |
+| `on_complete.set_state` | State to set on source when the workflow succeeds |
+| `on_complete.add_labels` | Labels to add on source when the workflow succeeds |
+| `on_fail` | Hook applied when the workflow fails (same shape as `on_complete`) |
 
 ### `settings`
 
@@ -429,12 +436,12 @@ In detail view: `m` cycles model, `r` cycles runner, `w` cycles max_workers. Cha
 
 | Term | Description |
 |---|---|
-| **Cell** | Unit of work from a source (issue, PR, etc.) |
+| **Task** | Unit of work from a source (an issue or item) |
 | **Source** | Adapter that polls an external issue tracker and writes results back |
 | **Agent** | An LLM persona that processes tasks |
 | **Runner** | How an agent executes (CLI subprocess or API call) |
-| **Route** | Rule that matches Cells to Agents |
-| **Dispatcher** | Core loop that polls sources, routes Cells, dispatches to agents |
+| **Route** | Rule that matches Tasks to Agents |
+| **Dispatcher** | Core loop that polls sources, routes Tasks, dispatches to agents |
 | **inFlight** | Map of task IDs currently being processed — prevents double-dispatch |
 | **Soul file** | System prompt / persona definition for an agent |
 | **IPC Socket** | Unix socket (`apiary.sock`) for dashboard ↔ dispatcher communication |

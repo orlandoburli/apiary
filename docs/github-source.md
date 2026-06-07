@@ -42,8 +42,8 @@ sources:
 | **Poll** | `GET /repos/{owner}/{repo}/issues?state=open&sort=updated&direction=desc` | Every `poll_interval` |
 | **Acknowledge** | `POST /repos/{owner}/{repo}/issues/{number}/labels` (adds `in-progress`) | When `settings.state_lock: true` |
 | **WriteResult** | `POST /repos/{owner}/{repo}/issues/{number}/comments` | When `settings.result_comment: true` |
-| **SetState** | `PATCH /repos/{owner}/{repo}/issues/{number}` (sets `state`) | Via `route.on_complete.set_state` |
-| **AddLabels** | `PATCH /repos/{owner}/{repo}/issues/{number}` (replaces labels) | Via `route.on_complete.add_labels` |
+| **SetState** | `PATCH /repos/{owner}/{repo}/issues/{number}` (sets `state`) | Via `workflow.on_complete.set_state` |
+| **AddLabels** | `PATCH /repos/{owner}/{repo}/issues/{number}` (replaces labels) | Via `workflow.on_complete.add_labels` |
 
 GitHub's `/issues` endpoint also returns pull requests, but the adapter filters
 them out during polling — only plain issues become cells (always
@@ -128,45 +128,50 @@ agents:
 Default is 1 if not set. Polls are serialized (one source at a time) regardless
 of `settings.concurrency`.
 
-## Routing (`routes`)
+## Routing (`workflows`)
 
-Routes are evaluated in `priority` ascending order. The first match wins.
+A workflow's `trigger` decides which tasks it handles. Triggers are evaluated in
+`priority` ascending order (lower first); the first match wins. The match fields
+below live under `trigger.match`.
 
 ### `match` fields
 
 | Field | Type | Description |
 |---|---|---|
-| `source` | `string` | Only match cells from this source ID |
-| `labels` | `[string]` | Cell must have **all** of these labels (case-insensitive) |
-| `exclude_labels` | `[string]` | Cell must NOT have any of these labels |
-| `exclude_label_prefix` | `string` | Cell must not have a label starting with this prefix |
-| `states` | `[string]` | Only match cells whose state is in this list |
-| `types` | `[string]` | Only match cells whose type is in this list (GitHub cells are always `"issue"`) |
-| `title_regex` | `string` | Cell title must match this Go regexp |
-| `priority` | `[string]` | Only match cells whose priority is in this list |
+| `source` | `string` | Only match tasks from this source ID |
+| `labels` | `[string]` | Task must have **all** of these labels (case-insensitive) |
+| `exclude_labels` | `[string]` | Task must NOT have any of these labels |
+| `exclude_label_prefix` | `string` | Task must not have a label starting with this prefix |
+| `states` | `[string]` | Only match tasks whose state is in this list |
+| `types` | `[string]` | Only match tasks whose type is in this list (GitHub tasks are always `"issue"`) |
+| `title_regex` | `string` | Task title must match this Go regexp |
+| `priority` | `[string]` | Only match tasks whose priority is in this list |
 
 ### `on_complete` fields
 
 | Field | Type | Description |
 |---|---|---|
-| `set_state` | `string` | Transition the cell to this state after a successful run |
-| `add_labels` | `[string]` | Add these labels to the cell after a successful run |
+| `set_state` | `string` | Transition the task to this state after a successful run |
+| `add_labels` | `[string]` | Add these labels to the task after a successful run |
 
-### Example: route by label
+### Example: trigger by label
 
 ```yaml
-routes:
+workflows:
   - id: engineer-implement
-    priority: 20
-    match:
-      source: my-repo
-      labels: [agent:engineer]
-    agent: engineer
+    trigger:
+      priority: 20
+      match:
+        source: my-repo
+        labels: [agent:engineer]
+    steps:
+      - id: run
+        agent: engineer
     on_complete:
       set_state: closed
 ```
 
-The route matches any cell carrying the `agent:engineer` label and dispatches
+The trigger matches any task carrying the `agent:engineer` label and dispatches
 it to the engineer agent, closing the issue when the run succeeds.
 
 ## Environment variables
