@@ -140,6 +140,8 @@ func (c *Config) validateStep(
 		errs = append(errs, c.validateForeachStep(sctx, s, wf, agentIDs)...)
 	case StepTypeWorkflow:
 		errs = append(errs, validateWorkflowStep(sctx, s, wf, wfByID)...)
+	case StepTypePoll:
+		errs = append(errs, validatePollStep(sctx, s)...)
 	default:
 		errs = append(errs, fmt.Errorf("%s: unknown step type %q", sctx, s.Type))
 	}
@@ -315,6 +317,45 @@ func validateWorkflowStep(sctx string, s StepConfig, parent WorkflowConfig, wfBy
 		if cs.StepType() == StepTypeWorkflow {
 			errs = append(errs, fmt.Errorf("%s: referenced workflow %q contains a sub-workflow step %q; nesting is not allowed", sctx, s.Workflow, cs.ID))
 			break
+		}
+	}
+
+	return errs
+}
+
+// validatePollStep validates a type: poll step.
+func validatePollStep(sctx string, s StepConfig) []error {
+	var errs []error
+
+	if s.Agent != "" {
+		errs = append(errs, fmt.Errorf("%s: poll step must not have an agent field", sctx))
+	}
+
+	if s.PollConfig == nil {
+		errs = append(errs, fmt.Errorf("%s: poll step requires a poll config block", sctx))
+		return errs
+	}
+
+	cfg := s.PollConfig
+
+	// Validate kind
+	if cfg.Kind == "" {
+		// Default is "ci", which is valid
+	} else if cfg.Kind != "ci" {
+		errs = append(errs, fmt.Errorf("%s: poll step kind %q not supported (currently only 'ci')", sctx, cfg.Kind))
+	}
+
+	// Validate check_interval
+	if cfg.CheckInterval != "" {
+		if _, err := time.ParseDuration(cfg.CheckInterval); err != nil {
+			errs = append(errs, fmt.Errorf("%s: invalid poll check_interval %q: %v", sctx, cfg.CheckInterval, err))
+		}
+	}
+
+	// Validate max_duration
+	if cfg.MaxDuration != "" {
+		if _, err := time.ParseDuration(cfg.MaxDuration); err != nil {
+			errs = append(errs, fmt.Errorf("%s: invalid poll max_duration %q: %v", sctx, cfg.MaxDuration, err))
 		}
 	}
 
