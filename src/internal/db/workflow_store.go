@@ -213,6 +213,22 @@ func (c *Client) GetLatestInstanceByCell(ctx context.Context, cellID string) (*W
 	return inst, err
 }
 
+// ListWorkflowInstancesByCell returns every workflow instance keyed by a cell id,
+// newest first. Used by task deletion to catch orphaned instances and instances
+// written before task_id existed, which ListWorkflowInstancesByTask would miss.
+func (c *Client) ListWorkflowInstancesByCell(ctx context.Context, cellID string) ([]WorkflowInstance, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
+		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
+		FROM workflow_instances WHERE cell_id = ? ORDER BY created_at DESC
+	`, cellID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanInstances(rows)
+}
+
 // ListWorkflowInstancesByTask returns every workflow instance bound to an
 // InternalTask, newest first. A task may fan out to several workflows (Phase 4),
 // so the dashboard lists all of them per task. Backed by idx_wf_instances_task.
