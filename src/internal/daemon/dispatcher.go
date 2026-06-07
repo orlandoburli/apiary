@@ -909,6 +909,7 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 		// label-based lock (state_lock / "in-progress"), which is source-specific.
 		if persisted && d.db != nil {
 			matches = d.dropActiveMatches(ctx, task.ID, matches)
+			matches = d.dropCappedMatches(ctx, task, matches)
 		}
 		if len(matches) == 0 {
 			aplog.Debug("cell %s (%q): no matching route, skipping", cell.ID, cell.Title)
@@ -1060,6 +1061,63 @@ func (d *Dispatcher) dropActiveMatches(ctx context.Context, taskID string, match
 		out = append(out, m)
 	}
 	return out
+}
+
+// dropCappedMatches removes matches whose (task, workflow) has reached the
+// consecutive-failure cap (settings.max_attempts), so a workflow that keeps
+// failing is not re-dispatched forever. It is the internal backstop that does
+// not depend on source-side labels — it stops runaway loops even for workflows
+// with no on_fail. When a match is capped, the workflow's on_fail hook is
+// applied best-effort (so an issue parks to needs-attention and leaves the poll
+// set when the workflow defines one). Fail-open: on a count error the match is
+// kept (the cap is a safety net, not a correctness guard).
+func (d *Dispatcher) dropCappedMatches(ctx context.Context, task model.InternalTask, matches []router.Match) []router.Match {
+	limit := d.cfg.Settings.MaxAttempts
+	if limit <= 0 {
+		return matches
+	}
+	out := make([]router.Match, 0, len(matches))
+	for _, m := range matches {
+		n, err := d.db.CountConsecutiveFailedInstances(ctx, task.ID, m.Route.ID)
+		if err != nil {
+			aplog.Error("failure-cap check task %s workflow %s: %v — dispatching anyway", task.ID, m.Route.ID, err)
+			out = append(out, m)
+			continue
+		}
+		if n >= limit {
+			aplog.Warn("task %s: workflow %s hit failure cap (%d/%d consecutive failures), not re-dispatching", task.ID, m.Route.ID, n, limit)
+			d.parkCappedTask(ctx, task, m.Route.ID)
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// parkCappedTask applies a capped workflow's on_fail hook to the task's source
+// bindings (set_state / add_labels) using the same machinery the engine uses, so
+// the item parks (e.g. needs-attention) and stops being re-polled. A no-op when
+// the workflow has no on_fail (e.g. the hatch-* escape hatches) — the cap still
+// stops re-dispatch, the item just keeps being polled harmlessly.
+func (d *Dispatcher) parkCappedTask(ctx context.Context, task model.InternalTask, workflowID string) {
+	var onFail *config.OnComplete
+	for i := range d.cfg.Workflows {
+		if d.cfg.Workflows[i].ID == workflowID {
+			onFail = d.cfg.Workflows[i].OnFail
+			break
+		}
+	}
+	if onFail == nil {
+		return
+	}
+	bindings, err := d.db.ListBindingsByTask(ctx, task.ID)
+	if err != nil {
+		aplog.Error("park capped task %s: list bindings: %v", task.ID, err)
+		return
+	}
+	if err := (&wfSideEffects{d: d}).ApplyHook(ctx, task, bindings, *onFail); err != nil {
+		aplog.Error("park capped task %s: apply on_fail: %v", task.ID, err)
+	}
 }
 
 // dispatch acknowledges, runs, and writes the result for a single task.

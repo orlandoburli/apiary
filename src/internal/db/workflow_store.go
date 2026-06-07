@@ -126,6 +126,27 @@ func (c *Client) HasFailedInstance(ctx context.Context, taskID string) (bool, er
 	return n > 0, err
 }
 
+// CountConsecutiveFailedInstances returns how many of the most recent workflow
+// instances for (task, workflow) are in the failed state, counting back from the
+// newest until a non-failed one (or the start). A later success/done resets the
+// count to zero. Ordered by rowid (insertion order) so it is robust to the
+// timestamp format stored in created_at. Used as the re-dispatch failure cap.
+func (c *Client) CountConsecutiveFailedInstances(ctx context.Context, taskID, workflowID string) (int, error) {
+	var n int
+	err := c.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM workflow_instances
+		WHERE task_id = ? AND workflow_id = ? AND state = ?
+		  AND rowid > COALESCE((
+		    SELECT MAX(rowid) FROM workflow_instances
+		    WHERE task_id = ? AND workflow_id = ? AND state != ?
+		  ), 0)
+	`, taskID, workflowID, InstanceStateFailed, taskID, workflowID, InstanceStateFailed).Scan(&n)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return n, err
+}
+
 // HasActiveInstanceForRoute reports whether the task already has a non-terminal
 // instance for the given workflow — running or approval_waiting. The dispatcher
 // uses it as a source-agnostic in-flight guard: it stops a later poll from
