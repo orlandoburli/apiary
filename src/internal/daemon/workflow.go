@@ -32,6 +32,59 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 	return d.engine
 }
 
+// rehydrateParkedApprovals reconstructs workflow instances persisted in the
+// approval_waiting state and re-registers them in the engine's in-memory parked
+// set, so the polling loop's approval check (checkApprovals → CheckParkedApprovals)
+// re-evaluates them after a daemon restart.
+//
+// The parked set lives only in memory and is empty on a fresh process, so without
+// this an instance left waiting for approval when the daemon stopped would never
+// be re-evaluated: it would stay approval_waiting forever, its task's
+// outstanding-workflow counter would never drain, and the task would stay stuck in
+// 'registered'. ReconcileOrphanWorkflowInstances deliberately leaves
+// approval_waiting rows untouched (interrupting them would lose the wait); this
+// rehydration is what brings them back to life. Called once at startup, after the
+// orphan reconcile and before the poll loops start, so it builds the engine eagerly
+// (via workflowEngine) — that also makes the very first poll's approval check live.
+func (d *Dispatcher) rehydrateParkedApprovals(ctx context.Context) {
+	if d.db == nil {
+		return
+	}
+	instances, err := d.db.ListWorkflowInstancesByState(ctx, db.InstanceStateApprovalWaiting)
+	if err != nil {
+		aplog.Warn("rehydrate parked approvals: list instances: %v", err)
+		return
+	}
+	if len(instances) == 0 {
+		return
+	}
+
+	engine := d.workflowEngine()
+	rehydrated := 0
+	for i := range instances {
+		inst := instances[i]
+		wf, ok := d.workflowByID(inst.WorkflowID)
+		if !ok {
+			aplog.Warn("rehydrate parked approval %s: workflow %q no longer defined — leaving parked", inst.ID, inst.WorkflowID)
+			continue
+		}
+		steps, err := d.db.ListStepRuns(ctx, inst.ID)
+		if err != nil {
+			aplog.Warn("rehydrate parked approval %s: list step runs: %v", inst.ID, err)
+			continue
+		}
+		task := d.taskForInstance(ctx, &inst)
+		if err := engine.RehydrateApproval(ctx, inst.ID, wf, task, steps, inst.UpdatedAt); err != nil {
+			aplog.Warn("rehydrate parked approval %s: %v", inst.ID, err)
+			continue
+		}
+		rehydrated++
+	}
+	if rehydrated > 0 {
+		aplog.Info("rehydrated %d parked approval instance(s) from a previous run", rehydrated)
+	}
+}
+
 // newSpawner builds the WorkflowSpawner backing the APIARY_SPAWN marker: it
 // resolves a named workflow from config, persists the child InternalTask, and
 // runs the workflow through this dispatcher's engine. A nil DB disables spawning
