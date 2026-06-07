@@ -395,3 +395,37 @@ func nullStr(s string) any {
 	}
 	return s
 }
+
+// DeleteWorkflowInstances removes workflow instances and all their step runs and logs.
+// Safe to call with a list of instance IDs; deleted instances are cascaded via foreign keys.
+func (c *Client) DeleteWorkflowInstances(ctx context.Context, instanceIDs []string) error {
+	if len(instanceIDs) == 0 {
+		return nil
+	}
+
+	// Build a placeholder list for the IN clause.
+	placeholders := ""
+	args := make([]any, len(instanceIDs))
+	for i, id := range instanceIDs {
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		args[i] = id
+	}
+
+	// Delete step_runs for these instances (cascading delete would handle this,
+	// but being explicit is safer).
+	stmt := "DELETE FROM step_runs WHERE workflow_instance_id IN (" + placeholders + ")"
+	if _, err := c.db.ExecContext(ctx, stmt, args...); err != nil {
+		return err
+	}
+
+	// Delete the workflow instances themselves.
+	stmt = "DELETE FROM workflow_instances WHERE id IN (" + placeholders + ")"
+	if _, err := c.db.ExecContext(ctx, stmt, args...); err != nil {
+		return err
+	}
+
+	return nil
+}

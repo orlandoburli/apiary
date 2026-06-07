@@ -55,6 +55,7 @@ func init() {
 		newInitCmd(),
 		newVersionCmd(),
 		newRestartCmd(),
+		newDeleteCmd(),
 	)
 }
 

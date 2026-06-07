@@ -730,6 +730,23 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("/tasks/delete/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		taskRef := strings.TrimPrefix(r.URL.Path, "/tasks/delete/")
+		if taskRef == "" {
+			http.Error(w, "missing task reference", http.StatusBadRequest)
+			return
+		}
+		if err := d.DeleteTask(ctx, taskRef); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"deleted": taskRef})
+	})
 
 	srv := &http.Server{Handler: mux}
 
