@@ -165,42 +165,6 @@ workflows:
     on_complete:
       set_state: closed
 
-  - id: implementation
-    trigger:
-      priority: 20
-      match:
-        source: project-erp
-        labels: [workflow:implementation]
-    steps:
-      - id: run
-        agent: engineer
-    on_complete:
-      set_state: closed
-
-  - id: workflow-spec
-    trigger:
-      priority: 15
-      match:
-        source: project-erp
-        labels: [workflow:spec]
-    steps:
-      - id: run
-        agent: po
-    on_complete:
-      set_state: closed
-
-  - id: workflow-staff
-    trigger:
-      priority: 10
-      match:
-        source: project-erp
-        labels: [workflow:staff]
-    steps:
-      - id: run
-        agent: staff
-    on_complete:
-      set_state: closed
-
   # Triage — classify a new issue and route it to the right agent in one instance.
   - id: triage
     description: "Classify a new issue and route it to the right agent in one instance."
