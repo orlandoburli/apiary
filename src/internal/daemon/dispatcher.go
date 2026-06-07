@@ -507,6 +507,27 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, cellID string) error {
 
 		// Reset task state so it can be re-dispatched
 		_ = d.db.UpdateTaskState(ctx, cellID, "pending")
+
+		// Mark every non-terminal workflow_instance for the cell as interrupted.
+		// A daemon restart can strand a `running` (or approval_waiting/pending)
+		// instance; while it stays non-terminal, dropActiveMatches shadows the
+		// workflow on every poll and the cell never re-dispatches. Clearing the
+		// legacy task_executions/tasks rows above is not enough — the workflow
+		// engine routes on workflow_instances. Mirrors StopInstance.
+		if insts, err := d.db.ListWorkflowInstancesByCell(ctx, cellID); err != nil {
+			aplog.Error("force-restart %s: list workflow instances: %v", cellID, err)
+		} else {
+			for _, inst := range insts {
+				switch inst.State {
+				case db.InstanceStateRunning, db.InstanceStateApprovalWaiting, db.InstanceStatePending:
+					if err := d.db.UpdateWorkflowInstanceState(ctx, inst.ID, db.InstanceStateInterrupted); err != nil {
+						aplog.Error("force-restart %s: interrupt instance %s: %v", cellID, inst.ID, err)
+					} else {
+						aplog.Info("force-restart %s: interrupted workflow instance %s (was %s)", cellID, inst.ID, inst.State)
+					}
+				}
+			}
+		}
 	}
 
 	// Reset the source state (set back to todo) so the next poll picks it up
