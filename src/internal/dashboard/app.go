@@ -98,8 +98,8 @@ type logsDataMsg struct{ logs []LogEntry }
 type usageDataMsg struct{ data UsageTab }
 type workflowsConfigMsg struct{ workflows []WorkflowConfigItem }
 type workflowMonitorMsg struct {
-	taskID   string
-	instance *WorkflowInstanceItem
+	taskID    string
+	instances []*WorkflowInstanceItem // all instances for the task, newest-first
 }
 type workflowStepLogsMsg struct {
 	stepID string
@@ -241,8 +241,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.model.lastRefresh = time.Now()
 
 	case workflowMonitorMsg:
-		if a.model.tasksTab != nil {
-			a.model.tasksTab.WorkflowInstance = msg.instance
+		if a.model.tasksTab != nil && len(msg.instances) > 0 {
+			a.model.tasksTab.WorkflowInstances = msg.instances
+			a.model.tasksTab.WorkflowInstanceIdx = 0
+			a.model.tasksTab.WorkflowInstance = msg.instances[0]
 			a.model.tasksTab.WorkflowStepIdx = 0
 			a.model.tasksTab.WorkflowLogs = nil
 			a.model.tasksTab.WorkflowLogScroll = 0
@@ -260,9 +262,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.model.loading = false
 
 	case workflowMonitorRefreshMsg:
-		if a.model.tasksTab != nil && msg.instance != nil {
-			// Update step states without resetting the cursor position.
-			a.model.tasksTab.WorkflowInstance = msg.instance
+		if t := a.model.tasksTab; t != nil && msg.instance != nil {
+			// Update step states without resetting the cursor position. Write the
+			// refreshed instance back into the slice too, so switching away and
+			// back keeps the live state.
+			t.WorkflowInstance = msg.instance
+			if t.WorkflowInstanceIdx >= 0 && t.WorkflowInstanceIdx < len(t.WorkflowInstances) {
+				t.WorkflowInstances[t.WorkflowInstanceIdx] = msg.instance
+			}
 		}
 		a.model.loading = false
 	}
@@ -987,6 +994,19 @@ func (a *App) handleWorkflowMonitorKey(key string) (tea.Model, tea.Cmd) {
 			t.WorkflowStepIdx = clampScroll(t.WorkflowStepIdx+a.pageSize(), len(inst.Steps))
 		}
 
+	case "]", ">":
+		// Switch to a newer workflow instance (forward in time). The slice is
+		// newest-first, so newer = a lower index.
+		if !t.WorkflowShowLogs && t.WorkflowInstanceIdx > 0 {
+			a.selectWorkflowInstance(t, t.WorkflowInstanceIdx-1)
+		}
+
+	case "[", "<":
+		// Switch to an older workflow instance (back in time, e.g. triage).
+		if !t.WorkflowShowLogs && t.WorkflowInstanceIdx < len(t.WorkflowInstances)-1 {
+			a.selectWorkflowInstance(t, t.WorkflowInstanceIdx+1)
+		}
+
 	case "l", "enter":
 		// Open logs for the selected step.
 		if !t.WorkflowShowLogs && t.WorkflowStepIdx < len(inst.Steps) {
@@ -1013,6 +1033,20 @@ func (a *App) handleWorkflowMonitorKey(key string) (tea.Model, tea.Cmd) {
 		a.model.confirmTaskID = inst.CellID
 	}
 	return a, nil
+}
+
+// selectWorkflowInstance points the monitor at a different workflow instance for
+// the same task and resets the step cursor and log panel to that instance.
+func (a *App) selectWorkflowInstance(t *TasksTab, idx int) {
+	if idx < 0 || idx >= len(t.WorkflowInstances) {
+		return
+	}
+	t.WorkflowInstanceIdx = idx
+	t.WorkflowInstance = t.WorkflowInstances[idx]
+	t.WorkflowStepIdx = 0
+	t.WorkflowLogs = nil
+	t.WorkflowLogScroll = 0
+	t.WorkflowShowLogs = false
 }
 
 // handleWorkflowsKey handles keys in the static Workflows config tab.
@@ -1242,49 +1276,63 @@ func (a *App) openWorkflowMonitorOrLogs(taskID string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 		defer cancel()
 		if dbConn != nil {
-			inst, err := dbConn.GetLatestInstanceByCell(ctx, taskID)
-			if err == nil && inst != nil {
-				item := &WorkflowInstanceItem{
-					ID:       inst.ID,
-					Workflow: inst.WorkflowID,
-					State:    inst.State,
-					CellID:   inst.CellID,
+			// A task can fan out to several workflow instances over its life
+			// (e.g. triage → implementation); load all of them, newest first, so
+			// the monitor can switch between them with [ and ].
+			insts, err := dbConn.ListWorkflowInstancesByCell(ctx, taskID)
+			if err == nil && len(insts) > 0 {
+				items := make([]*WorkflowInstanceItem, 0, len(insts))
+				for i := range insts {
+					items = append(items, buildWorkflowInstanceItem(ctx, dbConn, &insts[i]))
 				}
-				if inst.State == "approval_waiting" {
-					item.Message = "Awaiting human approval — reply on the task to resume or abort."
-				}
-				steps, err := dbConn.ListStepRuns(ctx, inst.ID)
-				if err == nil {
-					now := time.Now()
-					for _, s := range steps {
-						si := WorkflowStepItem{
-							StepID:     s.StepID,
-							Agent:      s.AgentID,
-							State:      s.State,
-							Duration:   wfStepDuration(s, now),
-							Cached:     s.SkippedCached,
-							Output:     s.Output,
-							Summary:    s.Summary,
-							StartedAt:  s.StartedAt,
-							FinishedAt: s.FinishedAt,
-						}
-						if usage, err := dbConn.GetStepUsage(ctx, inst.ID, s.StepID); err == nil && usage != nil {
-							si.InputTokens = usage.InputTokens
-							si.OutputTokens = usage.OutputTokens
-							si.TotalTokens = usage.TotalTokens
-							si.CostUSD = usage.CostUSD
-							si.NumTurns = usage.NumTurns
-							si.NumToolCalls = usage.NumToolCalls
-						}
-						item.Steps = append(item.Steps, si)
-					}
-				}
-				return workflowMonitorMsg{taskID: taskID, instance: item}
+				return workflowMonitorMsg{taskID: taskID, instances: items}
 			}
 		}
 		// No workflow instance — fall back to logs view.
 		return taskLogsMsg{taskID: taskID, logs: nil, detail: nil}
 	}
+}
+
+// buildWorkflowInstanceItem hydrates a WorkflowInstanceItem (steps + per-step
+// usage) from a stored workflow instance, for the live monitor views.
+func buildWorkflowInstanceItem(ctx context.Context, dbConn *db.Client, inst *db.WorkflowInstance) *WorkflowInstanceItem {
+	item := &WorkflowInstanceItem{
+		ID:        inst.ID,
+		Workflow:  inst.WorkflowID,
+		State:     inst.State,
+		CellID:    inst.CellID,
+		CreatedAt: inst.CreatedAt,
+	}
+	if inst.State == "approval_waiting" {
+		item.Message = "Awaiting human approval — reply on the task to resume or abort."
+	}
+	steps, err := dbConn.ListStepRuns(ctx, inst.ID)
+	if err == nil {
+		now := time.Now()
+		for _, s := range steps {
+			si := WorkflowStepItem{
+				StepID:     s.StepID,
+				Agent:      s.AgentID,
+				State:      s.State,
+				Duration:   wfStepDuration(s, now),
+				Cached:     s.SkippedCached,
+				Output:     s.Output,
+				Summary:    s.Summary,
+				StartedAt:  s.StartedAt,
+				FinishedAt: s.FinishedAt,
+			}
+			if usage, err := dbConn.GetStepUsage(ctx, inst.ID, s.StepID); err == nil && usage != nil {
+				si.InputTokens = usage.InputTokens
+				si.OutputTokens = usage.OutputTokens
+				si.TotalTokens = usage.TotalTokens
+				si.CostUSD = usage.CostUSD
+				si.NumTurns = usage.NumTurns
+				si.NumToolCalls = usage.NumToolCalls
+			}
+			item.Steps = append(item.Steps, si)
+		}
+	}
+	return item
 }
 
 // refreshWorkflowMonitor re-fetches a workflow instance and its steps for the
@@ -1301,43 +1349,8 @@ func (a *App) refreshWorkflowMonitor(instanceID, cellID string) tea.Cmd {
 		if err != nil || inst == nil {
 			return nil
 		}
-		item := &WorkflowInstanceItem{
-			ID:       inst.ID,
-			Workflow: inst.WorkflowID,
-			State:    inst.State,
-			CellID:   inst.CellID,
-		}
-		if inst.State == "approval_waiting" {
-			item.Message = "Awaiting human approval — reply on the task to resume or abort."
-		}
-		steps, err := dbConn.ListStepRuns(ctx, instanceID)
-		if err == nil {
-			now := time.Now()
-			for _, s := range steps {
-				si := WorkflowStepItem{
-					StepID:     s.StepID,
-					Agent:      s.AgentID,
-					State:      s.State,
-					Duration:   wfStepDuration(s, now),
-					Cached:     s.SkippedCached,
-					Output:     s.Output,
-					Summary:    s.Summary,
-					StartedAt:  s.StartedAt,
-					FinishedAt: s.FinishedAt,
-				}
-				if usage, err := dbConn.GetStepUsage(ctx, instanceID, s.StepID); err == nil && usage != nil {
-					si.InputTokens = usage.InputTokens
-					si.OutputTokens = usage.OutputTokens
-					si.TotalTokens = usage.TotalTokens
-					si.CostUSD = usage.CostUSD
-					si.NumTurns = usage.NumTurns
-					si.NumToolCalls = usage.NumToolCalls
-				}
-				item.Steps = append(item.Steps, si)
-			}
-		}
 		// Preserve the step cursor — return a monitor refresh, not a full reset.
-		return workflowMonitorRefreshMsg{instance: item}
+		return workflowMonitorRefreshMsg{instance: buildWorkflowInstanceItem(ctx, dbConn, inst)}
 	}
 }
 
@@ -3764,7 +3777,11 @@ func (a *App) footerKeys() []fkey {
 				if t.WorkflowShowLogs {
 					return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"q", "quit"}}
 				}
-				return []fkey{{"↑/↓", "step"}, {"enter/l", "logs"}, {"r", "refresh"}, {"X", "stop"}, {"R", "restart"}, {"esc", "back"}, {"q", "quit"}}
+				keys := []fkey{{"↑/↓", "step"}, {"enter/l", "logs"}}
+				if len(t.WorkflowInstances) > 1 {
+					keys = append(keys, fkey{"[ ]", "workflow"})
+				}
+				return append(keys, fkey{"r", "refresh"}, fkey{"X", "stop"}, fkey{"R", "restart"}, fkey{"esc", "back"}, fkey{"q", "quit"})
 			}
 		}
 		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"d", "details"}, {"o", "open"}, {"R", "restart"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
@@ -3962,6 +3979,11 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 	}
 
 	label := "WORKFLOW  " + StyleValueStrong.Render(inst.Workflow) + "  " + wfInstanceBadge(inst.State)
+	// When the task fanned out to several workflows, show this one's chronological
+	// position (oldest = 1) and a hint that [ / ] switch between them.
+	if n := len(t.WorkflowInstances); n > 1 {
+		label += "   " + StyleMuted.Render(fmt.Sprintf("workflow %d/%d · [ ] switch", n-t.WorkflowInstanceIdx, n))
+	}
 
 	// ── left panel: step list ───────────────────────────────────────────────
 	var left strings.Builder
