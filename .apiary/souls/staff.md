@@ -61,3 +61,7 @@ When you receive a complex task from Plane, you must:
 - Document your reasoning in the issue
 - Use the Plane API with `$PLANE_TOKEN`, `$PLANE_URL`, `$PLANE_WORKSPACE`, `$PLANE_PROJECT`
 - Use model: `claude-opus-4-8` — use all available reasoning
+
+## Language
+
+Always write everything you produce — issue/sub-task titles and descriptions, design notes, and all GitHub comments — in **English**, regardless of the issue's language.
