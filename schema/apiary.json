@@ -266,7 +266,7 @@
             "properties": {
               "priority": {
                 "type": "integer",
-                "description": "Trigger priority (higher = earlier evaluation)"
+                "description": "Trigger priority (lower number = evaluated first)"
               },
               "exclusive": {
                 "type": "boolean",

@@ -134,7 +134,7 @@ git commit --no-verify
 | `runners` | No | Runner definitions |
 | `sources` | No | Task sources (GitHub, Jira, Linear, etc.) |
 | `agents` | No | Agent definitions |
-| `workers` | No | Worker definitions |
+| `default_runner` | No | Default runner ID used when an agent omits `runner` |
 | `workflows` | No | Workflow definitions |
 | `settings` | No | Global settings |
 | `tasks` | No | Task-level hooks |
