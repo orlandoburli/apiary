@@ -28,27 +28,27 @@ type Model struct {
 
 // OverviewTab shows dispatcher status and summary metrics.
 type AgentCount struct {
-	ID          string
-	Running     int
-	MaxWorkers  int
+	ID         string
+	Running    int
+	MaxWorkers int
 }
 
 type OverviewTab struct {
-	Status           string
-	Uptime           string
-	Concurrency      int
-	ActiveAgents     int
-	ActiveRuns       int
-	QueuedTasks      int
-	CompletedToday   int
-	FailedToday      int
-	ThroughputRatio  string
-	AvgDuration      string
-	SuccessRate      string
-	AgentBreakdown   []AgentCount
-	TodayCostUSD     float64
-	TodayTokens      int
-	TodayInputTokens int
+	Status            string
+	Uptime            string
+	Concurrency       int
+	ActiveAgents      int
+	ActiveRuns        int
+	QueuedTasks       int
+	CompletedToday    int
+	FailedToday       int
+	ThroughputRatio   string
+	AvgDuration       string
+	SuccessRate       string
+	AgentBreakdown    []AgentCount
+	TodayCostUSD      float64
+	TodayTokens       int
+	TodayInputTokens  int
 	TodayOutputTokens int
 }
 
@@ -56,7 +56,7 @@ type OverviewTab struct {
 type TaskView int
 
 const (
-	TaskViewList     TaskView = iota
+	TaskViewList TaskView = iota
 	TaskViewDetail
 	TaskViewLogs
 	TaskViewWorkflow // live workflow instance monitor
@@ -75,11 +75,13 @@ type TasksTab struct {
 	LogScroll       int
 
 	// Workflow monitor sub-view (View == TaskViewWorkflow).
-	WorkflowInstance *WorkflowInstanceItem // instance being monitored
-	WorkflowStepIdx  int                   // selected step index in monitor
-	WorkflowLogs     []LogEntry            // logs for the selected step
-	WorkflowLogScroll int
-	WorkflowShowLogs bool // true when the log panel is expanded
+	WorkflowInstances   []*WorkflowInstanceItem // all instances for the task, newest-first
+	WorkflowInstanceIdx int                     // index into WorkflowInstances of the one being shown
+	WorkflowInstance    *WorkflowInstanceItem   // instance being monitored (== WorkflowInstances[WorkflowInstanceIdx])
+	WorkflowStepIdx     int                     // selected step index in monitor
+	WorkflowLogs        []LogEntry              // logs for the selected step
+	WorkflowLogScroll   int
+	WorkflowShowLogs    bool // true when the log panel is expanded
 
 	// Scroll / filter / sort
 	ScrollOffset int    // first visible row index
@@ -227,7 +229,7 @@ type AgentsTab struct {
 
 	// Drill-down: logs of the task selected in the activity list.
 	LogsTaskID string
-	LogsTask   *TaskItem   // task detail for the logs header
+	LogsTask   *TaskItem // task detail for the logs header
 	TaskLogs   []LogEntry
 	TaskLogIdx int // vertical scroll within TaskLogs (visual lines)
 
@@ -265,18 +267,18 @@ type AgentStatus struct {
 	HeartbeatCount  int
 
 	// Config fields (enriched from apiary.yaml)
-	MaxWorkers     int
-	RunnerType     string
-	Model          string
-	SoulFile       string
-	Skills         []string // skill ids declared on the agent config
-	Description    string
-	SourceName     string // git author name from agent config
-	SourceEmail    string // git author email from agent config
-	Runners        []string // all available runner IDs for cycling
-	RunnerModels   []string // models declared on the current runner config
-	TotalCostUSD   float64
-	TotalTokens    int
+	MaxWorkers   int
+	RunnerType   string
+	Model        string
+	SoulFile     string
+	Skills       []string // skill ids declared on the agent config
+	Description  string
+	SourceName   string   // git author name from agent config
+	SourceEmail  string   // git author email from agent config
+	Runners      []string // all available runner IDs for cycling
+	RunnerModels []string // models declared on the current runner config
+	TotalCostUSD float64
+	TotalTokens  int
 }
 
 // UsageTab shows token/cost charts over time and per agent.
@@ -329,11 +331,11 @@ const (
 
 // WorkflowsTab shows the static workflow config definitions (read-only).
 type WorkflowsTab struct {
-	Workflows    []WorkflowConfigItem
-	SelectedIdx  int // selected workflow in the left panel
-	StepIdx      int // selected step in the right panel
-	StepScroll   int // scroll offset in the step list
-	Focus        WorkflowsView
+	Workflows   []WorkflowConfigItem
+	SelectedIdx int // selected workflow in the left panel
+	StepIdx     int // selected step in the right panel
+	StepScroll  int // scroll offset in the step list
+	Focus       WorkflowsView
 }
 
 // NewModel creates a new dashboard model.
@@ -353,7 +355,7 @@ func NewModel() *Model {
 		agentsTab: &AgentsTab{
 			Agents: []AgentStatus{},
 		},
-		usageTab:     &UsageTab{},
+		usageTab: &UsageTab{},
 		logsTab: &LogsTab{
 			Logs:        []LogEntry{},
 			FilterLevel: "All",
