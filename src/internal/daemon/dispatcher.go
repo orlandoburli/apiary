@@ -938,42 +938,47 @@ func (d *Dispatcher) fanOut(ctx context.Context, cell model.SourceItem, adapter 
 	var inner sync.WaitGroup
 	for _, match := range matches {
 		match := match
-		agentID := match.Route.Agent
-		agentCh := d.agentSem[agentID]
-		if agentCh != nil {
-			agentCh <- struct{}{}
-		}
-		d.active.Add(1)
+		agentCh := d.agentSem[match.Route.Agent]
 		inner.Add(1)
 		if wg != nil {
 			wg.Add(1)
 		}
-
 		runID := d.nextRunID()
-		d.activeRuns.Store(runID, model.ActiveRun{
-			ID:        runID,
-			Cell:      cell,
-			WorkerID:  match.Worker.ID,
-			Model:     match.Worker.Model,
-			Status:    model.RunStatusRunning,
-			StartedAt: time.Now(),
-		})
-
-		aplog.Info("dispatching cell %s (%q) → workflow %s [agent %s]",
-			cell.ID, cell.Title, match.Route.ID, agentID)
 
 		go func(runID string, match router.Match, agentCh chan struct{}) {
-			defer func() {
-				if agentCh != nil {
-					<-agentCh
+			if wg != nil {
+				defer wg.Done()
+			}
+			defer inner.Done()
+
+			// Admit through the agent's semaphore HERE, inside the goroutine,
+			// rather than on the poll-loop thread. A saturated agent must not block
+			// the poll loop — doing so stalls polling and dispatch for every other
+			// source and agent. A run waiting for a slot is not yet counted active.
+			if agentCh != nil {
+				select {
+				case agentCh <- struct{}{}:
+				case <-ctx.Done():
+					return // shutting down before a slot freed; never acquired
 				}
-				d.active.Add(-1)
-				d.activeRuns.Delete(runID)
-				inner.Done()
-				if wg != nil {
-					wg.Done()
-				}
-			}()
+				defer func() { <-agentCh }()
+			}
+
+			d.active.Add(1)
+			defer d.active.Add(-1)
+			d.activeRuns.Store(runID, model.ActiveRun{
+				ID:        runID,
+				Cell:      cell,
+				WorkerID:  match.Worker.ID,
+				Model:     match.Worker.Model,
+				Status:    model.RunStatusRunning,
+				StartedAt: time.Now(),
+			})
+			defer d.activeRuns.Delete(runID)
+
+			aplog.Info("dispatching cell %s (%q) → workflow %s [agent %s]",
+				cell.ID, cell.Title, match.Route.ID, match.Route.Agent)
+
 			result := d.dispatch(ctx, cell, adapter, task, match)
 			if !result.Success && onFail != nil {
 				onFail(cell.ID)
