@@ -357,48 +357,71 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 	var checkRuns checkRunsResponse
 	_ = json.Unmarshal(checksBody, &checkRuns)
 
-	// Synthesize status from both sources.
-	overallStatus := "pending"
-	if commitStatus.State != "" {
-		overallStatus = commitStatus.State
-	}
+	// Synthesize the overall status from BOTH check runs (GitHub Actions) and the
+	// legacy combined commit status. A repo that runs CI purely via Actions has an
+	// EMPTY combined status whose state defaults to "pending" (total_count == 0) —
+	// trusting that alone would report pending forever even when every check is
+	// green. So we aggregate every signal:
+	//   - any failed signal      → failed
+	//   - else any still-running → pending
+	//   - else (≥1 signal, all good) → passed
+	//   - else (no signals at all)   → pending (CI hasn't started)
+	anyFail, anyPending, anySignal := false, false, false
 
-	// Convert GitHub statuses to our normalized form.
-	status := source.CIStatus{
-		Status: normalizeGitHubStatus(overallStatus),
-		URL:    pr.HTMLURL,
-	}
-
-	// Collect check names and statuses.
 	checks := make([]struct {
 		Name   string
 		Status string
 	}, 0)
 
-	// Add checks from check runs.
 	for _, run := range checkRuns.CheckRuns {
+		anySignal = true
+		var norm string
+		if run.Status != "completed" {
+			norm = "pending" // queued / in_progress
+			anyPending = true
+		} else {
+			norm = normalizeGitHubStatus(run.Conclusion) // success/skipped/neutral → passed/skipped; failure/… → failed
+			if norm == "failed" {
+				anyFail = true
+			}
+		}
 		checks = append(checks, struct {
 			Name   string
 			Status string
-		}{
-			Name:   run.Name,
-			Status: normalizeGitHubStatus(run.Conclusion),
-		})
+		}{Name: run.Name, Status: norm})
 	}
 
-	// Add statuses from combined status if not already in check runs.
-	for _, st := range commitStatus.Statuses {
-		checks = append(checks, struct {
-			Name   string
-			Status string
-		}{
-			Name:   st.Context,
-			Status: normalizeGitHubStatus(st.State),
-		})
+	// Legacy commit statuses count only when they actually exist.
+	if commitStatus.TotalCount > 0 {
+		for _, st := range commitStatus.Statuses {
+			anySignal = true
+			norm := normalizeGitHubStatus(st.State)
+			switch norm {
+			case "failed":
+				anyFail = true
+			case "pending":
+				anyPending = true
+			}
+			checks = append(checks, struct {
+				Name   string
+				Status string
+			}{Name: st.Context, Status: norm})
+		}
 	}
 
-	status.Checks = checks
-	return status, nil
+	overall := "pending"
+	switch {
+	case anyFail:
+		overall = "failed"
+	case anyPending:
+		overall = "pending"
+	case anySignal:
+		overall = "passed"
+	default:
+		overall = "pending" // no checks and no statuses yet — CI not started
+	}
+
+	return source.CIStatus{Status: overall, URL: pr.HTMLURL, Checks: checks}, nil
 }
 
 func normalizeGitHubStatus(s string) string {
