@@ -103,6 +103,67 @@ func TestTabsRenderFramedAndAligned(t *testing.T) {
 	assertFramed(t, a.renderAgentsTab(12), 100)
 }
 
+func TestLogMarkdownInlineRender(t *testing.T) {
+	a := newTestApp(90, 24)
+	md := "## Status\n\n- done\n- **verified**\n"
+	plain := "dispatching to agent=investigator model=claude-opus-4-8 runner=cli"
+
+	// Heuristic: multi-line markdown is detected; the operational one-liner isn't.
+	if !looksLikeMarkdown(md) {
+		t.Fatal("multi-line markdown should be detected")
+	}
+	if looksLikeMarkdown(plain) {
+		t.Fatal("operational one-liner should not be treated as markdown")
+	}
+
+	msgWidth := a.model.width - 2 - 15 // prefix column is 15 wide
+	rendered := a.logMessageLines(md, msgWidth)
+	if len(rendered) == 0 {
+		t.Fatal("no rendered lines for markdown log")
+	}
+	// Rendered markdown reflows differently from a plain wrap, but keeps the text.
+	if strings.Join(rendered, "\n") == strings.Join(wrapPlain(md, msgWidth), "\n") {
+		t.Error("markdown log should render differently from plain wrapping")
+	}
+	joined := stripANSI(strings.Join(rendered, "\n"))
+	if !strings.Contains(joined, "Status") || !strings.Contains(joined, "verified") {
+		t.Errorf("rendered markdown lost its text: %s", joined)
+	}
+	// No rendered line exceeds the content width (box border stays aligned).
+	for i, ln := range rendered {
+		if w := lipgloss.Width(ln); w > msgWidth {
+			t.Errorf("rendered line %d width %d exceeds msgWidth %d: %q", i, w, msgWidth, stripANSI(ln))
+		}
+	}
+
+	// Plain operational lines pass through wrapPlain untouched.
+	if got := a.logMessageLines(plain, msgWidth); strings.Join(got, "\n") != strings.Join(wrapPlain(plain, msgWidth), "\n") {
+		t.Error("plain message should pass through wrapPlain unchanged")
+	}
+
+	// The markdown render is memoized.
+	if a.logMDWidth != msgWidth || len(a.logMDCache) == 0 {
+		t.Errorf("markdown cache not populated: width=%d size=%d", a.logMDWidth, len(a.logMDCache))
+	}
+
+	// All three log paths render framed with the markdown entry inline.
+	now := time.Now()
+	entries := []LogEntry{
+		{Timestamp: now, Level: "INFO", Message: plain},
+		{Timestamp: now, Level: "INFO", Message: md},
+	}
+	a.model.activeTab = 4 // Logs
+	a.model.logsTab.Wrap = true
+	a.model.logsTab.Logs = entries
+	assertFramed(t, a.renderLogsTab(16), 90)
+
+	// logEntryLines feeds the Tasks- and Agents-tab task-log views.
+	taskLines := a.logEntryLines(entries)
+	if len(taskLines) < 4 { // 1 plain + several rendered markdown lines
+		t.Errorf("expected inline markdown to expand task logs, got %d lines", len(taskLines))
+	}
+}
+
 func TestLogsTabWrapAndScroll(t *testing.T) {
 	now := time.Now()
 	long := "this is a very long operational log message that certainly exceeds the available width of the logs panel and must either wrap onto multiple lines or be horizontally scrollable by the user"
