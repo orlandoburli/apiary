@@ -53,12 +53,13 @@ apiary/
 │   │   ├── cli/            # Cobra commands
 │   │   ├── config/         # apiary.yaml parsing and validation
 │   │   ├── daemon/         # Dispatcher, IPC socket server, status types
-│   │   ├── model/          # Cell, RunRequest, RunResult, ActiveRun
+│   │   ├── model/          # task model, RunRequest, RunResult, ActiveRun
 │   │   ├── router/         # Rule matching engine
 │   │   ├── runner/         # Runner adapter interface + registry
-│   │   │   ├── cli/        # CLI subprocess runner (opencode, gemini, …)
-│   │   │   └── script/     # Shell script runner
+│   │   │   ├── execution/  # cli + api execution engines
+│   │   │   └── providers/  # claude, opencode, cursor presets
 │   │   ├── source/         # Source adapter interface + registry
+│   │   │   ├── github/     # GitHub Issues source adapter
 │   │   │   └── plane/      # Plane source adapter
 │   │   └── tui/            # Bubble Tea terminal UI
 │   ├── sdk/                # Public SDK for custom adapters (planned)
@@ -79,35 +80,43 @@ cd /your/project
 apiary init          # scaffolds apiary.yaml — edit it before running
 ```
 
-Minimal working config (using the `script` runner for local testing without a real agent CLI):
+Minimal working config — a GitHub source routed to a single Claude agent:
 
 ```yaml
 version: "1"
 
-sources:
-  - id: my-plane
-    type: plane
+runners:
+  - id: claude
+    type: cli
+    provider: claude
     config:
-      workspace: your-workspace-slug
-      project: your-project-uuid
-      api_key: ${PLANE_API_KEY}
+      args: ["--output-format", "stream-json", "--verbose"]
+
+sources:
+  - id: my-repo
+    type: github
+    config:
+      repo: my-org/my-repo
+      api_key: ${GITHUB_TOKEN}
     poll_interval: 30s
     filters:
       labels: [ai-ready]
 
-workers:
-  - id: echo-worker
-    runner: script
-    model: none
-    runner_config:
-      command: echo "would run agent on: $APIARY_CELL_TITLE"
+agents:
+  - id: engineer
+    description: "Implements tasks"
+    runner: claude
+    model: claude-sonnet-4-6
 
-routes:
+workflows:
   - id: default
-    priority: 99
-    match:
-      source: my-plane
-    worker: echo-worker
+    trigger:
+      priority: 99
+      match:
+        source: my-repo
+    steps:
+      - id: run
+        agent: engineer
 
 settings:
   concurrency: 1
@@ -119,7 +128,7 @@ Create a `.env` file next to your `apiary.yaml` with your secrets:
 
 ```sh
 # .env  (never committed — already in .gitignore)
-PLANE_API_KEY=your_key_here
+GITHUB_TOKEN=your_token_here
 ```
 
 Apiary loads `.env` automatically on every command. Already-set shell variables always take precedence. To point at a different file:

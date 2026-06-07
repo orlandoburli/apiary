@@ -9,8 +9,8 @@
 Apiary is an open-source harness that connects project management tools (Jira, Plane, GitHub Issues, Linear) to AI agent runners and routes each task to the right agent profile and LLM model based on declarative rules.
 
 ```
-Task System ──► Apiary ──► Agent Profile ──► LLM Model
-   (Plane)      (router)    (backend-dev)     (gpt-4o)
+Task System ──► Apiary ──► Agent ──► LLM Model
+  (GitHub)      (router)  (backend-dev)  (claude-sonnet-4-6)
 ```
 
 ## Why Apiary?
@@ -22,48 +22,75 @@ Most AI coding agents require a human to manually pick a task, paste context, an
 | Term | Meaning |
 |---|---|
 | **Hive** | A configured Apiary instance (`apiary.yaml`) |
-| **Source** | A task system integration (Plane, Jira, Linear…) |
-| **Worker** | An agent profile — a named combo of runner + model + prompt context |
-| **Route** | A rule that maps task attributes to a Worker |
-| **Cell** | A single task unit flowing through the system |
+| **Source** | A task system integration that polls work items and writes results back (GitHub, Plane, Jira, Linear…) |
+| **Runner** | How an agent executes — a CLI subprocess (`cli`) or API call (`api`) |
+| **Agent** | A named LLM persona: runner + model + soul/skills, with optional fallbacks |
+| **Workflow** | A pipeline of steps, fired by a `trigger` that matches tasks; each step runs an agent |
+| **Task** | A unit of work flowing through the system (an issue or item from a Source) |
 
 ## Quick Example
 
 ```yaml
 # apiary.yaml
-sources:
-  - id: main-plane
-    type: plane
+version: "1"
+
+runners:
+  - id: claude
+    type: cli
+    provider: claude
     config:
-      workspace: my-workspace
-      project: my-project
-      api_key: ${PLANE_API_KEY}
+      args: ["--output-format", "stream-json", "--verbose"]
+
+sources:
+  - id: main-repo
+    type: github
+    config:
+      repo: my-org/my-repo
+      api_key: ${GITHUB_TOKEN}
+    poll_interval: 120s
     filters:
       labels: [ai-ready]
 
-workers:
+agents:
   - id: backend-dev
-    runner: opencode
-    model: openai/gpt-4o
-    config:
-      working_dir: /workspace/my-project
-      max_turns: 10
+    description: "Implements backend tasks"
+    runner: claude
+    model: claude-sonnet-4-6
 
-routes:
+# A workflow fires when its trigger matches a task, then runs its steps.
+workflows:
   - id: backend-bugs
-    priority: 10
-    match:
-      labels: [backend, bug]
-    worker: backend-dev
+    trigger:
+      priority: 10        # lower number = evaluated first
+      match:
+        labels: [backend, bug]
+    steps:
+      - id: run
+        agent: backend-dev
+    on_complete:
+      set_state: closed
 ```
 
 ```sh
 apiary run
 ```
 
+## What's in the beta
+
+Apiary runs end-to-end today and ships with the safeguards that make unattended agent dispatch safe to leave running:
+
+- **Rate-limit failover** — when a provider rejects a run on a usage limit, Apiary pauses that runner type until it resets and fails over to the agent's next `fallbacks` entry, instead of burning the task on a pre-failed call.
+- **Re-dispatch cap** (`settings.max_attempts`) — a task whose workflow keeps failing stops being re-dispatched after N consecutive failures, so a broken task can't loop forever.
+- **Non-blocking dispatch** — a busy agent parks its own runs without stalling polling or dispatch for any other source or agent.
+- **Approval rehydration** — runs parked on a manual-approval gate survive a daemon restart.
+- **Scoped env vars** — set environment variables per agent, workflow, or step, merged with precedence.
+- **Schema-validated config** — `apiary.yaml` is validated against a JSON Schema, with live validation in the VS Code extension.
+
+See the [Apiary Guide](docs/apiary-guide.md#rate-limits--resilience) for details.
+
 ## Installation
 
-> **Pre-alpha.** Direct downloads, `.deb`/`.rpm`, and the Docker image are published on every release ([Releases](https://github.com/orlandoburli/apiary/releases)). The Homebrew and Scoop channels activate with the first **stable** tag (`v0.1.0`).
+> **Public beta.** Every channel below is live — Homebrew, Scoop, Docker, `.deb`/`.rpm`, and direct downloads are published on each release ([Releases](https://github.com/orlandoburli/apiary/releases)).
 
 **macOS / Linux — Homebrew**
 
@@ -123,14 +150,20 @@ All specs live in [`openspec/`](openspec/):
 Apiary supports a `cli` runner adapter that invokes agent CLI tools (such as `opencode`, `gemini`, or similar) as subprocesses on your local machine.
 
 ```yaml
-workers:
-  - id: my-worker
-    runner: cli
-    model: openai/gpt-4o
+runners:
+  - id: opencode
+    type: cli
+    provider: opencode
     config:
-      command: opencode       # CLI binary on your PATH
+      binary: opencode        # CLI binary on your PATH
       model_flag: "--model"   # flag used to pass the model
-      working_dir: /my/repo
+
+agents:
+  - id: my-agent
+    runner: opencode          # references the runner above
+    model: opencode-go/deepseek-v4-pro
+    config:
+      working_dir: /my/repo   # where the agent runs
 ```
 
 **Important:** Apiary never handles, stores, intercepts, or transmits authentication credentials of any kind. CLI tools manage their own authentication independently. The `cli` runner simply invokes the binary — it has no knowledge of how the tool authenticates.
@@ -166,7 +199,9 @@ the diagram shows. The extension source lives under
 
 ## Status
 
-> Pre-alpha. Implementation in progress.
+> **Public beta.** Apiary works end-to-end and is in active use. Config and adapter
+> APIs may still change before `v1.0` — pin a version for anything you depend on, and
+> [file issues](https://github.com/orlandoburli/apiary/issues) for anything rough.
 
 ## License
 
