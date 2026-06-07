@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/config"
@@ -10,6 +12,11 @@ import (
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
 )
+
+// ErrTaskNotFound is returned by DeleteTask when no task, binding, or workflow
+// instance resolves the given reference. The IPC handler maps it to HTTP 404 so
+// the CLI can distinguish "nothing to delete" from a real server-side failure.
+var ErrTaskNotFound = errors.New("task not found")
 
 // InstanceSummary is one row in the `apiary instances` list.
 type InstanceSummary struct {
@@ -314,47 +321,29 @@ func stepDuration(s db.StepRun, now time.Time) string {
 	return humanDuration(end.Sub(*s.StartedAt))
 }
 
-// DeleteTask removes a task by its internal task ID or by source reference (source:item).
-// It cancels any running execution, clears tracking state, and deletes all associated
-// workflow instances, steps, and logs from the database.
+// DeleteTask permanently removes a task and everything attached to it. The
+// reference may be (1) a source:item pair (e.g. "github:1956"), (2) the canonical
+// InternalTask id, or (3) a bare source-item id / dashboard DrillKey (e.g. a
+// GitHub issue number "1956", which is the workflow_instances.cell_id). It cancels
+// any in-flight run, clears tracking state, and deletes the workflow instances,
+// step runs, task logs, source bindings, and the internal_tasks row — so the same
+// source item rebinds to a fresh task on the next dispatch cycle. Returns
+// ErrTaskNotFound (wrapped) when the reference resolves to nothing.
 func (d *Dispatcher) DeleteTask(ctx context.Context, taskRef string) error {
 	if d.db == nil {
 		return nil
 	}
 
-	// Resolve the task ID from the reference. If taskRef contains ":", it's source:item.
-	var taskID string
-	instances, err := d.db.ListWorkflowInstances(ctx, 10000)
+	taskID, cellID, err := d.resolveTaskRef(ctx, taskRef)
 	if err != nil {
-		return fmt.Errorf("list instances: %w", err)
+		return err
 	}
 
-	// Find matching instances by task ID or source reference.
-	var instancesToDelete []string
-	var cellID string
-	for _, inst := range instances {
-		// Check if this instance matches our task reference.
-		if inst.ID == taskRef {
-			instancesToDelete = append(instancesToDelete, inst.ID)
-			taskID = inst.ID
-			cellID = inst.CellID
-		} else if taskRef != "" && inst.WorkflowID != "" {
-			// Could be source:item reference, would need to check bindings.
-			// For now, match by instance ID (task ID stored in workflow instance).
-		}
-	}
-
-	if len(instancesToDelete) == 0 {
-		return fmt.Errorf("task not found: %s", taskRef)
-	}
-
-	// Cancel any running execution.
+	// Cancel any in-flight run and free its slot, keyed by cell id.
 	if val, ok := d.runCancel.LoadAndDelete(cellID); ok {
 		cancel := val.(context.CancelFunc)
 		cancel()
 	}
-
-	// Remove from in-flight tracking.
 	d.inFlight.Delete(cellID)
 	d.activeRuns.Range(func(key, val any) bool {
 		run := val.(model.ActiveRun)
@@ -364,14 +353,124 @@ func (d *Dispatcher) DeleteTask(ctx context.Context, taskRef string) error {
 		return true
 	})
 
-	// Delete workflow instances and their step runs.
-	// The database cascade deletes should handle step_runs (FK to workflow_instances),
-	// but we may need explicit cleanup for task_logs, etc.
-	if err := d.db.DeleteWorkflowInstances(ctx, instancesToDelete); err != nil {
-		aplog.Error("delete task %s: %v", taskID, err)
+	// Workflow instances (and their step runs) attached to the task or its cell.
+	instanceIDs, err := d.instanceIDsForDelete(ctx, taskID, cellID)
+	if err != nil {
+		aplog.Error("delete task %s: list instances: %v", taskRef, err)
+		return err
+	}
+	if len(instanceIDs) > 0 {
+		if err := d.db.DeleteWorkflowInstances(ctx, instanceIDs); err != nil {
+			aplog.Error("delete task %s: instances: %v", taskRef, err)
+			return err
+		}
+	}
+
+	// Task logs and executions are keyed by cell id.
+	if err := d.db.ClearTaskLogs(ctx, cellID); err != nil {
+		aplog.Error("delete task %s: logs: %v", taskRef, err)
 		return err
 	}
 
-	aplog.Info("deleted task %s (cell %s): %d instance(s)", taskID, cellID, len(instancesToDelete))
+	// Bindings and the canonical task row. Skipped for orphaned cells (taskID == "").
+	if taskID != "" {
+		if err := d.db.SourceBindings().DeleteBindingsByTask(ctx, taskID); err != nil {
+			aplog.Error("delete task %s: bindings: %v", taskRef, err)
+			return err
+		}
+		if err := d.db.InternalTasks().DeleteTask(ctx, taskID); err != nil {
+			aplog.Error("delete task %s: task row: %v", taskRef, err)
+			return err
+		}
+	}
+
+	aplog.Info("deleted task %s (task=%q cell=%q): %d instance(s)", taskRef, taskID, cellID, len(instanceIDs))
 	return nil
+}
+
+// resolveTaskRef maps a user-supplied task reference to its canonical task id and
+// cell id. See DeleteTask for the accepted reference forms. taskID is empty only
+// for an orphaned cell (workflow instances whose task row is already gone); cellID
+// is always set on success. Returns a wrapped ErrTaskNotFound when nothing matches.
+func (d *Dispatcher) resolveTaskRef(ctx context.Context, taskRef string) (taskID, cellID string, err error) {
+	bindings := d.db.SourceBindings()
+	tasks := d.db.InternalTasks()
+
+	// 1. Explicit source:item reference.
+	if src, item, ok := strings.Cut(taskRef, ":"); ok && src != "" && item != "" {
+		b, err := bindings.GetBindingBySourceItem(ctx, src, item)
+		if err != nil {
+			return "", "", err
+		}
+		if b != nil {
+			return b.TaskID, b.SourceItemID, nil
+		}
+		return "", "", fmt.Errorf("%w: %s", ErrTaskNotFound, taskRef)
+	}
+
+	// 2. Canonical InternalTask id.
+	if t, err := tasks.GetTask(ctx, taskRef); err != nil {
+		return "", "", err
+	} else if t != nil {
+		return t.ID, d.cellIDForTask(ctx, t.ID), nil
+	}
+
+	// 3. Bare source-item id / DrillKey (e.g. a GitHub issue number).
+	if b, err := bindings.GetBindingBySourceItemID(ctx, taskRef); err != nil {
+		return "", "", err
+	} else if b != nil {
+		return b.TaskID, b.SourceItemID, nil
+	}
+
+	// 4. Orphaned cell: workflow instances keyed by this cell id with no task row.
+	if inst, err := d.db.GetLatestInstanceByCell(ctx, taskRef); err != nil {
+		return "", "", err
+	} else if inst != nil {
+		return inst.TaskID, taskRef, nil
+	}
+
+	return "", "", fmt.Errorf("%w: %s", ErrTaskNotFound, taskRef)
+}
+
+// cellIDForTask returns the cell id a task's legacy machinery (instances, logs,
+// executions) is keyed by: the primary binding's source-item id when bound,
+// otherwise the task's own id (the engine uses it as the cell id for spawned,
+// binding-less tasks). Mirrors the dashboard's drillKeyFor.
+func (d *Dispatcher) cellIDForTask(ctx context.Context, taskID string) string {
+	if bs, err := d.db.ListBindingsByTask(ctx, taskID); err == nil && len(bs) > 0 {
+		return bs[0].SourceItemID
+	}
+	return taskID
+}
+
+// instanceIDsForDelete collects the workflow-instance ids to delete for a task,
+// matching both by task id and by cell id (the latter catches orphaned instances
+// whose task row is gone, and legacy instances written before task_id existed).
+func (d *Dispatcher) instanceIDsForDelete(ctx context.Context, taskID, cellID string) ([]string, error) {
+	seen := make(map[string]bool)
+	var ids []string
+	add := func(insts []db.WorkflowInstance) {
+		for _, inst := range insts {
+			if !seen[inst.ID] {
+				seen[inst.ID] = true
+				ids = append(ids, inst.ID)
+			}
+		}
+	}
+
+	if taskID != "" {
+		byTask, err := d.db.ListWorkflowInstancesByTask(ctx, taskID)
+		if err != nil {
+			return nil, err
+		}
+		add(byTask)
+	}
+
+	byCell, err := d.db.ListWorkflowInstancesByCell(ctx, cellID)
+	if err != nil {
+		return nil, err
+	}
+	add(byCell)
+
+	return ids, nil
 }
