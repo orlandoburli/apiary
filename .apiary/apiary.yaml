@@ -173,8 +173,7 @@ workflows:
       priority: 100
       match:
         source: project-erp
-        exclude_label_prefix: "workflow:"
-        exclude_labels: [agent:staff, agent:po, agent:reviewer, agent:qa]
+        exclude_label_prefix: "agent:"
 
     steps:
       # 1) Classify. The investigator emits a structured `agent` decision, which
