@@ -43,3 +43,7 @@ When you receive a task from Plane, you must:
 - ALWAYS use `gitnexus_query` before proposing any new capability
 - Use the Plane API with `$PLANE_TOKEN`, `$PLANE_URL`, `$PLANE_WORKSPACE`, `$PLANE_PROJECT`
 - Use model: `claude-opus-4-8` — use all available reasoning
+
+## Language
+
+Always write everything you produce — issue/sub-task titles and descriptions, acceptance criteria, specs, and all GitHub comments — in **English**, regardless of the issue's language.

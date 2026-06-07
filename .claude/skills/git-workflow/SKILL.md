@@ -91,14 +91,15 @@ cd <worktree>
 gitnexus analyze
 git diff --quiet AGENTS.md CLAUDE.md || \
   git add AGENTS.md CLAUDE.md && \
-  git commit -m "chore: atualiza AGENTS.md e CLAUDE.md (gitnexus reindex)"
+  git commit -m "chore: update AGENTS.md and CLAUDE.md (gitnexus reindex)"
 ```
 
 Isso garante que cada PR traz os arquivos de contexto atualizados. Após o merge, o passo 9 usa `--skip-agents-md` porque o PR já atualizou os arquivos.
 
 ## PR requirements
 
-- Title: concise summary in Portuguese.
+- **Language: write ALL commit messages, PR titles, and PR descriptions in English.** This is mandatory and non-negotiable — the repo's history and PRs are English-only. Never write git commit messages or PR text in Portuguese.
+- Title: concise summary in English.
 - Body: `## Summary` with bullet points + `## Test plan`.
 - Body MUST include `Closes #<issue>` to auto-link and auto-close the issue on merge.
 - CI required status check: **CI** (gate job that aggregates all per-area checks, including E2E).
@@ -106,4 +107,4 @@ Isso garante que cada PR traz os arquivos de contexto atualizados. Após o merge
 ## Naming conventions
 
 - Branches: `feat/`, `fix/`, `refactor/`, `chore/`, `docs/` prefixes.
-- Commits: conventional commits in Portuguese (e.g. `feat:`, `fix:`, `ci:`).
+- Commits: conventional commits **in English** (e.g. `feat:`, `fix:`, `ci:`).
