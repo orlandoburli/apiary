@@ -323,20 +323,21 @@ func (c *Client) GetTaskTitle(ctx context.Context, id string) (string, error) {
 }
 
 // ReconcileOrphanWorkflowInstances marks any instance left in the 'running'
-// state by a previously-killed process as 'interrupted'. Returns the count.
-// approval_waiting instances are intentionally left untouched — their condition
-// is re-evaluated against the live task on the next poll.
+// state by a previously-killed process as 'interrupted'. A fresh daemon process
+// owns no in-flight workflow runs, so rows left 'running' are orphans that would
+// otherwise cause tasks to appear stuck. Marking them interrupted allows the next
+// poll to dispatch fresh instances. approval_waiting instances are deliberately
+// left untouched — they are rehydrated separately via rehydrateParkedApprovals.
 func (c *Client) ReconcileOrphanWorkflowInstances(ctx context.Context) (int64, error) {
 	res, err := c.db.ExecContext(ctx, `
 		UPDATE workflow_instances
-		SET state = 'interrupted', updated_at = ?
-		WHERE state = 'running'
-	`, time.Now())
+		SET state = ?, updated_at = ?
+		WHERE state = ?
+	`, InstanceStateInterrupted, time.Now(), InstanceStateRunning)
 	if err != nil {
 		return 0, err
 	}
-	n, _ := res.RowsAffected()
-	return n, nil
+	return res.RowsAffected()
 }
 
 // CreateStepRun inserts a new step run row.
