@@ -68,8 +68,11 @@ func (e *Engine) checkCIWaitStep(
 
 	status, err := e.ciChecker(ctx, sourceID, sourceItemID)
 	if err != nil {
-		// Transient error; treat as not-yet-resolved and retry next cycle.
-		aplog.Debug("wait_for step %q: CI check failed (will retry): %v", step.ID, err)
+		// Surface at WARN (not DEBUG): a persistent error here — e.g. a token
+		// missing 'Pull requests: Read' (403) — would otherwise masquerade as an
+		// endless "pending" with no visible cause. Still retried next cycle so it
+		// self-heals once the underlying problem (token, transient outage) is fixed.
+		aplog.Warn("wait_for step %q: CI check failed (will retry next cycle): %v", step.ID, err)
 		return StepResult{Pending: true}, nil
 	}
 
