@@ -310,10 +310,10 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 	// in 'registered' forever (the approval_waiting restart gap).
 	d.rehydrateParkedApprovals(ctx)
 
-	// Same for instances parked at a poll step (e.g. waiting for CI): the engine's
+	// Same for instances parked at a wait_for step (e.g. waiting for CI): the engine's
 	// in-memory parked set is empty after a restart, so without this a poll-waiting
 	// instance would never be re-checked and its task would be stranded.
-	d.rehydrateParkedPolls(ctx)
+	d.rehydrateParkedWaits(ctx)
 
 	for _, sc := range d.cfg.Sources {
 		sc := sc
@@ -535,7 +535,7 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, cellID string) error {
 		} else {
 			for _, inst := range insts {
 				switch inst.State {
-				case db.InstanceStateRunning, db.InstanceStateApprovalWaiting, db.InstanceStatePollWaiting, db.InstanceStatePending:
+				case db.InstanceStateRunning, db.InstanceStateApprovalWaiting, db.InstanceStateWaiting, db.InstanceStatePending:
 					if err := d.db.UpdateWorkflowInstanceState(ctx, inst.ID, db.InstanceStateInterrupted); err != nil {
 						aplog.Error("force-restart %s: interrupt instance %s: %v", cellID, inst.ID, err)
 					} else {
@@ -924,9 +924,9 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 	// on each poll cycle (resume/abort/timeout) before fetching new work.
 	d.checkApprovals(ctx)
 
-	// Re-check any workflows parked at poll steps (e.g. waiting for CI) so they
+	// Re-check any workflows parked at wait_for steps (e.g. waiting for CI) so they
 	// advance, fail, or keep waiting based on live status.
-	d.checkPolls(ctx)
+	d.checkWaits(ctx)
 
 	aplog.Debug("polling source %s (since %s)", sc.ID, since.Format(time.RFC3339))
 	cells, err := adapter.Poll(ctx, since)

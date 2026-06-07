@@ -11,7 +11,7 @@ const (
 	InstanceStatePending         = "pending"
 	InstanceStateRunning         = "running"
 	InstanceStateApprovalWaiting = "approval_waiting"
-	InstanceStatePollWaiting     = "poll_waiting"
+	InstanceStateWaiting         = "waiting"
 	InstanceStateInterrupted     = "interrupted"
 	InstanceStateDone            = "done"
 	InstanceStateFailed          = "failed"
@@ -149,7 +149,7 @@ func (c *Client) CountConsecutiveFailedInstances(ctx context.Context, taskID, wo
 }
 
 // HasActiveInstanceForRoute reports whether the task already has a non-terminal
-// instance for the given workflow — running, approval_waiting, or poll_waiting.
+// instance for the given workflow — running, approval_waiting, or waiting.
 // The dispatcher uses it as a source-agnostic in-flight guard: it stops a later
 // poll from dispatching a duplicate while the workflow runs or, crucially, waits
 // at an approval or poll step (where the in-memory inFlight marker has already
@@ -161,7 +161,7 @@ func (c *Client) HasActiveInstanceForRoute(ctx context.Context, taskID, workflow
 	err := c.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM workflow_instances
 		WHERE task_id = ? AND workflow_id = ? AND state IN (?, ?, ?)
-	`, taskID, workflowID, InstanceStateRunning, InstanceStateApprovalWaiting, InstanceStatePollWaiting).Scan(&n)
+	`, taskID, workflowID, InstanceStateRunning, InstanceStateApprovalWaiting, InstanceStateWaiting).Scan(&n)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -327,9 +327,9 @@ func (c *Client) GetTaskTitle(ctx context.Context, id string) (string, error) {
 // state by a previously-killed process as 'interrupted'. A fresh daemon process
 // owns no in-flight workflow runs, so rows left 'running' are orphans that would
 // otherwise cause tasks to appear stuck. Marking them interrupted allows the next
-// poll to dispatch fresh instances. approval_waiting and poll_waiting instances
+// poll to dispatch fresh instances. approval_waiting and waiting instances
 // are deliberately left untouched (the WHERE only matches 'running') — they are
-// rehydrated separately via rehydrateParkedApprovals / rehydrateParkedPolls.
+// rehydrated separately via rehydrateParkedApprovals / rehydrateParkedWaits.
 func (c *Client) ReconcileOrphanWorkflowInstances(ctx context.Context) (int64, error) {
 	res, err := c.db.ExecContext(ctx, `
 		UPDATE workflow_instances

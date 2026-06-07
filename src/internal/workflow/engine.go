@@ -73,9 +73,9 @@ type StepResult struct {
 	Output           string
 	StructuredOutput map[string]any
 	Summary          string
-	// Pending is set only by poll steps to signal "no terminal result yet —
+	// Pending is set only by wait_for steps to signal "no terminal result yet —
 	// park the instance and re-check on a later poll cycle" (as opposed to a
-	// pass or a fail). The scheduler suspends the run at the poll step instead
+	// pass or a fail). The scheduler suspends the run at the wait_for step instead
 	// of marking it passed/failed. Ignored for all other step types.
 	Pending bool
 	// PublishPayload is the APIARY_PUBLISH text the agent emitted, if any. The
@@ -112,7 +112,7 @@ type SideEffects interface {
 // runs, threads workflow memory between steps, and applies side effects. In
 // Phase 2 it executes agent steps sequentially in declaration order (single-step
 // and linear chains); the DAG executor with splits/foreach arrives in Phase 3.
-// CIStatusChecker is called by poll steps to check the current CI status of a PR/branch.
+// CIStatusChecker is called by wait_for steps to check the current CI status of a PR/branch.
 // It returns a CIStatus or an error if the check fails (transient or permanent).
 type CIStatusChecker func(ctx context.Context, sourceID, sourceItemID string) (source.CIStatus, error)
 
@@ -155,7 +155,7 @@ func WithSpawner(s WorkflowSpawner) Option { return func(e *Engine) { e.spawner 
 // outstanding-workflow counter and apply the top-level tasks: hook.
 func WithTaskTracker(t TaskTracker) Option { return func(e *Engine) { e.tracker = t } }
 
-// WithCIStatusChecker sets the CI status checker used by poll steps.
+// WithCIStatusChecker sets the CI status checker used by wait_for steps.
 func WithCIStatusChecker(checker CIStatusChecker) Option { return func(e *Engine) { e.ciChecker = checker } }
 
 // NewEngine builds an Engine. cfg, store, and exec are required.
@@ -260,13 +260,13 @@ func sourceItemView(task model.InternalTask, bindings []model.SourceBinding) mod
 // instance completed successfully (false for failed or waiting).
 func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool {
 	if outcome == outcomeWaiting {
-		// A run suspends at either an approval step or a poll step; persist the
+		// A run suspends at either an approval step or a wait_for step; persist the
 		// matching waiting state so the right rehydration path picks it up after a
-		// restart (approval_waiting → rehydrateParkedApprovals, poll_waiting →
-		// rehydrateParkedPolls).
+		// restart (approval_waiting → rehydrateParkedApprovals, waiting →
+		// rehydrateParkedWaits).
 		waitState := db.InstanceStateApprovalWaiting
-		if r.byID[r.waitingStep].StepType() == config.StepTypePoll {
-			waitState = db.InstanceStatePollWaiting
+		if r.byID[r.waitingStep].StepType() == config.StepTypeWaitFor {
+			waitState = db.InstanceStateWaiting
 		}
 		_ = e.store.UpdateWorkflowInstanceState(ctx, r.instID, waitState)
 		e.mu.Lock()

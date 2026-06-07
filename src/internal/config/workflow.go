@@ -9,7 +9,7 @@ const (
 	StepTypeApproval = "approval"
 	StepTypeForeach  = "foreach"
 	StepTypeWorkflow = "workflow"
-	StepTypePoll     = "poll"
+	StepTypeWaitFor  = "wait_for"
 	// StepTypeParallel is emitted by the v2 lowering pass for `parallel:` steps.
 	// Children run concurrently (§8e); the step's outcome = the join policy.
 	StepTypeParallel = "parallel"
@@ -145,9 +145,10 @@ type StepConfig struct {
 	AbortOn  *ApprovalTrigger `yaml:"abort_on,omitempty"`
 	Timeout  string           `yaml:"timeout,omitempty"`
 
-	// ── poll step ─────────────────────────────────────────────────
-	// PollConfig holds configuration for polling-based steps (e.g., wait for CI).
-	PollConfig *PollConfig `yaml:"poll,omitempty"`
+	// ── wait_for step ─────────────────────────────────────────────
+	// WaitFor holds configuration for a wait_for step (e.g., wait for CI). The
+	// step suspends the workflow until the awaited condition resolves.
+	WaitFor *WaitForConfig `yaml:"wait_for,omitempty"`
 
 	// ── foreach step ──────────────────────────────────────────────
 	Items       string      `yaml:"items,omitempty"`
@@ -274,9 +275,10 @@ func (t ApprovalTrigger) IsEmpty() bool {
 	return t.CommentContains == "" && t.LabelAdded == "" && t.StateChanged == ""
 }
 
-// PollConfig configures a poll step that actively checks the CI status or other
-// external state at regular intervals until a condition is met or a timeout occurs.
-type PollConfig struct {
+// WaitForConfig configures a wait_for step that suspends the workflow until an
+// external condition (e.g. CI status) resolves, re-checking each poll cycle until
+// the condition is met or a timeout occurs.
+type WaitForConfig struct {
 	// Kind specifies what to poll: "ci" for GitHub/GitLab CI status.
 	Kind string `yaml:"kind,omitempty"`
 	// CheckInterval is how often to query the status (e.g., "30s"). Defaults to 1m.
@@ -291,7 +293,7 @@ type PollConfig struct {
 }
 
 // ParsedCheckInterval returns the check interval duration, defaulting to 1 minute.
-func (p *PollConfig) ParsedCheckInterval() time.Duration {
+func (p *WaitForConfig) ParsedCheckInterval() time.Duration {
 	if p == nil || p.CheckInterval == "" {
 		return time.Minute
 	}
@@ -303,7 +305,7 @@ func (p *PollConfig) ParsedCheckInterval() time.Duration {
 }
 
 // ParsedMaxDuration returns the maximum polling duration, defaulting to 2 hours.
-func (p *PollConfig) ParsedMaxDuration() time.Duration {
+func (p *WaitForConfig) ParsedMaxDuration() time.Duration {
 	if p == nil || p.MaxDuration == "" {
 		return 2 * time.Hour
 	}
@@ -315,7 +317,7 @@ func (p *PollConfig) ParsedMaxDuration() time.Duration {
 }
 
 // ShouldFailIfNotPassed returns whether to reject the step on non-green CI, defaulting to true.
-func (p *PollConfig) ShouldFailIfNotPassed() bool {
+func (p *WaitForConfig) ShouldFailIfNotPassed() bool {
 	if p == nil || p.FailIfNotPassed == nil {
 		return true
 	}

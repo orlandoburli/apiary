@@ -27,7 +27,7 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 				workflow.WithTaskTracker(dbTaskTracker{db: d.db}),
 			)
 		}
-		// Wire up CI status polling for poll steps.
+		// Wire up CI status polling for wait_for steps.
 		opts = append(opts, workflow.WithCIStatusChecker(func(ctx context.Context, sourceID, sourceItemID string) (source.CIStatus, error) {
 			adapter, ok := d.sources[sourceID]
 			if !ok {
@@ -97,21 +97,21 @@ func (d *Dispatcher) rehydrateParkedApprovals(ctx context.Context) {
 	}
 }
 
-// rehydrateParkedPolls reconstructs workflow instances persisted in the
-// poll_waiting state and re-registers them in the engine's in-memory parked set,
-// so the polling loop's poll check (checkPolls → CheckParkedPolls) re-checks them
+// rehydrateParkedWaits reconstructs workflow instances persisted in the
+// waiting state and re-registers them in the engine's in-memory parked set,
+// so the polling loop's poll check (checkWaits → CheckParkedWaits) re-checks them
 // after a daemon restart. It mirrors rehydrateParkedApprovals: the parked set
 // lives only in memory and is empty on a fresh process, and
-// ReconcileOrphanWorkflowInstances deliberately leaves poll_waiting rows untouched
+// ReconcileOrphanWorkflowInstances deliberately leaves waiting rows untouched
 // (interrupting them would lose the wait). Called once at startup, after the orphan
 // reconcile and before the poll loops start.
-func (d *Dispatcher) rehydrateParkedPolls(ctx context.Context) {
+func (d *Dispatcher) rehydrateParkedWaits(ctx context.Context) {
 	if d.db == nil {
 		return
 	}
-	instances, err := d.db.ListWorkflowInstancesByState(ctx, db.InstanceStatePollWaiting)
+	instances, err := d.db.ListWorkflowInstancesByState(ctx, db.InstanceStateWaiting)
 	if err != nil {
-		aplog.Warn("rehydrate parked polls: list instances: %v", err)
+		aplog.Warn("rehydrate parked waits: list instances: %v", err)
 		return
 	}
 	if len(instances) == 0 {
@@ -124,23 +124,23 @@ func (d *Dispatcher) rehydrateParkedPolls(ctx context.Context) {
 		inst := instances[i]
 		wf, ok := d.workflowByID(inst.WorkflowID)
 		if !ok {
-			aplog.Warn("rehydrate parked poll %s: workflow %q no longer defined — leaving parked", inst.ID, inst.WorkflowID)
+			aplog.Warn("rehydrate parked wait %s: workflow %q no longer defined — leaving parked", inst.ID, inst.WorkflowID)
 			continue
 		}
 		steps, err := d.db.ListStepRuns(ctx, inst.ID)
 		if err != nil {
-			aplog.Warn("rehydrate parked poll %s: list step runs: %v", inst.ID, err)
+			aplog.Warn("rehydrate parked wait %s: list step runs: %v", inst.ID, err)
 			continue
 		}
 		task := d.taskForInstance(ctx, &inst)
-		if err := engine.RehydratePoll(ctx, inst.ID, wf, task, steps); err != nil {
-			aplog.Warn("rehydrate parked poll %s: %v", inst.ID, err)
+		if err := engine.RehydrateWait(ctx, inst.ID, wf, task, steps); err != nil {
+			aplog.Warn("rehydrate parked wait %s: %v", inst.ID, err)
 			continue
 		}
 		rehydrated++
 	}
 	if rehydrated > 0 {
-		aplog.Info("rehydrated %d parked poll instance(s) from a previous run", rehydrated)
+		aplog.Info("rehydrated %d parked wait instance(s) from a previous run", rehydrated)
 	}
 }
 
@@ -236,14 +236,14 @@ func (d *Dispatcher) checkApprovals(ctx context.Context) {
 	})
 }
 
-// checkPolls drives the engine's parked-poll re-checks (CI status) once per poll
+// checkWaits drives the engine's parked-poll re-checks (CI status) once per poll
 // cycle. The engine re-checks via its wired CIStatusChecker, so this needs no
 // per-call poller argument. A nil DB/engine (no run-history) disables it.
-func (d *Dispatcher) checkPolls(ctx context.Context) {
+func (d *Dispatcher) checkWaits(ctx context.Context) {
 	if d.db == nil || d.engine == nil {
 		return
 	}
-	d.engine.CheckParkedPolls(ctx)
+	d.engine.CheckParkedWaits(ctx)
 }
 
 // wfStepExecutor adapts the dispatcher's runner machinery to the workflow

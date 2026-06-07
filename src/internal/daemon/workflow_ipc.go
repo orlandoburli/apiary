@@ -301,7 +301,7 @@ func instanceSummary(v db.WorkflowInstanceView, now time.Time) InstanceSummary {
 // interrupted/pending where no meaningful span exists.
 func instanceDuration(inst db.WorkflowInstance, now time.Time) string {
 	switch inst.State {
-	case db.InstanceStateRunning, db.InstanceStateApprovalWaiting, db.InstanceStatePollWaiting:
+	case db.InstanceStateRunning, db.InstanceStateApprovalWaiting, db.InstanceStateWaiting:
 		return humanDuration(now.Sub(inst.CreatedAt))
 	case db.InstanceStateDone, db.InstanceStateFailed:
 		return humanDuration(inst.UpdatedAt.Sub(inst.CreatedAt))
