@@ -320,6 +320,74 @@ func TestAgentRelatedFilesFlow(t *testing.T) {
 	}
 }
 
+func TestAgentMarkdownViewerToggle(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	soulPath := filepath.Join("souls", "engineer.md")
+	if err := os.MkdirAll(filepath.Dir(soulPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "# Engineer\n\nImplements tasks with **care**.\n\n- impact analysis\n- tests\n"
+	if err := os.WriteFile(soulPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newTestApp(90, 20)
+	a.model.activeTab = 2 // Agents
+	a.model.agentsTab.Agents = []AgentStatus{
+		{ID: "engineer", Status: "active", MaxWorkers: 2, SoulFile: soulPath},
+	}
+	a.model.agentsTab.Detail = &a.model.agentsTab.Agents[0]
+	a.model.agentsTab.View = AgentViewDetail
+
+	send := func(key string) { a.handleKeyMsg(keyPress(key)) }
+
+	// Open the soul file: defaults to rendered markdown.
+	send("f")
+	send("enter")
+	if a.model.agentsTab.View != AgentViewFileContent {
+		t.Fatalf("enter → view %d, want AgentViewFileContent", a.model.agentsTab.View)
+	}
+	if a.model.agentsTab.FileRaw {
+		t.Fatal("markdown should default to rendered, not raw")
+	}
+	rendered := a.agentFileLines()
+	// Rendered markdown keeps the text but reflows it (margins, bullet glyphs,
+	// styling), so it must differ from a plain wrap of the same source. The exact
+	// glamour styling is terminal-dependent, so we assert the difference and the
+	// preserved text rather than specific markers.
+	joined := stripANSI(strings.Join(rendered, "\n"))
+	if !strings.Contains(joined, "Engineer") || !strings.Contains(joined, "impact analysis") {
+		t.Errorf("rendered markdown lost its text; got:\n%s", joined)
+	}
+	if strings.Join(rendered, "\n") == strings.Join(wrapPlain(body, a.model.width-2), "\n") {
+		t.Error("rendered markdown should differ from plain wrapping")
+	}
+	assertFramed(t, a.renderAgentsTab(14), 90)
+
+	// t toggles to raw: the source text (with the '#' marker) is shown verbatim,
+	// matching plain wrapping, and the title is flagged.
+	send("t")
+	if !a.model.agentsTab.FileRaw {
+		t.Fatal("t did not toggle to raw mode")
+	}
+	raw := a.agentFileLines()
+	wantRaw := wrapPlain(body, a.model.width-2)
+	if strings.Join(raw, "\n") != strings.Join(wantRaw, "\n") {
+		t.Errorf("raw mode should equal plain wrapping;\ngot:  %q\nwant: %q", raw, wantRaw)
+	}
+	if title := stripANSI(a.renderAgentsTab(14)); !strings.Contains(title, "(raw)") {
+		t.Error("raw mode should flag the title with (raw)")
+	}
+	assertFramed(t, a.renderAgentsTab(14), 90)
+
+	// t toggles back to rendered.
+	send("t")
+	if a.model.agentsTab.FileRaw {
+		t.Fatal("second t did not toggle back to rendered")
+	}
+}
+
 func TestTaskNumberAndOpenURL(t *testing.T) {
 	now := time.Now()
 	a := newTestApp(100, 24)
