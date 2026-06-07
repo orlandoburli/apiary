@@ -21,9 +21,11 @@ func init() {
 // Compile-time checks: the GitHub adapter supports the optional source
 // capabilities used by the dispatcher and the workflow engine.
 var (
-	_ source.StateSetter = (*Adapter)(nil)
-	_ source.LabelAdder  = (*Adapter)(nil)
-	_ source.TaskPoller  = (*Adapter)(nil)
+	_ source.StateSetter      = (*Adapter)(nil)
+	_ source.LabelAdder       = (*Adapter)(nil)
+	_ source.LabelRemover     = (*Adapter)(nil)
+	_ source.TaskPoller       = (*Adapter)(nil)
+	_ source.CIStatusPoller   = (*Adapter)(nil)
 )
 
 type Adapter struct {
@@ -266,6 +268,114 @@ func (a *Adapter) RemoveLabels(ctx context.Context, cell model.SourceItem, names
 		}
 	}
 	return nil
+}
+
+// PollCIStatus fetches the CI status of a PR/issue from GitHub. It queries the
+// combined status and check runs for the PR and synthesizes an overall status.
+// Implements source.CIStatusPoller.
+func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CIStatus, error) {
+	// cellID is the issue number. We need to find the associated PR to get the commit SHA.
+	// For GitHub, issues and PRs share the same number space, so we can use the same endpoint.
+
+	// First, get the PR to find the head commit SHA.
+	prPath := fmt.Sprintf("/repos/%s/%s/pulls/%s", a.owner, a.repo, cellID)
+	prBody, err := a.client.get(ctx, prPath)
+	if err != nil {
+		// If it's not a PR, try to find an associated PR for this issue.
+		// This is a fallback for issues that might be linked to a PR.
+		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: fetching PR %s: %w", cellID, err)
+	}
+
+	var pr pullRequest
+	if err := json.Unmarshal(prBody, &pr); err != nil {
+		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: decoding PR %s: %w", cellID, err)
+	}
+
+	headSHA := pr.Head.SHA
+	if headSHA == "" {
+		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: PR %s has no head SHA", cellID)
+	}
+
+	// Get the combined status for this commit.
+	statusPath := fmt.Sprintf("/repos/%s/%s/commits/%s/status", a.owner, a.repo, headSHA)
+	statusBody, err := a.client.get(ctx, statusPath)
+	if err != nil {
+		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: fetching status for %s: %w", headSHA, err)
+	}
+
+	var commitStatus commitStatus
+	if err := json.Unmarshal(statusBody, &commitStatus); err != nil {
+		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: decoding commit status: %w", err)
+	}
+
+	// Get check runs for more detailed status information.
+	checksPath := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs", a.owner, a.repo, headSHA)
+	checksBody, err := a.client.get(ctx, checksPath)
+	if err != nil {
+		// Check runs might not be available; fall back to status.
+		checksBody = []byte("{}")
+	}
+
+	var checkRuns checkRunsResponse
+	_ = json.Unmarshal(checksBody, &checkRuns)
+
+	// Synthesize status from both sources.
+	overallStatus := "pending"
+	if commitStatus.State != "" {
+		overallStatus = commitStatus.State
+	}
+
+	// Convert GitHub statuses to our normalized form.
+	status := source.CIStatus{
+		Status: normalizeGitHubStatus(overallStatus),
+		URL:    pr.HTMLURL,
+	}
+
+	// Collect check names and statuses.
+	checks := make([]struct {
+		Name   string
+		Status string
+	}, 0)
+
+	// Add checks from check runs.
+	for _, run := range checkRuns.CheckRuns {
+		checks = append(checks, struct {
+			Name   string
+			Status string
+		}{
+			Name:   run.Name,
+			Status: normalizeGitHubStatus(run.Conclusion),
+		})
+	}
+
+	// Add statuses from combined status if not already in check runs.
+	for _, st := range commitStatus.Statuses {
+		checks = append(checks, struct {
+			Name   string
+			Status string
+		}{
+			Name:   st.Context,
+			Status: normalizeGitHubStatus(st.State),
+		})
+	}
+
+	status.Checks = checks
+	return status, nil
+}
+
+func normalizeGitHubStatus(s string) string {
+	switch s {
+	case "success":
+		return "passed"
+	case "failure", "error":
+		return "failed"
+	case "pending":
+		return "pending"
+	case "skipped":
+		return "skipped"
+	default:
+		return "unknown"
+	}
 }
 
 func (a *Adapter) ensureLabel(ctx context.Context, name string) error {
