@@ -260,6 +260,12 @@ agents:
     # Max concurrency for THIS agent (overrides global settings.concurrency)
     max_workers: 2
 
+    # Rate-limit failover: retry on the next non-paused runner/model when the
+    # primary is rejected by a provider usage limit. See Rate limits & resilience.
+    fallbacks:
+      - {runner: opencode-go, model: opencode-go/deepseek-v4-pro}
+      - {runner: cursor, model: composer-2.5-fast}
+
     # Per-agent route overrides
     match:
       source: my-repo
@@ -278,6 +284,7 @@ agents:
 | `source_email` | no | Git author email (set as `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_EMAIL` in runner env) |
 | `source_name` | no | Git author name (set as `GIT_AUTHOR_NAME`, `GIT_COMMITTER_NAME` in runner env) |
 | `max_workers` | no | Per-agent concurrency cap (default: global `settings.concurrency`) |
+| `fallbacks` | no | Ordered `{runner, model}` chain to fail over to on a provider rate limit. `runner` must be defined; `model` optional. See Rate limits & resilience |
 
 ### `routes`
 
@@ -327,7 +334,28 @@ settings:
   log_level: info          # debug | info | warn | error
   state_lock: true         # Add "in-progress" label on acknowledge
   result_comment: true     # Post agent output as comment
+  max_attempts: 3          # Re-dispatch failure cap per (task, workflow); <=0 disables
 ```
+
+### Rate limits & resilience
+
+Safeguards that stop a saturated provider or a failing task from becoming a
+runaway loop:
+
+- **Failover on rate limits.** When a runner is rejected by a provider usage
+  limit (the Claude CLI emits `rate_limit_event` `status: rejected`), Apiary pauses
+  that runner type until it resets and retries the step on the agent's next
+  `fallbacks` entry — instead of recording the empty "you've hit your limit" run
+  as a success. Pause is keyed by runner type (all Claude agents share one
+  account). `fallbacks` load at startup.
+- **Re-dispatch cap (`settings.max_attempts`, default 3).** After N consecutive
+  *failed* instances for a `(task, workflow)`, the dispatcher stops re-dispatching
+  it (and applies the workflow's `on_fail` if set). Internal backstop independent
+  of source labels — covers workflows with no `on_fail`. Rate-limited runs fail
+  over and don't count; a success resets the count. `<=0` disables.
+- **Non-blocking dispatch.** A busy agent's `max_workers` slot is acquired inside
+  the dispatch goroutine, so a saturated agent never stalls polling/dispatch for
+  other sources or agents.
 
 ## Dashboard
 
