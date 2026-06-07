@@ -257,3 +257,50 @@ func TestStepRun_OrderedByInsertion(t *testing.T) {
 		t.Errorf("unexpected step run order: %+v", runs)
 	}
 }
+
+func TestReconcileOrphanWorkflowInstances_Extended(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+
+	// Create instances in various states: running (orphan), approval_waiting (rehydrated),
+	// pending, done, failed (terminal states not reconciled).
+	now := time.Now()
+	instances := []*WorkflowInstance{
+		{ID: "wf_running", WorkflowID: "w", CellID: "c", State: InstanceStateRunning, CreatedAt: now},
+		{ID: "wf_approval", WorkflowID: "w", CellID: "c", State: InstanceStateApprovalWaiting, CreatedAt: now},
+		{ID: "wf_done", WorkflowID: "w", CellID: "c", State: InstanceStateDone, CreatedAt: now},
+		{ID: "wf_failed", WorkflowID: "w", CellID: "c", State: InstanceStateFailed, CreatedAt: now},
+	}
+	for _, inst := range instances {
+		if err := c.CreateWorkflowInstance(ctx, inst); err != nil {
+			t.Fatalf("create instance: %v", err)
+		}
+	}
+
+	// Reconcile orphaned instances.
+	n, err := c.ReconcileOrphanWorkflowInstances(ctx)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// Should reconcile only 1 instance (running); approval_waiting is rehydrated separately.
+	if n != 1 {
+		t.Fatalf("expected 1 reconciled, got %d", n)
+	}
+
+	// Verify only running was changed to interrupted, others are untouched.
+	for id, expectedState := range map[string]string{
+		"wf_running":   InstanceStateInterrupted,  // running → interrupted
+		"wf_approval":  InstanceStateApprovalWaiting, // approval_waiting (untouched, rehydrated separately)
+		"wf_done":      InstanceStateDone,         // done (unchanged)
+		"wf_failed":    InstanceStateFailed,       // failed (unchanged)
+	} {
+		inst, err := c.GetWorkflowInstance(ctx, id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
+		if inst.State != expectedState {
+			t.Errorf("%s: expected state %q, got %q", id, expectedState, inst.State)
+		}
+	}
+}

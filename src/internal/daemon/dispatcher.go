@@ -291,6 +291,17 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		} else if n > 0 {
 			aplog.Info("reconciled %d orphaned running execution(s) from a previous run", n)
 		}
+
+		// Mark any workflow instances left in the 'running' state as interrupted.
+		// These are orphans from a previously-killed daemon that would otherwise
+		// cause tasks to appear stuck (running for longer than daemon uptime).
+		// Marking them interrupted allows the next poll to dispatch fresh instances.
+		// approval_waiting instances are handled separately via rehydrateParkedApprovals.
+		if n, err := d.db.ReconcileOrphanWorkflowInstances(ctx); err != nil {
+			aplog.Warn("reconcile orphan workflow instances: %v", err)
+		} else if n > 0 {
+			aplog.Info("reconciled %d orphaned running workflow instance(s) from a previous run", n)
+		}
 	}
 
 	// Reconstruct workflow instances parked at an approval step into the engine's
