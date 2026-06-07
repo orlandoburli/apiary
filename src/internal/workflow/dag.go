@@ -54,8 +54,13 @@ type dagRun struct {
 	contrib     map[string]MemoryStep // memory contribution per passed step
 	passedOrder []string              // step ids in the order they passed
 
-	waitingStep string    // id of the approval step currently parked, if any
+	waitingStep string    // id of the approval/poll step currently parked, if any
 	parkedAt    time.Time // when the current approval parked (for timeout)
+
+	// pollDeadline is the absolute time a parked poll step gives up waiting for
+	// CI (set when the poll first parks, preserved across re-checks, cleared once
+	// the poll produces a terminal pass/fail). Zero means "no deadline yet".
+	pollDeadline time.Time
 }
 
 // initDAG builds the in-memory state for a workflow instance's step graph. The
@@ -176,6 +181,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 			r.state[id] = stRunning
 			snap := r.memSteps()
 			contribSnap := r.contribSnapshot()
+			pollDeadline := r.pollDeadline // captured for the poll worker (value copy, safe)
 			inFlight++
 			go func(step config.StepConfig, memSnap []MemoryStep, contribSnap map[string]MemoryStep) {
 				sem <- struct{}{}
@@ -201,7 +207,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 				case config.StepTypeWorkflow:
 					res = e.executeSubWorkflowStep(ctx, r.instID, step, r.task, r.bindings, memSnap, r.depth, r.wf.ID)
 				case config.StepTypePoll:
-					res, _ = e.RunPollStep(ctx, step, r.cell.SourceID, r.cell.ID)
+					res, _ = e.RunPollStep(ctx, step, r.cell.SourceID, r.cell.ID, pollDeadline)
 				default: // StepTypeAgent
 					res = e.runStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, r.wf.Env)
 				}
@@ -262,6 +268,25 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 		}
 
 		res := wr.res
+
+		// Poll step with no terminal result yet: suspend the instance at this step
+		// (releasing the worker) and resume it on a later poll cycle, exactly like
+		// an approval park. Drain any siblings first (poll workflows are sequential
+		// in practice, so this is normally a no-op). The deadline persists across
+		// re-checks via enterPoll so the timeout is measured from the first park.
+		if step.StepType() == config.StepTypePoll && res.Pending {
+			for inFlight > 0 {
+				<-resultCh
+				inFlight--
+			}
+			e.enterPoll(r, step)
+			return outcomeWaiting
+		}
+		// Terminal poll result (pass/fail): clear the deadline so a future loop-back
+		// to this poll (on_reject.restart_from) starts a fresh waiting window.
+		if step.StepType() == config.StepTypePoll {
+			r.pollDeadline = time.Time{}
+		}
 
 		// on_missing_output: fail — declared output schema required structured output.
 		if res.Success && step.OutputSchema != nil &&
@@ -365,6 +390,22 @@ func (e *Engine) enterApproval(ctx context.Context, r *dagRun, step config.StepC
 	aplog.Info("workflow %s: instance %s parked at approval step %q", r.wf.ID, r.instID, step.ID)
 }
 
+// enterPoll parks the run at a poll step: it records the waiting step and, on the
+// first park, sets the absolute deadline after which the poll gives up (from the
+// step's max_duration). Re-parks of the same poll (CI still pending) preserve the
+// original deadline so the timeout is measured from the first wait, not reset each
+// cycle. Unlike an approval, a poll park posts no message — it waits silently.
+func (e *Engine) enterPoll(r *dagRun, step config.StepConfig) {
+	r.state[step.ID] = stWaiting
+	r.waitingStep = step.ID
+	if r.pollDeadline.IsZero() && step.PollConfig != nil {
+		if md := step.PollConfig.ParsedMaxDuration(); md > 0 {
+			r.pollDeadline = e.now().Add(md)
+		}
+	}
+	aplog.Info("workflow %s: instance %s parked at poll step %q", r.wf.ID, r.instID, step.ID)
+}
+
 // resolveApproval applies an approval decision to the parked step so the run can
 // continue: a resume marks it passed, an abort marks it failed.
 func (r *dagRun) resolveApproval(decision ApprovalDecision) {
@@ -387,6 +428,20 @@ func (r *dagRun) resolveApproval(decision ApprovalDecision) {
 func (r *dagRun) firstRunnableApproval() (string, bool) {
 	for _, id := range r.pickAllRunnable() {
 		if r.byID[id].StepType() == config.StepTypeApproval {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// firstRunnablePoll returns the id of the first poll step that is currently
+// runnable, in declaration order. It identifies which poll step a rehydrated
+// instance is parked at: poll steps persist no step run of their own, so after the
+// cached passed steps are restored the waiting poll is simply the next runnable
+// poll. Returns false when none is runnable.
+func (r *dagRun) firstRunnablePoll() (string, bool) {
+	for _, id := range r.pickAllRunnable() {
+		if r.byID[id].StepType() == config.StepTypePoll {
 			return id, true
 		}
 	}

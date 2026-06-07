@@ -86,11 +86,17 @@ type ParkedApproval struct {
 }
 
 // ParkedApprovals returns a snapshot of all instances currently awaiting approval.
+// The parked set is shared with poll-waiting instances, so it filters to runs whose
+// waiting step is an approval — a poll park is resolved by CheckParkedPolls, not by
+// the approval checker.
 func (e *Engine) ParkedApprovals() []ParkedApproval {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := make([]ParkedApproval, 0, len(e.parked))
 	for id, r := range e.parked {
+		if r.byID[r.waitingStep].StepType() != config.StepTypeApproval {
+			continue
+		}
 		out = append(out, ParkedApproval{
 			InstanceID: id,
 			Task:       r.task,

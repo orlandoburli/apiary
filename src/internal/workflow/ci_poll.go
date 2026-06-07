@@ -9,12 +9,19 @@ import (
 	"github.com/orlandoburli/apiary/internal/config"
 )
 
-// RunPollStep executes a poll step, actively querying the external system
-// (e.g., CI status) at regular intervals until success, failure, or timeout.
+// RunPollStep performs ONE check of the external system (e.g. CI status) and
+// returns either a terminal result (pass/fail) or StepResult{Pending: true} when
+// there is no answer yet. It does NOT loop or block: the scheduler parks the
+// instance on a Pending result and calls this again on a later poll cycle, so a
+// long CI wait survives daemon restarts instead of holding a worker for hours.
+//
+// deadline is the absolute time the wait gives up (zero = no deadline). Past the
+// deadline the step returns a terminal failure with ci_status=timeout.
 func (e *Engine) RunPollStep(
 	ctx context.Context,
 	step config.StepConfig,
 	sourceID, sourceItemID string,
+	deadline time.Time,
 ) (StepResult, error) {
 	if step.PollConfig == nil {
 		return StepResult{}, fmt.Errorf("poll step %q missing poll config", step.ID)
@@ -23,17 +30,20 @@ func (e *Engine) RunPollStep(
 	cfg := step.PollConfig
 	switch cfg.Kind {
 	case "", "ci":
-		return e.runCIPollStep(ctx, step, sourceID, sourceItemID)
+		return e.checkCIPollStep(ctx, step, sourceID, sourceItemID, deadline)
 	default:
 		return StepResult{}, fmt.Errorf("poll step %q unsupported kind: %q", step.ID, cfg.Kind)
 	}
 }
 
-// runCIPollStep polls the CI status of a PR/branch until it passes, fails, or times out.
-func (e *Engine) runCIPollStep(
+// checkCIPollStep performs a single CI status check. Transient errors and a
+// still-running CI both yield Pending (retry next cycle); a passed/failed CI is
+// terminal; passing the deadline is a terminal timeout failure.
+func (e *Engine) checkCIPollStep(
 	ctx context.Context,
 	step config.StepConfig,
 	sourceID, sourceItemID string,
+	deadline time.Time,
 ) (StepResult, error) {
 	if e.ciChecker == nil {
 		return StepResult{
@@ -44,84 +54,60 @@ func (e *Engine) runCIPollStep(
 
 	cfg := step.PollConfig
 
-	checkInterval := cfg.ParsedCheckInterval()
-	maxDuration := cfg.ParsedMaxDuration()
-	deadline := time.Now().Add(maxDuration)
+	// Timeout: give up waiting once past the deadline.
+	if !deadline.IsZero() && e.now().After(deadline) {
+		aplog.Info("poll step %q: CI wait timed out after %v", step.ID, cfg.ParsedMaxDuration())
+		return StepResult{
+			Success: false,
+			StructuredOutput: map[string]any{
+				"ci_status": "timeout",
+				"reason":    fmt.Sprintf("CI did not complete within %v", cfg.ParsedMaxDuration()),
+			},
+		}, nil
+	}
 
-	ticker := time.NewTicker(checkInterval)
-	defer ticker.Stop()
+	status, err := e.ciChecker(ctx, sourceID, sourceItemID)
+	if err != nil {
+		// Transient error; treat as not-yet-resolved and retry next cycle.
+		aplog.Debug("poll step %q: CI check failed (will retry): %v", step.ID, err)
+		return StepResult{Pending: true}, nil
+	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return StepResult{
-				Success: false,
-				Err:     ctx.Err(),
-			}, nil
+	switch status.Status {
+	case "passed":
+		return StepResult{
+			Success: true,
+			StructuredOutput: map[string]any{
+				"ci_status": "passed",
+				"url":       status.URL,
+			},
+		}, nil
 
-		case <-time.After(time.Until(deadline)):
-			// Timeout reached.
-			return StepResult{
-				Success: false,
-				StructuredOutput: map[string]any{
-					"ci_status": "timeout",
-					"reason":    fmt.Sprintf("CI did not complete within %v", maxDuration),
-				},
-			}, nil
-
-		case <-ticker.C:
-			// Query current CI status.
-			status, err := e.ciChecker(ctx, sourceID, sourceItemID)
-			if err != nil {
-				// Transient error; retry.
-				aplog.Debug("poll step %q: CI check failed (retrying): %v", step.ID, err)
-				continue
-			}
-
-			switch status.Status {
-			case "passed":
-				// CI is green; step succeeds.
-				return StepResult{
-					Success: true,
-					StructuredOutput: map[string]any{
-						"ci_status": "passed",
-						"url":       status.URL,
-					},
-				}, nil
-
-			case "failed":
-				// CI is red; step fails (or continues based on config).
-				result := StepResult{
-					StructuredOutput: map[string]any{
-						"ci_status": "failed",
-						"url":       status.URL,
-						"checks":    checksToMap(status.Checks),
-					},
-				}
-				if cfg.ShouldFailIfNotPassed() {
-					result.Success = false
-					result.Err = fmt.Errorf("CI checks failed")
-				} else {
-					result.Success = true
-				}
-				return result, nil
-
-			case "pending":
-				// Still running; keep polling.
-				aplog.Debug("poll step %q: CI still pending, retrying in %v", step.ID, checkInterval)
-				continue
-
-			default:
-				// Unknown status.
-				return StepResult{
-					Success: false,
-					StructuredOutput: map[string]any{
-						"ci_status": status.Status,
-						"reason":    "Unknown CI status",
-					},
-				}, nil
-			}
+	case "failed":
+		result := StepResult{
+			StructuredOutput: map[string]any{
+				"ci_status": "failed",
+				"url":       status.URL,
+				"checks":    checksToMap(status.Checks),
+			},
 		}
+		if cfg.ShouldFailIfNotPassed() {
+			result.Success = false
+			result.Err = fmt.Errorf("CI checks failed")
+		} else {
+			result.Success = true
+		}
+		return result, nil
+
+	case "pending":
+		aplog.Debug("poll step %q: CI still pending", step.ID)
+		return StepResult{Pending: true}, nil
+
+	default:
+		// Unknown/empty status: keep waiting rather than failing spuriously. The
+		// deadline guarantees this cannot loop forever.
+		aplog.Debug("poll step %q: CI status %q not yet conclusive", step.ID, status.Status)
+		return StepResult{Pending: true}, nil
 	}
 }
 
