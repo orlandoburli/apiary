@@ -55,10 +55,13 @@ type pullRequest struct {
 	} `json:"head"`
 }
 
-// commitStatus is the combined status of a commit.
+// commitStatus is the combined legacy status of a commit. TotalCount is 0 when no
+// legacy commit statuses exist — in which case State defaults to "pending" and must
+// be ignored (a GitHub-Actions-only repo reports CI via check runs, not statuses).
 type commitStatus struct {
-	State    string `json:"state"`
-	Statuses []struct {
+	State      string `json:"state"`
+	TotalCount int    `json:"total_count"`
+	Statuses   []struct {
 		Context string `json:"context"`
 		State   string `json:"state"`
 		URL     string `json:"target_url"`
