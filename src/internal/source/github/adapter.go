@@ -279,28 +279,45 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 	prPath := fmt.Sprintf("/repos/%s/%s/pulls/%s", a.owner, a.repo, cellID)
 	prBody, err := a.client.get(ctx, prPath)
 
-	// If direct lookup fails, find PR by branch name (agent/task-<issue>).
+	// If direct lookup fails, find PR via issue timeline cross-reference.
 	if err != nil {
-		branchName := fmt.Sprintf("agent/task-%s", cellID)
-		prListPath := fmt.Sprintf("/repos/%s/%s/pulls?state=open&head=%s", a.owner, a.repo, branchName)
-		prListBody, prListErr := a.client.get(ctx, prListPath)
-		if prListErr != nil {
-			return source.CIStatus{Status: "pending"}, nil // No PR found yet; still pending
+		timelinePath := fmt.Sprintf("/repos/%s/%s/issues/%s/timeline", a.owner, a.repo, cellID)
+		timelineBody, timelineErr := a.client.get(ctx, timelinePath)
+		if timelineErr != nil {
+			return source.CIStatus{Status: "pending"}, nil // No timeline; still pending
 		}
 
-		var prList []struct {
-			Number int `json:"number"`
+		var timeline []struct {
+			Event  string `json:"event"`
+			Source struct {
+				Type  string `json:"type"`
+				Issue struct {
+					Number      int `json:"number"`
+					PullRequest struct {
+						URL string `json:"url"`
+					} `json:"pull_request"`
+				} `json:"issue"`
+			} `json:"source"`
 		}
-		if err := json.Unmarshal(prListBody, &prList); err != nil {
+		if err := json.Unmarshal(timelineBody, &timeline); err != nil {
 			return source.CIStatus{Status: "pending"}, nil
 		}
 
-		if len(prList) == 0 {
+		// Find the cross-reference event pointing to a PR
+		var prNumber int
+		for _, event := range timeline {
+			if event.Event == "cross-referenced" && event.Source.Type == "issue" && event.Source.Issue.PullRequest.URL != "" {
+				prNumber = event.Source.Issue.Number
+				break
+			}
+		}
+
+		if prNumber == 0 {
 			return source.CIStatus{Status: "pending"}, nil // No PR found yet; still pending
 		}
 
-		// Use the first PR found (should only be one)
-		prPath = fmt.Sprintf("/repos/%s/%s/pulls/%d", a.owner, a.repo, prList[0].Number)
+		// Fetch the PR details
+		prPath = fmt.Sprintf("/repos/%s/%s/pulls/%d", a.owner, a.repo, prNumber)
 		prBody, err = a.client.get(ctx, prPath)
 		if err != nil {
 			return source.CIStatus{Status: "pending"}, nil
