@@ -256,6 +256,14 @@ agents:
     # Max concurrency for THIS agent (overrides global settings.concurrency)
     max_workers: 2
 
+    # Rate-limit failover: if the primary runner is rejected by a provider
+    # usage limit (e.g. Claude's 5-hour session limit), retry on the next
+    # non-paused fallback runner/model instead of stalling. See Rate limits
+    # & resilience below.
+    fallbacks:
+      - {runner: opencode-go, model: opencode-go/deepseek-v4-pro}
+      - {runner: cursor, model: composer-2.5-fast}
+
     # Per-agent route overrides
     match:
       source: my-repo
@@ -274,6 +282,7 @@ agents:
 | `source_email` | no | Git author email (set as `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_EMAIL` in runner env) |
 | `source_name` | no | Git author name (set as `GIT_AUTHOR_NAME`, `GIT_COMMITTER_NAME` in runner env) |
 | `max_workers` | no | Per-agent concurrency cap (default: global `settings.concurrency`) |
+| `fallbacks` | no | Ordered list of `{runner, model}` to fail over to when the primary runner hits a provider rate limit. `runner` must be a defined runner id; `model` is optional (empty = that runner's default). See [Rate limits & resilience](#rate-limits--resilience) |
 | `env` | no | Agent-scope environment variables (map). Lowest-precedence explicit scope — see [Environment variables](#environment-variables) |
 
 ### `routes`
@@ -312,7 +321,65 @@ settings:
   log_level: info          # debug | info | warn | error
   state_lock: true         # Add "in-progress" label on acknowledge
   result_comment: true     # Post agent output as comment
+  max_attempts: 3          # Re-dispatch failure cap per (task, workflow); <=0 disables
 ```
+
+| Field | Default | Description |
+|---|---|---|
+| `concurrency` | 2 | Global worker pool size (informational; real dispatch concurrency is the sum of per-agent `max_workers`) |
+| `log_level` | info | `debug` \| `info` \| `warn` \| `error` |
+| `state_lock` | false | Add an "in-progress" label on acknowledge |
+| `result_comment` | false | Post agent output back as a comment |
+| `max_attempts` | 3 | Stop re-dispatching a `(task, workflow)` after this many **consecutive failed** instances (rate-limited runs don't count). `<=0` disables the cap. See [Rate limits & resilience](#rate-limits--resilience) |
+
+## Rate limits & resilience
+
+Apiary is built around a single dispatch path and a small set of safeguards that
+keep a saturated provider or a failing task from turning into a runaway,
+money-burning loop.
+
+### Provider rate limits → failover
+
+When a runner is rejected by a provider usage limit — e.g. the Claude CLI emits a
+`rate_limit_event` with `status: rejected` ("you've hit your session limit") —
+Apiary does **not** treat the empty run as a success. Instead it:
+
+1. **Pauses that runner type** until the limit resets (`resetsAt`). Because every
+   Claude agent shares one account, pausing is keyed by runner type, so all Claude
+   agents back off together.
+2. **Fails over** to the agent's next `fallbacks` entry whose runner isn't paused,
+   retrying the same step on that runner/model. While the primary is paused, new
+   steps go straight to the fallback (no wasted, pre-failed call).
+
+```yaml
+agents:
+  - id: engineer
+    runner: claude
+    model: claude-sonnet-4-6
+    fallbacks:
+      - {runner: opencode-go, model: opencode-go/deepseek-v4-pro}
+      - {runner: cursor, model: composer-2.5-fast}
+```
+
+Each attempt is recorded as its own execution, so the dashboard shows the
+failover (primary rate-limited → fallback ran). `fallbacks` load at startup —
+changing the chain requires a restart.
+
+### Re-dispatch failure cap
+
+A task whose workflow keeps failing would otherwise be re-dispatched on every poll
+forever (especially workflows with no `on_fail`, like escape-hatch routes). The
+`settings.max_attempts` cap is an **internal** backstop, independent of
+source-side labels: after N consecutive **failed** instances for the same
+`(task, workflow)`, Apiary stops re-dispatching it and applies the workflow's
+`on_fail` hook (if any). Rate-limited runs fail over and are not counted; a single
+success resets the count. Default `3`; set `<=0` to disable.
+
+### Non-blocking dispatch
+
+Each agent's `max_workers` slot is acquired inside the dispatch goroutine, not on
+the poll-loop thread. A fully-busy agent therefore parks its own runs without
+stalling polling or dispatch for any other source or agent.
 
 ## Dashboard
 
