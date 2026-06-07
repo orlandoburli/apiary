@@ -93,6 +93,12 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		logs        []model.LogEntry
 		finalResult string
 		usage       model.Usage
+		// Set when the provider emits a rate_limit_event with status "rejected"
+		// (e.g. Claude's 5-hour session limit). resetsAt is epoch seconds, 0 if
+		// the provider did not report it. Guarded by mu (written from the stdout
+		// goroutine).
+		rateLimited       bool
+		rateLimitResetsAt int64
 	)
 
 	emit := func(level, msg string) {
@@ -158,6 +164,14 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 				finalResult = res
 				mu.Unlock()
 			}
+			if resetsAt, rejected := detectRateLimitRejection(line); rejected {
+				mu.Lock()
+				rateLimited = true
+				if resetsAt > 0 {
+					rateLimitResetsAt = resetsAt
+				}
+				mu.Unlock()
+			}
 			accumulateStreamUsage(line, &usage)
 			if pretty, ok := formatStreamLine(line); ok {
 				emit("debug", pretty)
@@ -193,17 +207,28 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		usagePtr = nil
 	}
 	result := model.RunResult{
-		WorkerID: req.WorkerID,
-		Success:  runErr == nil,
-		Output:   output,
-		Logs:     logs,
-		Duration: time.Since(start),
-		Usage:    usagePtr,
+		WorkerID:    req.WorkerID,
+		Success:     runErr == nil,
+		Output:      output,
+		Logs:        logs,
+		Duration:    time.Since(start),
+		Usage:       usagePtr,
+		RateLimited: rateLimited,
+	}
+	if rateLimited && rateLimitResetsAt > 0 {
+		result.RateLimitResetsAt = time.Unix(rateLimitResetsAt, 0)
 	}
 	if runErr != nil {
-		stderr := strings.TrimSpace(errBuf.String())
-		if stderr != "" {
-			result.Error = fmt.Errorf("%w\nstderr: %s", runErr, stderr)
+		// claude often exits non-zero with an empty stderr, leaving a bare
+		// "exit status 1" with no clue why. Fall back to the most meaningful
+		// stdout (final result / last assistant text) so the recorded error is
+		// diagnosable instead of opaque.
+		detail := strings.TrimSpace(errBuf.String())
+		if detail == "" {
+			detail = errorDetail(output)
+		}
+		if detail != "" {
+			result.Error = fmt.Errorf("%w: %s", runErr, detail)
 		} else {
 			result.Error = runErr
 		}
@@ -271,6 +296,55 @@ func accumulateStreamUsage(line string, u *model.Usage) {
 			u.CostUSD = ev.TotalCostUSD
 		}
 	}
+}
+
+// rateLimitEvent is the provider's usage-limit signal in the stream. Claude
+// emits it as {"type":"rate_limit_event","rate_limit_info":{"status":"rejected",
+// "resetsAt":<epoch-seconds>,...}} when a run is blocked by the 5-hour session
+// limit (the run then prints "you've hit your session limit" and may exit 0).
+type rateLimitEvent struct {
+	Type          string `json:"type"`
+	RateLimitInfo *struct {
+		Status   string `json:"status"`
+		ResetsAt int64  `json:"resetsAt"`
+	} `json:"rate_limit_info"`
+}
+
+// detectRateLimitRejection reports whether a stream-json line is a
+// rate_limit_event with status "rejected" (the provider refused the run because
+// of a usage limit), along with the epoch-seconds reset time when present.
+// Other statuses ("allowed", "allowed_warning") are not rejections.
+func detectRateLimitRejection(line string) (resetsAt int64, rejected bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "{") {
+		return 0, false
+	}
+	var ev rateLimitEvent
+	if err := json.Unmarshal([]byte(trimmed), &ev); err != nil {
+		return 0, false
+	}
+	if ev.Type != "rate_limit_event" || ev.RateLimitInfo == nil {
+		return 0, false
+	}
+	if ev.RateLimitInfo.Status != "rejected" {
+		return 0, false
+	}
+	return ev.RateLimitInfo.ResetsAt, true
+}
+
+// errorDetail trims, single-lines, and length-caps an output fragment so it can
+// be folded into a recorded error message without dumping a whole transcript.
+func errorDetail(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, "\n", " ")
+	const max = 300
+	if len(s) > max {
+		s = "…" + s[len(s)-max:]
+	}
+	return s
 }
 
 func formatStreamLine(line string) (string, bool) {
