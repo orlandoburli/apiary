@@ -172,6 +172,14 @@ func (s *InternalTaskStore) outstanding(ctx context.Context, id string) (int, er
 	return n, err
 }
 
+// DeleteTask removes a task row by ID. Workflow instances, bindings, and logs are
+// removed by their own stores; this only drops the internal_tasks row. Deleting a
+// non-existent id is a no-op (no error), so it is safe to call for orphaned cells.
+func (s *InternalTaskStore) DeleteTask(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM internal_tasks WHERE id = ?`, id)
+	return err
+}
+
 // ListTasksByState returns all tasks in the given state, oldest first.
 func (s *InternalTaskStore) ListTasksByState(ctx context.Context, state model.TaskState) ([]model.InternalTask, error) {
 	rows, err := s.db.QueryContext(ctx, `

@@ -3,8 +3,10 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -66,6 +68,14 @@ func newDeleteCmd() *cobra.Command {
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				detail := strings.TrimSpace(string(body))
+				if resp.StatusCode == http.StatusNotFound {
+					return fmt.Errorf("no task matched %q — pass the task id, the source item id, or --source/--item", taskID)
+				}
+				if detail != "" {
+					return fmt.Errorf("delete failed (HTTP %d): %s", resp.StatusCode, detail)
+				}
 				return fmt.Errorf("delete failed: HTTP %d", resp.StatusCode)
 			}
 
