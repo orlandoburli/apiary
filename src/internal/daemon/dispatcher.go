@@ -219,6 +219,12 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		}
 	}
 
+	// Reconstruct workflow instances parked at an approval step into the engine's
+	// in-memory parked set. That set is empty after a restart, so without this the
+	// polling loop would never re-evaluate them and their tasks would be stranded
+	// in 'registered' forever (the approval_waiting restart gap).
+	d.rehydrateParkedApprovals(ctx)
+
 	for _, sc := range d.cfg.Sources {
 		sc := sc
 		adapter, ok := d.sources[sc.ID]

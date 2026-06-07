@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -155,4 +156,51 @@ func (e *Engine) CheckParkedApprovals(ctx context.Context, poll func(sourceID, s
 			}
 		}
 	}
+}
+
+// ErrNoApprovalStep is returned by RehydrateApproval when the instance has no
+// approval step waiting once its cached steps are restored — i.e. it was not
+// actually parked at an approval (a stale or malformed approval_waiting row). The
+// caller should leave it for manual reconciliation rather than re-parking it.
+var ErrNoApprovalStep = errors.New("no approval step is waiting")
+
+// RehydrateApproval reconstructs an instance persisted in the approval_waiting
+// state and re-registers it in the engine's in-memory parked set, so the next
+// CheckParkedApprovals poll can re-evaluate it against the live source item.
+//
+// The parked set is the only place CheckParkedApprovals looks and it is empty
+// after a process restart: without rehydration an instance left waiting for
+// approval when the daemon stopped would never be re-evaluated, never settle, and
+// its task's outstanding-workflow counter would never drain — stranding the task
+// in 'registered' forever. The startup orphan reconcile deliberately leaves
+// approval_waiting rows untouched (interrupting them would lose the wait); this is
+// what brings them back to life.
+//
+// It replays the instance's passed steps as cached — no re-execution, no re-fired
+// side effects, and crucially no re-posted approval message — then parks the run
+// at its waiting approval step. priorSteps are the instance's persisted step runs
+// in execution order. parkedAt is when the instance originally suspended (the
+// persisted instance's updated_at); preserving it means an approval timeout counts
+// from the original park time and survives the restart rather than resetting on
+// every boot.
+//
+// It returns ErrNoApprovalStep when no approval step is waiting.
+func (e *Engine) RehydrateApproval(ctx context.Context, instID string, wf config.WorkflowConfig, task model.InternalTask, priorSteps []db.StepRun, parkedAt time.Time) error {
+	bindings := e.bindingsFor(ctx, task.ID)
+	r := e.initDAG(instID, wf, task, bindings, nil, 0)
+	e.restoreCachedSteps(r, priorSteps)
+
+	stepID, ok := r.firstRunnableApproval()
+	if !ok {
+		return ErrNoApprovalStep
+	}
+	r.state[stepID] = stWaiting
+	r.waitingStep = stepID
+	r.parkedAt = parkedAt
+
+	e.mu.Lock()
+	e.parked[instID] = r
+	e.mu.Unlock()
+	aplog.Info("workflow %s: rehydrated parked approval for instance %s at step %q", wf.ID, instID, stepID)
+	return nil
 }
