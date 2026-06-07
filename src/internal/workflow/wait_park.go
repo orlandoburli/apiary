@@ -11,56 +11,56 @@ import (
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
-// ParkedPoll describes an instance suspended at a poll step waiting for an
+// ParkedWait describes an instance suspended at a wait_for step waiting for an
 // external signal (e.g. CI completion).
-type ParkedPoll struct {
+type ParkedWait struct {
 	InstanceID string
 	Task       model.InternalTask
 	Step       config.StepConfig
 	Deadline   time.Time // absolute give-up time (zero = none)
 }
 
-// parkedPolls returns a snapshot of all instances currently suspended at a poll
+// parkedWaits returns a snapshot of all instances currently suspended at a poll
 // step. The parked set is shared with approval-waiting instances, so it filters to
 // runs whose waiting step is a poll.
-func (e *Engine) parkedPolls() []ParkedPoll {
+func (e *Engine) parkedWaits() []ParkedWait {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	out := make([]ParkedPoll, 0, len(e.parked))
+	out := make([]ParkedWait, 0, len(e.parked))
 	for id, r := range e.parked {
-		if r.byID[r.waitingStep].StepType() != config.StepTypePoll {
+		if r.byID[r.waitingStep].StepType() != config.StepTypeWaitFor {
 			continue
 		}
-		out = append(out, ParkedPoll{
+		out = append(out, ParkedWait{
 			InstanceID: id,
 			Task:       r.task,
 			Step:       r.byID[r.waitingStep],
-			Deadline:   r.pollDeadline,
+			Deadline:   r.waitDeadline,
 		})
 	}
 	return out
 }
 
-// CheckParkedPolls re-checks every instance suspended at a poll step by waking it:
-// the woken run re-executes the poll step (a single CI query via the engine's
+// CheckParkedWaits re-checks every instance suspended at a wait_for step by waking it:
+// the woken run re-executes the wait_for step (a single CI query via the engine's
 // CIStatusChecker) and either advances past it (CI passed), fails it (CI failed or
 // the deadline elapsed, which drives on_reject/on_fail loop-back), or re-parks it
 // (CI still pending). Called once per dispatcher poll cycle, mirroring
 // CheckParkedApprovals. The poll cadence is therefore the dispatcher's poll
 // interval; a step's check_interval acts as a lower bound only.
-func (e *Engine) CheckParkedPolls(ctx context.Context) {
-	for _, p := range e.parkedPolls() {
-		e.wakePoll(ctx, p.InstanceID)
+func (e *Engine) CheckParkedWaits(ctx context.Context) {
+	for _, p := range e.parkedWaits() {
+		e.wakeWait(ctx, p.InstanceID)
 	}
 }
 
-// wakePoll resumes a poll-parked instance: it resets the waiting poll step to
+// wakeWait resumes a wait-parked instance: it resets the waiting wait_for step to
 // pending so driveDAG re-dispatches it (a single CI check), then drives the graph
 // to its next terminal or suspended state and settles it. A pending check re-parks
-// the instance (via enterPoll, preserving its deadline); a pass/fail advances or
+// the instance (via enterWait, preserving its deadline); a pass/fail advances or
 // loops the workflow through the normal result-processing path. It is a no-op if
 // the instance is no longer parked.
-func (e *Engine) wakePoll(ctx context.Context, instanceID string) {
+func (e *Engine) wakeWait(ctx context.Context, instanceID string) {
 	e.mu.Lock()
 	r, ok := e.parked[instanceID]
 	if ok {
@@ -73,58 +73,58 @@ func (e *Engine) wakePoll(ctx context.Context, instanceID string) {
 
 	step := r.waitingStep
 	r.waitingStep = ""
-	r.state[step] = stPending // re-arm the poll step for re-dispatch
+	r.state[step] = stPending // re-arm the wait_for step for re-dispatch
 
 	_ = e.store.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateRunning)
 	outcome := e.driveDAG(ctx, r)
 	e.settle(ctx, r, outcome)
 }
 
-// ErrNoPollStep is returned by RehydratePoll when the instance has no poll step
+// ErrNoWaitStep is returned by RehydrateWait when the instance has no wait_for step
 // waiting once its cached steps are restored — i.e. it was not actually parked at a
-// poll (a stale or malformed poll_waiting row). The caller leaves it for manual
+// poll (a stale or malformed waiting row). The caller leaves it for manual
 // reconciliation rather than re-parking it.
-var ErrNoPollStep = errors.New("no poll step is waiting")
+var ErrNoWaitStep = errors.New("no wait_for step is waiting")
 
-// RehydratePoll reconstructs an instance persisted in the poll_waiting state and
+// RehydrateWait reconstructs an instance persisted in the waiting state and
 // re-registers it in the engine's in-memory parked set, so the next
-// CheckParkedPolls cycle re-checks it against the live CI status.
+// CheckParkedWaits cycle re-checks it against the live CI status.
 //
-// The parked set is the only place CheckParkedPolls looks and it is empty after a
+// The parked set is the only place CheckParkedWaits looks and it is empty after a
 // process restart: without rehydration an instance left waiting for CI when the
 // daemon stopped would never be re-checked, never settle, and its task's
 // outstanding-workflow counter would never drain — stranding the task. The startup
-// orphan reconcile deliberately leaves poll_waiting rows untouched (interrupting
+// orphan reconcile deliberately leaves waiting rows untouched (interrupting
 // them would lose the wait); this is what brings them back to life.
 //
 // It replays the instance's passed steps as cached (no re-execution, no re-fired
-// side effects) then parks the run at its waiting poll step. priorSteps are the
+// side effects) then parks the run at its waiting wait_for step. priorSteps are the
 // instance's persisted step runs in execution order. The wait deadline is set
-// fresh from the poll step's max_duration: a poll step persists no step run of its
+// fresh from the wait_for step's max_duration: a wait_for step persists no step run of its
 // own, so the original park time is not recoverable across a restart — the timeout
 // effectively restarts, which is acceptable for a safety bound.
 //
-// It returns ErrNoPollStep when no poll step is waiting.
-func (e *Engine) RehydratePoll(ctx context.Context, instID string, wf config.WorkflowConfig, task model.InternalTask, priorSteps []db.StepRun) error {
+// It returns ErrNoWaitStep when no wait_for step is waiting.
+func (e *Engine) RehydrateWait(ctx context.Context, instID string, wf config.WorkflowConfig, task model.InternalTask, priorSteps []db.StepRun) error {
 	bindings := e.bindingsFor(ctx, task.ID)
 	r := e.initDAG(instID, wf, task, bindings, nil, 0)
 	e.restoreCachedSteps(r, priorSteps)
 
-	stepID, ok := r.firstRunnablePoll()
+	stepID, ok := r.firstRunnableWait()
 	if !ok {
-		return ErrNoPollStep
+		return ErrNoWaitStep
 	}
 	r.state[stepID] = stWaiting
 	r.waitingStep = stepID
-	if pc := r.byID[stepID].PollConfig; pc != nil {
+	if pc := r.byID[stepID].WaitFor; pc != nil {
 		if md := pc.ParsedMaxDuration(); md > 0 {
-			r.pollDeadline = e.now().Add(md)
+			r.waitDeadline = e.now().Add(md)
 		}
 	}
 
 	e.mu.Lock()
 	e.parked[instID] = r
 	e.mu.Unlock()
-	aplog.Info("workflow %s: rehydrated parked poll for instance %s at step %q", wf.ID, instID, stepID)
+	aplog.Info("workflow %s: rehydrated parked wait for instance %s at step %q", wf.ID, instID, stepID)
 	return nil
 }

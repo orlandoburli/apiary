@@ -12,20 +12,20 @@ import (
 	"github.com/orlandoburli/apiary/internal/source"
 )
 
-// pollWorkflow: implement (agent) → check-ci (poll) → review (agent). The poll
+// waitForWorkflow: implement (agent) → check-ci (poll) → review (agent). The poll
 // step loops back to implement on a red CI, up to 3 times.
-func pollWorkflow() config.WorkflowConfig {
+func waitForWorkflow() config.WorkflowConfig {
 	return config.WorkflowConfig{ID: "impl", Steps: []config.StepConfig{
 		{ID: "implement", Agent: "backend-dev"},
-		{ID: "check-ci", Type: config.StepTypePoll, DependsOn: []string{"implement"},
-			PollConfig: &config.PollConfig{Kind: "ci", CheckInterval: "30s", MaxDuration: "2h"},
+		{ID: "check-ci", Type: config.StepTypeWaitFor, DependsOn: []string{"implement"},
+			WaitFor: &config.WaitForConfig{Kind: "ci", CheckInterval: "30s", MaxDuration: "2h"},
 			OnFail:     &config.StepOutcome{Goto: "implement", MaxRetries: 3}},
 		{ID: "review", Agent: "backend-dev", DependsOn: []string{"check-ci"}},
 	}}
 }
 
-// pollEngine builds a test engine with a controllable clock and CI checker.
-func pollEngine(cfg *config.Config, store Store, exec StepExecutor, side SideEffects,
+// waitForEngine builds a test engine with a controllable clock and CI checker.
+func waitForEngine(cfg *config.Config, store Store, exec StepExecutor, side SideEffects,
 	clock *time.Time, ci func() (source.CIStatus, error)) *Engine {
 	var seq atomic.Int64
 	return NewEngine(cfg, store, exec,
@@ -38,18 +38,18 @@ func pollEngine(cfg *config.Config, store Store, exec StepExecutor, side SideEff
 	)
 }
 
-func TestPoll_SuspendsWhilePending(t *testing.T) {
+func TestWaitFor_SuspendsWhilePending(t *testing.T) {
 	store := newFakeStore()
 	exec := &fakeExecutor{}
 	clock := time.Unix(1000, 0)
 	ci := func() (source.CIStatus, error) { return source.CIStatus{Status: "pending"}, nil }
-	eng := pollEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
 
-	instID, success, _ := eng.RunInstance(context.Background(), pollWorkflow(), model.InternalTask{ID: "c1"})
+	instID, success, _ := eng.RunInstance(context.Background(), waitForWorkflow(), model.InternalTask{ID: "c1"})
 	if success {
 		t.Fatal("a poll-parked instance should not report success")
 	}
-	if store.instances[instID].State != db.InstanceStatePollWaiting {
+	if store.instances[instID].State != db.InstanceStateWaiting {
 		t.Errorf("instance state = %q, want poll_waiting", store.instances[instID].State)
 	}
 	// implement ran; review must not have.
@@ -58,7 +58,7 @@ func TestPoll_SuspendsWhilePending(t *testing.T) {
 		t.Errorf("unexpected execution while CI pending: %v", ids)
 	}
 	// It shows up as a parked poll, not a parked approval.
-	if pp := eng.parkedPolls(); len(pp) != 1 || pp[0].Step.ID != "check-ci" {
+	if pp := eng.parkedWaits(); len(pp) != 1 || pp[0].Step.ID != "check-ci" {
 		t.Fatalf("expected one parked poll for check-ci, got %+v", pp)
 	}
 	if len(eng.ParkedApprovals()) != 0 {
@@ -66,37 +66,37 @@ func TestPoll_SuspendsWhilePending(t *testing.T) {
 	}
 }
 
-func TestPoll_AdvancesWhenCIPasses(t *testing.T) {
+func TestWaitFor_AdvancesWhenCIPasses(t *testing.T) {
 	store := newFakeStore()
 	exec := &fakeExecutor{}
 	clock := time.Unix(1000, 0)
 	status := "pending"
 	ci := func() (source.CIStatus, error) { return source.CIStatus{Status: status}, nil }
-	eng := pollEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
 
-	instID, _, _ := eng.RunInstance(context.Background(), pollWorkflow(), model.InternalTask{ID: "c1"})
+	instID, _, _ := eng.RunInstance(context.Background(), waitForWorkflow(), model.InternalTask{ID: "c1"})
 
 	// Still pending → stays parked.
-	eng.CheckParkedPolls(context.Background())
-	if store.instances[instID].State != db.InstanceStatePollWaiting {
+	eng.CheckParkedWaits(context.Background())
+	if store.instances[instID].State != db.InstanceStateWaiting {
 		t.Fatalf("expected still poll_waiting, got %q", store.instances[instID].State)
 	}
 
 	// CI turns green → next check advances the workflow to done.
 	status = "passed"
-	eng.CheckParkedPolls(context.Background())
+	eng.CheckParkedWaits(context.Background())
 	if store.instances[instID].State != db.InstanceStateDone {
 		t.Errorf("expected done after CI passed, got %q", store.instances[instID].State)
 	}
 	if !contains(executedIDs(exec.seen), "review") {
 		t.Error("review should run once CI passed")
 	}
-	if len(eng.parkedPolls()) != 0 {
+	if len(eng.parkedWaits()) != 0 {
 		t.Error("instance should no longer be parked")
 	}
 }
 
-func TestPoll_RedCILoopsBackToImplement(t *testing.T) {
+func TestWaitFor_RedCILoopsBackToImplement(t *testing.T) {
 	store := newFakeStore()
 	exec := &fakeExecutor{}
 	clock := time.Unix(1000, 0)
@@ -114,10 +114,10 @@ func TestPoll_RedCILoopsBackToImplement(t *testing.T) {
 		}
 		return source.CIStatus{Status: "pending"}, nil // the loop-back's new CI is still running
 	}
-	eng := pollEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
 
-	instID, _, _ := eng.RunInstance(context.Background(), pollWorkflow(), model.InternalTask{ID: "c1"})
-	if got := store.instances[instID].State; got != db.InstanceStatePollWaiting {
+	instID, _, _ := eng.RunInstance(context.Background(), waitForWorkflow(), model.InternalTask{ID: "c1"})
+	if got := store.instances[instID].State; got != db.InstanceStateWaiting {
 		t.Fatalf("after red CI loop-back, want poll_waiting, got %q", got)
 	}
 	if n := countID(exec.seen, "implement"); n != 2 {
@@ -129,7 +129,7 @@ func TestPoll_RedCILoopsBackToImplement(t *testing.T) {
 
 	// The retried CI goes green → completes.
 	override = "passed"
-	eng.CheckParkedPolls(context.Background())
+	eng.CheckParkedWaits(context.Background())
 	if store.instances[instID].State != db.InstanceStateDone {
 		t.Errorf("expected done after green retry, got %q", store.instances[instID].State)
 	}
@@ -138,46 +138,46 @@ func TestPoll_RedCILoopsBackToImplement(t *testing.T) {
 	}
 }
 
-func TestPoll_TimesOut(t *testing.T) {
+func TestWaitFor_TimesOut(t *testing.T) {
 	store := newFakeStore()
 	exec := &fakeExecutor{}
 	clock := time.Unix(1000, 0)
 	ci := func() (source.CIStatus, error) { return source.CIStatus{Status: "pending"}, nil }
-	eng := pollEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
 
 	// Workflow whose poll has no on_fail loop, so a timeout fails the instance.
 	wf := config.WorkflowConfig{ID: "impl", Steps: []config.StepConfig{
 		{ID: "implement", Agent: "backend-dev"},
-		{ID: "check-ci", Type: config.StepTypePoll, DependsOn: []string{"implement"},
-			PollConfig: &config.PollConfig{Kind: "ci", MaxDuration: "2h"}},
+		{ID: "check-ci", Type: config.StepTypeWaitFor, DependsOn: []string{"implement"},
+			WaitFor: &config.WaitForConfig{Kind: "ci", MaxDuration: "2h"}},
 	}}
 	instID, _, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
-	if store.instances[instID].State != db.InstanceStatePollWaiting {
+	if store.instances[instID].State != db.InstanceStateWaiting {
 		t.Fatalf("expected poll_waiting, got %q", store.instances[instID].State)
 	}
 
 	// Advance past the 2h deadline; the next check times out and fails the step.
 	clock = clock.Add(3 * time.Hour)
-	eng.CheckParkedPolls(context.Background())
+	eng.CheckParkedWaits(context.Background())
 	if store.instances[instID].State != db.InstanceStateFailed {
 		t.Errorf("expected failed after timeout, got %q", store.instances[instID].State)
 	}
 }
 
-// TestPoll_RehydrateSurvivesRestart is the core regression: an instance parked at
+// TestWaitFor_RehydrateSurvivesRestart is the core regression: an instance parked at
 // a poll step when the daemon stopped must be reconstructed (not restarted from the
 // top) so it resumes from the poll and advances past it — without re-running the
 // already-passed implement step.
-func TestPoll_RehydrateSurvivesRestart(t *testing.T) {
+func TestWaitFor_RehydrateSurvivesRestart(t *testing.T) {
 	store := newFakeStore()
 	clock := time.Unix(1000, 0)
 
 	// First engine: run until parked at the poll step (CI pending).
 	exec1 := &fakeExecutor{}
 	ci1 := func() (source.CIStatus, error) { return source.CIStatus{Status: "pending"}, nil }
-	eng1 := pollEngine(baseCfg(), store, exec1, &fakeSide{}, &clock, ci1)
-	instID, _, _ := eng1.RunInstance(context.Background(), pollWorkflow(), model.InternalTask{ID: "c1"})
-	if store.instances[instID].State != db.InstanceStatePollWaiting {
+	eng1 := waitForEngine(baseCfg(), store, exec1, &fakeSide{}, &clock, ci1)
+	instID, _, _ := eng1.RunInstance(context.Background(), waitForWorkflow(), model.InternalTask{ID: "c1"})
+	if store.instances[instID].State != db.InstanceStateWaiting {
 		t.Fatalf("expected poll_waiting before restart, got %q", store.instances[instID].State)
 	}
 
@@ -185,17 +185,17 @@ func TestPoll_RehydrateSurvivesRestart(t *testing.T) {
 	// green. Rehydrate from the persisted step runs, then a poll check advances it.
 	exec2 := &fakeExecutor{}
 	ci2 := func() (source.CIStatus, error) { return source.CIStatus{Status: "passed"}, nil }
-	eng2 := pollEngine(baseCfg(), store, exec2, &fakeSide{}, &clock, ci2)
+	eng2 := waitForEngine(baseCfg(), store, exec2, &fakeSide{}, &clock, ci2)
 
-	if err := eng2.RehydratePoll(context.Background(), instID, pollWorkflow(),
+	if err := eng2.RehydrateWait(context.Background(), instID, waitForWorkflow(),
 		model.InternalTask{ID: "c1"}, priorStepsFor(store, instID)); err != nil {
 		t.Fatalf("rehydrate: %v", err)
 	}
-	if pp := eng2.parkedPolls(); len(pp) != 1 || pp[0].Step.ID != "check-ci" {
+	if pp := eng2.parkedWaits(); len(pp) != 1 || pp[0].Step.ID != "check-ci" {
 		t.Fatalf("expected rehydrated poll park at check-ci, got %+v", pp)
 	}
 
-	eng2.CheckParkedPolls(context.Background())
+	eng2.CheckParkedWaits(context.Background())
 
 	if store.instances[instID].State != db.InstanceStateDone {
 		t.Errorf("expected done after rehydrated poll passed, got %q", store.instances[instID].State)

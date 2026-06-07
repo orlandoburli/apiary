@@ -86,8 +86,8 @@ type ParkedApproval struct {
 }
 
 // ParkedApprovals returns a snapshot of all instances currently awaiting approval.
-// The parked set is shared with poll-waiting instances, so it filters to runs whose
-// waiting step is an approval — a poll park is resolved by CheckParkedPolls, not by
+// The parked set is shared with wait-waiting instances, so it filters to runs whose
+// waiting step is an approval — a wait park is resolved by CheckParkedWaits, not by
 // the approval checker.
 func (e *Engine) ParkedApprovals() []ParkedApproval {
 	e.mu.Lock()
