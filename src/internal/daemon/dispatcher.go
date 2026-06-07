@@ -48,6 +48,15 @@ type Dispatcher struct {
 	sources     map[string]source.Adapter
 	runners     map[string]runnerimpl.Runner
 	agentRunner map[string]string
+	// agentFallbacks holds each agent's rate-limit failover chain (primary
+	// excluded), in order. Pre-built at construction so failover is a cheap swap.
+	agentFallbacks map[string][]runnerCandidate
+
+	// rateLimitPaused maps a runner adapter type (e.g. "claude") to the time its
+	// provider rate limit resets. While now is before that time, the dispatcher
+	// routes that runner's steps to a fallback instead. Guarded by rateLimitMu.
+	rateLimitPaused map[string]time.Time
+	rateLimitMu     sync.Mutex
 
 	db     *db.Client
 	logger *logging.Logger
@@ -75,6 +84,40 @@ type Dispatcher struct {
 	engineOnce sync.Once
 }
 
+// runnerCandidate is one rung in an agent's rate-limit failover chain: a
+// configured runner adapter, its adapter type (the rate-limit pause key), and
+// the model to run it with.
+type runnerCandidate struct {
+	adapter    runnerimpl.Runner
+	runnerType string
+	model      string
+}
+
+// runnerPausedUntil returns the time a runner type's provider rate limit resets,
+// or the zero time if it is not paused.
+func (d *Dispatcher) runnerPausedUntil(runnerType string) time.Time {
+	d.rateLimitMu.Lock()
+	defer d.rateLimitMu.Unlock()
+	return d.rateLimitPaused[runnerType]
+}
+
+// pauseRunner records that a runner type was rate-limited until `until`. A zero
+// `until` (provider did not report a reset) defaults to 5 minutes out. Only
+// extends an existing pause, never shortens it.
+func (d *Dispatcher) pauseRunner(runnerType string, until time.Time) {
+	if until.IsZero() {
+		until = time.Now().Add(5 * time.Minute)
+	}
+	d.rateLimitMu.Lock()
+	defer d.rateLimitMu.Unlock()
+	if d.rateLimitPaused == nil {
+		d.rateLimitPaused = make(map[string]time.Time)
+	}
+	if cur, ok := d.rateLimitPaused[runnerType]; !ok || until.After(cur) {
+		d.rateLimitPaused[runnerType] = until
+	}
+}
+
 // New builds and connects a Dispatcher from the given config.
 // Pass nil for db and logger to skip state persistence and logging to SQLite.
 func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *db.Client, logger *logging.Logger) (*Dispatcher, error) {
@@ -88,9 +131,11 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		configFile:  configFile,
 		startedAt:   time.Now(),
 		router:      r,
-		sources:     make(map[string]source.Adapter),
-		runners:     make(map[string]runnerimpl.Runner),
-		agentRunner: make(map[string]string),
+		sources:         make(map[string]source.Adapter),
+		runners:         make(map[string]runnerimpl.Runner),
+		agentRunner:     make(map[string]string),
+		agentFallbacks:  make(map[string][]runnerCandidate),
+		rateLimitPaused: make(map[string]time.Time),
 		db:          dbClient,
 		logger:      logger,
 		sem:         make(chan struct{}, 1), // poll: one at a time
@@ -187,6 +232,34 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			if err := d.writeOpencodeAgent(ctx, ac, rc); err != nil {
 				aplog.Warn("agent %s: write opencode agent config: %v", ac.ID, err)
 			}
+		}
+
+		// Pre-build the rate-limit failover chain so dispatch can swap runners
+		// without re-instantiating adapters on the hot path.
+		for _, fb := range ac.Fallbacks {
+			frc, ok := runnerMap[fb.Runner]
+			if !ok {
+				return nil, fmt.Errorf("agent %q: fallback runner %q not found", ac.ID, fb.Runner)
+			}
+			fAdapterName := frc.AdapterName()
+			fra, ok := runnerimpl.New(fAdapterName)
+			if !ok {
+				return nil, fmt.Errorf("agent %q: fallback runner type %q not found", ac.ID, fAdapterName)
+			}
+			if err := fra.Configure(frc.Config); err != nil {
+				return nil, fmt.Errorf("agent %q: configure fallback runner %q: %w", ac.ID, fb.Runner, err)
+			}
+			if fAdapterName == "opencode" {
+				if err := d.writeOpencodeAgent(ctx, ac, frc); err != nil {
+					aplog.Warn("agent %s: write opencode fallback agent config: %v", ac.ID, err)
+				}
+			}
+			d.agentFallbacks[ac.ID] = append(d.agentFallbacks[ac.ID], runnerCandidate{
+				adapter:    fra,
+				runnerType: fAdapterName,
+				model:      fb.Model,
+			})
+			aplog.Info("agent %s: fallback #%d runner=%s type=%s model=%s", ac.ID, len(d.agentFallbacks[ac.ID]), fb.Runner, fAdapterName, fb.Model)
 		}
 	}
 
