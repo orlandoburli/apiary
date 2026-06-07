@@ -1,9 +1,9 @@
 # Installation
 
-!!! warning "Pre-alpha"
-    Direct downloads, `.deb`/`.rpm`, and the Docker image are published on every
-    release ([Releases](https://github.com/orlandoburli/apiary/releases)). The
-    Homebrew and Scoop channels activate with the first **stable** tag (`v0.1.0`).
+!!! note "Public beta"
+    Every channel below is live — Homebrew, Scoop, Docker, `.deb`/`.rpm`, and direct
+    downloads are published on each release
+    ([Releases](https://github.com/orlandoburli/apiary/releases)).
 
 ## macOS / Linux — Homebrew
 
