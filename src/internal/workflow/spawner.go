@@ -2,11 +2,16 @@ package workflow
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/config"
+	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
@@ -25,10 +30,12 @@ type WorkflowSpawner interface {
 	Await(ctx context.Context, taskID string) (bool, error)
 }
 
-// taskCreator persists a new InternalTask, filling in any unset id/timestamps.
-// *db.InternalTaskStore satisfies it.
+// taskCreator persists a new InternalTask and looks one up by its idempotency
+// key. *db.InternalTaskStore satisfies it. FindChildByDedupKey returns (nil, nil)
+// when no child matches; the spawner uses it to dedup re-runs (issue #119).
 type taskCreator interface {
 	CreateTask(ctx context.Context, task *model.InternalTask) error
+	FindChildByDedupKey(ctx context.Context, parentTaskID, dedupKey string) (*model.InternalTask, error)
 }
 
 // DefaultSpawner is the production WorkflowSpawner. It resolves the named
@@ -83,10 +90,29 @@ func NewDefaultSpawner(
 // parent id and input, and launches the workflow on its own goroutine. The child
 // is returned immediately in the registered state; spawn:await callers block via
 // Await. A missing workflow or a persistence failure is returned synchronously.
+//
+// Spawning is idempotent within a parent (issue #119): each request carries a
+// deterministic dedup key (req.Key, or one derived from workflow+title+input).
+// If a child with that key already exists under the same parent, Spawn returns
+// it without creating a duplicate or launching the workflow again — so re-running
+// the same decomposition does not fan out a second, duplicate set of sub-issues.
 func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (model.InternalTask, error) {
 	wf, ok := s.resolve(req.WorkflowID)
 	if !ok {
 		return model.InternalTask{}, fmt.Errorf("workflow %q not found", req.WorkflowID)
+	}
+
+	dedupKey := spawnDedupKey(req)
+
+	// Idempotency check: a re-run of the same decomposition resolves to the
+	// existing child rather than spawning a duplicate.
+	if existing, err := s.creator.FindChildByDedupKey(ctx, req.ParentTaskID, dedupKey); err != nil {
+		return model.InternalTask{}, fmt.Errorf("dedup-check spawned task: %w", err)
+	} else if existing != nil {
+		aplog.Info("spawn deduped: parent %s already has child %s for key %q (workflow %q) — not re-spawning",
+			req.ParentTaskID, existing.ID, dedupKey, req.WorkflowID)
+		s.trackExisting(*existing)
+		return *existing, nil
 	}
 
 	now := s.now()
@@ -95,12 +121,22 @@ func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (mod
 		ParentTaskID: req.ParentTaskID,
 		Title:        req.Title,
 		Input:        req.Input,
+		DedupKey:     dedupKey,
 		State:        model.TaskStateRegistered,
 		Metadata:     model.TaskMetadata{Type: "internal"},
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
 	if err := s.creator.CreateTask(ctx, &child); err != nil {
+		// Lost a race against a concurrent spawn of the same key: the unique index
+		// on (parent_task_id, dedup_key) rejected the insert. Resolve to the child
+		// the winner created instead of surfacing the constraint error.
+		if existing, ferr := s.creator.FindChildByDedupKey(ctx, req.ParentTaskID, dedupKey); ferr == nil && existing != nil {
+			aplog.Info("spawn deduped (race): parent %s resolved to child %s for key %q",
+				req.ParentTaskID, existing.ID, dedupKey)
+			s.trackExisting(*existing)
+			return *existing, nil
+		}
 		return model.InternalTask{}, fmt.Errorf("create spawned task: %w", err)
 	}
 
@@ -119,6 +155,48 @@ func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (mod
 	}()
 
 	return child, nil
+}
+
+// trackExisting registers a completion handle for a child resolved via dedup, so
+// a spawn:await caller can still observe its outcome. If the child is already
+// tracked in this process (its workflow is in flight here), the live handle is
+// kept. Otherwise a pre-closed handle is registered reporting success only when
+// the child has already reached the done state — a deduped child is virtually
+// always terminal, since the parent step that re-spawns ran after the first
+// completed.
+func (s *DefaultSpawner) trackExisting(child model.InternalTask) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.running[child.ID]; ok {
+		return
+	}
+	done := make(chan struct{})
+	close(done)
+	s.running[child.ID] = &spawnHandle{done: done, success: child.State == model.TaskStateDone}
+}
+
+// spawnDedupKey returns the deterministic idempotency key for a spawn request,
+// scoped to its parent via the (parent_task_id, dedup_key) unique index. A caller
+// -supplied req.Key is used verbatim (the per-spec "task_key"). Otherwise the key
+// is derived by hashing the workflow id, title, and canonical input, so two
+// identical spawns (the duplicate-decomposition case) collapse to one child.
+func spawnDedupKey(req model.SpawnRequest) string {
+	if k := strings.TrimSpace(req.Key); k != "" {
+		return k
+	}
+	// json.Marshal sorts map keys, so the input encoding is stable. A nil input
+	// marshals to "null"; any marshal error falls back to the title alone.
+	inputJSON, err := json.Marshal(req.Input)
+	if err != nil {
+		inputJSON = nil
+	}
+	h := sha256.New()
+	h.Write([]byte(req.WorkflowID))
+	h.Write([]byte{0x1f})
+	h.Write([]byte(req.Title))
+	h.Write([]byte{0x1f})
+	h.Write(inputJSON)
+	return "auto:" + hex.EncodeToString(h.Sum(nil))
 }
 
 // Await blocks until the workflow launched for taskID reaches a terminal state,

@@ -230,6 +230,12 @@ var migrations = []string{
 	`ALTER TABLE step_runs ADD COLUMN num_turns INTEGER DEFAULT 0`,
 	`ALTER TABLE step_runs ADD COLUMN num_tool_calls INTEGER DEFAULT 0`,
 	`ALTER TABLE step_runs ADD COLUMN cost_usd REAL DEFAULT 0.0`,
+	// Idempotent spawn (issue #119): a deterministic per-parent key so a re-run of
+	// the same decomposition resolves to the existing child instead of creating a
+	// duplicate set of sub-issues. The partial unique index enforces at-most-one
+	// child per (parent, dedup_key); NULL/empty keys (source-bound tasks) are exempt.
+	`ALTER TABLE internal_tasks ADD COLUMN dedup_key TEXT`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_internal_tasks_dedup ON internal_tasks(parent_task_id, dedup_key) WHERE dedup_key IS NOT NULL AND dedup_key != ''`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/orlandoburli/apiary/internal/config"
+	"github.com/orlandoburli/apiary/internal/model"
 )
 
 func TestValidate_Valid(t *testing.T) {
@@ -29,6 +30,39 @@ func TestValidate_Valid(t *testing.T) {
 func TestValidate_MissingVersion(t *testing.T) {
 	cfg := &config.Config{}
 	assertError(t, cfg, "version is required")
+}
+
+func TestValidate_MCPMissingCommand(t *testing.T) {
+	cfg := &config.Config{
+		Version: "1",
+		Runners: []config.RunnerConfig{
+			{ID: "claude", Type: "cli", MCPs: []model.MCPServer{{Name: "gitnexus"}}},
+		},
+	}
+	assertError(t, cfg, "command is required")
+}
+
+func TestValidate_MCPMissingName(t *testing.T) {
+	cfg := &config.Config{
+		Version: "1",
+		Agents: []config.AgentConfig{
+			{ID: "a-1", Model: "m", MCPs: []model.MCPServer{{Command: "npx"}}},
+		},
+	}
+	assertError(t, cfg, "name is required")
+}
+
+func TestValidate_MCPDuplicateName(t *testing.T) {
+	cfg := &config.Config{
+		Version: "1",
+		Runners: []config.RunnerConfig{
+			{ID: "claude", Type: "cli", MCPs: []model.MCPServer{
+				{Name: "gitnexus", Command: "npx"},
+				{Name: "gitnexus", Command: "npx"},
+			}},
+		},
+	}
+	assertError(t, cfg, "duplicate name")
 }
 
 func TestValidate_MissingSourceID(t *testing.T) {

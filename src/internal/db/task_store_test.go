@@ -53,6 +53,70 @@ func TestInternalTask_CRUD(t *testing.T) {
 	}
 }
 
+func TestInternalTask_FindChildByDedupKey(t *testing.T) {
+	ctx := context.Background()
+	store := newTestClient(t).InternalTasks()
+
+	parent := &model.InternalTask{Title: "spec"}
+	if err := store.CreateTask(ctx, parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	child := &model.InternalTask{
+		ParentTaskID: parent.ID,
+		Title:        "DB Migration",
+		DedupKey:     "spec/db",
+	}
+	if err := store.CreateTask(ctx, child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	got, err := store.FindChildByDedupKey(ctx, parent.ID, "spec/db")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if got == nil || got.ID != child.ID {
+		t.Fatalf("FindChildByDedupKey returned %+v, want child %s", got, child.ID)
+	}
+
+	// Empty key never matches; a different key under the same parent misses.
+	if g, _ := store.FindChildByDedupKey(ctx, parent.ID, ""); g != nil {
+		t.Errorf("empty key should not match, got %+v", g)
+	}
+	if g, _ := store.FindChildByDedupKey(ctx, parent.ID, "spec/other"); g != nil {
+		t.Errorf("unknown key should not match, got %+v", g)
+	}
+}
+
+func TestInternalTask_DedupKeyUniquePerParent(t *testing.T) {
+	ctx := context.Background()
+	store := newTestClient(t).InternalTasks()
+
+	parent := &model.InternalTask{Title: "spec"}
+	if err := store.CreateTask(ctx, parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	first := &model.InternalTask{ParentTaskID: parent.ID, Title: "Backend", DedupKey: "spec/backend"}
+	if err := store.CreateTask(ctx, first); err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	// A second child with the same (parent, dedup_key) must be rejected by the
+	// partial unique index — this is what stops the duplicate fan-out (issue #119).
+	dup := &model.InternalTask{ParentTaskID: parent.ID, Title: "Backend", DedupKey: "spec/backend"}
+	if err := store.CreateTask(ctx, dup); err == nil {
+		t.Fatal("expected unique-constraint error for duplicate (parent, dedup_key), got nil")
+	}
+
+	// Empty dedup keys are exempt: multiple source-bound children may share a
+	// parent with no key.
+	for i := 0; i < 2; i++ {
+		if err := store.CreateTask(ctx, &model.InternalTask{ParentTaskID: parent.ID, Title: "no-key"}); err != nil {
+			t.Fatalf("empty-key child %d should be allowed: %v", i, err)
+		}
+	}
+}
+
 func TestInternalTask_GetMissing(t *testing.T) {
 	ctx := context.Background()
 	store := newTestClient(t).InternalTasks()

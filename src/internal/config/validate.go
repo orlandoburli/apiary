@@ -3,7 +3,30 @@ package config
 import (
 	"fmt"
 	"os"
+
+	"github.com/orlandoburli/apiary/internal/model"
 )
+
+// validateMCPs checks that each MCP server has a name and command, and that
+// names are unique within the scope. `scope` is a human label for error
+// messages (e.g. `runners[0] "claude"`).
+func validateMCPs(scope string, mcps []model.MCPServer) []error {
+	var errs []error
+	seen := map[string]bool{}
+	for j, m := range mcps {
+		if m.Name == "" {
+			errs = append(errs, fmt.Errorf("%s: mcps[%d]: name is required", scope, j))
+		}
+		if m.Command == "" {
+			errs = append(errs, fmt.Errorf("%s: mcps[%d] %q: command is required", scope, j, m.Name))
+		}
+		if m.Name != "" && seen[m.Name] {
+			errs = append(errs, fmt.Errorf("%s: mcps[%d]: duplicate name %q", scope, j, m.Name))
+		}
+		seen[m.Name] = true
+	}
+	return errs
+}
 
 // Validate checks the config for structural errors.
 func (c *Config) Validate() []error {
@@ -25,6 +48,7 @@ func (c *Config) Validate() []error {
 			errs = append(errs, fmt.Errorf("runners[%d]: duplicate id %q", i, r.ID))
 		}
 		runnerIDs[r.ID] = true
+		errs = append(errs, validateMCPs(fmt.Sprintf("runners[%d] %q", i, r.ID), r.MCPs)...)
 	}
 
 	if c.DefaultRunner != "" && !runnerIDs[c.DefaultRunner] {
@@ -72,6 +96,7 @@ func (c *Config) Validate() []error {
 			errs = append(errs, fmt.Errorf("agents[%d]: duplicate id %q", i, a.ID))
 		}
 		agentIDs[a.ID] = true
+		errs = append(errs, validateMCPs(fmt.Sprintf("agents[%d] %q", i, a.ID), a.MCPs)...)
 	}
 
 	workerIDs := map[string]bool{}

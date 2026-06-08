@@ -21,12 +21,17 @@ func init() {
 		}
 	}
 
-	runner.Register("claude-cli", cliFactory("claude", nil))
+	// mcp_format selects how the CLI runner serialises MCP servers into the
+	// provider's native config (see execution.CliRunner.setupMCP).
+	runner.Register("claude-cli", cliFactory("claude", map[string]any{
+		"mcp_format": "claude",
+	}))
 
 	runner.Register("opencode-cli", cliFactory("opencode", map[string]any{
 		"args":              []any{"run"},
 		"prompt_flag":       "",
 		"prompt_positional": true,
+		"mcp_format":        "opencode",
 	}))
 
 	// Cursor agent CLI — requires the `agent` binary from https://cursor.com/install.
@@ -35,6 +40,7 @@ func init() {
 		"args":              []any{"-p", "--output-format", "stream-json", "--force"},
 		"prompt_flag":       "",
 		"prompt_positional": true,
+		"mcp_format":        "cursor",
 	}))
 
 	// ── API providers ──────────────────────────────────────────────────────────

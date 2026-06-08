@@ -127,6 +127,7 @@ erDiagram
         TEXT title
         TEXT description
         TEXT input "JSON from spawner"
+        TEXT dedup_key "idempotent spawn: UNIQUE(parent_task_id, dedup_key)"
         TEXT state "registered|running|approval_waiting|done|failed"
         TEXT metadata "JSON: labels, priority, type"
         INTEGER outstanding_workflows
