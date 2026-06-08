@@ -215,6 +215,13 @@ func TestStepRun_CRUD(t *testing.T) {
 	sr.Output = "did the work"
 	sr.StructuredOutput = `{"complexity":"high"}`
 	sr.Summary = "- planned it"
+	sr.InputPrompt = "you are an architect; plan it"
+	sr.InputTokens = 120
+	sr.OutputTokens = 80
+	sr.TotalTokens = 200
+	sr.NumTurns = 3
+	sr.NumToolCalls = 5
+	sr.CostUSD = 0.0123
 	sr.FinishedAt = &finished
 	if err := c.UpdateStepRun(ctx, sr); err != nil {
 		t.Fatalf("update step run: %v", err)
@@ -239,6 +246,24 @@ func TestStepRun_CRUD(t *testing.T) {
 	}
 	if got.FinishedAt == nil {
 		t.Error("finished_at not persisted")
+	}
+	if got.InputPrompt != "you are an architect; plan it" {
+		t.Errorf("input prompt wrong: %q", got.InputPrompt)
+	}
+	if got.InputTokens != 120 || got.OutputTokens != 80 || got.TotalTokens != 200 {
+		t.Errorf("token columns wrong: %+v", got)
+	}
+	if got.NumTurns != 3 || got.NumToolCalls != 5 {
+		t.Errorf("turn/tool-call columns wrong: %+v", got)
+	}
+	if got.CostUSD != 0.0123 {
+		t.Errorf("cost wrong: %v", got.CostUSD)
+	}
+	if !StepRunHasUsage(got) {
+		t.Error("StepRunHasUsage should be true for a row with tokens/cost")
+	}
+	if StepRunHasUsage(StepRun{}) {
+		t.Error("StepRunHasUsage should be false for an empty row")
 	}
 }
 

@@ -58,6 +58,12 @@ type RunResult struct {
 	Error    error
 	Usage    *Usage // populated by runners that support usage reporting
 
+	// InputPrompt is the full composed prompt the runner sent to the agent (system
+	// prepend + cell details + system append, exactly as buildPrompt assembled it).
+	// Persisted per execution for cost auditing and replay. Empty for runners that
+	// do not report it.
+	InputPrompt string
+
 	// StructuredOutput is the parsed JSON object from the APIARY_OUTPUT: sentinel
 	// line, when present. Nil for runs that emit no structured output. The
 	// sentinel line is stripped from Output.

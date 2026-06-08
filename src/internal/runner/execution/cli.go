@@ -213,6 +213,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		Logs:        logs,
 		Duration:    time.Since(start),
 		Usage:       usagePtr,
+		InputPrompt: prompt,
 		RateLimited: rateLimited,
 	}
 	if rateLimited && rateLimitResetsAt > 0 {

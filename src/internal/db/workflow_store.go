@@ -70,8 +70,18 @@ type StepRun struct {
 	// SpawnedTaskID is the child InternalTask id created when the step emitted an
 	// APIARY_SPAWN request. Empty when the step spawned nothing.
 	SpawnedTaskID string
-	StartedAt     *time.Time
-	FinishedAt    *time.Time
+	// InputPrompt is the composed prompt of the step's final (winning) attempt.
+	InputPrompt string
+	// Token/cost rollup, summed across the step's failover attempts. Per-attempt
+	// detail lives in the linked task_executions rows.
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
+	NumTurns     int
+	NumToolCalls int
+	CostUSD      float64
+	StartedAt    *time.Time
+	FinishedAt   *time.Time
 }
 
 // CreateWorkflowInstance inserts a new workflow instance. The caller supplies
@@ -342,18 +352,27 @@ func (c *Client) ReconcileOrphanWorkflowInstances(ctx context.Context) (int64, e
 	return res.RowsAffected()
 }
 
+// StepRunHasUsage reports whether a step run carries its own token/cost rollup
+// (populated since step_runs gained the usage columns). Rows written earlier
+// leave these at zero, in which case callers fall back to GetStepUsage.
+func StepRunHasUsage(s StepRun) bool {
+	return s.TotalTokens > 0 || s.InputTokens > 0 || s.OutputTokens > 0 || s.CostUSD > 0
+}
+
 // CreateStepRun inserts a new step run row.
 func (c *Client) CreateStepRun(ctx context.Context, sr *StepRun) error {
 	_, err := c.db.ExecContext(ctx, `
 		INSERT INTO step_runs
 		  (id, workflow_instance_id, step_id, agent_id, state, output, structured_output,
 		   summary, exit_code, skipped_cached, publish_payload, publish_state, spawned_task_id,
+		   input_prompt, input_tokens, output_tokens, total_tokens, num_turns, num_tool_calls, cost_usd,
 		   started_at, finished_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, sr.ID, sr.WorkflowInstanceID, sr.StepID, nullStr(sr.AgentID), sr.State,
 		nullStr(sr.Output), nullStr(sr.StructuredOutput), nullStr(sr.Summary),
 		sr.ExitCode, sr.SkippedCached, nullStr(sr.PublishPayload), nullStr(sr.PublishState),
-		nullStr(sr.SpawnedTaskID), sr.StartedAt, sr.FinishedAt)
+		nullStr(sr.SpawnedTaskID), nullStr(sr.InputPrompt), sr.InputTokens, sr.OutputTokens,
+		sr.TotalTokens, sr.NumTurns, sr.NumToolCalls, sr.CostUSD, sr.StartedAt, sr.FinishedAt)
 	return err
 }
 
@@ -364,11 +383,14 @@ func (c *Client) UpdateStepRun(ctx context.Context, sr *StepRun) error {
 		UPDATE step_runs
 		SET state = ?, output = ?, structured_output = ?, summary = ?,
 		    exit_code = ?, skipped_cached = ?, publish_payload = ?, publish_state = ?,
-		    spawned_task_id = ?, started_at = ?, finished_at = ?
+		    spawned_task_id = ?, input_prompt = ?, input_tokens = ?, output_tokens = ?,
+		    total_tokens = ?, num_turns = ?, num_tool_calls = ?, cost_usd = ?,
+		    started_at = ?, finished_at = ?
 		WHERE id = ?
 	`, sr.State, nullStr(sr.Output), nullStr(sr.StructuredOutput), nullStr(sr.Summary),
 		sr.ExitCode, sr.SkippedCached, nullStr(sr.PublishPayload), nullStr(sr.PublishState),
-		nullStr(sr.SpawnedTaskID), sr.StartedAt, sr.FinishedAt, sr.ID)
+		nullStr(sr.SpawnedTaskID), nullStr(sr.InputPrompt), sr.InputTokens, sr.OutputTokens,
+		sr.TotalTokens, sr.NumTurns, sr.NumToolCalls, sr.CostUSD, sr.StartedAt, sr.FinishedAt, sr.ID)
 	return err
 }
 
@@ -379,7 +401,10 @@ func (c *Client) ListStepRuns(ctx context.Context, instanceID string) ([]StepRun
 		       COALESCE(output,''), COALESCE(structured_output,''), COALESCE(summary,''),
 		       COALESCE(exit_code,0), COALESCE(skipped_cached,0),
 		       COALESCE(publish_payload,''), COALESCE(publish_state,''),
-		       COALESCE(spawned_task_id,''), started_at, finished_at
+		       COALESCE(spawned_task_id,''), COALESCE(input_prompt,''),
+		       COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(total_tokens,0),
+		       COALESCE(num_turns,0), COALESCE(num_tool_calls,0), COALESCE(cost_usd,0.0),
+		       started_at, finished_at
 		FROM step_runs WHERE workflow_instance_id = ? ORDER BY rowid ASC
 	`, instanceID)
 	if err != nil {
@@ -392,7 +417,9 @@ func (c *Client) ListStepRuns(ctx context.Context, instanceID string) ([]StepRun
 		var sr StepRun
 		if err := rows.Scan(&sr.ID, &sr.WorkflowInstanceID, &sr.StepID, &sr.AgentID, &sr.State,
 			&sr.Output, &sr.StructuredOutput, &sr.Summary, &sr.ExitCode, &sr.SkippedCached,
-			&sr.PublishPayload, &sr.PublishState, &sr.SpawnedTaskID, &sr.StartedAt, &sr.FinishedAt); err != nil {
+			&sr.PublishPayload, &sr.PublishState, &sr.SpawnedTaskID, &sr.InputPrompt,
+			&sr.InputTokens, &sr.OutputTokens, &sr.TotalTokens, &sr.NumTurns, &sr.NumToolCalls,
+			&sr.CostUSD, &sr.StartedAt, &sr.FinishedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, sr)
