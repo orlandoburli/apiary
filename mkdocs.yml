@@ -23,7 +23,11 @@ extra_css:
 markdown_extensions:
   - admonition
   - pymdownx.details
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
   - pymdownx.highlight:
@@ -37,6 +41,7 @@ nav:
   - Home: index.md
   - Installation: installation.md
   - Apiary Guide: apiary-guide.md
+  - Data Model: data-model.md
   - Dashboard: dashboard.md
   - GitHub Source: github-source.md
   - VS Code Extension: vscode-extension.md
