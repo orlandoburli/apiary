@@ -2695,7 +2695,14 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	row("Runner", valueOr(d.Runner, "—"))
 	row("Attempts", fmt.Sprintf("%d", d.Attempt))
 	row("Started", started)
-	row("Completed", completed)
+	// Label the terminal timestamp by outcome: a failed task that shows
+	// "Completed: <time>" reads as success even though the Status badge says
+	// failed. CompletedAt is populated for both done and failed terminal states.
+	endedLabel := "Completed"
+	if d.Status == "failed" {
+		endedLabel = "Failed at"
+	}
+	row(endedLabel, completed)
 	row("Duration", dur)
 	row("Tokens", fmt.Sprintf("%d in / %d out / %d total", d.InputTokens, d.OutputTokens, d.TotalTokens))
 	row("Turns / Calls", fmt.Sprintf("%d / %d", d.NumTurns, d.NumToolCalls))
@@ -2823,14 +2830,36 @@ func renderWorkflowSteps(inst *WorkflowInstanceItem) string {
 		b.WriteString("  " + StyleWarning.Render("⏸ "+inst.Message) + "\n")
 	}
 
-	if len(inst.Steps) == 0 {
-		return b.String()
+	if len(inst.Steps) > 0 {
+		b.WriteString("\n  " + StyleLabel.Render("Steps") + "\n")
+		for _, s := range inst.Steps {
+			b.WriteString("    " + wfStepRow(s) + "\n")
+		}
 	}
-	b.WriteString("\n  " + StyleLabel.Render("Steps") + "\n")
-	for _, s := range inst.Steps {
-		b.WriteString("    " + wfStepRow(s) + "\n")
+	if m := wfFailureMarker(inst); m != "" {
+		b.WriteString("  " + m + "\n")
 	}
 	return b.String()
+}
+
+// wfFailureMarker returns a one-line notice when an instance is failed but none
+// of its recorded steps is — i.e. the run died after (or between) the steps that
+// were persisted (e.g. a later CI-wait or gate), so the all-passed step list
+// would otherwise read as a completed run.
+func wfFailureMarker(inst *WorkflowInstanceItem) string {
+	if inst.State != db.InstanceStateFailed {
+		return ""
+	}
+	for _, s := range inst.Steps {
+		if s.State == db.StepStateFailed {
+			return "" // the failing step is already visible in the list
+		}
+	}
+	after := "before any step completed"
+	if n := len(inst.Steps); n > 0 {
+		after = "after step '" + inst.Steps[n-1].StepID + "'"
+	}
+	return StyleError.Render("✗ workflow failed " + after + " — no further steps recorded")
 }
 
 // wfStepRow formats a single workflow step as one display row (glyph, step id,
@@ -2992,6 +3021,9 @@ func (a *App) taskHistoryLines() []string {
 			if s.Summary != "" {
 				out = append(out, "      "+StyleMuted.Render(truncate(s.Summary, sw)))
 			}
+		}
+		if m := wfFailureMarker(&seg.Instance); m != "" {
+			out = append(out, "  "+m)
 		}
 		out = append(out, a.logEntryLines(seg.Logs)...)
 	}

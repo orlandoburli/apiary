@@ -535,6 +535,43 @@ func TestTaskDetailShowsUsageWhenZero(t *testing.T) {
 	}
 }
 
+// A failed task populates CompletedAt too, so the terminal-timestamp row must
+// be relabeled "Failed at" rather than "Completed" (which reads as success).
+func TestTaskDetailFailedRelabelsCompletedRow(t *testing.T) {
+	now := time.Now()
+	a := newTestApp(80, 24)
+	a.model.tasksTab.View = TaskViewDetail
+	a.model.tasksTab.Detail = &TaskItem{
+		TaskID:      "T-9",
+		Title:       "failed task",
+		Status:      "failed",
+		CompletedAt: &now,
+	}
+	out := stripANSI(a.renderTaskDetail(a.model.tasksTab, 20))
+	if !strings.Contains(out, "Failed at:") {
+		t.Errorf("failed task should show a 'Failed at' row; got:\n%s", out)
+	}
+	if strings.Contains(out, "Completed:") {
+		t.Errorf("failed task should not show a 'Completed' row; got:\n%s", out)
+	}
+}
+
+func TestTaskDetailDoneKeepsCompletedRow(t *testing.T) {
+	now := time.Now()
+	a := newTestApp(80, 24)
+	a.model.tasksTab.View = TaskViewDetail
+	a.model.tasksTab.Detail = &TaskItem{
+		TaskID:      "T-10",
+		Title:       "done task",
+		Status:      "done",
+		CompletedAt: &now,
+	}
+	out := stripANSI(a.renderTaskDetail(a.model.tasksTab, 20))
+	if !strings.Contains(out, "Completed:") {
+		t.Errorf("done task should keep the 'Completed' row; got:\n%s", out)
+	}
+}
+
 func TestContextualFooter(t *testing.T) {
 	a := newTestApp(100, 24)
 
