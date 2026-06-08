@@ -17,11 +17,16 @@ const (
 // created from a source binding (see SourceBinding) or spawned by a workflow
 // step (see SpawnRequest), in which case ParentTaskID and Input are populated.
 type InternalTask struct {
-	ID                   string
-	ParentTaskID         string // empty if root task
-	Title                string
-	Description          string
-	Input                map[string]any // structured input from spawner, nil for source-bound tasks
+	ID           string
+	ParentTaskID string // empty if root task
+	Title        string
+	Description  string
+	Input        map[string]any // structured input from spawner, nil for source-bound tasks
+	// DedupKey makes spawning idempotent: it is a deterministic key, unique within
+	// a parent, derived from the spawn request (or the caller-supplied SpawnRequest.Key).
+	// A re-run of the same decomposition resolves to the existing child instead of
+	// creating a duplicate. Empty for source-bound (non-spawned) tasks.
+	DedupKey             string
 	State                TaskState
 	Metadata             TaskMetadata
 	OutstandingWorkflows int
@@ -64,11 +69,16 @@ type SourceBinding struct {
 // SpawnRequest describes a new InternalTask requested by a workflow step via the
 // APIARY_SPAWN marker. WorkflowSpawner (internal/workflow) consumes it to create
 // the child task and dispatch the named workflow. The JSON tags map the marker's
-// payload ({"workflow","title","input"}) onto this struct; ParentTaskID is never
-// taken from agent output — the engine sets it to the spawning task's id.
+// payload ({"workflow","title","input","key"}) onto this struct; ParentTaskID is
+// never taken from agent output — the engine sets it to the spawning task's id.
 type SpawnRequest struct {
 	ParentTaskID string         `json:"-"`
 	WorkflowID   string         `json:"workflow"`
 	Title        string         `json:"title"`
 	Input        map[string]any `json:"input"`
+	// Key is an optional caller-supplied idempotency key (the per-spec "task_key"):
+	// when set, two spawns with the same Key under the same parent resolve to the
+	// same child. When empty the spawner derives a key from (workflow, title, input)
+	// so identical re-runs still dedup. See WorkflowSpawner.Spawn.
+	Key string `json:"key,omitempty"`
 }

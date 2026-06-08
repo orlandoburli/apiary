@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,7 +13,8 @@ import (
 )
 
 // fakeCreator records created tasks. CreateTask mimics the store's behaviour of
-// leaving a caller-supplied id in place.
+// leaving a caller-supplied id in place, and FindChildByDedupKey mimics the
+// (parent_task_id, dedup_key) unique index so idempotency can be exercised.
 type fakeCreator struct {
 	mu    sync.Mutex
 	tasks []model.InternalTask
@@ -20,9 +22,31 @@ type fakeCreator struct {
 
 func (f *fakeCreator) CreateTask(_ context.Context, t *model.InternalTask) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if t.DedupKey != "" {
+		for _, existing := range f.tasks {
+			if existing.ParentTaskID == t.ParentTaskID && existing.DedupKey == t.DedupKey {
+				return fmt.Errorf("UNIQUE constraint failed: internal_tasks.dedup_key")
+			}
+		}
+	}
 	f.tasks = append(f.tasks, *t)
-	f.mu.Unlock()
 	return nil
+}
+
+func (f *fakeCreator) FindChildByDedupKey(_ context.Context, parentTaskID, dedupKey string) (*model.InternalTask, error) {
+	if dedupKey == "" {
+		return nil, nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.tasks {
+		if f.tasks[i].ParentTaskID == parentTaskID && f.tasks[i].DedupKey == dedupKey {
+			found := f.tasks[i]
+			return &found, nil
+		}
+	}
+	return nil, nil
 }
 
 func (f *fakeCreator) created() []model.InternalTask {
@@ -94,6 +118,87 @@ func TestDefaultSpawner_CreatesChildAndRuns(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("named workflow was not dispatched")
+	}
+}
+
+// TestDefaultSpawner_IdempotentPerSpec covers issue #119: re-running the same
+// decomposition (same parent + workflow + title + input, or an explicit key)
+// must resolve to the existing child instead of fanning out a duplicate set of
+// sub-issues. The workflow is launched exactly once.
+func TestDefaultSpawner_IdempotentPerSpec(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  model.SpawnRequest
+	}{
+		{"derived key (identical title+input)", model.SpawnRequest{
+			ParentTaskID: "spec-1986",
+			WorkflowID:   "implementation",
+			Title:        "DB Migration: fabricantes",
+			Input:        map[string]any{"task": "db", "table": "fabricantes"},
+		}},
+		{"explicit task_key", model.SpawnRequest{
+			ParentTaskID: "spec-1986",
+			WorkflowID:   "implementation",
+			Title:        "Backend CRUD",
+			Key:          "spec-1986/backend",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			creator := &fakeCreator{}
+			var runs int32
+			run := func(_ context.Context, _ config.WorkflowConfig, _ model.InternalTask) (bool, error) {
+				atomic.AddInt32(&runs, 1)
+				return true, nil
+			}
+			s := NewDefaultSpawner(
+				func(string) (config.WorkflowConfig, bool) { return config.WorkflowConfig{ID: "implementation"}, true },
+				creator, run, testIDGen(), func() time.Time { return time.Unix(1000, 0) },
+			)
+
+			first, err := s.Spawn(context.Background(), tc.req)
+			if err != nil {
+				t.Fatalf("first Spawn: %v", err)
+			}
+			second, err := s.Spawn(context.Background(), tc.req)
+			if err != nil {
+				t.Fatalf("second Spawn: %v", err)
+			}
+
+			if second.ID != first.ID {
+				t.Errorf("second spawn created a new child %q, want existing %q", second.ID, first.ID)
+			}
+			if created := creator.created(); len(created) != 1 {
+				t.Fatalf("created %d child tasks, want 1 (duplicate spawn not deduped)", len(created))
+			}
+			// Give the (single) launched workflow a moment, then assert it ran once.
+			time.Sleep(50 * time.Millisecond)
+			if n := atomic.LoadInt32(&runs); n != 1 {
+				t.Errorf("workflow launched %d times, want 1", n)
+			}
+		})
+	}
+}
+
+// TestDefaultSpawner_DistinctTasksNotDeduped guards against over-eager dedup:
+// different tasks of the same spec (distinct titles) must each get their own
+// child.
+func TestDefaultSpawner_DistinctTasksNotDeduped(t *testing.T) {
+	creator := &fakeCreator{}
+	s := NewDefaultSpawner(
+		func(string) (config.WorkflowConfig, bool) { return config.WorkflowConfig{ID: "implementation"}, true },
+		creator,
+		func(context.Context, config.WorkflowConfig, model.InternalTask) (bool, error) { return true, nil },
+		testIDGen(), func() time.Time { return time.Unix(1000, 0) },
+	)
+	for _, title := range []string{"DB Migration", "Backend CRUD", "Frontend", "E2E"} {
+		if _, err := s.Spawn(context.Background(), model.SpawnRequest{
+			ParentTaskID: "spec-1986", WorkflowID: "implementation", Title: title,
+		}); err != nil {
+			t.Fatalf("Spawn %q: %v", title, err)
+		}
+	}
+	if created := creator.created(); len(created) != 4 {
+		t.Fatalf("created %d children, want 4 distinct", len(created))
 	}
 }
 

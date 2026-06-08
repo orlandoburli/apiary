@@ -11,6 +11,12 @@ runners:
       - claude-opus-4-8
       - claude-sonnet-4-6
       - claude-haiku-4-5
+    # GitNexus code-intelligence MCP — exposed to every agent on this runner.
+    # `mcp` serves all repos already indexed via `gitnexus analyze`.
+    mcps:
+      - name: gitnexus
+        command: npx
+        args: ["-y", "gitnexus@latest", "mcp"]
 
 default_runner: claude
 

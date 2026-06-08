@@ -220,7 +220,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			return nil, fmt.Errorf("agent %q: runner type %q not found", ac.ID, rc.Type)
 		}
 
-		if err := ra.Configure(rc.Config); err != nil {
+		if err := ra.Configure(runnerConfigWithMCPs(rc.Config, rc.MCPs, ac.MCPs)); err != nil {
 			return nil, fmt.Errorf("agent %q: configure runner: %w", ac.ID, err)
 		}
 
@@ -247,7 +247,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			if !ok {
 				return nil, fmt.Errorf("agent %q: fallback runner type %q not found", ac.ID, fAdapterName)
 			}
-			if err := fra.Configure(frc.Config); err != nil {
+			if err := fra.Configure(runnerConfigWithMCPs(frc.Config, frc.MCPs, ac.MCPs)); err != nil {
 				return nil, fmt.Errorf("agent %q: configure fallback runner %q: %w", ac.ID, fb.Runner, err)
 			}
 			if fAdapterName == "opencode" {
@@ -955,6 +955,7 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 		// label-based lock (state_lock / "in-progress"), which is source-specific.
 		if persisted && d.db != nil {
 			matches = d.dropActiveMatches(ctx, task.ID, matches)
+			matches = d.dropOnceMatches(ctx, task.ID, matches)
 			matches = d.dropCappedMatches(ctx, task, matches)
 		}
 		if len(matches) == 0 {
@@ -1107,6 +1108,35 @@ func (d *Dispatcher) dropActiveMatches(ctx context.Context, taskID string, match
 		}
 		if active {
 			aplog.Debug("task %s: workflow %s already active (running/approval_waiting), skipping re-dispatch", taskID, m.Route.ID)
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// dropOnceMatches removes matches whose trigger declared `once: true` and that
+// already have a completed (done) instance for this task. It is the source-agnostic
+// run-at-most-once guard: a decomposition / fan-out workflow whose source item (a
+// spec issue) stays in its trigger set after succeeding would otherwise be
+// re-dispatched on every poll, fanning out a duplicate set of children (issue
+// #119). Only routes that opt in via `once` are checked; all others pass through.
+// Fail-closed: on a query error the (once) match is dropped — skip this poll and
+// retry next, rather than risk a duplicate fan-out.
+func (d *Dispatcher) dropOnceMatches(ctx context.Context, taskID string, matches []router.Match) []router.Match {
+	out := make([]router.Match, 0, len(matches))
+	for _, m := range matches {
+		if !m.Route.Once {
+			out = append(out, m)
+			continue
+		}
+		done, err := d.db.HasCompletedInstanceForRoute(ctx, taskID, m.Route.ID)
+		if err != nil {
+			aplog.Error("once check task %s workflow %s: %v — skipping this poll", taskID, m.Route.ID, err)
+			continue
+		}
+		if done {
+			aplog.Debug("task %s: workflow %s already completed and is once-only, skipping re-dispatch", taskID, m.Route.ID)
 			continue
 		}
 		out = append(out, m)
@@ -1328,6 +1358,24 @@ func (d *Dispatcher) registerAgentInConfig(workDir string, ac config.AgentConfig
 		return err
 	}
 	return os.WriteFile(globalConfigPath, raw, 0644)
+}
+
+// runnerConfigWithMCPs returns the runner's config map augmented with the
+// resolved MCP servers (runner-scope defaults overlaid by agent-scope overrides,
+// keyed by name) under the "mcps" key, which CliRunner.Configure consumes. The
+// base map is never mutated — a shallow copy is returned only when there are
+// servers to inject, so MCP-less runners keep their original config untouched.
+func runnerConfigWithMCPs(base map[string]any, runnerMCPs, agentMCPs []model.MCPServer) map[string]any {
+	merged := model.MergeMCPServers(runnerMCPs, agentMCPs)
+	if len(merged) == 0 {
+		return base
+	}
+	out := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		out[k] = v
+	}
+	out["mcps"] = merged
+	return out
 }
 
 func workerRunConfig(wc config.WorkerConfig) map[string]any {

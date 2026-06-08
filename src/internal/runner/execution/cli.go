@@ -27,6 +27,14 @@ type CliRunner struct {
 	promptFlag       string
 	turnsFlag        string
 	promptPositional bool // pass prompt as last positional arg instead of a flag
+	// mcpFormat selects how MCP servers are serialised into the provider's native
+	// config ("claude" | "cursor" | "opencode"); empty disables MCP support.
+	mcpFormat string
+	// mcps are the resolved (runner + agent) MCP servers for this runner instance.
+	mcps []model.MCPServer
+	// mcpRunArgs are extra CLI args injected into every run to activate the MCP
+	// config written by setupMCP (e.g. claude's "--mcp-config <path>").
+	mcpRunArgs []string
 }
 
 func (r *CliRunner) ID() string { return "cli" }
@@ -56,6 +64,22 @@ func (r *CliRunner) Configure(config map[string]any) error {
 			}
 		}
 	}
+	if v, ok := config["mcp_format"].(string); ok && v != "" {
+		r.mcpFormat = v
+	}
+	if v, ok := config["mcps"].([]model.MCPServer); ok {
+		r.mcps = v
+	}
+	// Materialise the provider's MCP config (and any per-run CLI args) once the
+	// servers are known. Configure runs at load time, sequentially across agents,
+	// so the global-config merges (cursor/opencode) are race-free.
+	if len(r.mcps) > 0 {
+		args, err := r.setupMCP()
+		if err != nil {
+			return fmt.Errorf("cli runner: setup MCP: %w", err)
+		}
+		r.mcpRunArgs = args
+	}
 	return nil
 }
 
@@ -64,6 +88,9 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	prompt := buildPrompt(req)
 
 	argv := append([]string{}, r.args...)
+	// Inject MCP activation args (e.g. claude's "--mcp-config <path>") before the
+	// model/prompt flags; the provider config itself was written by setupMCP.
+	argv = append(argv, r.mcpRunArgs...)
 	if r.modelFlag != "" && req.Model != "" {
 		argv = append(argv, r.modelFlag, req.Model)
 	}

@@ -79,12 +79,39 @@ func insertTask(ctx context.Context, ex execer, task *model.InternalTask) error 
 	_, err = ex.ExecContext(ctx, `
 		INSERT INTO internal_tasks
 		  (id, parent_task_id, title, description, input, state, metadata,
-		   outstanding_workflows, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   outstanding_workflows, created_at, updated_at, dedup_key)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, task.ID, nullStr(task.ParentTaskID), task.Title, nullStr(task.Description),
 		inputJSON, string(task.State), string(metaJSON), task.OutstandingWorkflows,
-		task.CreatedAt, task.UpdatedAt)
+		task.CreatedAt, task.UpdatedAt, nullStr(task.DedupKey))
 	return err
+}
+
+// FindChildByDedupKey returns the child of parentTaskID whose dedup_key matches,
+// or (nil, nil) when none exists. It backs the spawner's idempotency check: a
+// re-run of the same decomposition resolves to the already-created child instead
+// of spawning a duplicate. An empty dedupKey never matches (returns nil, nil) —
+// only spawned tasks carry one. Backed by idx_internal_tasks_dedup.
+func (s *InternalTaskStore) FindChildByDedupKey(ctx context.Context, parentTaskID, dedupKey string) (*model.InternalTask, error) {
+	if dedupKey == "" {
+		return nil, nil
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
+		       COALESCE(input,''), state, COALESCE(metadata,''),
+		       COALESCE(outstanding_workflows,0), created_at, updated_at
+		FROM internal_tasks
+		WHERE parent_task_id = ? AND dedup_key = ?
+	`, parentTaskID, dedupKey)
+	task, err := scanTask(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	task.DedupKey = dedupKey
+	return task, nil
 }
 
 // GetTask fetches a task by ID, or (nil, nil) if not found.

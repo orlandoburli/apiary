@@ -162,6 +162,40 @@ func TestHasActiveInstanceForRoute(t *testing.T) {
 	}
 }
 
+func TestHasCompletedInstanceForRoute(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+
+	// task T1: decompose done; T2: decompose still running; T3: decompose failed.
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t1-dec", WorkflowID: "decompose", CellID: "1986", TaskID: "T1", State: InstanceStateDone})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t2-dec", WorkflowID: "decompose", CellID: "1987", TaskID: "T2", State: InstanceStateRunning})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t3-dec", WorkflowID: "decompose", CellID: "1988", TaskID: "T3", State: InstanceStateFailed})
+
+	cases := []struct {
+		name       string
+		taskID     string
+		workflowID string
+		want       bool
+	}{
+		{"done blocks re-dispatch", "T1", "decompose", true},
+		{"running is not yet complete", "T2", "decompose", false},
+		{"failed does not count as completed", "T3", "decompose", false},
+		{"different workflow on same task", "T1", "implementation", false},
+		{"unknown task", "T9", "decompose", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := c.HasCompletedInstanceForRoute(ctx, tc.taskID, tc.workflowID)
+			if err != nil {
+				t.Fatalf("HasCompletedInstanceForRoute: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("HasCompletedInstanceForRoute(%q,%q) = %v, want %v", tc.taskID, tc.workflowID, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWorkflowInstance_ListByTask(t *testing.T) {
 	ctx := context.Background()
 	c := newTestClient(t)

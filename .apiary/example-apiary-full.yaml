@@ -9,6 +9,17 @@ runners:
     provider: claude
     config:
       args: ["--output-format", "stream-json", "--verbose"]
+    # Model Context Protocol servers exposed to every agent on this runner.
+    # Each provider writes them into its own native MCP config: claude uses a
+    # temp file + `--mcp-config`, cursor merges ~/.cursor/mcp.json + `--approve-mcps`,
+    # opencode merges the global opencode.json `mcp` block. Agent-level `mcps:`
+    # (see agents below) override these by name.
+    mcps:
+      - name: gitnexus
+        command: npx
+        args: ["-y", "gitnexus@latest", "mcp"]
+        # env:                       # optional; ${VAR} refs are expanded at load
+        #   GITNEXUS_TOKEN: ${GITNEXUS_TOKEN}
 
   # Claude API runner (Anthropic API with full model access) — requires provider
   - id: claude-api
@@ -141,6 +152,12 @@ agents:
     fallbacks:
       - {runner: opencode-go-cli}
       - {runner: opencode-zen-cli}
+    # Agent-scope MCP servers are layered over the runner's `mcps:` (override by
+    # name, new names appended). Use this to give one agent an extra tool.
+    # mcps:
+    #   - name: playwright
+    #     command: npx
+    #     args: ["-y", "@playwright/mcp@latest"]
 
   - id: reviewer
     description: "Reviewer — performs code review and quality checks"
@@ -338,11 +355,20 @@ workflows:
   # workflows above; it is claimed by this workflow alone. (With exclusive: false,
   # the default, a task fans out to EVERY matching workflow, each as its own
   # instance, and the top-level `tasks:` hook below fires once all of them finish.)
+  #
+  # `once: true` — run this workflow at most once per task. Once it has a completed
+  # (done) instance for the task, later polls do NOT re-dispatch it even if the task
+  # still matches the trigger. Essential for a fan-out / decomposition workflow whose
+  # source item stays in its trigger set after it succeeds (e.g. it spawns children
+  # but does not change its own labels/state): without `once`, every poll would
+  # re-dispatch and create a DUPLICATE set of children (issue #119). Failed runs are
+  # not blocked — they stay eligible for retry up to settings.max_attempts.
   - id: incident-triage
     description: "Triage an incident, write a summary back to the issue, and spawn a collection task."
     trigger:
       priority: 5
       exclusive: true
+      once: true
       match:
         source: project-erp
         labels: [incident]
@@ -358,10 +384,17 @@ workflows:
           APIARY_PUBLISH_END
 
           APIARY_SPAWN_BEGIN
-          {"workflow": "collect-logs", "title": "Collect logs for incident", "input": {"severity": "high"}}
+          {"workflow": "collect-logs", "title": "Collect logs for incident", "input": {"severity": "high"}, "key": "incident/collect-logs"}
           APIARY_SPAWN_END
         publish: auto   # write the APIARY_PUBLISH payload back to the task's source bindings
         spawn: await    # block until the spawned collect-logs task is terminal; its failure fails this step
+        # "key" is OPTIONAL and makes spawning idempotent per parent task: re-running
+        # this step (or this whole workflow) with the same key resolves to the child
+        # already created instead of fanning out a duplicate. Use a stable per-task key
+        # (e.g. "<spec>/<task>") when one spec decomposes into a fixed set of sub-tasks,
+        # so a re-decomposition can never produce two of the same. When "key" is omitted
+        # the spawner derives one from (workflow, title, input), so byte-identical spawns
+        # still dedup; supply an explicit key whenever the title/input may vary across runs.
     on_complete:
       set_state: in review
 

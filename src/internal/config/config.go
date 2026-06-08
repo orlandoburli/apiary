@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	aplog "github.com/orlandoburli/apiary/internal/log"
+	"github.com/orlandoburli/apiary/internal/model"
 )
 
 type Config struct {
@@ -54,6 +55,11 @@ type RunnerConfig struct {
 	Provider string         `yaml:"provider,omitempty"` // adapter name: cli, opencode, script, claude, etc.
 	Config   map[string]any `yaml:"config"`
 	Models   []string       `yaml:"models,omitempty"`
+	// MCPs are Model Context Protocol servers exposed to every agent that uses
+	// this runner. Each CLI provider writes them into its own native MCP config
+	// format/location (see runner/execution). Agent-scope MCPs (AgentConfig.MCPs)
+	// are layered on top of these, overriding by name.
+	MCPs []model.MCPServer `yaml:"mcps,omitempty"`
 }
 
 // AdapterName returns the runner adapter name as "{provider}-{type}" when both
@@ -86,6 +92,10 @@ type AgentConfig struct {
 	// it resets and retries the step on the next non-paused fallback. Empty means
 	// no failover (the step fails / waits for the limit to reset).
 	Fallbacks []FallbackConfig `yaml:"fallbacks,omitempty"`
+	// MCPs are Model Context Protocol servers scoped to this agent. They are
+	// layered on top of the runner's MCPs (RunnerConfig.MCPs), overriding any
+	// runner-scope server with the same name.
+	MCPs []model.MCPServer `yaml:"mcps,omitempty"`
 }
 
 // FallbackConfig is one entry in an agent's rate-limit failover chain. Runner
@@ -137,6 +147,10 @@ type RouteConfig struct {
 	// RouteAll from considering any lower-priority route. Set by the Router when it
 	// synthesizes routes from workflow triggers.
 	Exclusive bool `yaml:"-"`
+	// Once mirrors TriggerConfig.Once: the dispatcher drops this route on a re-poll
+	// once the task already has a completed instance of it, so a run-at-most-once
+	// workflow does not re-dispatch. Set by the Router from the workflow trigger.
+	Once bool `yaml:"-"`
 }
 
 type RouteMatch struct {

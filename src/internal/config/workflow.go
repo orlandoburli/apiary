@@ -86,8 +86,16 @@ type TriggerConfig struct {
 	// Exclusive, when true, stops trigger evaluation after this trigger matches:
 	// no lower-priority trigger is considered. Use it for a terminal classifier or
 	// catch-all that must own a task alone rather than fan out alongside others.
-	Exclusive bool       `yaml:"exclusive"`
-	Match     RouteMatch `yaml:"match"`
+	Exclusive bool `yaml:"exclusive"`
+	// Once, when true, makes the workflow run at most once per task: once it has a
+	// completed (done) instance for the task, later polls do not re-dispatch it even
+	// if the task still matches the trigger. Use it for a decomposition/fan-out
+	// workflow whose source item (e.g. a spec issue) stays in its trigger set after
+	// the workflow succeeds — without it, every poll re-dispatches and produces a
+	// duplicate set of children (issue #119). Failed runs are not blocked (they
+	// remain eligible for retry up to settings.max_attempts).
+	Once  bool       `yaml:"once"`
+	Match RouteMatch `yaml:"match"`
 }
 
 // StepConfig is one node in a workflow graph. The active fields depend on Type.

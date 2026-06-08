@@ -178,6 +178,24 @@ func (c *Client) HasActiveInstanceForRoute(ctx context.Context, taskID, workflow
 	return n > 0, err
 }
 
+// HasCompletedInstanceForRoute reports whether the task already has a successfully
+// completed (done) instance of the given workflow. The dispatcher uses it to honor
+// a trigger's `once: true`: a run-at-most-once workflow (e.g. a spec decomposition)
+// is not re-dispatched after it has succeeded, even when its source item stays in
+// the trigger set — the guard against duplicate fan-out (issue #119). Only the
+// done state counts; a failed instance stays eligible for retry.
+func (c *Client) HasCompletedInstanceForRoute(ctx context.Context, taskID, workflowID string) (bool, error) {
+	var n int
+	err := c.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM workflow_instances
+		WHERE task_id = ? AND workflow_id = ? AND state = ?
+	`, taskID, workflowID, InstanceStateDone).Scan(&n)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return n > 0, err
+}
+
 // ListWorkflowInstancesByState returns all instances in the given state, oldest first.
 func (c *Client) ListWorkflowInstancesByState(ctx context.Context, state string) ([]WorkflowInstance, error) {
 	rows, err := c.db.QueryContext(ctx, `

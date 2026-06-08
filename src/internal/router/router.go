@@ -60,6 +60,7 @@ func New(cfg *config.Config) (*Router, error) {
 			Match:     wf.Trigger.Match,
 			Agent:     firstAgentStep(wf),
 			Exclusive: wf.Trigger.Exclusive,
+			Once:      wf.Trigger.Once,
 		})
 	}
 	sort.Slice(routes, func(i, j int) bool {
