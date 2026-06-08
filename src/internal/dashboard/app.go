@@ -1321,7 +1321,14 @@ func buildWorkflowInstanceItem(ctx context.Context, dbConn *db.Client, inst *db.
 				StartedAt:  s.StartedAt,
 				FinishedAt: s.FinishedAt,
 			}
-			if usage, err := dbConn.GetStepUsage(ctx, inst.ID, s.StepID); err == nil && usage != nil {
+			if db.StepRunHasUsage(s) {
+				si.InputTokens = s.InputTokens
+				si.OutputTokens = s.OutputTokens
+				si.TotalTokens = s.TotalTokens
+				si.CostUSD = s.CostUSD
+				si.NumTurns = s.NumTurns
+				si.NumToolCalls = s.NumToolCalls
+			} else if usage, err := dbConn.GetStepUsage(ctx, inst.ID, s.StepID); err == nil && usage != nil {
 				si.InputTokens = usage.InputTokens
 				si.OutputTokens = usage.OutputTokens
 				si.TotalTokens = usage.TotalTokens
@@ -2054,13 +2061,19 @@ func mapStepRuns(steps []db.StepRun, now time.Time) []WorkflowStepItem {
 	out := make([]WorkflowStepItem, 0, len(steps))
 	for _, s := range steps {
 		out = append(out, WorkflowStepItem{
-			StepID:   s.StepID,
-			Agent:    s.AgentID,
-			State:    s.State,
-			Duration: wfStepDuration(s, now),
-			Cached:   s.SkippedCached,
-			Output:   s.Output,
-			Summary:  s.Summary,
+			StepID:       s.StepID,
+			Agent:        s.AgentID,
+			State:        s.State,
+			Duration:     wfStepDuration(s, now),
+			Cached:       s.SkippedCached,
+			Output:       s.Output,
+			Summary:      s.Summary,
+			InputTokens:  s.InputTokens,
+			OutputTokens: s.OutputTokens,
+			TotalTokens:  s.TotalTokens,
+			CostUSD:      s.CostUSD,
+			NumTurns:     s.NumTurns,
+			NumToolCalls: s.NumToolCalls,
 		})
 	}
 	return out

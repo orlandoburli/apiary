@@ -36,10 +36,11 @@ func TestWfStepExecutor_RecordsExecution(t *testing.T) {
 	t.Cleanup(func() { _ = dbc.Close() })
 
 	runner := &fakeRunner{result: model.RunResult{
-		Success:  true,
-		Output:   "done",
-		Duration: 1200 * time.Millisecond,
-		Usage:    &model.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, CostUSD: 0.02, NumTurns: 3},
+		Success:     true,
+		Output:      "done",
+		InputPrompt: "system + cell + instruction",
+		Duration:    1200 * time.Millisecond,
+		Usage:       &model.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, CostUSD: 0.02, NumTurns: 3},
 	}}
 
 	d := &Dispatcher{
@@ -64,7 +65,16 @@ func TestWfStepExecutor_RecordsExecution(t *testing.T) {
 		t.Fatalf("expected success, got %+v", res)
 	}
 
-	// A terminal task_executions row must exist with the recorded usage.
+	// The StepResult carries usage and the composed prompt to the engine, which
+	// persists them onto the step run.
+	if res.Usage == nil || res.Usage.TotalTokens != 150 || res.Usage.CostUSD != 0.02 {
+		t.Errorf("StepResult.Usage not propagated: %+v", res.Usage)
+	}
+	if res.InputPrompt != "system + cell + instruction" {
+		t.Errorf("StepResult.InputPrompt = %q, want propagated", res.InputPrompt)
+	}
+
+	// A terminal task_executions row must exist with the recorded usage and prompts.
 	exec, err := dbc.GetLastExecution(ctx, "c1")
 	if err != nil {
 		t.Fatalf("GetLastExecution: %v", err)
@@ -81,8 +91,72 @@ func TestWfStepExecutor_RecordsExecution(t *testing.T) {
 	if exec.TotalTokens != 150 || exec.CostUSD != 0.02 {
 		t.Errorf("usage not recorded: tokens=%d cost=%.4f", exec.TotalTokens, exec.CostUSD)
 	}
+	if exec.InputPrompt != "system + cell + instruction" || exec.OutputText != "done" {
+		t.Errorf("prompts not recorded: in=%q out=%q", exec.InputPrompt, exec.OutputText)
+	}
 	if exec.DurationMs != 1200 {
 		t.Errorf("duration = %dms, want 1200", exec.DurationMs)
+	}
+}
+
+// TestWfStepExecutor_SumsUsageAcrossFailover verifies that when the primary
+// runner is rate-limited and the step fails over to a fallback, the StepResult's
+// usage is the sum of both attempts (the user paid for both), while each attempt
+// remains its own task_executions row.
+func TestWfStepExecutor_SumsUsageAcrossFailover(t *testing.T) {
+	ctx := context.Background()
+	dbc, err := db.New(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbc.Close() })
+
+	primary := &fakeRunner{result: model.RunResult{
+		Success:     false,
+		RateLimited: true,
+		Output:      "rate limited",
+		Usage:       &model.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15, CostUSD: 0.001, NumTurns: 1, NumToolCalls: 1},
+	}}
+	fallback := &fakeRunner{result: model.RunResult{
+		Success: true,
+		Output:  "done",
+		Usage:   &model.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, CostUSD: 0.02, NumTurns: 3, NumToolCalls: 4},
+	}}
+
+	d := &Dispatcher{
+		cfg:         &config.Config{},
+		db:          dbc,
+		runners:     map[string]runnerpkg.Runner{"agent-architect": primary},
+		agentRunner: map[string]string{"architect": "claude"},
+		agentFallbacks: map[string][]runnerCandidate{
+			"architect": {{adapter: fallback, runnerType: "claude-2", model: "claude-sonnet-4-6"}},
+		},
+	}
+	x := &wfStepExecutor{d: d}
+
+	res := x.ExecuteStep(ctx, workflow.StepRequest{
+		InstanceID: "wf_1",
+		Cell:       model.SourceItem{ID: "c1"},
+		Step:       config.StepConfig{ID: "plan", Agent: "architect"},
+	})
+
+	if !primary.ran || !fallback.ran {
+		t.Fatalf("expected both runners to run: primary=%v fallback=%v", primary.ran, fallback.ran)
+	}
+	if !res.Success {
+		t.Fatalf("expected fallback success, got %+v", res)
+	}
+	if res.Usage == nil {
+		t.Fatal("expected summed usage, got nil")
+	}
+	if res.Usage.TotalTokens != 165 || res.Usage.InputTokens != 110 || res.Usage.OutputTokens != 55 {
+		t.Errorf("tokens not summed across failover: %+v", res.Usage)
+	}
+	if res.Usage.NumTurns != 4 || res.Usage.NumToolCalls != 5 {
+		t.Errorf("turns/tool-calls not summed: %+v", res.Usage)
+	}
+	if diff := res.Usage.CostUSD - 0.021; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("cost not summed: got %v, want 0.021", res.Usage.CostUSD)
 	}
 }
 

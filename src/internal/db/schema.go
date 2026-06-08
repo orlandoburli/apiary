@@ -213,6 +213,23 @@ var migrations = []string{
 	`ALTER TABLE step_runs ADD COLUMN publish_payload TEXT`,
 	`ALTER TABLE step_runs ADD COLUMN publish_state TEXT`,
 	`ALTER TABLE step_runs ADD COLUMN spawned_task_id TEXT REFERENCES internal_tasks(id)`,
+	// Per-step prompt capture: the full composed input prompt sent to the runner
+	// and the raw agent output text, persisted alongside the token/cost columns
+	// for cost auditing and replay. task_executions already carries the token and
+	// cost columns (one row per runner invocation, so failovers stay distinct).
+	`ALTER TABLE task_executions ADD COLUMN input_prompt TEXT`,
+	`ALTER TABLE task_executions ADD COLUMN output_text TEXT`,
+	// Per-step usage rollup on the logical step record: token counts and cost are
+	// summed across the step's failover attempts; input_prompt holds the final
+	// (winning) attempt's composed prompt. Timing (started_at/finished_at) and the
+	// output text already live on step_runs.
+	`ALTER TABLE step_runs ADD COLUMN input_prompt TEXT`,
+	`ALTER TABLE step_runs ADD COLUMN input_tokens INTEGER DEFAULT 0`,
+	`ALTER TABLE step_runs ADD COLUMN output_tokens INTEGER DEFAULT 0`,
+	`ALTER TABLE step_runs ADD COLUMN total_tokens INTEGER DEFAULT 0`,
+	`ALTER TABLE step_runs ADD COLUMN num_turns INTEGER DEFAULT 0`,
+	`ALTER TABLE step_runs ADD COLUMN num_tool_calls INTEGER DEFAULT 0`,
+	`ALTER TABLE step_runs ADD COLUMN cost_usd REAL DEFAULT 0.0`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).

@@ -219,7 +219,17 @@ func (d *Dispatcher) stepRunView(ctx context.Context, instanceID string, s db.St
 		StartedAt:  s.StartedAt,
 		FinishedAt: s.FinishedAt,
 	}
-	if usage, err := d.db.GetStepUsage(ctx, instanceID, s.StepID); err == nil && usage != nil {
+	// Prefer the step's own usage rollup (summed across failover attempts). Fall
+	// back to the latest task_execution for rows written before step_runs carried
+	// these columns.
+	if db.StepRunHasUsage(s) {
+		srv.InputTokens = s.InputTokens
+		srv.OutputTokens = s.OutputTokens
+		srv.TotalTokens = s.TotalTokens
+		srv.CostUSD = s.CostUSD
+		srv.NumTurns = s.NumTurns
+		srv.NumToolCalls = s.NumToolCalls
+	} else if usage, err := d.db.GetStepUsage(ctx, instanceID, s.StepID); err == nil && usage != nil {
 		srv.InputTokens = usage.InputTokens
 		srv.OutputTokens = usage.OutputTokens
 		srv.TotalTokens = usage.TotalTokens

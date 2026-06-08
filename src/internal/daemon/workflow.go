@@ -308,6 +308,11 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 	}}, x.d.agentFallbacks[req.Step.Agent]...)
 
 	var res model.RunResult
+	// summedUsage accumulates token/cost across every attempt (primary + failovers)
+	// so the step run reflects everything the step actually cost, not just the
+	// winning attempt. Per-attempt detail stays in each task_executions row.
+	var summedUsage model.Usage
+	var anyUsage bool
 	for i, c := range candidates {
 		last := i == len(candidates)-1
 		if !last && x.d.runnerPausedUntil(c.runnerType).After(time.Now()) {
@@ -336,6 +341,16 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		x.finishExecution(ctx, exec, out)
 		res = out
 
+		if out.Usage != nil {
+			anyUsage = true
+			summedUsage.InputTokens += out.Usage.InputTokens
+			summedUsage.OutputTokens += out.Usage.OutputTokens
+			summedUsage.TotalTokens += out.Usage.TotalTokens
+			summedUsage.NumTurns += out.Usage.NumTurns
+			summedUsage.NumToolCalls += out.Usage.NumToolCalls
+			summedUsage.CostUSD += out.Usage.CostUSD
+		}
+
 		// On a provider rate-limit rejection, pause this runner type until it
 		// resets and fail over to the next candidate. Not a genuine failure — the
 		// run did no work — so we do not return it while a fallback remains.
@@ -356,10 +371,16 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		publishPayload = ""
 	}
 
+	var usage *model.Usage
+	if anyUsage {
+		u := summedUsage
+		usage = &u
+	}
+
 	// A malformed APIARY_SPAWN block is a step-level error so the workflow fails
 	// with a descriptive message rather than silently dropping the request.
 	if res.SpawnError != nil {
-		return workflow.StepResult{Success: false, Output: res.Output, Err: res.SpawnError}
+		return workflow.StepResult{Success: false, Output: res.Output, Usage: usage, InputPrompt: res.InputPrompt, Err: res.SpawnError}
 	}
 
 	return workflow.StepResult{
@@ -369,6 +390,8 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		Summary:          res.Summary,
 		PublishPayload:   publishPayload,
 		SpawnRequest:     res.SpawnRequest,
+		Usage:            usage,
+		InputPrompt:      res.InputPrompt,
 		Err:              res.Error,
 	}
 }
@@ -420,6 +443,8 @@ func (x *wfStepExecutor) finishExecution(ctx context.Context, exec *db.Execution
 		exec.NumToolCalls = res.Usage.NumToolCalls
 		exec.CostUSD = res.Usage.CostUSD
 	}
+	exec.InputPrompt = res.InputPrompt
+	exec.OutputText = res.Output
 	if err := x.d.db.UpdateExecution(ctx, exec); err != nil {
 		aplog.Error("cell %s: update execution record: %v", exec.TaskID, err)
 	}

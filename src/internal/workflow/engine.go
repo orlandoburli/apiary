@@ -85,7 +85,14 @@ type StepResult struct {
 	// SpawnRequest is the parsed APIARY_SPAWN request the agent emitted, if any.
 	// The engine creates a child task and dispatches the named workflow.
 	SpawnRequest *model.SpawnRequest
-	Err          error
+	// Usage is the token/cost rollup for the step, summed across the step's
+	// failover attempts (each attempt is also its own task_executions row). Nil
+	// when the runner reported no usage. The engine persists it onto the step run.
+	Usage *model.Usage
+	// InputPrompt is the composed prompt of the final (winning) attempt, persisted
+	// onto the step run for cost auditing and replay.
+	InputPrompt string
+	Err         error
 }
 
 // StepExecutor performs the actual runner invocation for a single agent step.
@@ -386,6 +393,15 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 	sr.FinishedAt = &finished
 	sr.Output = res.Output
 	sr.Summary = res.Summary
+	sr.InputPrompt = res.InputPrompt
+	if res.Usage != nil {
+		sr.InputTokens = res.Usage.InputTokens
+		sr.OutputTokens = res.Usage.OutputTokens
+		sr.TotalTokens = res.Usage.TotalTokens
+		sr.NumTurns = res.Usage.NumTurns
+		sr.NumToolCalls = res.Usage.NumToolCalls
+		sr.CostUSD = res.Usage.CostUSD
+	}
 	if res.StructuredOutput != nil {
 		if data, err := json.Marshal(res.StructuredOutput); err == nil {
 			sr.StructuredOutput = string(data)
