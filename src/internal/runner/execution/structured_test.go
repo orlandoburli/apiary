@@ -66,6 +66,91 @@ func TestExtractStructured_LastOutputWins(t *testing.T) {
 	}
 }
 
+func TestExtractStructured_BareLineRegression(t *testing.T) {
+	raw := strings.Join([]string{
+		"real output",
+		`APIARY_OUTPUT: {"review_verdict":"rejected","reason":"missing tests"}`,
+	}, "\n")
+	cleaned, structured, _, _, _ := extractStructured(raw)
+	if structured == nil {
+		t.Fatal("expected structured output for bare sentinel, got nil")
+	}
+	if structured["review_verdict"] != "rejected" {
+		t.Errorf("structured parsed incorrectly: %#v", structured)
+	}
+	if strings.Contains(cleaned, "APIARY_OUTPUT") {
+		t.Errorf("sentinel line not stripped:\n%s", cleaned)
+	}
+	if cleaned != "real output" {
+		t.Errorf("unexpected cleaned output: %q", cleaned)
+	}
+}
+
+func TestExtractStructured_InlineBacktickWrapped(t *testing.T) {
+	raw := strings.Join([]string{
+		"Here is my verdict:",
+		"`APIARY_OUTPUT: {\"review_verdict\": \"rejected\", \"reason\": \"flaky test\"}`",
+	}, "\n")
+	cleaned, structured, _, _, _ := extractStructured(raw)
+	if structured == nil {
+		t.Fatal("expected structured output for backtick-wrapped sentinel, got nil")
+	}
+	if structured["review_verdict"] != "rejected" {
+		t.Errorf("verdict lost when wrapped in backticks: %#v", structured)
+	}
+	if structured["reason"] != "flaky test" {
+		t.Errorf("reason parsed incorrectly: %#v", structured)
+	}
+	if strings.Contains(cleaned, "APIARY_OUTPUT") || strings.Contains(cleaned, "review_verdict") {
+		t.Errorf("backtick-wrapped sentinel not stripped:\n%s", cleaned)
+	}
+	if cleaned != "Here is my verdict:" {
+		t.Errorf("unexpected cleaned output: %q", cleaned)
+	}
+}
+
+func TestExtractStructured_FencedCodeBlock(t *testing.T) {
+	raw := strings.Join([]string{
+		"Result below.",
+		"```json",
+		`APIARY_OUTPUT: {"review_verdict":"approved"}`,
+		"```",
+	}, "\n")
+	_, structured, _, _, _ := extractStructured(raw)
+	if structured == nil {
+		t.Fatal("expected structured output inside fenced block, got nil")
+	}
+	if structured["review_verdict"] != "approved" {
+		t.Errorf("verdict lost inside fenced block: %#v", structured)
+	}
+}
+
+func TestExtractStructured_WrappedLastWins(t *testing.T) {
+	raw := strings.Join([]string{
+		`APIARY_OUTPUT: {"review_verdict":"approved"}`,
+		"some reconsideration",
+		"`APIARY_OUTPUT: {\"review_verdict\": \"rejected\"}`",
+	}, "\n")
+	_, structured, _, _, _ := extractStructured(raw)
+	if structured == nil {
+		t.Fatal("expected structured output, got nil")
+	}
+	if structured["review_verdict"] != "rejected" {
+		t.Errorf("expected last (wrapped) APIARY_OUTPUT to win, got: %#v", structured)
+	}
+}
+
+func TestExtractStructured_ProseMentionNotStripped(t *testing.T) {
+	raw := "I will now emit APIARY_OUTPUT: with the final verdict."
+	cleaned, structured, _, _, _ := extractStructured(raw)
+	if structured != nil {
+		t.Errorf("prose mention should not parse as structured, got: %#v", structured)
+	}
+	if cleaned != raw {
+		t.Errorf("prose line mentioning the sentinel should be preserved, got: %q", cleaned)
+	}
+}
+
 func TestExtractStructured_InvalidJSONStrippedButNil(t *testing.T) {
 	raw := "real output\nAPIARY_OUTPUT: {not valid json}"
 	cleaned, structured, _, _, _ := extractStructured(raw)

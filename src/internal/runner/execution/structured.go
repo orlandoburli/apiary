@@ -59,14 +59,18 @@ func extractStructured(output string) (cleaned string, structured map[string]any
 			publishLines = append(publishLines, line)
 		case inSpawn:
 			spawnLines = append(spawnLines, line)
-		case strings.HasPrefix(trimmed, apiaryOutputPrefix):
-			jsonPart := strings.TrimSpace(strings.TrimPrefix(trimmed, apiaryOutputPrefix))
-			var obj map[string]any
-			if err := json.Unmarshal([]byte(jsonPart), &obj); err == nil {
-				structured = obj
-			}
-			// The sentinel line is stripped whether or not it parsed.
 		default:
+			// The APIARY_OUTPUT: sentinel may arrive bare, or wrapped by an
+			// agent in markdown — inline backticks, code fences, or list /
+			// blockquote prefixes. outputSentinelJSON tolerates all of these.
+			if jsonPart, ok := outputSentinelJSON(trimmed); ok {
+				var obj map[string]any
+				if err := json.Unmarshal([]byte(jsonPart), &obj); err == nil {
+					structured = obj
+				}
+				// The sentinel line is stripped whether or not it parsed.
+				continue
+			}
 			kept = append(kept, line)
 		}
 	}
@@ -76,6 +80,92 @@ func extractStructured(output string) (cleaned string, structured map[string]any
 	publish = strings.TrimSpace(strings.Join(publishLines, "\n"))
 	spawn = strings.TrimSpace(strings.Join(spawnLines, "\n"))
 	return cleaned, structured, summary, publish, spawn
+}
+
+// outputSentinelJSON reports whether a trimmed line carries an APIARY_OUTPUT:
+// sentinel and, when it does, returns the JSON payload that follows it. The
+// sentinel is recognized even when an agent wraps it in markdown — inline
+// backticks (`APIARY_OUTPUT: {...}`), code-fence markers, or a list/blockquote
+// prefix — so legitimate verdicts are not silently dropped. Anything before the
+// sentinel must be markdown wrapper noise; a prose line that merely mentions
+// the sentinel is left untouched. The JSON is read up to its balanced closing
+// brace, which naturally ignores a trailing backtick or fence marker.
+func outputSentinelJSON(trimmed string) (string, bool) {
+	idx := strings.Index(trimmed, apiaryOutputPrefix)
+	if idx < 0 {
+		return "", false
+	}
+	if !isMarkdownWrapper(trimmed[:idx]) {
+		return "", false
+	}
+	rest := strings.TrimSpace(trimmed[idx+len(apiaryOutputPrefix):])
+	if payload := balancedJSON(rest); payload != "" {
+		return payload, true
+	}
+	// No balanced object/array present (e.g. an empty or malformed sentinel).
+	// Strip any surrounding fence/backtick noise and hand back what remains so
+	// the line is still recognized as a sentinel and stripped from the output.
+	return strings.TrimSpace(strings.Trim(rest, "`")), true
+}
+
+// isMarkdownWrapper reports whether s consists solely of characters an agent
+// might place before the sentinel when wrapping it in markdown: backticks,
+// fence tildes, list bullets, blockquote markers, and whitespace.
+func isMarkdownWrapper(s string) bool {
+	for _, r := range s {
+		switch r {
+		case '`', '~', '-', '*', '+', '>', ' ', '\t':
+			// wrapper noise, keep scanning
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// balancedJSON returns the first balanced {…} or […] span in s, respecting
+// quoted strings and escape sequences, or "" when none is present. It lets the
+// caller pull a JSON payload out of a line that has trailing markdown (e.g. a
+// closing backtick) after the object.
+func balancedJSON(s string) string {
+	start := strings.IndexAny(s, "{[")
+	if start < 0 {
+		return ""
+	}
+	open := s[start]
+	close := byte('}')
+	if open == '[' {
+		close = ']'
+	}
+	depth := 0
+	inStr := false
+	esc := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return s[start : i+1]
+			}
+		}
+	}
+	return ""
 }
 
 // applyStructured post-processes a RunResult's Output, moving any structured
