@@ -103,6 +103,18 @@ type WorkflowInstanceItem struct {
 	ResumedFrom      string // set when this instance resumed a prior one
 	CreatedAt        time.Time
 	Steps            []WorkflowStepItem
+	CIPolls          []CIPollItem // recorded wait_for CI poll history (oldest first)
+}
+
+// CIPollItem is one recorded poll of a wait_for step's CI status, shown in the
+// Task Detail / monitor so a parked CI wait reports how many times it polled,
+// when, and what each poll returned.
+type CIPollItem struct {
+	StepID    string
+	Status    string // passed|failed|pending|timeout|error|unknown
+	PRURL     string
+	Detail    string // JSON of per-check states, or an error message
+	CheckedAt time.Time
 }
 
 // TaskHistorySegmentItem is one workflow instance's slice of a task's history in

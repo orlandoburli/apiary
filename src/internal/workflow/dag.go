@@ -207,7 +207,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 				case config.StepTypeWorkflow:
 					res = e.executeSubWorkflowStep(ctx, r.instID, step, r.task, r.bindings, memSnap, r.depth, r.wf.ID)
 				case config.StepTypeWaitFor:
-					res, _ = e.RunWaitStep(ctx, step, r.cell.SourceID, r.cell.ID, waitDeadline)
+					res, _ = e.RunWaitStep(ctx, r.instID, step, r.cell.SourceID, r.cell.ID, waitDeadline)
 				default: // StepTypeAgent
 					res = e.runStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, r.wf.Env)
 				}

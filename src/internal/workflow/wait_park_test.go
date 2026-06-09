@@ -210,6 +210,75 @@ func TestWaitFor_RehydrateSurvivesRestart(t *testing.T) {
 	}
 }
 
+// TestWaitFor_RecordsEachPoll verifies every CI poll is persisted with its
+// returned status, so a parked wait reports how many times it polled and what
+// each poll returned.
+func TestWaitFor_RecordsEachPoll(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	clock := time.Unix(1000, 0)
+	status := "pending"
+	url := "https://example.test/pr/1"
+	ci := func() (source.CIStatus, error) {
+		return source.CIStatus{Status: status, URL: url}, nil
+	}
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+
+	// Initial run polls once (pending → park).
+	instID, _, _ := eng.RunInstance(context.Background(), waitForWorkflow(), model.InternalTask{ID: "c1"})
+	// Two more pending re-checks, then green.
+	eng.CheckParkedWaits(context.Background())
+	eng.CheckParkedWaits(context.Background())
+	status = "passed"
+	eng.CheckParkedWaits(context.Background())
+
+	got := store.pollStatuses()
+	want := []string{"pending", "pending", "pending", "passed"}
+	if len(got) != len(want) {
+		t.Fatalf("recorded %d polls (%v), want %d (%v)", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("poll %d status = %q, want %q (all: %v)", i, got[i], want[i], got)
+		}
+	}
+	// The PR URL and instance/step are carried on each record.
+	store.mu.Lock()
+	last := store.ciPolls[len(store.ciPolls)-1]
+	store.mu.Unlock()
+	if last.WorkflowInstanceID != instID || last.StepID != "check-ci" || last.PRURL != url {
+		t.Errorf("poll record = %+v, want inst=%s step=check-ci url=%s", last, instID, url)
+	}
+}
+
+// TestWaitFor_RecordsErrorAndTimeout verifies a failed CI check and a timeout are
+// each recorded with a distinct status.
+func TestWaitFor_RecordsErrorAndTimeout(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	clock := time.Unix(1000, 0)
+	ci := func() (source.CIStatus, error) {
+		return source.CIStatus{}, context.DeadlineExceeded // transient checker error
+	}
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+
+	wf := config.WorkflowConfig{ID: "impl", Steps: []config.StepConfig{
+		{ID: "implement", Agent: "backend-dev"},
+		{ID: "check-ci", Type: config.StepTypeWaitFor, DependsOn: []string{"implement"},
+			WaitFor: &config.WaitForConfig{Kind: "ci", MaxDuration: "2h"}},
+	}}
+	eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
+
+	// Past the deadline: next check records a timeout.
+	clock = clock.Add(3 * time.Hour)
+	eng.CheckParkedWaits(context.Background())
+
+	got := store.pollStatuses()
+	if len(got) != 2 || got[0] != "error" || got[1] != "timeout" {
+		t.Errorf("recorded polls = %v, want [error timeout]", got)
+	}
+}
+
 // priorStepsFor returns the instance's persisted step runs in creation order,
 // mirroring db.Client.ListStepRuns for the rehydration path.
 func priorStepsFor(f *fakeStore, instID string) []db.StepRun {

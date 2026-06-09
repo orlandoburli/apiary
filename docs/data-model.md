@@ -21,6 +21,7 @@ erDiagram
     workflow_instances ||--o{ workflow_instances : "sub-workflow (parent_instance_id)"
     workflow_instances ||--o{ step_runs : "steps"
     workflow_instances ||--o{ task_executions : "step attempt (instance_id, step_id)"
+    workflow_instances ||--o{ ci_poll_checks : "wait_for CI polls"
     step_runs ||--o| internal_tasks : "APIARY_SPAWN (spawned_task_id)"
 
     agents {
@@ -121,6 +122,16 @@ erDiagram
         TIMESTAMP finished_at
     }
 
+    ci_poll_checks {
+        INTEGER id PK
+        TEXT workflow_instance_id FK "-> workflow_instances.id"
+        TEXT step_id "wait_for step config id"
+        TEXT status "passed|failed|pending|timeout|error|unknown"
+        TEXT pr_url
+        TEXT detail "JSON of per-check states, or error message"
+        TIMESTAMP checked_at "one row per poll"
+    }
+
     internal_tasks {
         TEXT id PK "ulid; canonical unit of work"
         TEXT parent_task_id FK "lineage (self)"
@@ -208,3 +219,13 @@ Per-step cost/usage detail is recorded in **both** layers:
 
 The cost figure originates from the harness: the CLI runner parses the model's
 streamed `total_cost_usd` and token counts — it is reported, not estimated.
+
+### CI poll history (wait_for steps)
+
+A `wait_for` step does not get a `step_runs` row — it parks the workflow
+instance (`workflow_instances.state = 'waiting'`) and is re-evaluated each poll
+cycle. Every one of those polls is appended to **`ci_poll_checks`**: one row per
+poll with its `status` (passed/failed/pending/timeout/error/unknown), the PR
+`pr_url`, the per-check `detail` (JSON), and `checked_at`. This makes a parked CI
+wait auditable — how many times it polled, when, and what each poll returned —
+which the dashboard surfaces in the task detail and history views.

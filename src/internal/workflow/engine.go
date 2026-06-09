@@ -31,6 +31,34 @@ type bindingLister interface {
 	ListBindingsByTask(ctx context.Context, taskID string) ([]model.SourceBinding, error)
 }
 
+// ciPollRecorder is the optional capability the engine uses to persist each CI
+// poll of a wait_for step (count, timestamp, returned status). *db.Client
+// satisfies it; fake stores in tests that omit it simply record nothing.
+type ciPollRecorder interface {
+	RecordCIPollCheck(ctx context.Context, p *db.CIPollCheck) error
+}
+
+// recordCIPoll persists one CI poll result for a wait_for step when the store
+// supports it. Best-effort: a recording failure never affects the poll outcome.
+func (e *Engine) recordCIPoll(ctx context.Context, instID, stepID, status, url, detail string) {
+	if instID == "" {
+		return
+	}
+	rec, ok := e.store.(ciPollRecorder)
+	if !ok {
+		return
+	}
+	if err := rec.RecordCIPollCheck(ctx, &db.CIPollCheck{
+		WorkflowInstanceID: instID,
+		StepID:             stepID,
+		Status:             status,
+		PRURL:              url,
+		Detail:             detail,
+	}); err != nil {
+		aplog.Debug("wait_for step %q: record CI poll: %v", stepID, err)
+	}
+}
+
 // TaskTracker is the optional capability the engine uses to apply the top-level
 // tasks: completion hook. When an instance reaches a terminal state the engine
 // decrements the task's outstanding-workflow counter; when it hits zero it flips

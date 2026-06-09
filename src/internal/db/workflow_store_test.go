@@ -56,6 +56,51 @@ func TestWorkflowInstance_CRUD(t *testing.T) {
 	}
 }
 
+func TestCIPollChecks_RecordAndList(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+
+	inst := &WorkflowInstance{ID: "wf_ci", WorkflowID: "implementation", CellID: "42", State: InstanceStateWaiting}
+	if err := c.CreateWorkflowInstance(ctx, inst); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	polls := []CIPollCheck{
+		{WorkflowInstanceID: "wf_ci", StepID: "check-ci", Status: "pending", PRURL: "https://x/pr/1"},
+		{WorkflowInstanceID: "wf_ci", StepID: "check-ci", Status: "pending", PRURL: "https://x/pr/1"},
+		{WorkflowInstanceID: "wf_ci", StepID: "check-ci", Status: "failed", PRURL: "https://x/pr/1", Detail: `{"build":"failure"}`},
+		{WorkflowInstanceID: "wf_ci", StepID: "check-ci", Status: "passed", PRURL: "https://x/pr/1"},
+	}
+	for i := range polls {
+		if err := c.RecordCIPollCheck(ctx, &polls[i]); err != nil {
+			t.Fatalf("record poll %d: %v", i, err)
+		}
+	}
+
+	got, err := c.ListCIPollChecks(ctx, "wf_ci")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("got %d polls, want 4", len(got))
+	}
+	// Oldest-first ordering and round-tripped fields.
+	if got[0].Status != "pending" || got[3].Status != "passed" {
+		t.Errorf("ordering wrong: %q … %q", got[0].Status, got[3].Status)
+	}
+	if got[2].Status != "failed" || got[2].Detail != `{"build":"failure"}` {
+		t.Errorf("detail not round-tripped: %+v", got[2])
+	}
+	if got[0].PRURL != "https://x/pr/1" || got[0].CheckedAt.IsZero() {
+		t.Errorf("pr_url/checked_at not populated: %+v", got[0])
+	}
+
+	// Isolated per instance.
+	if other, _ := c.ListCIPollChecks(ctx, "wf_none"); len(other) != 0 {
+		t.Errorf("expected no polls for unknown instance, got %d", len(other))
+	}
+}
+
 func TestWorkflowInstance_NotFound(t *testing.T) {
 	c := newTestClient(t)
 	got, err := c.GetWorkflowInstance(context.Background(), "missing")
