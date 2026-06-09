@@ -74,6 +74,13 @@ type TasksTab struct {
 	InstanceHistory []TaskHistorySegmentItem // per-instance history (TaskViewLogs, InternalTask rows)
 	LogScroll       int
 
+	// Flat-log tail pagination (Logs path only): the view loads the most recent
+	// taskLogTailLimit lines, then fetches older pages on scroll-to-top.
+	LogTaskID      string // task whose flat logs are loaded (cursor scope)
+	LogOldestID    int64  // row id of the oldest loaded line (the older-page cursor)
+	LogHasMore     bool   // an older page may exist (last load filled the limit)
+	LogLoadingMore bool   // an older-page fetch is in flight (de-dupe guard)
+
 	// Workflow monitor sub-view (View == TaskViewWorkflow).
 	WorkflowInstances   []*WorkflowInstanceItem // all instances for the task, newest-first
 	WorkflowInstanceIdx int                     // index into WorkflowInstances of the one being shown

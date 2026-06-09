@@ -31,6 +31,13 @@ const refreshInterval = 2 * time.Second
 // queryTimeout bounds each database query so a locked DB never blocks the UI.
 const queryTimeout = 2 * time.Second
 
+// taskLogTailLimit caps how many of a task's most recent log lines are loaded
+// when the logs view opens. task_logs rows are large (~10KB of agent stream), so
+// loading the full history cold is the main cause of a slow first open; a tail of
+// this size keeps it fast, and older lines load on scroll-to-top (see
+// fetchOlderTaskLogs).
+const taskLogTailLimit = 1000
+
 // App is the main dashboard application.
 //
 // It follows the Elm architecture used by Bubble Tea: commands run in
@@ -75,9 +82,20 @@ type taskDetailMsg struct {
 	instance *WorkflowInstanceItem
 }
 type taskLogsMsg struct {
-	taskID string
-	logs   []LogEntry
-	detail *TaskItem
+	taskID   string
+	logs     []LogEntry
+	detail   *TaskItem
+	oldestID int64 // row id of the oldest loaded line (older-page cursor)
+	hasMore  bool  // an older page may exist
+}
+
+// olderTaskLogsMsg carries an older page of flat task logs lazily loaded when the
+// logs view is scrolled to the top.
+type olderTaskLogsMsg struct {
+	taskID   string
+	logs     []LogEntry
+	oldestID int64
+	hasMore  bool
 }
 type taskHistoryMsg struct {
 	taskID   string
@@ -163,22 +181,44 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.model.loading = false
 
 	case taskLogsMsg:
-		if a.model.tasksTab != nil {
-			a.model.tasksTab.Logs = msg.logs
-			a.model.tasksTab.InstanceHistory = nil
-			a.model.tasksTab.Detail = msg.detail
-			a.model.tasksTab.LogScroll = 0
-			a.model.tasksTab.View = TaskViewLogs
+		if t := a.model.tasksTab; t != nil {
+			t.Logs = msg.logs
+			t.InstanceHistory = nil
+			t.Detail = msg.detail
+			t.LogScroll = 0
+			t.View = TaskViewLogs
+			t.LogTaskID = msg.taskID
+			t.LogOldestID = msg.oldestID
+			t.LogHasMore = msg.hasMore
+			t.LogLoadingMore = false
 		}
 		a.model.loading = false
 
+	case olderTaskLogsMsg:
+		if t := a.model.tasksTab; t != nil && t.View == TaskViewLogs && msg.taskID == t.LogTaskID {
+			t.LogLoadingMore = false
+			if len(msg.logs) > 0 {
+				// Prepend older lines and keep the viewport anchored: the prior top
+				// line shifts down by the number of visual lines the new entries add.
+				delta := len(a.logEntryLines(msg.logs))
+				t.Logs = append(append([]LogEntry{}, msg.logs...), t.Logs...)
+				t.LogScroll += delta
+				t.LogOldestID = msg.oldestID
+			}
+			t.LogHasMore = msg.hasMore
+		}
+
 	case taskHistoryMsg:
-		if a.model.tasksTab != nil {
-			a.model.tasksTab.InstanceHistory = msg.segments
-			a.model.tasksTab.Logs = nil
-			a.model.tasksTab.Detail = msg.detail
-			a.model.tasksTab.LogScroll = 0
-			a.model.tasksTab.View = TaskViewLogs
+		if t := a.model.tasksTab; t != nil {
+			t.InstanceHistory = msg.segments
+			t.Logs = nil
+			t.Detail = msg.detail
+			t.LogScroll = 0
+			t.View = TaskViewLogs
+			// History (per-instance) path is segment-bounded — no flat-log cursor.
+			t.LogTaskID = ""
+			t.LogHasMore = false
+			t.LogLoadingMore = false
 		}
 		a.model.loading = false
 
@@ -876,6 +916,9 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 		t.Logs = nil
 		t.InstanceHistory = nil
 		t.LogScroll = 0
+		t.LogTaskID = ""
+		t.LogHasMore = false
+		t.LogLoadingMore = false
 	case "d":
 		if row, ok := a.selectedTask(); ok {
 			a.model.loading = true
@@ -895,8 +938,12 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 			return a, a.fetchTaskDetail(row.TaskID, row.InternalTaskID)
 		}
 	case "up":
-		if t.View == TaskViewLogs && t.LogScroll > 0 {
-			t.LogScroll--
+		if t.View == TaskViewLogs {
+			if t.LogScroll > 0 {
+				t.LogScroll--
+			} else if cmd := a.loadOlderLogsCmd(t); cmd != nil {
+				return a, cmd // at top — pull in the next older page
+			}
 		}
 	case "down":
 		if t.View == TaskViewLogs && t.LogScroll < len(a.taskLogLines())-1 {
@@ -912,6 +959,11 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 		}
 	case "pgup", "ctrl+u":
 		if t.View == TaskViewLogs {
+			if t.LogScroll == 0 {
+				if cmd := a.loadOlderLogsCmd(t); cmd != nil {
+					return a, cmd
+				}
+			}
 			t.LogScroll = clampScroll(t.LogScroll-a.pageSize(), len(a.taskLogLines()))
 		}
 	case "pgdown", "ctrl+d", " ":
@@ -1308,6 +1360,7 @@ func buildWorkflowInstanceItem(ctx context.Context, dbConn *db.Client, inst *db.
 	}
 	steps, err := dbConn.ListStepRuns(ctx, inst.ID)
 	if err == nil {
+		usage := loadStepUsageFallback(ctx, dbConn, inst.ID, steps)
 		now := time.Now()
 		for _, s := range steps {
 			si := WorkflowStepItem{
@@ -1322,7 +1375,7 @@ func buildWorkflowInstanceItem(ctx context.Context, dbConn *db.Client, inst *db.
 				FinishedAt: s.FinishedAt,
 			}
 			si.InputTokens, si.OutputTokens, si.TotalTokens, si.NumTurns, si.NumToolCalls, si.CostUSD =
-				resolveStepUsage(ctx, dbConn, inst.ID, s)
+				stepUsageFromMap(s, usage)
 			item.Steps = append(item.Steps, si)
 		}
 		aggregateInstance(item)
@@ -1333,16 +1386,32 @@ func buildWorkflowInstanceItem(ctx context.Context, dbConn *db.Client, inst *db.
 	return item
 }
 
-// resolveStepUsage returns a step's token/turn/cost rollup, preferring the
-// step_runs row's own summed columns and falling back to the linked
-// task_executions rows for older steps that predate the rollup (StepRunHasUsage
-// is false). Returns zeros when neither carries usage.
-func resolveStepUsage(ctx context.Context, dbConn *db.Client, instID string, s db.StepRun) (in, out, total, turns, calls int, cost float64) {
+// loadStepUsageFallback fetches the per-instance executions usage map, but only
+// when at least one step lacks its own rollup — modern instances (every step_run
+// carries usage) skip the query entirely. This replaces the old per-step
+// GetStepUsage fan-out (N+1) with at most one query per instance.
+func loadStepUsageFallback(ctx context.Context, dbConn *db.Client, instID string, steps []db.StepRun) map[string]db.Execution {
+	for _, s := range steps {
+		if !db.StepRunHasUsage(s) {
+			if m, err := dbConn.GetInstanceStepUsage(ctx, instID); err == nil {
+				return m
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+// stepUsageFromMap returns a step's token/turn/cost rollup, preferring the
+// step_runs row's own summed columns and falling back to the per-instance usage
+// map (loadStepUsageFallback) for older steps that predate the rollup. Returns
+// zeros when neither carries usage.
+func stepUsageFromMap(s db.StepRun, usage map[string]db.Execution) (in, out, total, turns, calls int, cost float64) {
 	if db.StepRunHasUsage(s) {
 		return s.InputTokens, s.OutputTokens, s.TotalTokens, s.NumTurns, s.NumToolCalls, s.CostUSD
 	}
-	if usage, err := dbConn.GetStepUsage(ctx, instID, s.StepID); err == nil && usage != nil {
-		return usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.NumTurns, usage.NumToolCalls, usage.CostUSD
+	if u, ok := usage[s.StepID]; ok {
+		return u.InputTokens, u.OutputTokens, u.TotalTokens, u.NumTurns, u.NumToolCalls, u.CostUSD
 	}
 	return 0, 0, 0, 0, 0, 0
 }
@@ -1808,7 +1877,7 @@ func (a *App) fetchAgentTaskLogs(taskID string) tea.Cmd {
 					CostUSD:      r.CostUSD,
 				}
 			}
-			if rows, err := dbConn.GetTaskLogs(ctx, taskID, 5000); err == nil {
+			if rows, err := dbConn.GetTaskLogs(ctx, taskID, taskLogTailLimit); err == nil {
 				for _, l := range rows {
 					logs = append(logs, LogEntry{
 						Timestamp: l.Timestamp,
@@ -1951,10 +2020,11 @@ func mapInstances(ctx context.Context, dbConn *db.Client, insts []db.WorkflowIns
 			CreatedAt:        in.CreatedAt,
 		}
 		if steps, err := dbConn.ListStepRuns(ctx, in.ID); err == nil {
+			usage := loadStepUsageFallback(ctx, dbConn, in.ID, steps)
 			for _, s := range steps {
 				si := WorkflowStepItem{StartedAt: s.StartedAt, FinishedAt: s.FinishedAt}
 				si.InputTokens, si.OutputTokens, si.TotalTokens, si.NumTurns, si.NumToolCalls, si.CostUSD =
-					resolveStepUsage(ctx, dbConn, in.ID, s)
+					stepUsageFromMap(s, usage)
 				item.Steps = append(item.Steps, si)
 			}
 			aggregateInstance(&item)
@@ -2003,13 +2073,54 @@ func (a *App) fetchTaskLogs(taskID string) tea.Cmd {
 
 		var detail *TaskItem
 		logs := make([]LogEntry, 0)
+		var oldestID int64
+		var hasMore bool
 		if dbConn != nil {
 			detail = taskDetailItem(ctx, dbConn, taskID)
-			if rows, err := dbConn.GetTaskLogs(ctx, taskID, 5000); err == nil {
+			if rows, err := dbConn.GetTaskLogs(ctx, taskID, taskLogTailLimit); err == nil {
 				logs = mapLogLines(rows)
+				if len(rows) > 0 {
+					oldestID = rows[0].ID // chronological: first row is the oldest loaded
+				}
+				hasMore = len(rows) == taskLogTailLimit // a full page implies older rows exist
 			}
 		}
-		return taskLogsMsg{taskID: taskID, logs: logs, detail: detail}
+		return taskLogsMsg{taskID: taskID, logs: logs, detail: detail, oldestID: oldestID, hasMore: hasMore}
+	}
+}
+
+// loadOlderLogsCmd starts a lazy fetch of the next older page of flat task logs
+// when the logs view is scrolled to the top and an older page may exist. Returns
+// nil when there is nothing to load (history view, no cursor, already loading, or
+// no more pages).
+func (a *App) loadOlderLogsCmd(t *TasksTab) tea.Cmd {
+	if t.View != TaskViewLogs || len(t.InstanceHistory) > 0 ||
+		t.LogTaskID == "" || !t.LogHasMore || t.LogLoadingMore {
+		return nil
+	}
+	t.LogLoadingMore = true
+	return a.fetchOlderTaskLogs(t.LogTaskID, t.LogOldestID)
+}
+
+// fetchOlderTaskLogs lazily loads the page of flat task logs immediately older
+// than beforeID, for the scroll-to-top tail-pagination of the logs view.
+func (a *App) fetchOlderTaskLogs(taskID string, beforeID int64) tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+
+		msg := olderTaskLogsMsg{taskID: taskID}
+		if dbConn != nil {
+			if rows, err := dbConn.GetTaskLogsBefore(ctx, taskID, beforeID, taskLogTailLimit); err == nil {
+				msg.logs = mapLogLines(rows)
+				if len(rows) > 0 {
+					msg.oldestID = rows[0].ID
+				}
+				msg.hasMore = len(rows) == taskLogTailLimit
+			}
+		}
+		return msg
 	}
 }
 
@@ -3174,6 +3285,19 @@ func (a *App) renderTaskLogs(t *TasksTab, height int) string {
 	if rows < 1 {
 		rows = 1
 	}
+	// A "load older" hint takes the top row when the flat-log tail is scrolled to
+	// its start and an older page is available (or being fetched).
+	hint := ""
+	if t.LogScroll == 0 && len(t.InstanceHistory) == 0 {
+		if t.LogLoadingMore {
+			hint = "↑ loading older logs…"
+		} else if t.LogHasMore {
+			hint = "↑ older logs — press ↑/PgUp to load"
+		}
+	}
+	if hint != "" && rows > 1 {
+		rows-- // reserve a row for the hint so the box height is unchanged
+	}
 	start := t.LogScroll
 	if start > len(lines)-1 {
 		start = len(lines) - 1
@@ -3187,6 +3311,9 @@ func (a *App) renderTaskLogs(t *TasksTab, height int) string {
 	}
 
 	var b strings.Builder
+	if hint != "" {
+		b.WriteString(StyleMuted.Render(hint) + "\n")
+	}
 	for i := start; i < end; i++ {
 		b.WriteString(lines[i] + "\n")
 	}

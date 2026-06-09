@@ -452,20 +452,35 @@ func (c *Client) GetTaskDetail(ctx context.Context, taskID string) (*TaskHistory
 
 // TaskLogLine is a single per-task log record.
 type TaskLogLine struct {
+	ID        int64
 	Timestamp time.Time
 	Level     string
 	Message   string
 }
 
-// GetTaskLogs returns per-task log lines in chronological order.
+// GetTaskLogs returns the most recent `limit` log lines for a task, in
+// chronological order (oldest first).
 func (c *Client) GetTaskLogs(ctx context.Context, taskID string, limit int) ([]TaskLogLine, error) {
+	return c.taskLogsPage(ctx, taskID, 0, limit)
+}
+
+// GetTaskLogsBefore returns up to `limit` log lines older than beforeID (a row
+// id cursor), in chronological order. Used to lazily load earlier history when
+// the logs view is scrolled to the top, so the first open only pays for a tail.
+func (c *Client) GetTaskLogsBefore(ctx context.Context, taskID string, beforeID int64, limit int) ([]TaskLogLine, error) {
+	return c.taskLogsPage(ctx, taskID, beforeID, limit)
+}
+
+// taskLogsPage returns up to `limit` of a task's log lines with id < beforeID
+// (beforeID == 0 means no upper bound — the newest page), ordered oldest-first.
+func (c *Client) taskLogsPage(ctx context.Context, taskID string, beforeID int64, limit int) ([]TaskLogLine, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT timestamp, level, message
+		SELECT id, timestamp, level, message
 		FROM task_logs
-		WHERE task_id = ?
+		WHERE task_id = ? AND (? = 0 OR id < ?)
 		ORDER BY id DESC
 		LIMIT ?
-	`, taskID, limit)
+	`, taskID, beforeID, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +490,7 @@ func (c *Client) GetTaskLogs(ctx context.Context, taskID string, limit int) ([]T
 	for rows.Next() {
 		var l TaskLogLine
 		var level, msg sql.NullString
-		if err := rows.Scan(&l.Timestamp, &level, &msg); err != nil {
+		if err := rows.Scan(&l.ID, &l.Timestamp, &level, &msg); err != nil {
 			continue
 		}
 		l.Level = level.String
