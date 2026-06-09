@@ -132,8 +132,17 @@ func TestRehydrateParkedApprovals_ResumesAndSettlesTask(t *testing.T) {
 		t.Fatalf("expected one rehydrated parked approval at gate, got %+v", parked)
 	}
 
-	// --- the poll loop's approval check now sees the approving comment. ---
+	// --- the poll loop's approval check now sees the approving comment. The check
+	// fans each parked approval out onto its own goroutine (so a slow resume never
+	// blocks the poll loop), so the resume + settle happen asynchronously. settle
+	// marks the instance done first and then transitions the task, so await the task
+	// state — the last signal — which implies the whole resume completed.
 	d.checkApprovals(ctx)
+
+	waitUntil(t, 3*time.Second, func() bool {
+		got, _ := dbc.InternalTasks().GetTask(ctx, task.ID)
+		return got != nil && got.State == model.TaskStateDone
+	}, "rehydrated approval was not resumed and settled (task left stuck in 'registered')")
 
 	inst, err := dbc.GetWorkflowInstance(ctx, instID)
 	if err != nil {
@@ -144,12 +153,5 @@ func TestRehydrateParkedApprovals_ResumesAndSettlesTask(t *testing.T) {
 	}
 	if got := impl.n.Load(); got != 1 {
 		t.Errorf("implement runner calls = %d, want 1", got)
-	}
-	got, err := dbc.InternalTasks().GetTask(ctx, task.ID)
-	if err != nil {
-		t.Fatalf("get task: %v", err)
-	}
-	if got == nil || got.State != model.TaskStateDone {
-		t.Errorf("task state = %v, want done (the gap left it stuck in 'registered')", got)
 	}
 }

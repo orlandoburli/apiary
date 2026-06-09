@@ -83,6 +83,10 @@ type ParkedApproval struct {
 	Bindings   []model.SourceBinding
 	Step       config.StepConfig // the waiting approval step (resume_on/abort_on/timeout)
 	ParkedAt   time.Time
+	// AgentID is the workflow's representative agent — the slot a resumed advance is
+	// admitted through so a follow-on agent step respects that agent's max_workers
+	// (see Dispatcher.checkApprovals). Empty/unmatched ids gate as ungated.
+	AgentID string
 }
 
 // ParkedApprovals returns a snapshot of all instances currently awaiting approval.
@@ -103,6 +107,7 @@ func (e *Engine) ParkedApprovals() []ParkedApproval {
 			Bindings:   r.bindings,
 			Step:       r.byID[r.waitingStep],
 			ParkedAt:   r.parkedAt,
+			AgentID:    representativeAgent(r.wf),
 		})
 	}
 	return out
@@ -128,6 +133,55 @@ func (e *Engine) ResolveApproval(ctx context.Context, instanceID string, decisio
 	return e.settle(ctx, r, outcome), nil
 }
 
+// RecheckApproval performs ONE cheap evaluation of a parked approval instance
+// WITHOUT advancing its workflow graph, returning the decision (wait/resume/abort)
+// so the caller can decide whether to drive the expensive ResolveApproval advance.
+//
+// It mirrors RecheckWait: the timeout is checked first (an elapsed timeout aborts),
+// then the live source item is polled per binding (poll is keyed by source id +
+// source item id) and evaluated via EvaluateApproval — the first binding whose item
+// satisfies a resume/abort condition decides, a poll error skips that binding. It
+// runs no agent step, so it is safe to run every poll cycle for every parked
+// instance, concurrently and WITHOUT holding any agent-concurrency slot — a busy
+// agent can never delay another instance's approval re-check. The expensive graph
+// advance is left to ResolveApproval, which the dispatcher gates through the
+// per-agent semaphore.
+//
+// It returns ApprovalWait (a no-op) when the instance is no longer parked at an
+// approval step. A binding-less (spawned) task can only ever reach ApprovalAbort
+// via timeout, mirroring CheckParkedApprovals.
+func (e *Engine) RecheckApproval(ctx context.Context, instanceID string, poll func(sourceID, sourceItemID string) (model.SourceItem, error)) ApprovalDecision {
+	e.mu.Lock()
+	r, ok := e.parked[instanceID]
+	if !ok {
+		e.mu.Unlock()
+		return ApprovalWait
+	}
+	step := r.byID[r.waitingStep]
+	bindings := r.bindings
+	parkedAt := r.parkedAt
+	e.mu.Unlock()
+
+	if step.StepType() != config.StepTypeApproval {
+		return ApprovalWait
+	}
+	if to := step.ParsedTimeout(); to > 0 && e.now().Sub(parkedAt) >= to {
+		aplog.Info("workflow: approval on instance %s timed out after %s — aborting", instanceID, to)
+		return ApprovalAbort
+	}
+	for _, b := range bindings {
+		item, err := poll(b.SourceID, b.SourceItemID)
+		if err != nil {
+			aplog.Debug("workflow: poll item %s/%s for approval check failed: %v", b.SourceID, b.SourceItemID, err)
+			continue
+		}
+		if decision := EvaluateApproval(step, item); decision != ApprovalWait {
+			return decision
+		}
+	}
+	return ApprovalWait
+}
+
 // CheckParkedApprovals evaluates every parked instance against its live source
 // item(s) and resumes, aborts, or times it out as conditions dictate. The live
 // item is fetched per source binding (poll is keyed by source id + source item
@@ -136,6 +190,13 @@ func (e *Engine) ResolveApproval(ctx context.Context, instanceID string, decisio
 // condition decides the instance; when poll errors for a binding it is skipped.
 // A binding-less (spawned) task cannot be resolved via a source and stays parked
 // until it times out.
+//
+// This is the simple sequential reference path used by the engine tests. In
+// production the dispatcher does NOT call it; instead Dispatcher.checkApprovals
+// drives the same primitives concurrently (RecheckApproval + ResolveApproval) so a
+// long-running follow-on agent on one resumed instance cannot block the cheap
+// re-checks of every other parked approval, and so each advance is admitted through
+// the per-agent semaphore.
 func (e *Engine) CheckParkedApprovals(ctx context.Context, poll func(sourceID, sourceItemID string) (model.SourceItem, error)) {
 	for _, p := range e.ParkedApprovals() {
 		if to := p.Step.ParsedTimeout(); to > 0 && e.now().Sub(p.ParkedAt) >= to {

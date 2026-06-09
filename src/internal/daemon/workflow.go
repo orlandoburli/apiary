@@ -216,14 +216,30 @@ func (d *Dispatcher) resolveWorkflow(match router.Match) config.WorkflowConfig {
 	return config.WorkflowConfig{}
 }
 
-// checkApprovals drives the engine's parked-approval evaluation using each
-// source's TaskPoller. Called once per poll cycle. Sources that do not implement
-// TaskPoller cannot resolve approvals (the instance stays parked).
+// checkApprovals drives the engine's parked-approval re-checks once per poll cycle.
+// Each parked instance is handled on its own goroutine so a long-running follow-on
+// agent step on one resumed instance cannot delay the cheap re-evaluation of any
+// other parked approval — the head-of-line blocking that, on the single poll loop,
+// mirrors the parked wait_for starvation fixed in checkWaits.
+//
+// Two phases per instance, mirroring checkWaits / fresh dispatch's split:
+//   - RecheckApproval: a cheap timeout + per-binding TaskPoller evaluation, run
+//     UNGATED, so a busy agent never blocks it. A still-waiting approval stops here
+//     and stays parked.
+//   - ResolveApproval: the expensive graph advance (may run a follow-on agent), run
+//     only when the decision is resume/abort and admitted through the agent's
+//     semaphore so it respects max_workers — exactly like fanOut and WakeWait.
+//
+// The approvalAdvancing guard keeps a slow advance started on one cycle from being
+// re-checked or re-advanced by the next. Sources that do not implement TaskPoller
+// cannot resolve approvals (poll errors, the instance stays parked). A nil DB/engine
+// (no run-history) disables it. This does not block the poll loop: it launches the
+// goroutines and returns.
 func (d *Dispatcher) checkApprovals(ctx context.Context) {
 	if d.db == nil || d.engine == nil {
 		return
 	}
-	d.engine.CheckParkedApprovals(ctx, func(sourceID, cellID string) (model.SourceItem, error) {
+	poll := func(sourceID, cellID string) (model.SourceItem, error) {
 		adapter, ok := d.sources[sourceID]
 		if !ok {
 			return model.SourceItem{}, fmt.Errorf("source %q not found", sourceID)
@@ -233,7 +249,38 @@ func (d *Dispatcher) checkApprovals(ctx context.Context) {
 			return model.SourceItem{}, fmt.Errorf("source %q does not support per-task polling (approvals)", sourceID)
 		}
 		return poller.PollTask(ctx, cellID)
-	})
+	}
+
+	for _, p := range d.engine.ParkedApprovals() {
+		p := p
+		// Skip an instance already being re-checked/advanced by an earlier cycle.
+		if _, busy := d.approvalAdvancing.LoadOrStore(p.InstanceID, struct{}{}); busy {
+			continue
+		}
+		agentCh := d.agentSem[p.AgentID]
+		go func() {
+			defer d.approvalAdvancing.Delete(p.InstanceID)
+
+			// Cheap re-evaluation, ungated. Still waiting → leave it parked.
+			decision := d.engine.RecheckApproval(ctx, p.InstanceID, poll)
+			if decision == workflow.ApprovalWait {
+				return
+			}
+
+			// Resume/abort: admit the advance through the agent's semaphore (held for
+			// the whole advance, just like fanOut) so a follow-on agent step honours
+			// max_workers. A run waiting for a slot is not yet counted active.
+			if agentCh != nil {
+				select {
+				case agentCh <- struct{}{}:
+				case <-ctx.Done():
+					return // shutting down before a slot freed; never acquired
+				}
+				defer func() { <-agentCh }()
+			}
+			_, _ = d.engine.ResolveApproval(ctx, p.InstanceID, decision)
+		}()
+	}
 }
 
 // checkWaits drives the engine's parked-wait re-checks (CI status) once per poll

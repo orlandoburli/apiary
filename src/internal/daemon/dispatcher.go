@@ -76,6 +76,10 @@ type Dispatcher struct {
 	// follow-on advance) is in flight, so overlapping poll cycles don't double-check
 	// or double-advance the same instance. Mirrors inFlight for polled cells.
 	waitAdvancing sync.Map
+	// approvalAdvancing is the approval-path twin of waitAdvancing: it guards a parked
+	// approval instance while its cheap re-evaluation (and any follow-on resume/abort
+	// advance) is in flight, so overlapping poll cycles don't double-advance it.
+	approvalAdvancing sync.Map
 
 	stats  map[string]*sourceStat
 	statMu sync.RWMutex
