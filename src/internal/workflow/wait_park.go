@@ -18,12 +18,16 @@ type ParkedWait struct {
 	Task       model.InternalTask
 	Step       config.StepConfig
 	Deadline   time.Time // absolute give-up time (zero = none)
+	// AgentID is the workflow's representative agent — the slot a woken advance is
+	// admitted through so a follow-on agent step respects that agent's max_workers
+	// (see Dispatcher.checkWaits). Empty/unmatched ids gate as ungated.
+	AgentID string
 }
 
-// parkedWaits returns a snapshot of all instances currently suspended at a poll
+// ParkedWaits returns a snapshot of all instances currently suspended at a wait_for
 // step. The parked set is shared with approval-waiting instances, so it filters to
-// runs whose waiting step is a poll.
-func (e *Engine) parkedWaits() []ParkedWait {
+// runs whose waiting step is a wait_for.
+func (e *Engine) ParkedWaits() []ParkedWait {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := make([]ParkedWait, 0, len(e.parked))
@@ -36,31 +40,98 @@ func (e *Engine) parkedWaits() []ParkedWait {
 			Task:       r.task,
 			Step:       r.byID[r.waitingStep],
 			Deadline:   r.waitDeadline,
+			AgentID:    representativeAgent(r.wf),
 		})
 	}
 	return out
 }
 
-// CheckParkedWaits re-checks every instance suspended at a wait_for step by waking it:
-// the woken run re-executes the wait_for step (a single CI query via the engine's
-// CIStatusChecker) and either advances past it (CI passed), fails it (CI failed or
-// the deadline elapsed, which drives on_reject/on_fail loop-back), or re-parks it
-// (CI still pending). Called once per dispatcher poll cycle, mirroring
-// CheckParkedApprovals. The poll cadence is therefore the dispatcher's poll
-// interval; a step's check_interval acts as a lower bound only.
+// representativeAgent returns the agent id used to gate a parked wait's advance
+// through the dispatcher's per-agent concurrency semaphore — the workflow's first
+// agent step, mirroring how a fresh dispatch picks its route's agent
+// (router.firstAgentStep). It falls back to the workflow id (which is not a
+// configured agent, so the gate treats it as ungated) when the workflow declares no
+// agent step.
+func representativeAgent(wf config.WorkflowConfig) string {
+	for _, s := range wf.Steps {
+		switch s.StepType() {
+		case config.StepTypeAgent:
+			if s.Agent != "" {
+				return s.Agent
+			}
+		case config.StepTypeForeach:
+			if s.Step != nil && s.Step.Agent != "" {
+				return s.Step.Agent
+			}
+		}
+	}
+	return wf.ID
+}
+
+// CheckParkedWaits re-checks every instance suspended at a wait_for step by waking
+// it: the woken run re-executes the wait_for step (a single CI query via the
+// engine's CIStatusChecker) and either advances past it (CI passed), fails it (CI
+// failed or the deadline elapsed, which drives on_reject/on_fail loop-back), or
+// re-parks it (CI still pending).
+//
+// This is the simple sequential reference path. In production the dispatcher does
+// NOT call it; instead Dispatcher.checkWaits drives the same primitives
+// concurrently (RecheckWait + WakeWait) so a long-running follow-on agent on one
+// woken instance cannot block the cheap CI re-checks of every other parked
+// instance, and so each advance is admitted through the per-agent semaphore.
 func (e *Engine) CheckParkedWaits(ctx context.Context) {
-	for _, p := range e.parkedWaits() {
-		e.wakeWait(ctx, p.InstanceID)
+	for _, p := range e.ParkedWaits() {
+		e.WakeWait(ctx, p.InstanceID)
 	}
 }
 
-// wakeWait resumes a wait-parked instance: it resets the waiting wait_for step to
+// RecheckWait performs ONE cheap CI status check for a wait_for instance WITHOUT
+// advancing its workflow graph, returning whether the wait is now terminal — i.e.
+// CI reached pass/fail (or the deadline elapsed) and the instance has real work to
+// do, so the caller should drive it via WakeWait.
+//
+// It deliberately runs no agent step: a still-pending check leaves the instance
+// parked and returns false. That makes it safe to run every poll cycle for every
+// parked instance, concurrently and WITHOUT holding any agent-concurrency slot — so
+// a busy agent can never delay another instance's CI re-check. The expensive graph
+// advance (which may run a follow-on agent) is left to WakeWait, which the
+// dispatcher gates through the per-agent semaphore. It is a no-op returning false
+// when the instance is no longer parked at a wait_for step.
+//
+// The CI status the re-check observes is re-queried by the subsequent WakeWait
+// (driveDAG re-arms and re-runs the wait_for step), so a terminal transition costs
+// one extra, idempotent CI poll — recorded for audit like any other.
+func (e *Engine) RecheckWait(ctx context.Context, instanceID string) (terminal bool) {
+	e.mu.Lock()
+	r, ok := e.parked[instanceID]
+	if !ok {
+		e.mu.Unlock()
+		return false
+	}
+	step := r.byID[r.waitingStep]
+	sourceID, itemID := r.cell.SourceID, r.cell.ID
+	deadline := r.waitDeadline
+	e.mu.Unlock()
+
+	if step.StepType() != config.StepTypeWaitFor {
+		return false
+	}
+	res, _ := e.RunWaitStep(ctx, instanceID, step, sourceID, itemID, deadline)
+	return !res.Pending
+}
+
+// WakeWait resumes a wait-parked instance: it resets the waiting wait_for step to
 // pending so driveDAG re-dispatches it (a single CI check), then drives the graph
 // to its next terminal or suspended state and settles it. A pending check re-parks
 // the instance (via enterWait, preserving its deadline); a pass/fail advances or
 // loops the workflow through the normal result-processing path. It is a no-op if
-// the instance is no longer parked.
-func (e *Engine) wakeWait(ctx context.Context, instanceID string) {
+// the instance is no longer parked — the claim (delete from e.parked) is atomic, so
+// two concurrent wakes of the same instance are safe: the loser returns early.
+//
+// The dispatcher runs this on its own goroutine, admitted through the per-agent
+// semaphore, so a slow follow-on agent step here neither blocks the poll loop nor
+// exceeds the agent's max_workers.
+func (e *Engine) WakeWait(ctx context.Context, instanceID string) {
 	e.mu.Lock()
 	r, ok := e.parked[instanceID]
 	if ok {

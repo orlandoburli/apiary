@@ -58,7 +58,7 @@ func TestWaitFor_SuspendsWhilePending(t *testing.T) {
 		t.Errorf("unexpected execution while CI pending: %v", ids)
 	}
 	// It shows up as a parked poll, not a parked approval.
-	if pp := eng.parkedWaits(); len(pp) != 1 || pp[0].Step.ID != "check-ci" {
+	if pp := eng.ParkedWaits(); len(pp) != 1 || pp[0].Step.ID != "check-ci" {
 		t.Fatalf("expected one parked poll for check-ci, got %+v", pp)
 	}
 	if len(eng.ParkedApprovals()) != 0 {
@@ -91,7 +91,7 @@ func TestWaitFor_AdvancesWhenCIPasses(t *testing.T) {
 	if !contains(executedIDs(exec.seen), "review") {
 		t.Error("review should run once CI passed")
 	}
-	if len(eng.parkedWaits()) != 0 {
+	if len(eng.ParkedWaits()) != 0 {
 		t.Error("instance should no longer be parked")
 	}
 }
@@ -191,7 +191,7 @@ func TestWaitFor_RehydrateSurvivesRestart(t *testing.T) {
 		model.InternalTask{ID: "c1"}, priorStepsFor(store, instID)); err != nil {
 		t.Fatalf("rehydrate: %v", err)
 	}
-	if pp := eng2.parkedWaits(); len(pp) != 1 || pp[0].Step.ID != "check-ci" {
+	if pp := eng2.ParkedWaits(); len(pp) != 1 || pp[0].Step.ID != "check-ci" {
 		t.Fatalf("expected rehydrated poll park at check-ci, got %+v", pp)
 	}
 
