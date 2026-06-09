@@ -176,6 +176,23 @@ CREATE TABLE IF NOT EXISTS source_bindings (
   UNIQUE(source_id, source_item_id)
 );
 
+-- Pull requests linked to an InternalTask, discovered from the source (e.g. a
+-- GitHub issue's cross-referenced PRs) when a task's detail is opened. Persisted
+-- so the dashboard can offer "open the latest PR" from the list, not just detail.
+-- seq is the source-order position; MAX(seq) is the most recent PR.
+CREATE TABLE IF NOT EXISTS task_pull_requests (
+  id TEXT PRIMARY KEY,                          -- ulid
+  task_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,                      -- e.g. "github"
+  pr_number INTEGER NOT NULL,
+  pr_url TEXT NOT NULL,                         -- browser deep-link
+  pr_state TEXT,                                -- open|closed|merged, nullable
+  seq INTEGER NOT NULL DEFAULT 0,               -- source order; MAX(seq) = most recent
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(task_id) REFERENCES internal_tasks(id),
+  UNIQUE(task_id, source_id, pr_number)
+);
+
 -- Create indices
 CREATE INDEX IF NOT EXISTS idx_executions_task ON task_executions(task_id);
 CREATE INDEX IF NOT EXISTS idx_executions_retry ON task_executions(next_retry_at) WHERE status='failed';
@@ -193,6 +210,7 @@ CREATE INDEX IF NOT EXISTS idx_internal_tasks_state ON internal_tasks(state);
 CREATE INDEX IF NOT EXISTS idx_internal_tasks_parent ON internal_tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_source_bindings_task ON source_bindings(task_id);
 CREATE INDEX IF NOT EXISTS idx_source_bindings_item ON source_bindings(source_id, source_item_id);
+CREATE INDEX IF NOT EXISTS idx_task_pull_requests_task ON task_pull_requests(task_id);
 `
 
 // migrations are idempotent ALTER statements applied to databases created

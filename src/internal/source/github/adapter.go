@@ -430,6 +430,55 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 	return source.CIStatus{Status: overall, URL: pr.HTMLURL, Checks: checks}, nil
 }
 
+// ListPullRequests returns every pull request cross-referenced from the issue,
+// oldest first. It makes a single API call (the issue timeline) and derives each
+// PR's html_url from owner/repo/number, so the cost is constant regardless of how
+// many PRs are linked — the dashboard only needs a URL to open in the browser.
+// Implements source.PullRequestLister.
+func (a *Adapter) ListPullRequests(ctx context.Context, cellID string) ([]source.PullRequestRef, error) {
+	timelinePath := fmt.Sprintf("/repos/%s/%s/issues/%s/timeline", a.owner, a.repo, cellID)
+	body, err := a.client.get(ctx, timelinePath)
+	if err != nil {
+		return nil, fmt.Errorf("github: fetching timeline for issue %s: %w", cellID, err)
+	}
+
+	var timeline []struct {
+		Event  string `json:"event"`
+		Source struct {
+			Type  string `json:"type"`
+			Issue struct {
+				Number      int `json:"number"`
+				PullRequest struct {
+					URL string `json:"url"`
+				} `json:"pull_request"`
+			} `json:"issue"`
+		} `json:"source"`
+	}
+	if err := json.Unmarshal(body, &timeline); err != nil {
+		return nil, fmt.Errorf("github: decoding timeline for issue %s: %w", cellID, err)
+	}
+
+	// A PR can be cross-referenced more than once; dedup by number while keeping
+	// first-seen (chronological) order so the caller's tail is the most recent PR.
+	var prs []source.PullRequestRef
+	seen := make(map[int]bool)
+	for _, e := range timeline {
+		if e.Event != "cross-referenced" || e.Source.Type != "issue" || e.Source.Issue.PullRequest.URL == "" {
+			continue
+		}
+		n := e.Source.Issue.Number
+		if n == 0 || seen[n] {
+			continue
+		}
+		seen[n] = true
+		prs = append(prs, source.PullRequestRef{
+			Number: n,
+			URL:    fmt.Sprintf("https://github.com/%s/%s/pull/%d", a.owner, a.repo, n),
+		})
+	}
+	return prs, nil
+}
+
 // isAuthError reports whether a client error is a GitHub authorization failure
 // (401 Unauthorized or 403 Forbidden) — typically a missing token permission,
 // which is permanent until the token is fixed (not a transient blip to retry past).

@@ -768,6 +768,28 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(hist)
 	})
+	mux.HandleFunc("/tasks/pulls/refresh/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ref := strings.TrimPrefix(r.URL.Path, "/tasks/pulls/refresh/")
+		if ref == "" {
+			http.Error(w, "missing task ref", http.StatusBadRequest)
+			return
+		}
+		resp, err := d.RefreshTaskPullRequests(r.Context(), ref)
+		if err != nil {
+			if errors.Is(err, ErrTaskNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
 	mux.HandleFunc("/resume/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/resume/")
 		if id == "" {

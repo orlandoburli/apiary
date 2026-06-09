@@ -234,6 +234,16 @@ type TaskItem struct {
 	Lineage              []TaskLineageItem      // ancestors root-first incl. self (detail only)
 	Children             []TaskLineageItem      // direct children / spawned tasks (detail only)
 	Instances            []WorkflowInstanceItem // all workflow instances for this task (detail only)
+	PullRequests         []PullRequestItem      // persisted PRs, oldest first; last = most recent
+}
+
+// PullRequestItem is one pull request linked to a task, persisted by the daemon
+// (discovered from the source on detail open) and read back from the local DB so
+// the dashboard can open the latest PR with the (p) key.
+type PullRequestItem struct {
+	Number int
+	URL    string
+	State  string
 }
 
 // AgentView is which sub-screen the Agents tab is showing.
