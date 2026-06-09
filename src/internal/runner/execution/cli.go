@@ -266,18 +266,31 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	return result, nil
 }
 
-// cliUsage mirrors the usage object the Claude CLI reports on both `assistant`
-// message events and the final `result` event. Cache tokens are real input the
-// model processed (and are billed), so inputTotal folds them into the input side.
+// cliUsage mirrors the usage object the CLIs report on `assistant` message
+// events and the final `result` event. It accepts both the Claude CLI's
+// snake_case fields (input_tokens, cache_creation_input_tokens, …) and the
+// Cursor agent CLI's camelCase fields (inputTokens, cacheWriteTokens, …); only
+// one naming is present per event, so the accessors sum the pair. Cache tokens
+// are real input the model processed (and are billed), so inputTotal folds them
+// into the input side; cacheCreation/cacheRead expose the breakdown separately.
 type cliUsage struct {
 	InputTokens              int `json:"input_tokens"`
+	InputTokensCamel         int `json:"inputTokens"`
 	OutputTokens             int `json:"output_tokens"`
+	OutputTokensCamel        int `json:"outputTokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheWriteTokensCamel    int `json:"cacheWriteTokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheReadTokensCamel     int `json:"cacheReadTokens"`
 }
 
+func (u cliUsage) input() int         { return u.InputTokens + u.InputTokensCamel }
+func (u cliUsage) output() int        { return u.OutputTokens + u.OutputTokensCamel }
+func (u cliUsage) cacheCreation() int { return u.CacheCreationInputTokens + u.CacheWriteTokensCamel }
+func (u cliUsage) cacheRead() int     { return u.CacheReadInputTokens + u.CacheReadTokensCamel }
+
 func (u cliUsage) inputTotal() int {
-	return u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+	return u.input() + u.cacheCreation() + u.cacheRead()
 }
 
 // stream-json event types (Claude CLI output format). The CLI emits complete-
@@ -313,6 +326,18 @@ type streamEvent struct {
 // `tool_use` blocks in `assistant` messages. The per-assistant usage is also
 // recorded as a fallback so a run that dies before the `result` event still
 // reports the last message's counts rather than zeros.
+// applyUsage records a parsed CLI usage object onto the running totals.
+// InputTokens stays the full billed input (cache folded in) so totals and the
+// existing in/out/total displays are unchanged; the cache breakdown is recorded
+// separately. TotalTokens = full input + output (cache already lives in input).
+func applyUsage(u *model.Usage, cu *cliUsage) {
+	u.InputTokens = cu.inputTotal()
+	u.OutputTokens = cu.output()
+	u.CacheCreationTokens = cu.cacheCreation()
+	u.CacheReadTokens = cu.cacheRead()
+	u.TotalTokens = u.InputTokens + u.OutputTokens
+}
+
 func accumulateStreamUsage(line string, u *model.Usage) {
 	var ev streamEvent
 	if err := json.Unmarshal([]byte(line), &ev); err != nil || ev.Type == "" {
@@ -326,9 +351,7 @@ func accumulateStreamUsage(line string, u *model.Usage) {
 			}
 		}
 		if ev.Message.Usage != nil {
-			u.InputTokens = ev.Message.Usage.inputTotal()
-			u.OutputTokens = ev.Message.Usage.OutputTokens
-			u.TotalTokens = u.InputTokens + u.OutputTokens
+			applyUsage(u, ev.Message.Usage)
 		}
 	case "result":
 		u.NumTurns = ev.NumTurns
@@ -336,9 +359,7 @@ func accumulateStreamUsage(line string, u *model.Usage) {
 			u.CostUSD = ev.TotalCostUSD
 		}
 		if ev.Usage != nil { // authoritative cumulative totals
-			u.InputTokens = ev.Usage.inputTotal()
-			u.OutputTokens = ev.Usage.OutputTokens
-			u.TotalTokens = u.InputTokens + u.OutputTokens
+			applyUsage(u, ev.Usage)
 		}
 	}
 }

@@ -123,12 +123,14 @@ type WorkflowInstanceItem struct {
 	// earliest step start, FinishedAt = latest step finish). Used for the per-
 	// workflow timing/usage line and to roll up the whole-task header, so the
 	// detail no longer reflects only the last execution row.
-	StartedAt    *time.Time
-	FinishedAt   *time.Time
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
-	CostUSD      float64
+	StartedAt           *time.Time
+	FinishedAt          *time.Time
+	InputTokens         int
+	OutputTokens        int
+	TotalTokens         int
+	CacheCreationTokens int
+	CacheReadTokens     int
+	CostUSD             float64
 }
 
 // CIPollItem is one recorded poll of a wait_for step's CI status, shown in the
@@ -175,21 +177,23 @@ type TaskLineageItem struct {
 
 // WorkflowStepItem is one step row within a WorkflowInstanceItem.
 type WorkflowStepItem struct {
-	StepID       string
-	Agent        string
-	State        string // pending, running, passed, failed, skipped, skipped_cached
-	Duration     string
-	Cached       bool
-	Output       string
-	Summary      string
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
-	CostUSD      float64
-	NumTurns     int
-	NumToolCalls int
-	StartedAt    *time.Time
-	FinishedAt   *time.Time
+	StepID              string
+	Agent               string
+	State               string // pending, running, passed, failed, skipped, skipped_cached
+	Duration            string
+	Cached              bool
+	Output              string
+	Summary             string
+	InputTokens         int
+	OutputTokens        int
+	TotalTokens         int
+	CacheCreationTokens int
+	CacheReadTokens     int
+	CostUSD             float64
+	NumTurns            int
+	NumToolCalls        int
+	StartedAt           *time.Time
+	FinishedAt          *time.Time
 }
 
 // TaskItem is one row in the Tasks tab. Since Phase 9 the list is keyed on the

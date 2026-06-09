@@ -211,6 +211,11 @@ var migrations = []string{
 	`ALTER TABLE task_executions ADD COLUMN input_tokens INTEGER DEFAULT 0`,
 	`ALTER TABLE task_executions ADD COLUMN output_tokens INTEGER DEFAULT 0`,
 	`ALTER TABLE task_executions ADD COLUMN total_tokens INTEGER DEFAULT 0`,
+	// Cache token breakdown of the input (input_tokens already includes these;
+	// pure uncached input = input_tokens - cache_creation - cache_read). Reported
+	// by the Claude and Cursor CLIs; zero for runners that don't surface it.
+	`ALTER TABLE task_executions ADD COLUMN cache_creation_tokens INTEGER DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN cache_read_tokens INTEGER DEFAULT 0`,
 	`ALTER TABLE task_executions ADD COLUMN num_turns INTEGER DEFAULT 0`,
 	`ALTER TABLE task_executions ADD COLUMN num_tool_calls INTEGER DEFAULT 0`,
 	`ALTER TABLE task_executions ADD COLUMN cost_usd REAL DEFAULT 0.0`,
@@ -243,6 +248,10 @@ var migrations = []string{
 	`ALTER TABLE step_runs ADD COLUMN input_tokens INTEGER DEFAULT 0`,
 	`ALTER TABLE step_runs ADD COLUMN output_tokens INTEGER DEFAULT 0`,
 	`ALTER TABLE step_runs ADD COLUMN total_tokens INTEGER DEFAULT 0`,
+	// Cache token breakdown, summed across the step's failover attempts. See the
+	// task_executions cache columns above for semantics.
+	`ALTER TABLE step_runs ADD COLUMN cache_creation_tokens INTEGER DEFAULT 0`,
+	`ALTER TABLE step_runs ADD COLUMN cache_read_tokens INTEGER DEFAULT 0`,
 	`ALTER TABLE step_runs ADD COLUMN num_turns INTEGER DEFAULT 0`,
 	`ALTER TABLE step_runs ADD COLUMN num_tool_calls INTEGER DEFAULT 0`,
 	`ALTER TABLE step_runs ADD COLUMN cost_usd REAL DEFAULT 0.0`,

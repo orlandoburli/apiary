@@ -138,6 +138,16 @@ func showInstance(id string, asJSON bool) error {
 				s.Duration,
 				stateColor(s.State).Render(state),
 			)
+			if s.TotalTokens > 0 {
+				usage := fmt.Sprintf("%d in / %d out / %d total", s.InputTokens, s.OutputTokens, s.TotalTokens)
+				if s.CacheCreationTokens > 0 || s.CacheReadTokens > 0 {
+					usage += fmt.Sprintf("  ·  cache %d write / %d read", s.CacheCreationTokens, s.CacheReadTokens)
+				}
+				if s.CostUSD > 0 {
+					usage += fmt.Sprintf("  ·  $%.5f", s.CostUSD)
+				}
+				fmt.Printf("       %s\n", instMuted.Render(usage))
+			}
 		}
 	}
 	printCIPolls(detail.CIPolls)

@@ -74,14 +74,16 @@ type StepRun struct {
 	InputPrompt string
 	// Token/cost rollup, summed across the step's failover attempts. Per-attempt
 	// detail lives in the linked task_executions rows.
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
-	NumTurns     int
-	NumToolCalls int
-	CostUSD      float64
-	StartedAt    *time.Time
-	FinishedAt   *time.Time
+	InputTokens         int
+	OutputTokens        int
+	TotalTokens         int
+	CacheCreationTokens int
+	CacheReadTokens     int
+	NumTurns            int
+	NumToolCalls        int
+	CostUSD             float64
+	StartedAt           *time.Time
+	FinishedAt          *time.Time
 }
 
 // CreateWorkflowInstance inserts a new workflow instance. The caller supplies
@@ -383,14 +385,16 @@ func (c *Client) CreateStepRun(ctx context.Context, sr *StepRun) error {
 		INSERT INTO step_runs
 		  (id, workflow_instance_id, step_id, agent_id, state, output, structured_output,
 		   summary, exit_code, skipped_cached, publish_payload, publish_state, spawned_task_id,
-		   input_prompt, input_tokens, output_tokens, total_tokens, num_turns, num_tool_calls, cost_usd,
+		   input_prompt, input_tokens, output_tokens, total_tokens,
+		   cache_creation_tokens, cache_read_tokens, num_turns, num_tool_calls, cost_usd,
 		   started_at, finished_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, sr.ID, sr.WorkflowInstanceID, sr.StepID, nullStr(sr.AgentID), sr.State,
 		nullStr(sr.Output), nullStr(sr.StructuredOutput), nullStr(sr.Summary),
 		sr.ExitCode, sr.SkippedCached, nullStr(sr.PublishPayload), nullStr(sr.PublishState),
 		nullStr(sr.SpawnedTaskID), nullStr(sr.InputPrompt), sr.InputTokens, sr.OutputTokens,
-		sr.TotalTokens, sr.NumTurns, sr.NumToolCalls, sr.CostUSD, sr.StartedAt, sr.FinishedAt)
+		sr.TotalTokens, sr.CacheCreationTokens, sr.CacheReadTokens, sr.NumTurns, sr.NumToolCalls,
+		sr.CostUSD, sr.StartedAt, sr.FinishedAt)
 	return err
 }
 
@@ -402,13 +406,15 @@ func (c *Client) UpdateStepRun(ctx context.Context, sr *StepRun) error {
 		SET state = ?, output = ?, structured_output = ?, summary = ?,
 		    exit_code = ?, skipped_cached = ?, publish_payload = ?, publish_state = ?,
 		    spawned_task_id = ?, input_prompt = ?, input_tokens = ?, output_tokens = ?,
-		    total_tokens = ?, num_turns = ?, num_tool_calls = ?, cost_usd = ?,
+		    total_tokens = ?, cache_creation_tokens = ?, cache_read_tokens = ?,
+		    num_turns = ?, num_tool_calls = ?, cost_usd = ?,
 		    started_at = ?, finished_at = ?
 		WHERE id = ?
 	`, sr.State, nullStr(sr.Output), nullStr(sr.StructuredOutput), nullStr(sr.Summary),
 		sr.ExitCode, sr.SkippedCached, nullStr(sr.PublishPayload), nullStr(sr.PublishState),
 		nullStr(sr.SpawnedTaskID), nullStr(sr.InputPrompt), sr.InputTokens, sr.OutputTokens,
-		sr.TotalTokens, sr.NumTurns, sr.NumToolCalls, sr.CostUSD, sr.StartedAt, sr.FinishedAt, sr.ID)
+		sr.TotalTokens, sr.CacheCreationTokens, sr.CacheReadTokens, sr.NumTurns, sr.NumToolCalls,
+		sr.CostUSD, sr.StartedAt, sr.FinishedAt, sr.ID)
 	return err
 }
 
@@ -421,6 +427,7 @@ func (c *Client) ListStepRuns(ctx context.Context, instanceID string) ([]StepRun
 		       COALESCE(publish_payload,''), COALESCE(publish_state,''),
 		       COALESCE(spawned_task_id,''), COALESCE(input_prompt,''),
 		       COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(total_tokens,0),
+		       COALESCE(cache_creation_tokens,0), COALESCE(cache_read_tokens,0),
 		       COALESCE(num_turns,0), COALESCE(num_tool_calls,0), COALESCE(cost_usd,0.0),
 		       started_at, finished_at
 		FROM step_runs WHERE workflow_instance_id = ? ORDER BY rowid ASC
@@ -436,7 +443,8 @@ func (c *Client) ListStepRuns(ctx context.Context, instanceID string) ([]StepRun
 		if err := rows.Scan(&sr.ID, &sr.WorkflowInstanceID, &sr.StepID, &sr.AgentID, &sr.State,
 			&sr.Output, &sr.StructuredOutput, &sr.Summary, &sr.ExitCode, &sr.SkippedCached,
 			&sr.PublishPayload, &sr.PublishState, &sr.SpawnedTaskID, &sr.InputPrompt,
-			&sr.InputTokens, &sr.OutputTokens, &sr.TotalTokens, &sr.NumTurns, &sr.NumToolCalls,
+			&sr.InputTokens, &sr.OutputTokens, &sr.TotalTokens,
+			&sr.CacheCreationTokens, &sr.CacheReadTokens, &sr.NumTurns, &sr.NumToolCalls,
 			&sr.CostUSD, &sr.StartedAt, &sr.FinishedAt); err != nil {
 			return nil, err
 		}
