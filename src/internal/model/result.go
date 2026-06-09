@@ -83,11 +83,17 @@ type RunResult struct {
 	// Output. The workflow engine writes this back to the task's source
 	// bindings as a comment (the agent-driven replacement for result_comment).
 	PublishPayload string
-	// SpawnRequest is the parsed APIARY_SPAWN_BEGIN/END block, when present and
-	// valid JSON. Nil otherwise. The markers are stripped from Output. The
+	// SpawnRequest is the parsed APIARY_SPAWN_BEGIN/END block when it carries a
+	// single JSON object. Nil otherwise. The markers are stripped from Output. The
 	// workflow engine creates a child InternalTask and dispatches the named
 	// workflow against it.
 	SpawnRequest *SpawnRequest
+	// SpawnRequests is the parsed APIARY_SPAWN block when it carries a JSON array
+	// of requests — one agent step fanning out into several children (e.g. a spec
+	// decomposed into sub-issues). Empty for a single-object or absent block. The
+	// engine treats SpawnRequest and SpawnRequests uniformly: each request becomes
+	// one deduped child.
+	SpawnRequests []SpawnRequest
 	// SpawnError is set when an APIARY_SPAWN block was present but its body was
 	// not valid JSON. The workflow executor turns this into a failed step.
 	SpawnError error

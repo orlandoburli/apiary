@@ -102,6 +102,23 @@ type PullRequestLister interface {
 	ListPullRequests(ctx context.Context, cellID string) ([]PullRequestRef, error)
 }
 
+// SubIssueCreator is an optional interface a source may implement to create a
+// child work item linked to a parent (a sub-issue). The workflow engine uses it
+// to materialize a spawned InternalTask as a source sub-issue under the spawning
+// task's item (see step.Materialize / APIARY_SPAWN). The child carries the spawn
+// request's title, body, and labels so the normal poll→route loop dispatches the
+// matching workflow once it sees the new item.
+//
+// CreateSubIssue returns the created item populated with its source-native ID,
+// human number, and URL — enough for the engine to persist the child's
+// SourceBinding. The parent-child link itself is best-effort: an adapter that
+// creates the item but cannot link it should still return the created item (and
+// log the link failure) rather than erroring, so the caller persists the binding
+// and never re-creates a duplicate on the next run.
+type SubIssueCreator interface {
+	CreateSubIssue(ctx context.Context, parent, child model.SourceItem) (model.SourceItem, error)
+}
+
 // Factory creates a new, unconfigured Adapter instance.
 type Factory func() Adapter
 

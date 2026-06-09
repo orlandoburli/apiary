@@ -121,6 +121,63 @@ func TestDefaultSpawner_CreatesChildAndRuns(t *testing.T) {
 	}
 }
 
+// TestDefaultSpawner_MaterializeOnly covers a spawn request with no workflow: the
+// child is created (carrying its labels + body) and deduped like any other, but no
+// workflow is launched — the child is left for the poll loop to pick up once it is
+// materialized as a source sub-issue.
+func TestDefaultSpawner_MaterializeOnly(t *testing.T) {
+	creator := &fakeCreator{}
+	var ran int32
+	resolve := func(string) (config.WorkflowConfig, bool) {
+		t.Error("resolve must not be called for a materialize-only spawn")
+		return config.WorkflowConfig{}, false
+	}
+	run := func(context.Context, config.WorkflowConfig, model.InternalTask) (bool, error) {
+		atomic.AddInt32(&ran, 1)
+		return true, nil
+	}
+	s := NewDefaultSpawner(resolve, creator, run, testIDGen(), func() time.Time { return time.Unix(1000, 0) })
+
+	req := model.SpawnRequest{
+		ParentTaskID: "parent-1",
+		Title:        "Add CRUD endpoints",
+		Body:         "GIVEN ... THEN ...",
+		Labels:       []string{"agent:backend"},
+		Key:          "customer-crud-endpoint",
+	}
+	child, err := s.Spawn(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if child.Description != "GIVEN ... THEN ..." {
+		t.Errorf("child Description = %q, want body", child.Description)
+	}
+	if len(child.Metadata.Labels) != 1 || child.Metadata.Labels[0] != "agent:backend" {
+		t.Errorf("child labels = %v, want [agent:backend]", child.Metadata.Labels)
+	}
+	if child.DedupKey != "customer-crud-endpoint" {
+		t.Errorf("child DedupKey = %q, want explicit key", child.DedupKey)
+	}
+
+	// Re-running with the same key resolves to the same child (no duplicate).
+	again, err := s.Spawn(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Spawn (re-run): %v", err)
+	}
+	if again.ID != child.ID {
+		t.Errorf("re-run created a new child %q, want existing %q", again.ID, child.ID)
+	}
+	if got := creator.created(); len(got) != 1 {
+		t.Fatalf("materialize-only spawn persisted %d children, want 1", len(got))
+	}
+
+	// No workflow runs for a materialize-only spawn.
+	time.Sleep(20 * time.Millisecond)
+	if n := atomic.LoadInt32(&ran); n != 0 {
+		t.Errorf("workflow ran %d times for materialize-only spawn, want 0", n)
+	}
+}
+
 // TestDefaultSpawner_IdempotentPerSpec covers issue #119: re-running the same
 // decomposition (same parent + workflow + title + input, or an explicit key)
 // must resolve to the existing child instead of fanning out a duplicate set of

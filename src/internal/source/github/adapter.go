@@ -21,11 +21,12 @@ func init() {
 // Compile-time checks: the GitHub adapter supports the optional source
 // capabilities used by the dispatcher and the workflow engine.
 var (
-	_ source.StateSetter    = (*Adapter)(nil)
-	_ source.LabelAdder     = (*Adapter)(nil)
-	_ source.LabelRemover   = (*Adapter)(nil)
-	_ source.TaskPoller     = (*Adapter)(nil)
-	_ source.CIStatusPoller = (*Adapter)(nil)
+	_ source.StateSetter     = (*Adapter)(nil)
+	_ source.LabelAdder      = (*Adapter)(nil)
+	_ source.LabelRemover    = (*Adapter)(nil)
+	_ source.TaskPoller      = (*Adapter)(nil)
+	_ source.CIStatusPoller  = (*Adapter)(nil)
+	_ source.SubIssueCreator = (*Adapter)(nil)
 )
 
 type Adapter struct {
@@ -165,6 +166,48 @@ func (a *Adapter) WriteResult(ctx context.Context, cell model.SourceItem, result
 		return fmt.Errorf("github: writing result to %s: %w", cell.ID, err)
 	}
 	return nil
+}
+
+// CreateSubIssue creates a new issue from the child item (title, body, labels)
+// and links it under the parent issue via GitHub's sub-issues API. It implements
+// source.SubIssueCreator, materializing a spawned InternalTask as a real issue so
+// the normal poll→route loop picks it up by its labels.
+//
+// The link step is best-effort: if the issue is created but linking fails (e.g.
+// the token lacks the needed scope, or sub-issues are unavailable on the host),
+// the created issue is still returned with the failure logged. Returning the item
+// lets the caller persist the child's binding so a re-run never creates a second
+// copy — the parent-child link is navigational, while routing is driven by labels.
+func (a *Adapter) CreateSubIssue(ctx context.Context, parent, child model.SourceItem) (model.SourceItem, error) {
+	// Labels must exist before they can be applied; ensureLabel is a no-op when the
+	// label already exists (GitHub returns 422, which it tolerates).
+	for _, name := range child.Labels {
+		if err := a.ensureLabel(ctx, name); err != nil {
+			return model.SourceItem{}, err
+		}
+	}
+
+	createPath := fmt.Sprintf("/repos/%s/%s/issues", a.owner, a.repo)
+	body, err := a.client.post(ctx, createPath, createIssueRequest{
+		Title:  child.Title,
+		Body:   child.Description,
+		Labels: child.Labels,
+	})
+	if err != nil {
+		return model.SourceItem{}, fmt.Errorf("github: creating sub-issue under %s: %w", parent.ID, err)
+	}
+	var created issue
+	if err := json.Unmarshal(body, &created); err != nil {
+		return model.SourceItem{}, fmt.Errorf("github: decoding created sub-issue: %w", err)
+	}
+
+	// Link the new issue under the parent. parent.ID is the parent's issue number.
+	linkPath := fmt.Sprintf("/repos/%s/%s/issues/%s/sub_issues", a.owner, a.repo, parent.ID)
+	if _, err := a.client.post(ctx, linkPath, subIssueRequest{SubIssueID: created.ID}); err != nil {
+		aplog.Error("github: created sub-issue #%d but could not link it under #%s: %v", created.Number, parent.ID, err)
+	}
+
+	return a.toSourceItem(created), nil
 }
 
 func (a *Adapter) WebhookHandler() http.Handler { return nil }

@@ -180,11 +180,23 @@ func applyStructured(result *model.RunResult) {
 	result.Summary = summary
 	result.PublishPayload = publish
 	if spawn != "" {
-		var req model.SpawnRequest
-		if err := json.Unmarshal([]byte(spawn), &req); err != nil {
-			result.SpawnError = fmt.Errorf("APIARY_SPAWN: invalid JSON: %w", err)
+		// The block may carry a single object (one child) or a JSON array (a
+		// decomposition fanning out into several). A leading '[' selects the array
+		// form; anything else is parsed as a single object.
+		if strings.HasPrefix(strings.TrimSpace(spawn), "[") {
+			var reqs []model.SpawnRequest
+			if err := json.Unmarshal([]byte(spawn), &reqs); err != nil {
+				result.SpawnError = fmt.Errorf("APIARY_SPAWN: invalid JSON array: %w", err)
+			} else {
+				result.SpawnRequests = reqs
+			}
 		} else {
-			result.SpawnRequest = &req
+			var req model.SpawnRequest
+			if err := json.Unmarshal([]byte(spawn), &req); err != nil {
+				result.SpawnError = fmt.Errorf("APIARY_SPAWN: invalid JSON: %w", err)
+			} else {
+				result.SpawnRequest = &req
+			}
 		}
 	}
 }

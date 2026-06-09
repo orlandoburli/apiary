@@ -184,6 +184,25 @@ func (c *Config) validateAgentStep(sctx string, s StepConfig, agentIDs, stepIDs 
 		errs = append(errs, fmt.Errorf("%s: invalid on_missing_output %q (want warn|fail|ignore)", sctx, s.OnMissingOutput))
 	}
 
+	switch s.Spawn {
+	case "", SpawnAuto, SpawnAwait:
+	default:
+		errs = append(errs, fmt.Errorf("%s: invalid spawn %q (want auto|await)", sctx, s.Spawn))
+	}
+
+	switch s.Materialize {
+	case MaterializeOff, MaterializeSubIssue:
+	default:
+		errs = append(errs, fmt.Errorf("%s: invalid materialize %q (want sub_issue)", sctx, s.Materialize))
+	}
+
+	// materialize: sub_issue creates children via APIARY_SPAWN, which can never
+	// complete under spawn: await (a materialized child runs no inline workflow to
+	// await) — flag the combination rather than letting it hang at runtime.
+	if s.Materialize == MaterializeSubIssue && s.Spawn == SpawnAwait {
+		errs = append(errs, fmt.Errorf("%s: materialize: sub_issue is incompatible with spawn: await", sctx))
+	}
+
 	// memory.write requires output_schema with matching top-level fields.
 	if w := s.MemoryWriteFields(); len(w) > 0 {
 		if s.OutputSchema == nil {

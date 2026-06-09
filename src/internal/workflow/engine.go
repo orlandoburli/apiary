@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -114,9 +115,14 @@ type StepResult struct {
 	// engine writes it back to the task's source bindings as a comment. The
 	// executor clears it when the step sets publish: off.
 	PublishPayload string
-	// SpawnRequest is the parsed APIARY_SPAWN request the agent emitted, if any.
-	// The engine creates a child task and dispatches the named workflow.
+	// SpawnRequest is the parsed APIARY_SPAWN request the agent emitted as a single
+	// object, if any. The engine creates a child task and dispatches the named
+	// workflow.
 	SpawnRequest *model.SpawnRequest
+	// SpawnRequests is the parsed APIARY_SPAWN request list when the agent emitted a
+	// JSON array — one step fanning out into several children (e.g. a spec
+	// decomposed into sub-issues). The engine handles it uniformly with SpawnRequest.
+	SpawnRequests []model.SpawnRequest
 	// Usage is the token/cost rollup for the step, summed across the step's
 	// failover attempts (each attempt is also its own task_executions row). Nil
 	// when the runner reported no usage. The engine persists it onto the step run.
@@ -145,6 +151,13 @@ type SideEffects interface {
 	// ApplyHook applies an on_complete/on_fail hook (set_state, add_labels) to
 	// each bound source item.
 	ApplyHook(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, hook config.OnComplete) error
+	// MaterializeChild creates a source sub-issue for a spawned child task under the
+	// parent's source item and persists the child's source binding, so the child
+	// becomes a first-class pollable work item exactly once. parentBindings are the
+	// spawning task's bindings; the child is anchored under the first one. It is an
+	// error when the source does not support sub-issue creation; a duplicate binding
+	// (a concurrent materialize) is treated as success.
+	MaterializeChild(ctx context.Context, parent model.InternalTask, parentBindings []model.SourceBinding, child model.InternalTask) error
 }
 
 // Engine orchestrates a workflow instance: it persists the instance and its step
@@ -445,7 +458,7 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 	}
 	// Spawn handling runs before the pass/fail decision so a spawn failure (or an
 	// await on a failed child) fails the step.
-	e.spawnStep(ctx, task, step, &res, sr)
+	e.spawnStep(ctx, task, step, bindings, &res, sr)
 	if res.Success {
 		sr.State = db.StepStatePassed
 	} else {
@@ -456,15 +469,25 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 	return res
 }
 
-// spawnStep handles an agent-emitted APIARY_SPAWN request: it creates a child
-// InternalTask via the spawner, dispatches the named workflow, and records the
-// child id on the step run. By default (spawn: auto) it is fire-and-forget; with
-// spawn: await it blocks until the child reaches a terminal state and fails the
-// step if the child failed. A spawn request is only honored when the agent step
-// itself succeeded; a missing spawner, an unknown workflow, or a create failure
-// fails the step (never a silent no-op).
-func (e *Engine) spawnStep(ctx context.Context, task model.InternalTask, step config.StepConfig, res *StepResult, sr *db.StepRun) {
-	if res.SpawnRequest == nil || !res.Success {
+// spawnStep handles one or more agent-emitted APIARY_SPAWN requests: for each it
+// creates a deduped child InternalTask via the spawner and, when the step sets
+// materialize: sub_issue, publishes the child to the source as a sub-issue under
+// the parent's item. A request that names a workflow runs it (fire-and-forget, or
+// blocking under spawn: await); a request with no workflow is materialize-only —
+// the child is left for the normal poll→route loop to pick up by its labels.
+//
+// Spawn requests are only honored when the agent step itself succeeded. Each child
+// is independent: a failure on one (spawn, materialize, or await) is recorded but
+// does not stop the others, so a re-run makes maximal forward progress before the
+// step is failed. Idempotency comes from the child dedup key (one child per key)
+// and the materialize binding check (one sub-issue per child), so re-running the
+// decomposition never fans out a duplicate set (issue #119).
+func (e *Engine) spawnStep(ctx context.Context, task model.InternalTask, step config.StepConfig, bindings []model.SourceBinding, res *StepResult, sr *db.StepRun) {
+	reqs := res.SpawnRequests
+	if len(reqs) == 0 && res.SpawnRequest != nil {
+		reqs = []model.SpawnRequest{*res.SpawnRequest}
+	}
+	if len(reqs) == 0 || !res.Success {
 		return
 	}
 	if e.spawner == nil {
@@ -473,28 +496,63 @@ func (e *Engine) spawnStep(ctx context.Context, task model.InternalTask, step co
 		return
 	}
 
-	req := *res.SpawnRequest
-	req.ParentTaskID = task.ID
-	child, err := e.spawner.Spawn(ctx, req)
-	if err != nil {
-		res.Success = false
-		res.Err = fmt.Errorf("spawn workflow %q: %w", req.WorkflowID, err)
-		return
-	}
-	sr.SpawnedTaskID = child.ID
+	var spawnErrs []error
+	for _, req := range reqs {
+		req.ParentTaskID = task.ID
+		child, err := e.spawner.Spawn(ctx, req)
+		if err != nil {
+			spawnErrs = append(spawnErrs, fmt.Errorf("spawn workflow %q: %w", req.WorkflowID, err))
+			continue
+		}
+		// Record the first spawned child on the step run (it has a single slot).
+		if sr.SpawnedTaskID == "" {
+			sr.SpawnedTaskID = child.ID
+		}
 
-	if step.Spawn == config.SpawnAwait {
-		ok, werr := e.spawner.Await(ctx, child.ID)
-		if werr != nil {
-			res.Success = false
-			res.Err = fmt.Errorf("spawn await child %s: %w", child.ID, werr)
-			return
+		if step.Materialize == config.MaterializeSubIssue {
+			if err := e.materializeChild(ctx, task, bindings, child); err != nil {
+				spawnErrs = append(spawnErrs, err)
+				continue
+			}
 		}
-		if !ok {
-			res.Success = false
-			res.Err = fmt.Errorf("spawned task %s failed", child.ID)
+
+		// spawn: await blocks only on children that actually run an inline workflow;
+		// a materialize-only child has no workflow to wait on.
+		if step.Spawn == config.SpawnAwait && req.WorkflowID != "" {
+			ok, werr := e.spawner.Await(ctx, child.ID)
+			if werr != nil {
+				spawnErrs = append(spawnErrs, fmt.Errorf("spawn await child %s: %w", child.ID, werr))
+				continue
+			}
+			if !ok {
+				spawnErrs = append(spawnErrs, fmt.Errorf("spawned task %s failed", child.ID))
+			}
 		}
 	}
+
+	if len(spawnErrs) > 0 {
+		res.Success = false
+		res.Err = errors.Join(spawnErrs...)
+	}
+}
+
+// materializeChild publishes a spawned child as a source sub-issue under the
+// parent's item, exactly once. It is idempotent and self-healing: a child that
+// already has a source binding (already materialized, including by a prior run
+// that crashed after the agent step) is skipped, so re-running the decomposition
+// never creates a second sub-issue. A binding-less parent (e.g. a spawned parent)
+// has no item to anchor under and is a no-op.
+func (e *Engine) materializeChild(ctx context.Context, parent model.InternalTask, parentBindings []model.SourceBinding, child model.InternalTask) error {
+	if e.side == nil {
+		return fmt.Errorf("materialize child %s: no side effects configured", child.ID)
+	}
+	if len(parentBindings) == 0 {
+		return nil
+	}
+	if existing := e.bindingsFor(ctx, child.ID); len(existing) > 0 {
+		return nil
+	}
+	return e.side.MaterializeChild(ctx, parent, parentBindings, child)
 }
 
 // publishStep writes an agent-emitted APIARY_PUBLISH payload back to the task's

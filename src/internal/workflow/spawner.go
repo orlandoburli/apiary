@@ -97,9 +97,16 @@ func NewDefaultSpawner(
 // it without creating a duplicate or launching the workflow again — so re-running
 // the same decomposition does not fan out a second, duplicate set of sub-issues.
 func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (model.InternalTask, error) {
-	wf, ok := s.resolve(req.WorkflowID)
-	if !ok {
-		return model.InternalTask{}, fmt.Errorf("workflow %q not found", req.WorkflowID)
+	// A materialize-only spawn (empty workflow) creates the deduped child but runs
+	// no inline workflow — the child is left for the normal poll→route loop to pick
+	// up once it is materialized as a source sub-issue (see step.Materialize). Only
+	// resolve (and later launch) a workflow when one is named.
+	var wf config.WorkflowConfig
+	if req.WorkflowID != "" {
+		var ok bool
+		if wf, ok = s.resolve(req.WorkflowID); !ok {
+			return model.InternalTask{}, fmt.Errorf("workflow %q not found", req.WorkflowID)
+		}
 	}
 
 	dedupKey := spawnDedupKey(req)
@@ -120,10 +127,11 @@ func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (mod
 		ID:           s.newID("task"),
 		ParentTaskID: req.ParentTaskID,
 		Title:        req.Title,
+		Description:  req.Body,
 		Input:        req.Input,
 		DedupKey:     dedupKey,
 		State:        model.TaskStateRegistered,
-		Metadata:     model.TaskMetadata{Type: "internal"},
+		Metadata:     model.TaskMetadata{Type: "internal", Labels: req.Labels},
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -138,6 +146,15 @@ func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (mod
 			return *existing, nil
 		}
 		return model.InternalTask{}, fmt.Errorf("create spawned task: %w", err)
+	}
+
+	// Materialize-only spawn: there is no inline workflow to run or await, so return
+	// the freshly created child without launching a goroutine. The child becomes a
+	// real work item only once it is materialized as a source sub-issue and the
+	// poll loop dispatches it (spawn: await is rejected by config lint for this
+	// mode, so no caller blocks on a handle that would never close).
+	if req.WorkflowID == "" {
+		return child, nil
 	}
 
 	h := &spawnHandle{done: make(chan struct{})}

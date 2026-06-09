@@ -129,9 +129,11 @@ func (f *fakeExecutor) ExecuteStep(_ context.Context, req StepRequest) StepResul
 
 // fakeSide records side-effect calls.
 type fakeSide struct {
-	stateLocked bool
-	comments    []string
-	hooks       []config.OnComplete
+	stateLocked    bool
+	comments       []string
+	hooks          []config.OnComplete
+	materialized   []model.InternalTask
+	materializeErr error
 }
 
 func (f *fakeSide) StateLock(_ context.Context, _ model.InternalTask, _ []model.SourceBinding) error {
@@ -144,6 +146,13 @@ func (f *fakeSide) PostComment(_ context.Context, _ model.InternalTask, _ []mode
 }
 func (f *fakeSide) ApplyHook(_ context.Context, _ model.InternalTask, _ []model.SourceBinding, h config.OnComplete) error {
 	f.hooks = append(f.hooks, h)
+	return nil
+}
+func (f *fakeSide) MaterializeChild(_ context.Context, _ model.InternalTask, _ []model.SourceBinding, child model.InternalTask) error {
+	if f.materializeErr != nil {
+		return f.materializeErr
+	}
+	f.materialized = append(f.materialized, child)
 	return nil
 }
 
@@ -465,6 +474,95 @@ func TestEngine_SpawnWithoutSpawnerFailsStep(t *testing.T) {
 	instID, _, _ := eng.RunInstance(context.Background(), spawnWF(config.SpawnAuto), model.InternalTask{ID: "C1"})
 	if store.instances[instID].State != db.InstanceStateFailed {
 		t.Errorf("expected failed instance when no spawner configured, got %s", store.instances[instID].State)
+	}
+}
+
+// materializeWF builds a single agent step that materializes each spawned child
+// as a source sub-issue.
+func materializeWF() config.WorkflowConfig {
+	return config.WorkflowConfig{
+		ID:    "r",
+		Steps: []config.StepConfig{{ID: "run", Agent: "backend-dev", Materialize: config.MaterializeSubIssue}},
+	}
+}
+
+// parentBinding seeds a single source binding for a task so the materialize gate
+// has a parent item to anchor children under.
+func parentBinding(taskID string) map[string][]model.SourceBinding {
+	return map[string][]model.SourceBinding{
+		taskID: {{TaskID: taskID, SourceID: "github", SourceItemID: "42", SourceItemNumber: "#42"}},
+	}
+}
+
+// TestEngine_MaterializeSpawnedChildren covers the spawn+materialize path: a step
+// that emits several APIARY_SPAWN entries with materialize: sub_issue creates each
+// child and asks the side-effect layer to publish it as a sub-issue under the
+// parent's bound item. The decomposition step succeeds.
+func TestEngine_MaterializeSpawnedChildren(t *testing.T) {
+	store := newFakeStore()
+	store.bindings = parentBinding("C1")
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"run": {Success: true, Output: "ok", SpawnRequests: []model.SpawnRequest{
+			{Title: "Backend", Body: "spec b", Labels: []string{"agent:backend"}, Key: "be"},
+			{Title: "Frontend", Body: "spec f", Labels: []string{"agent:frontend"}, Key: "fe"},
+		}},
+	}}
+	sp := &fakeSpawner{child: model.InternalTask{ID: "task-child"}}
+	side := &fakeSide{}
+	eng := testEngineWithSpawner(baseCfg(), store, exec, side, sp)
+
+	instID, _, err := eng.RunInstance(context.Background(), materializeWF(), model.InternalTask{ID: "C1", Title: "Parent"})
+	if err != nil {
+		t.Fatalf("RunInstance: %v", err)
+	}
+	if store.instances[instID].State != db.InstanceStateDone {
+		t.Errorf("expected instance done, got %s", store.instances[instID].State)
+	}
+	if len(side.materialized) != 2 {
+		t.Fatalf("expected 2 children materialized, got %d", len(side.materialized))
+	}
+}
+
+// TestEngine_MaterializeSkipsAlreadyBound covers the self-healing idempotency gate:
+// a spawned child that already has a source binding (already materialized) is not
+// re-published, so a re-run never creates a duplicate sub-issue.
+func TestEngine_MaterializeSkipsAlreadyBound(t *testing.T) {
+	store := newFakeStore()
+	store.bindings = parentBinding("C1")
+	// The child already has a binding — it was materialized on a previous run.
+	store.bindings["task-child"] = []model.SourceBinding{{TaskID: "task-child", SourceID: "github", SourceItemID: "99"}}
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"run": {Success: true, Output: "ok", SpawnRequest: &model.SpawnRequest{Title: "Backend", Key: "be"}},
+	}}
+	sp := &fakeSpawner{child: model.InternalTask{ID: "task-child"}}
+	side := &fakeSide{}
+	eng := testEngineWithSpawner(baseCfg(), store, exec, side, sp)
+
+	instID, _, _ := eng.RunInstance(context.Background(), materializeWF(), model.InternalTask{ID: "C1"})
+	if store.instances[instID].State != db.InstanceStateDone {
+		t.Errorf("expected instance done, got %s", store.instances[instID].State)
+	}
+	if len(side.materialized) != 0 {
+		t.Errorf("already-bound child must not be re-materialized, got %d", len(side.materialized))
+	}
+}
+
+// TestEngine_MaterializeErrorFailsStep: a materialize failure (e.g. the source
+// can't create sub-issues) fails the decomposition step so the issue is not closed
+// and the run is retried, rather than silently losing the sub-issues.
+func TestEngine_MaterializeErrorFailsStep(t *testing.T) {
+	store := newFakeStore()
+	store.bindings = parentBinding("C1")
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"run": {Success: true, Output: "ok", SpawnRequest: &model.SpawnRequest{Title: "Backend", Key: "be"}},
+	}}
+	sp := &fakeSpawner{child: model.InternalTask{ID: "task-child"}}
+	side := &fakeSide{materializeErr: errTest}
+	eng := testEngineWithSpawner(baseCfg(), store, exec, side, sp)
+
+	instID, _, _ := eng.RunInstance(context.Background(), materializeWF(), model.InternalTask{ID: "C1"})
+	if store.instances[instID].State != db.InstanceStateFailed {
+		t.Errorf("expected failed instance on materialize error, got %s", store.instances[instID].State)
 	}
 }
 

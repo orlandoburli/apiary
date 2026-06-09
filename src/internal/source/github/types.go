@@ -1,6 +1,9 @@
 package github
 
 type issue struct {
+	// ID is GitHub's global REST id for the issue (distinct from Number). The
+	// sub-issues API links a child by this id, not its number.
+	ID          int64     `json:"id"`
 	Number      int       `json:"number"`
 	Title       string    `json:"title"`
 	Body        string    `json:"body"`
@@ -25,6 +28,20 @@ type label struct {
 type issueRequest struct {
 	State  string   `json:"state,omitempty"`
 	Labels []string `json:"labels,omitempty"`
+}
+
+// createIssueRequest is the body for POST /repos/{owner}/{repo}/issues, used to
+// materialize a spawned child task as a new sub-issue.
+type createIssueRequest struct {
+	Title  string   `json:"title"`
+	Body   string   `json:"body,omitempty"`
+	Labels []string `json:"labels,omitempty"`
+}
+
+// subIssueRequest is the body for POST /repos/{owner}/{repo}/issues/{n}/sub_issues,
+// which links an existing issue (by its global REST id) as a sub-issue of issue n.
+type subIssueRequest struct {
+	SubIssueID int64 `json:"sub_issue_id"`
 }
 
 type commentRequest struct {

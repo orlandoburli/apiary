@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -221,6 +222,88 @@ func TestRemoveLabels_Ignores404(t *testing.T) {
 	cell := model.SourceItem{ID: "42", Labels: []string{"in-progress"}}
 	if err := a.RemoveLabels(context.Background(), cell, []string{"in-progress"}); err != nil {
 		t.Errorf("expected 404 to be ignored, got %v", err)
+	}
+}
+
+// TestCreateSubIssue_CreatesAndLinks verifies that CreateSubIssue POSTs a new
+// issue (title, body, labels) and then links it under the parent via the
+// sub_issues endpoint using the created issue's REST id, returning the new item.
+func TestCreateSubIssue_CreatesAndLinks(t *testing.T) {
+	var createdBody, linkBody string
+	var ensuredLabels []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/labels"):
+			b, _ := io.ReadAll(r.Body)
+			ensuredLabels = append(ensuredLabels, string(b))
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sub_issues"):
+			b, _ := io.ReadAll(r.Body)
+			linkBody = string(b)
+			if !strings.HasSuffix(r.URL.Path, "/issues/42/sub_issues") {
+				t.Errorf("link path = %q, want under parent 42", r.URL.Path)
+			}
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues"):
+			b, _ := io.ReadAll(r.Body)
+			createdBody = string(b)
+			_, _ = w.Write([]byte(`{"id": 555, "number": 101, "html_url": "https://github.com/o/r/issues/101", "title": "Backend", "state": "open"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	a := &Adapter{id: "github", owner: "o", repo: "r", client: newClient(srv.URL, "")}
+	parent := model.SourceItem{ID: "42", Number: "#42", SourceID: "github"}
+	child := model.SourceItem{Title: "Backend", Description: "spec b", Labels: []string{"agent:backend"}}
+
+	created, err := a.CreateSubIssue(context.Background(), parent, child)
+	if err != nil {
+		t.Fatalf("CreateSubIssue: %v", err)
+	}
+	if created.ID != "101" || created.Number != "#101" {
+		t.Errorf("created item = %+v, want number 101", created)
+	}
+	if created.URL != "https://github.com/o/r/issues/101" {
+		t.Errorf("created URL = %q", created.URL)
+	}
+	if !strings.Contains(createdBody, `"title":"Backend"`) || !strings.Contains(createdBody, `"agent:backend"`) {
+		t.Errorf("create body missing title/labels: %s", createdBody)
+	}
+	if !strings.Contains(linkBody, `"sub_issue_id":555`) {
+		t.Errorf("link body = %q, want sub_issue_id 555 (the REST id, not number)", linkBody)
+	}
+	if len(ensuredLabels) == 0 {
+		t.Error("expected the child's labels to be ensured before creation")
+	}
+}
+
+// TestCreateSubIssue_LinkFailureNonFatal verifies that when the issue is created
+// but linking it under the parent fails, CreateSubIssue still returns the created
+// item (so the caller persists the binding and never re-creates a duplicate).
+func TestCreateSubIssue_LinkFailureNonFatal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sub_issues"):
+			http.Error(w, `{"message":"sub-issues unavailable"}`, http.StatusForbidden)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues"):
+			_, _ = w.Write([]byte(`{"id": 7, "number": 102, "html_url": "https://github.com/o/r/issues/102"}`))
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+
+	a := &Adapter{id: "github", owner: "o", repo: "r", client: newClient(srv.URL, "")}
+	created, err := a.CreateSubIssue(context.Background(),
+		model.SourceItem{ID: "42", Number: "#42"},
+		model.SourceItem{Title: "Backend"})
+	if err != nil {
+		t.Fatalf("link failure must be non-fatal, got error: %v", err)
+	}
+	if created.Number != "#102" {
+		t.Errorf("created item = %+v, want number 102 despite link failure", created)
 	}
 }
 

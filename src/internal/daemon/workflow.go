@@ -481,6 +481,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		Summary:          res.Summary,
 		PublishPayload:   publishPayload,
 		SpawnRequest:     res.SpawnRequest,
+		SpawnRequests:    res.SpawnRequests,
 		Usage:            usage,
 		InputPrompt:      res.InputPrompt,
 		Err:              res.Error,
@@ -621,6 +622,61 @@ func (s *wfSideEffects) ApplyHook(ctx context.Context, task model.InternalTask, 
 			}
 		}
 	}
+	return nil
+}
+
+// MaterializeChild creates a source sub-issue for a spawned child task under the
+// parent's first source item and persists the child's source binding, so the new
+// item resolves back to this same child task on the next poll (the binder is keyed
+// on source_id+source_item_id). The remote create happens before the local binding
+// write; the engine only calls this for a child that has no binding yet, and a
+// duplicate binding (a concurrent materialize) is treated as success — together
+// these make the publish exactly-once in the common path.
+func (s *wfSideEffects) MaterializeChild(ctx context.Context, parent model.InternalTask, parentBindings []model.SourceBinding, child model.InternalTask) error {
+	if len(parentBindings) == 0 {
+		return nil
+	}
+	// A sub-issue belongs under exactly one parent item; anchor under the first.
+	b := parentBindings[0]
+	adapter := s.d.sources[b.SourceID]
+	if adapter == nil {
+		return fmt.Errorf("materialize child %s: no adapter for source %q", child.ID, b.SourceID)
+	}
+	creator, ok := adapter.(source.SubIssueCreator)
+	if !ok {
+		return fmt.Errorf("materialize child %s: source %q does not support sub-issue creation", child.ID, b.SourceID)
+	}
+
+	parentItem := sourceItemFromBinding(parent, b)
+	childItem := model.SourceItem{
+		SourceID:    b.SourceID,
+		Title:       child.Title,
+		Description: child.Description,
+		Labels:      child.Metadata.Labels,
+		Type:        "issue",
+	}
+	created, err := creator.CreateSubIssue(ctx, parentItem, childItem)
+	if err != nil {
+		return fmt.Errorf("materialize child %s under %s: %w", child.ID, b.SourceItemNumber, err)
+	}
+
+	binding := model.SourceBinding{
+		TaskID:           child.ID,
+		SourceID:         b.SourceID,
+		SourceItemID:     created.ID,
+		SourceItemURL:    created.URL,
+		SourceItemNumber: created.Number,
+	}
+	if err := s.d.db.SourceBindings().CreateBinding(ctx, &binding); err != nil {
+		// A concurrent materialize may have already bound this item (the
+		// source_bindings unique index rejects the second insert). Re-resolve: if a
+		// binding now exists, the publish succeeded — not an error.
+		if existing, ferr := s.d.db.SourceBindings().GetBindingBySourceItem(ctx, b.SourceID, created.ID); ferr == nil && existing != nil {
+			return nil
+		}
+		return fmt.Errorf("materialize child %s: persist binding for %s: %w", child.ID, created.Number, err)
+	}
+	aplog.Info("materialized child %s as %s sub-issue %s under %s", child.ID, b.SourceID, created.Number, b.SourceItemNumber)
 	return nil
 }
 

@@ -102,12 +102,25 @@ workflows:
   - id: po-spec
     trigger:
       priority: 15
+      # once: the PO decomposition runs at most once per issue. After it has a
+      # completed instance, later polls do not re-dispatch it — so a spec issue that
+      # lingers in the trigger set (e.g. before on_complete closes it) never fans out
+      # a second set of sub-issues. The spawn dedup key + the materialize binding
+      # check already make sub-issue creation idempotent (issue #119); once: also
+      # avoids re-running the (expensive) PO agent.
+      once: true
       match:
         source: project-erp
         labels: [agent:po]
     steps:
       - id: run
         agent: po
+        # materialize: each sub-task the PO emits via APIARY_SPAWN is published as a
+        # GitHub sub-issue under this issue, exactly once. The new sub-issues carry
+        # agent:* labels, so the normal poll→route loop dispatches the right
+        # implementer. Re-running the PO resolves to the same children (by spawn key)
+        # and never duplicates them.
+        materialize: sub_issue
     on_complete:
       set_state: closed
 
@@ -215,6 +228,11 @@ workflows:
       - id: spec
         agent: po
         prompt: "Produce the spec / acceptance criteria for this issue."
+        # Same as po-spec: sub-tasks the PO emits via APIARY_SPAWN are published as
+        # GitHub sub-issues exactly once, deduped by spawn key. The whole triage
+        # workflow runs once per issue (on_complete closes it), so the decomposition
+        # is not repeated.
+        materialize: sub_issue
 
       - id: design
         agent: staff
