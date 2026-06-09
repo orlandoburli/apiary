@@ -445,6 +445,55 @@ func (c *Client) ListStepRuns(ctx context.Context, instanceID string) ([]StepRun
 	return out, rows.Err()
 }
 
+// CIPollCheck is one poll of a wait_for step's external status (e.g. a CI status
+// check on a PR). One row is written per poll, giving an auditable history of
+// how many times the step polled, when, and what each poll returned.
+type CIPollCheck struct {
+	ID                 int64
+	WorkflowInstanceID string
+	StepID             string
+	Status             string // passed|failed|pending|timeout|error|unknown
+	PRURL              string
+	Detail             string // JSON of per-check states, or an error message
+	CheckedAt          time.Time
+}
+
+// RecordCIPollCheck appends one CI poll result for a wait_for step. checked_at is
+// set by the database default (CURRENT_TIMESTAMP).
+func (c *Client) RecordCIPollCheck(ctx context.Context, p *CIPollCheck) error {
+	_, err := c.db.ExecContext(ctx, `
+		INSERT INTO ci_poll_checks
+		  (workflow_instance_id, step_id, status, pr_url, detail)
+		VALUES (?, ?, ?, ?, ?)
+	`, p.WorkflowInstanceID, p.StepID, p.Status, nullStr(p.PRURL), nullStr(p.Detail))
+	return err
+}
+
+// ListCIPollChecks returns all CI poll checks for an instance, oldest first.
+func (c *Client) ListCIPollChecks(ctx context.Context, instanceID string) ([]CIPollCheck, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT id, workflow_instance_id, step_id, status,
+		       COALESCE(pr_url,''), COALESCE(detail,''), checked_at
+		FROM ci_poll_checks WHERE workflow_instance_id = ?
+		ORDER BY checked_at ASC, id ASC
+	`, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []CIPollCheck
+	for rows.Next() {
+		var p CIPollCheck
+		if err := rows.Scan(&p.ID, &p.WorkflowInstanceID, &p.StepID, &p.Status,
+			&p.PRURL, &p.Detail, &p.CheckedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // scanner abstracts *sql.Row and *sql.Rows for shared scanning.
 type scanner interface {
 	Scan(dest ...any) error

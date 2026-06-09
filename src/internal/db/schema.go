@@ -133,6 +133,21 @@ CREATE TABLE IF NOT EXISTS step_runs (
   FOREIGN KEY(workflow_instance_id) REFERENCES workflow_instances(id)
 );
 
+-- CI poll checks: one row per poll of a wait_for step's external status (CI).
+-- A parked CI wait re-polls the PR every cycle; recording each poll makes the
+-- wait auditable — how many times it checked, when, and what each poll returned
+-- (passed|failed|pending|timeout|error) — instead of an opaque "waiting".
+CREATE TABLE IF NOT EXISTS ci_poll_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_instance_id TEXT NOT NULL,
+  step_id TEXT NOT NULL,
+  status TEXT NOT NULL,           -- passed|failed|pending|timeout|error|unknown
+  pr_url TEXT,
+  detail TEXT,                    -- JSON of per-check states, or an error message
+  checked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(workflow_instance_id) REFERENCES workflow_instances(id)
+);
+
 -- Canonical internal task registry: the source-independent unit of work.
 CREATE TABLE IF NOT EXISTS internal_tasks (
   id TEXT PRIMARY KEY,                          -- ulid
@@ -173,6 +188,7 @@ CREATE INDEX IF NOT EXISTS idx_wf_instances_state ON workflow_instances(state);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_cell ON workflow_instances(cell_id);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_parent ON workflow_instances(parent_instance_id);
 CREATE INDEX IF NOT EXISTS idx_step_runs_instance ON step_runs(workflow_instance_id);
+CREATE INDEX IF NOT EXISTS idx_ci_poll_checks_instance ON ci_poll_checks(workflow_instance_id, step_id);
 CREATE INDEX IF NOT EXISTS idx_internal_tasks_state ON internal_tasks(state);
 CREATE INDEX IF NOT EXISTS idx_internal_tasks_parent ON internal_tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_source_bindings_task ON source_bindings(task_id);

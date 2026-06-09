@@ -1339,7 +1339,25 @@ func buildWorkflowInstanceItem(ctx context.Context, dbConn *db.Client, inst *db.
 			item.Steps = append(item.Steps, si)
 		}
 	}
+	if polls, err := dbConn.ListCIPollChecks(ctx, inst.ID); err == nil {
+		item.CIPolls = mapCIPolls(polls)
+	}
 	return item
+}
+
+// mapCIPolls converts recorded CI poll rows into dashboard view-models.
+func mapCIPolls(checks []db.CIPollCheck) []CIPollItem {
+	out := make([]CIPollItem, 0, len(checks))
+	for _, c := range checks {
+		out = append(out, CIPollItem{
+			StepID:    c.StepID,
+			Status:    c.Status,
+			PRURL:     c.PRURL,
+			Detail:    c.Detail,
+			CheckedAt: c.CheckedAt,
+		})
+	}
+	return out
 }
 
 // refreshWorkflowMonitor re-fetches a workflow instance and its steps for the
@@ -1941,6 +1959,9 @@ func (a *App) fetchWorkflowInstance(ctx context.Context, dbConn *db.Client, task
 			Cached:   s.SkippedCached,
 		})
 	}
+	if polls, err := dbConn.ListCIPollChecks(ctx, inst.ID); err == nil {
+		item.CIPolls = mapCIPolls(polls)
+	}
 	return item
 }
 
@@ -2003,6 +2024,9 @@ func (a *App) fetchTaskHistory(internalTaskID, drillKey string) tea.Cmd {
 				for _, seg := range segs {
 					item := mapInstances([]db.WorkflowInstance{seg.Instance})[0]
 					item.Steps = mapStepRuns(seg.Steps, now)
+					if polls, err := dbConn.ListCIPollChecks(ctx, seg.Instance.ID); err == nil {
+						item.CIPolls = mapCIPolls(polls)
+					}
 					if item.State == db.InstanceStateApprovalWaiting {
 						item.Message = "Awaiting human approval — reply on the task to resume or abort."
 					}
@@ -2839,7 +2863,52 @@ func renderWorkflowSteps(inst *WorkflowInstanceItem) string {
 	if m := wfFailureMarker(inst); m != "" {
 		b.WriteString("  " + m + "\n")
 	}
+	b.WriteString(renderCIPolls(inst.CIPolls))
 	return b.String()
+}
+
+// renderCIPolls renders the wait_for CI poll history: a header with the count
+// and the latest status, then the most recent poll rows (oldest of the window
+// first). Empty when the instance never polled CI.
+func renderCIPolls(polls []CIPollItem) string {
+	if len(polls) == 0 {
+		return ""
+	}
+	const window = 8
+	var b strings.Builder
+	last := polls[len(polls)-1]
+	b.WriteString("\n  " + StyleLabel.Render(fmt.Sprintf("CI Polls (%d)", len(polls))) +
+		"   " + StyleMuted.Render("last: ") + ciPollStatusStyle(last.Status).Render(last.Status) +
+		StyleMuted.Render(" · "+last.CheckedAt.Format("01-02 15:04:05")) + "\n")
+
+	start := 0
+	if len(polls) > window {
+		start = len(polls) - window
+		b.WriteString("    " + StyleMuted.Render(fmt.Sprintf("… %d earlier", start)) + "\n")
+	}
+	for _, p := range polls[start:] {
+		row := StyleMuted.Render(pad(p.CheckedAt.Format("01-02 15:04:05"), 17)) + "  " +
+			ciPollStatusStyle(p.Status).Render(pad(p.Status, 8))
+		if p.Detail != "" {
+			row += "  " + StyleMuted.Render(truncate(p.Detail, 50))
+		}
+		b.WriteString("    " + row + "\n")
+	}
+	return b.String()
+}
+
+// ciPollStatusStyle maps a recorded CI poll status to a display style.
+func ciPollStatusStyle(status string) lipgloss.Style {
+	switch status {
+	case "passed":
+		return StyleSuccess
+	case "failed", "timeout", "error":
+		return StyleError
+	case "pending":
+		return StyleWarning
+	default:
+		return StyleMuted
+	}
 }
 
 // wfFailureMarker returns a one-line notice when an instance is failed but none
@@ -3024,6 +3093,9 @@ func (a *App) taskHistoryLines() []string {
 		}
 		if m := wfFailureMarker(&seg.Instance); m != "" {
 			out = append(out, "  "+m)
+		}
+		if polls := renderCIPolls(seg.Instance.CIPolls); polls != "" {
+			out = append(out, strings.Split(strings.Trim(polls, "\n"), "\n")...)
 		}
 		out = append(out, a.logEntryLines(seg.Logs)...)
 	}

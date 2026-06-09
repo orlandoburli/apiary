@@ -37,6 +37,7 @@ type fakeStore struct {
 	stepRuns  map[string]*db.StepRun
 	stepOrder []string
 	bindings  map[string][]model.SourceBinding // task id → bindings (for bindingLister)
+	ciPolls   []db.CIPollCheck                 // recorded wait_for CI polls (for ciPollRecorder)
 }
 
 func newFakeStore() *fakeStore {
@@ -45,6 +46,27 @@ func newFakeStore() *fakeStore {
 		stepRuns:  map[string]*db.StepRun{},
 		bindings:  map[string][]model.SourceBinding{},
 	}
+}
+
+// RecordCIPollCheck satisfies ciPollRecorder so the engine persists each CI poll
+// the same way the production *db.Client does.
+func (f *fakeStore) RecordCIPollCheck(_ context.Context, p *db.CIPollCheck) error {
+	cp := *p
+	f.mu.Lock()
+	f.ciPolls = append(f.ciPolls, cp)
+	f.mu.Unlock()
+	return nil
+}
+
+// pollStatuses returns the recorded CI poll statuses in order, for assertions.
+func (f *fakeStore) pollStatuses() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.ciPolls))
+	for i, p := range f.ciPolls {
+		out[i] = p.Status
+	}
+	return out
 }
 
 // ListBindingsByTask satisfies bindingLister so the engine resolves a task's

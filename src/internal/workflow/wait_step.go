@@ -2,11 +2,12 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
-	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/config"
+	aplog "github.com/orlandoburli/apiary/internal/log"
 )
 
 // RunWaitStep performs ONE check of the external system (e.g. CI status) and
@@ -19,6 +20,7 @@ import (
 // deadline the step returns a terminal failure with ci_status=timeout.
 func (e *Engine) RunWaitStep(
 	ctx context.Context,
+	instID string,
 	step config.StepConfig,
 	sourceID, sourceItemID string,
 	deadline time.Time,
@@ -30,7 +32,7 @@ func (e *Engine) RunWaitStep(
 	cfg := step.WaitFor
 	switch cfg.Kind {
 	case "", "ci":
-		return e.checkCIWaitStep(ctx, step, sourceID, sourceItemID, deadline)
+		return e.checkCIWaitStep(ctx, instID, step, sourceID, sourceItemID, deadline)
 	default:
 		return StepResult{}, fmt.Errorf("wait_for step %q unsupported kind: %q", step.ID, cfg.Kind)
 	}
@@ -41,6 +43,7 @@ func (e *Engine) RunWaitStep(
 // terminal; passing the deadline is a terminal timeout failure.
 func (e *Engine) checkCIWaitStep(
 	ctx context.Context,
+	instID string,
 	step config.StepConfig,
 	sourceID, sourceItemID string,
 	deadline time.Time,
@@ -57,6 +60,8 @@ func (e *Engine) checkCIWaitStep(
 	// Timeout: give up waiting once past the deadline.
 	if !deadline.IsZero() && e.now().After(deadline) {
 		aplog.Info("wait_for step %q: CI wait timed out after %v", step.ID, cfg.ParsedMaxDuration())
+		e.recordCIPoll(ctx, instID, step.ID, "timeout", "",
+			fmt.Sprintf("CI did not complete within %v", cfg.ParsedMaxDuration()))
 		return StepResult{
 			Success: false,
 			StructuredOutput: map[string]any{
@@ -73,8 +78,13 @@ func (e *Engine) checkCIWaitStep(
 		// endless "pending" with no visible cause. Still retried next cycle so it
 		// self-heals once the underlying problem (token, transient outage) is fixed.
 		aplog.Warn("wait_for step %q: CI check failed (will retry next cycle): %v", step.ID, err)
+		e.recordCIPoll(ctx, instID, step.ID, "error", "", err.Error())
 		return StepResult{Pending: true}, nil
 	}
+
+	// Record every poll result (passed/failed/pending/unknown) with the per-check
+	// detail, so the wait's full history is auditable from the dashboard.
+	e.recordCIPoll(ctx, instID, step.ID, normalizeCIStatus(status.Status), status.URL, encodeChecks(status.Checks))
 
 	switch status.Status {
 	case "passed":
@@ -123,4 +133,31 @@ func checksToMap(checks []struct {
 		m[c.Name] = c.Status
 	}
 	return m
+}
+
+// normalizeCIStatus maps an empty/unrecognized CI status to "unknown" so a
+// recorded poll always carries a meaningful, non-empty status.
+func normalizeCIStatus(s string) string {
+	switch s {
+	case "passed", "failed", "pending":
+		return s
+	default:
+		return "unknown"
+	}
+}
+
+// encodeChecks renders the per-check name→status map as compact JSON for the
+// recorded poll's detail column. Returns "" when there are no checks.
+func encodeChecks(checks []struct {
+	Name   string
+	Status string
+}) string {
+	if len(checks) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(checksToMap(checks))
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
