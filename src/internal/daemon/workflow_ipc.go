@@ -48,10 +48,37 @@ type StepRunView struct {
 	FinishedAt   *time.Time `json:"finished_at"`
 }
 
+// CIPollView is one recorded wait_for CI poll, surfaced in instance and
+// task-history detail so a parked CI wait reports how many times it polled,
+// when, and what each poll returned.
+type CIPollView struct {
+	StepID    string    `json:"step_id"`
+	Status    string    `json:"status"`
+	PRURL     string    `json:"pr_url"`
+	Detail    string    `json:"detail"`
+	CheckedAt time.Time `json:"checked_at"`
+}
+
 // InstanceDetail is the payload for `apiary instances <id>`.
 type InstanceDetail struct {
 	InstanceSummary
-	Steps []StepRunView `json:"steps"`
+	Steps   []StepRunView `json:"steps"`
+	CIPolls []CIPollView  `json:"ci_polls"`
+}
+
+// ciPollViews maps stored CI poll rows to their IPC views.
+func ciPollViews(checks []db.CIPollCheck) []CIPollView {
+	out := make([]CIPollView, 0, len(checks))
+	for _, c := range checks {
+		out = append(out, CIPollView{
+			StepID:    c.StepID,
+			Status:    c.Status,
+			PRURL:     c.PRURL,
+			Detail:    c.Detail,
+			CheckedAt: c.CheckedAt,
+		})
+	}
+	return out
 }
 
 // InstancesResponse is the JSON payload returned by GET /instances.
@@ -202,6 +229,9 @@ func (d *Dispatcher) InstanceDetail(ctx context.Context, id string) (*InstanceDe
 	for _, s := range steps {
 		detail.Steps = append(detail.Steps, d.stepRunView(ctx, id, s, now))
 	}
+	if polls, err := d.db.ListCIPollChecks(ctx, id); err == nil {
+		detail.CIPolls = ciPollViews(polls)
+	}
 	return detail, nil
 }
 
@@ -252,6 +282,7 @@ type TaskLogLineView struct {
 type TaskHistorySegmentView struct {
 	Instance InstanceSummary   `json:"instance"`
 	Steps    []StepRunView     `json:"steps"`
+	CIPolls  []CIPollView      `json:"ci_polls"`
 	Logs     []TaskLogLineView `json:"logs"`
 }
 
@@ -285,6 +316,9 @@ func (d *Dispatcher) TaskHistory(ctx context.Context, internalTaskID string) (*T
 		sv := TaskHistorySegmentView{Instance: instanceSummary(view, now)}
 		for _, s := range seg.Steps {
 			sv.Steps = append(sv.Steps, d.stepRunView(ctx, seg.Instance.ID, s, now))
+		}
+		if polls, err := d.db.ListCIPollChecks(ctx, seg.Instance.ID); err == nil {
+			sv.CIPolls = ciPollViews(polls)
 		}
 		for _, l := range seg.Logs {
 			sv.Logs = append(sv.Logs, TaskLogLineView{Timestamp: l.Timestamp, Level: l.Level, Message: l.Message})

@@ -124,23 +124,73 @@ func showInstance(id string, asJSON bool) error {
 
 	if len(detail.Steps) == 0 {
 		fmt.Println(instMuted.Render("No steps recorded."))
-		return nil
-	}
-	fmt.Println(instHeader.Render("Steps"))
-	for _, s := range detail.Steps {
-		state := s.State
-		if s.Cached {
-			state += " (cached)"
+	} else {
+		fmt.Println(instHeader.Render("Steps"))
+		for _, s := range detail.Steps {
+			state := s.State
+			if s.Cached {
+				state += " (cached)"
+			}
+			fmt.Printf("  %s  %-14s  %-16s  %-8s  %s\n",
+				stepGlyph(s.State),
+				truncate(s.StepID, 14),
+				truncate(s.AgentID, 16),
+				s.Duration,
+				stateColor(s.State).Render(state),
+			)
 		}
-		fmt.Printf("  %s  %-14s  %-16s  %-8s  %s\n",
-			stepGlyph(s.State),
-			truncate(s.StepID, 14),
-			truncate(s.AgentID, 16),
-			s.Duration,
-			stateColor(s.State).Render(state),
-		)
 	}
+	printCIPolls(detail.CIPolls)
 	return nil
+}
+
+// printCIPolls prints the wait_for CI poll history — a header with the count and
+// latest status, then the most recent poll rows (oldest of the window first).
+// Nothing is printed when the instance never polled CI.
+func printCIPolls(polls []daemon.CIPollView) {
+	if len(polls) == 0 {
+		return
+	}
+	const window = 10
+	last := polls[len(polls)-1]
+	fmt.Println()
+	fmt.Println(instHeader.Render(fmt.Sprintf("CI Polls (%d)", len(polls))) +
+		"  " + instMuted.Render("last: ") + pollColor(last.Status).Render(last.Status) +
+		instMuted.Render(" · "+last.CheckedAt.Format("2006-01-02 15:04:05")))
+
+	start := 0
+	if len(polls) > window {
+		start = len(polls) - window
+		fmt.Println(instMuted.Render(fmt.Sprintf("  … %d earlier", start)))
+	}
+	for _, p := range polls[start:] {
+		pad := 8 - len(p.Status)
+		if pad < 0 {
+			pad = 0
+		}
+		line := fmt.Sprintf("  %s  %s%s",
+			instMuted.Render(p.CheckedAt.Format("2006-01-02 15:04:05")),
+			pollColor(p.Status).Render(p.Status),
+			strings.Repeat(" ", pad))
+		if p.Detail != "" {
+			line += "  " + instMuted.Render(truncate(p.Detail, 60))
+		}
+		fmt.Println(line)
+	}
+}
+
+// pollColor maps a recorded CI poll status to a display style.
+func pollColor(status string) lipgloss.Style {
+	switch status {
+	case "passed":
+		return instOK
+	case "failed", "timeout", "error":
+		return instErr
+	case "pending":
+		return instWarn
+	default:
+		return instMuted
+	}
 }
 
 // stateCell renders a state column, color-coded and padded to width.
