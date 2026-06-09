@@ -35,13 +35,20 @@ func New(ctx context.Context, dbPath string) (*Client, error) {
 	//   cache_size=-20000 — ~20MB page cache; task_logs rows are ~10KB of agent
 	//                   stream text, so a bigger cache cuts cold-read disk hits.
 	//   temp_store=MEMORY — sorts/temp b-trees stay in RAM.
+	//   _time_format=sqlite — write time.Time as "2006-01-02 15:04:05.999999999
+	//                   -07:00". modernc's default is time.Time.String(), which
+	//                   appends " MST m=±…" (monotonic clock) — a form SQLite's
+	//                   DATE()/datetime() cannot parse, so every windowed/grouped
+	//                   query (dashboard daily charts, 24h totals) silently drops
+	//                   those rows. See normalizeLegacyTimestamps for the backfill.
 	dsn := dbPath
 	if !strings.Contains(dsn, "?") {
 		dsn += "?_pragma=busy_timeout(5000)" +
 			"&_pragma=journal_mode(WAL)" +
 			"&_pragma=synchronous(NORMAL)" +
 			"&_pragma=cache_size(-20000)" +
-			"&_pragma=temp_store(MEMORY)"
+			"&_pragma=temp_store(MEMORY)" +
+			"&_time_format=sqlite"
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
