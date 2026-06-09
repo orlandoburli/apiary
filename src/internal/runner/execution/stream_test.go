@@ -50,34 +50,47 @@ func TestFormatStreamLine_UserToolResult(t *testing.T) {
 	}
 }
 
+// Event shapes match the real Claude CLI `--output-format stream-json` output:
+// tool calls come from `tool_use` blocks in `assistant` messages, and token
+// totals from the final `result` event's usage (which folds in cache tokens).
 func TestAccumulateStreamUsage_Full(t *testing.T) {
 	var u model.Usage
 
-	accumulateStreamUsage(`{"type":"message_start","message":{"usage":{"input_tokens":523}}}`, &u)
-	if u.InputTokens != 523 {
-		t.Errorf("InputTokens = %d, want 523", u.InputTokens)
-	}
-
-	accumulateStreamUsage(`{"type":"message_delta","usage":{"output_tokens":142}}`, &u)
-	if u.OutputTokens != 142 {
-		t.Errorf("OutputTokens = %d, want 142", u.OutputTokens)
-	}
-	if u.TotalTokens != 523+142 {
-		t.Errorf("TotalTokens = %d, want %d", u.TotalTokens, 523+142)
-	}
-
-	accumulateStreamUsage(`{"type":"content_block_start","content_block":{"type":"tool_use","name":"Bash","input":{"command":"ls"}}}`, &u)
-	accumulateStreamUsage(`{"type":"content_block_start","content_block":{"type":"tool_use","name":"Read","input":{"file":"x"}}}`, &u)
+	// Two assistant turns, each issuing a tool call. The per-message usage is a
+	// fallback; the authoritative totals arrive on the result event below.
+	accumulateStreamUsage(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":10,"cache_read_input_tokens":1800,"output_tokens":20}}}`, &u)
+	accumulateStreamUsage(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file":"x"}}],"usage":{"input_tokens":12,"cache_read_input_tokens":1900,"output_tokens":30}}}`, &u)
 	if u.NumToolCalls != 2 {
 		t.Errorf("NumToolCalls = %d, want 2", u.NumToolCalls)
 	}
 
-	accumulateStreamUsage(`{"type":"result","subtype":"success","num_turns":4,"duration_ms":12000,"result":"done","total_cost_usd":0.087}`, &u)
+	// The result event's usage is authoritative and includes cache tokens on the
+	// input side: input = 10 + 6804(creation) + 18053(read) = 24867.
+	accumulateStreamUsage(`{"type":"result","subtype":"success","num_turns":4,"duration_ms":12000,"result":"done","total_cost_usd":0.087,"usage":{"input_tokens":10,"cache_creation_input_tokens":6804,"cache_read_input_tokens":18053,"output_tokens":142}}`, &u)
+	if u.InputTokens != 24867 {
+		t.Errorf("InputTokens = %d, want 24867 (input + cache creation + cache read)", u.InputTokens)
+	}
+	if u.OutputTokens != 142 {
+		t.Errorf("OutputTokens = %d, want 142", u.OutputTokens)
+	}
+	if u.TotalTokens != 24867+142 {
+		t.Errorf("TotalTokens = %d, want %d", u.TotalTokens, 24867+142)
+	}
 	if u.NumTurns != 4 {
 		t.Errorf("NumTurns = %d, want 4", u.NumTurns)
 	}
 	if u.CostUSD != 0.087 {
 		t.Errorf("CostUSD = %.4f, want 0.087", u.CostUSD)
+	}
+}
+
+// When a run ends without a result event (e.g. killed/timed out), the last
+// assistant message's usage is reported rather than zeros.
+func TestAccumulateStreamUsage_AssistantFallback(t *testing.T) {
+	var u model.Usage
+	accumulateStreamUsage(`{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":5,"cache_read_input_tokens":1000,"output_tokens":8}}}`, &u)
+	if u.InputTokens != 1005 || u.OutputTokens != 8 || u.TotalTokens != 1013 {
+		t.Errorf("assistant fallback usage = %d in / %d out / %d total, want 1005/8/1013", u.InputTokens, u.OutputTokens, u.TotalTokens)
 	}
 }
 
