@@ -9,18 +9,18 @@ import (
 
 // DashboardStats holds overview statistics.
 type DashboardStats struct {
-	DispatcherStatus string
-	Uptime           time.Duration
-	ActiveAgents     int
-	ActiveRuns       int
-	QueuedTasks      int
-	CompletedToday   int
-	FailedToday      int
-	AvgDurationMs    int64
-	SuccessRate      float64
-	TodayCostUSD     float64
-	TodayTokens      int
-	TodayInputTokens int
+	DispatcherStatus  string
+	Uptime            time.Duration
+	ActiveAgents      int
+	ActiveRuns        int
+	QueuedTasks       int
+	CompletedToday    int
+	FailedToday       int
+	AvgDurationMs     int64
+	SuccessRate       float64
+	TodayCostUSD      float64
+	TodayTokens       int
+	TodayInputTokens  int
 	TodayOutputTokens int
 }
 
@@ -504,6 +504,37 @@ func (c *Client) taskLogsPage(ctx context.Context, taskID string, beforeID int64
 	return logs, nil
 }
 
+// GetTaskLogsAfter returns up to `limit` log lines newer than afterID (a row id
+// cursor), in chronological order (oldest first). Used to live-tail the logs view
+// while a task is running: pass the newest loaded row id to pull only the lines
+// appended since.
+func (c *Client) GetTaskLogsAfter(ctx context.Context, taskID string, afterID int64, limit int) ([]TaskLogLine, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT id, timestamp, level, message
+		FROM task_logs
+		WHERE task_id = ? AND id > ?
+		ORDER BY id ASC
+		LIMIT ?
+	`, taskID, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []TaskLogLine
+	for rows.Next() {
+		var l TaskLogLine
+		var level, msg sql.NullString
+		if err := rows.Scan(&l.ID, &l.Timestamp, &level, &msg); err != nil {
+			continue
+		}
+		l.Level = level.String
+		l.Message = msg.String
+		logs = append(logs, l)
+	}
+	return logs, nil
+}
+
 // GetTaskLogsInRange returns log lines for a task within a time window, used to
 // isolate logs belonging to a specific workflow step run.
 func (c *Client) GetTaskLogsInRange(ctx context.Context, taskID string, from, to *time.Time) ([]TaskLogLine, error) {
@@ -666,10 +697,10 @@ func (c *Client) GetDailyUsage(ctx context.Context, days int) ([]DailyUsage, err
 
 // AgentUsage holds per-agent usage aggregates.
 type AgentUsage struct {
-	AgentID    string
+	AgentID     string
 	TotalTokens int
-	CostUSD    float64
-	RunCount   int
+	CostUSD     float64
+	RunCount    int
 }
 
 // GetAgentUsage returns per-agent usage totals.

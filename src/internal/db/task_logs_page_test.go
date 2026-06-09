@@ -49,6 +49,49 @@ func TestGetTaskLogs_CursorPagination(t *testing.T) {
 	}
 }
 
+// GetTaskLogsAfter returns only the lines newer than the cursor, oldest-first, so
+// the logs view can live-tail by passing its newest loaded row id.
+func TestGetTaskLogsAfter_Cursor(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+	for i := 1; i <= 6; i++ {
+		if err := c.WriteTaskLog(ctx, "7", "info", fmt.Sprintf("line-%d", i)); err != nil {
+			t.Fatalf("write log: %v", err)
+		}
+	}
+
+	// Load a tail of 3 (line-4..line-6), then tail forward from its newest id.
+	tail, err := c.GetTaskLogs(ctx, "7", 3)
+	if err != nil {
+		t.Fatalf("GetTaskLogs: %v", err)
+	}
+	cursor := tail[len(tail)-1].ID
+
+	// Nothing newer yet.
+	if more, err := c.GetTaskLogsAfter(ctx, "7", cursor, 100); err != nil {
+		t.Fatalf("GetTaskLogsAfter: %v", err)
+	} else if len(more) != 0 {
+		t.Fatalf("expected no new lines, got %+v", more)
+	}
+
+	// Two more lines arrive; only those come back, oldest-first.
+	for i := 7; i <= 8; i++ {
+		if err := c.WriteTaskLog(ctx, "7", "info", fmt.Sprintf("line-%d", i)); err != nil {
+			t.Fatalf("write log: %v", err)
+		}
+	}
+	more, err := c.GetTaskLogsAfter(ctx, "7", cursor, 100)
+	if err != nil {
+		t.Fatalf("GetTaskLogsAfter: %v", err)
+	}
+	if got := messages(more); fmt.Sprint(got) != fmt.Sprint([]string{"line-7", "line-8"}) {
+		t.Errorf("tail-after = %v, want [line-7 line-8]", got)
+	}
+	if more[0].ID <= cursor {
+		t.Errorf("returned a line at/under the cursor: id=%d cursor=%d", more[0].ID, cursor)
+	}
+}
+
 func messages(rows []TaskLogLine) []string {
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {

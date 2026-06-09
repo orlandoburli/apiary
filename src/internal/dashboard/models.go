@@ -21,6 +21,7 @@ type Model struct {
 	lastRefresh    time.Time
 	lastTabRefresh map[int]time.Time // Track refresh per tab
 	loading        bool              // Show loading state
+	tickCount      int               // refresh ticks elapsed; throttles the heavier logs refresh
 
 	confirmAction string // "restart" or "clear" or "stop" when awaiting confirmation
 	confirmTaskID string
@@ -78,8 +79,14 @@ type TasksTab struct {
 	// taskLogTailLimit lines, then fetches older pages on scroll-to-top.
 	LogTaskID      string // task whose flat logs are loaded (cursor scope)
 	LogOldestID    int64  // row id of the oldest loaded line (the older-page cursor)
+	LogNewestID    int64  // row id of the newest loaded line (the live-tail cursor)
 	LogHasMore     bool   // an older page may exist (last load filled the limit)
 	LogLoadingMore bool   // an older-page fetch is in flight (de-dupe guard)
+
+	// Identifiers kept so the open Logs view can re-fetch itself by id on each
+	// tick (live-tail). The detail header (Detail) does not carry the internal id.
+	LogInternalTaskID string // canonical InternalTask id (history-mode refresh), "" for flat mode
+	LogDrillKey       string // legacy cell id used to hydrate the detail header
 
 	// Workflow monitor sub-view (View == TaskViewWorkflow).
 	WorkflowInstances   []*WorkflowInstanceItem // all instances for the task, newest-first
