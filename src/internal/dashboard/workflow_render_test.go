@@ -159,9 +159,10 @@ func TestTaskRollup_SpansAllInstances(t *testing.T) {
 		Instances: []WorkflowInstanceItem{{
 			StartedAt: at("2026-06-08T13:42:01Z"), FinishedAt: at("2026-06-08T15:47:35Z"),
 			InputTokens: 90000, OutputTokens: 34533, TotalTokens: 124533, CostUSD: 0.95,
+			CacheCreationTokens: 7000, CacheReadTokens: 60000,
 		}},
 	}
-	start, end, in, out, total, cost := taskRollup(d, nil)
+	start, end, in, out, total, cacheCreate, cacheRead, cost := taskRollup(d, nil)
 	if start == nil || !start.Equal(*at("2026-06-08T13:42:01Z")) {
 		t.Errorf("rollup start should be the first workflow start, got %v", start)
 	}
@@ -170,6 +171,9 @@ func TestTaskRollup_SpansAllInstances(t *testing.T) {
 	}
 	if in != 90000 || out != 34533 || total != 124533 {
 		t.Errorf("rollup tokens should sum instances, got %d/%d/%d", in, out, total)
+	}
+	if cacheCreate != 7000 || cacheRead != 60000 {
+		t.Errorf("rollup cache tokens should sum instances, got %d write / %d read", cacheCreate, cacheRead)
 	}
 	if cost != 0.95 {
 		t.Errorf("rollup cost should sum instances, got %v", cost)
@@ -184,7 +188,7 @@ func TestTaskRollup_FallsBackToExecutionRow(t *testing.T) {
 		StartedAt: at("2026-06-08T10:00:00Z"), CompletedAt: at("2026-06-08T10:05:00Z"),
 		InputTokens: 10, OutputTokens: 20, TotalTokens: 30, CostUSD: 0.01,
 	}
-	start, end, in, out, total, cost := taskRollup(d, nil)
+	start, end, in, out, total, _, _, cost := taskRollup(d, nil)
 	if start == nil || end == nil || in != 10 || out != 20 || total != 30 || cost != 0.01 {
 		t.Errorf("expected execution-row fallback, got start=%v end=%v %d/%d/%d $%v", start, end, in, out, total, cost)
 	}

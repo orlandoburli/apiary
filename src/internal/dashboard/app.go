@@ -1431,6 +1431,8 @@ func aggregateInstance(item *WorkflowInstanceItem) {
 		item.InputTokens += s.InputTokens
 		item.OutputTokens += s.OutputTokens
 		item.TotalTokens += s.TotalTokens
+		item.CacheCreationTokens += s.CacheCreationTokens
+		item.CacheReadTokens += s.CacheReadTokens
 		item.CostUSD += s.CostUSD
 	}
 }
@@ -2816,7 +2818,7 @@ func (a *App) filteredTasks(t *TasksTab) []TaskItem {
 // entire run rather than only the last execution row (e.g. the merge step). It
 // falls back to the detail instance when the task has no internal-task instance
 // list, and to the execution-row values when neither carries a span/usage.
-func taskRollup(d *TaskItem, detail *WorkflowInstanceItem) (started, completed *time.Time, inTok, outTok, totalTok int, cost float64) {
+func taskRollup(d *TaskItem, detail *WorkflowInstanceItem) (started, completed *time.Time, inTok, outTok, totalTok, cacheCreate, cacheRead int, cost float64) {
 	insts := d.Instances
 	if len(insts) == 0 && detail != nil {
 		insts = []WorkflowInstanceItem{*detail}
@@ -2831,6 +2833,8 @@ func taskRollup(d *TaskItem, detail *WorkflowInstanceItem) (started, completed *
 		inTok += in.InputTokens
 		outTok += in.OutputTokens
 		totalTok += in.TotalTokens
+		cacheCreate += in.CacheCreationTokens
+		cacheRead += in.CacheReadTokens
 		cost += in.CostUSD
 	}
 	if started == nil {
@@ -2851,7 +2855,7 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 		return a.box("TASK DETAILS", StyleMuted.Render("No details")+"\n", height)
 	}
 
-	rStart, rEnd, inTok, outTok, totalTok, cost := taskRollup(d, t.DetailInstance)
+	rStart, rEnd, inTok, outTok, totalTok, cacheCreate, cacheRead, cost := taskRollup(d, t.DetailInstance)
 	started, completed, dur := "—", "—", "—"
 	if rStart != nil {
 		started = rStart.Format("2006-01-02 15:04:05")
@@ -2895,6 +2899,9 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	row(endedLabel, completed)
 	row("Duration", dur)
 	row("Tokens", fmt.Sprintf("%d in / %d out / %d total", inTok, outTok, totalTok))
+	if cacheCreate > 0 || cacheRead > 0 {
+		row("Cache", fmt.Sprintf("%d write / %d read", cacheCreate, cacheRead))
+	}
 	row("Turns / Calls", fmt.Sprintf("%d / %d", d.NumTurns, d.NumToolCalls))
 	row("Cost", fmt.Sprintf("$%.4f", cost))
 	if d.URL != "" {
@@ -3134,6 +3141,9 @@ func wfInstanceSummary(inst *WorkflowInstanceItem) string {
 		parts = append(parts, inst.FinishedAt.Sub(*inst.StartedAt).Round(time.Second).String())
 	}
 	parts = append(parts, fmtTokensShort(inst.TotalTokens)+" tokens")
+	if inst.CacheCreationTokens > 0 || inst.CacheReadTokens > 0 {
+		parts = append(parts, fmtTokensShort(inst.CacheCreationTokens+inst.CacheReadTokens)+" cache")
+	}
 	if inst.CostUSD > 0 {
 		parts = append(parts, fmt.Sprintf("$%.4f", inst.CostUSD))
 	}
