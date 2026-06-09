@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -569,6 +570,79 @@ func TestTaskDetailDoneKeepsCompletedRow(t *testing.T) {
 	out := stripANSI(a.renderTaskDetail(a.model.tasksTab, 20))
 	if !strings.Contains(out, "Completed:") {
 		t.Errorf("done task should keep the 'Completed' row; got:\n%s", out)
+	}
+}
+
+// detailWithManyChildren builds a task whose content far exceeds a short box,
+// so the detail view must scroll rather than truncate the tail.
+func detailWithManyChildren(n int) *TaskItem {
+	children := make([]TaskLineageItem, n)
+	for i := range children {
+		children[i] = TaskLineageItem{
+			TaskID:        fmt.Sprintf("tk_child_%02d", i),
+			Title:         fmt.Sprintf("child task number %02d", i),
+			State:         "running",
+			InstanceCount: 1,
+		}
+	}
+	return &TaskItem{
+		TaskID:   "T-scroll",
+		Title:    "parent with many children",
+		Status:   "running",
+		Children: children,
+	}
+}
+
+// A task with more content than the box is tall must scroll: at the top the tail
+// is hidden, and scrolling to the end reveals it while hiding the header.
+func TestTaskDetailScrolls(t *testing.T) {
+	a := newTestApp(90, 24)
+	tt := a.model.tasksTab
+	tt.View = TaskViewDetail
+	tt.Detail = detailWithManyChildren(40)
+
+	const height = 20 // 18 body rows — far fewer than the ~55 content lines
+
+	top := stripANSI(a.renderTaskDetail(tt, height))
+	if !strings.Contains(top, "Number") {
+		t.Fatalf("at scroll 0 the header should be visible; got:\n%s", top)
+	}
+	if strings.Contains(top, "child task number 39") {
+		t.Errorf("at scroll 0 the last child should be cut off; got:\n%s", top)
+	}
+
+	// Jump to the end via the key handler, then render (render applies the clamp).
+	tt.View = TaskViewDetail
+	a.handleTaskSubViewKey("G")
+	bottom := stripANSI(a.renderTaskDetail(tt, height))
+	if !strings.Contains(bottom, "child task number 39") {
+		t.Errorf("after scrolling to the end the last child should be visible; got:\n%s", bottom)
+	}
+	if strings.Contains(bottom, "Number") {
+		t.Errorf("after scrolling to the end the header should be off-screen; got:\n%s", bottom)
+	}
+
+	// The scroll offset must never run past the last full page.
+	lines := a.taskDetailLines(tt)
+	if max := len(lines) - (height - 2); tt.DetailScroll != max {
+		t.Errorf("DetailScroll = %d, want clamped to %d", tt.DetailScroll, max)
+	}
+
+	// The box stays framed at every scroll position.
+	assertFramed(t, a.renderTaskDetail(tt, height), 90)
+}
+
+// Short content (fits the box) must never scroll, and the up/down keys are no-ops.
+func TestTaskDetailNoScrollWhenContentFits(t *testing.T) {
+	a := newTestApp(90, 40)
+	tt := a.model.tasksTab
+	tt.View = TaskViewDetail
+	tt.Detail = &TaskItem{TaskID: "T-1", Title: "tiny", Status: "done"}
+
+	a.handleTaskSubViewKey("down")
+	a.renderTaskDetail(tt, 36) // render clamps
+	if tt.DetailScroll != 0 {
+		t.Errorf("DetailScroll = %d, want 0 when content fits", tt.DetailScroll)
 	}
 }
 
