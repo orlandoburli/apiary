@@ -236,14 +236,56 @@ func (d *Dispatcher) checkApprovals(ctx context.Context) {
 	})
 }
 
-// checkWaits drives the engine's parked-poll re-checks (CI status) once per poll
-// cycle. The engine re-checks via its wired CIStatusChecker, so this needs no
-// per-call poller argument. A nil DB/engine (no run-history) disables it.
+// checkWaits drives the engine's parked-wait re-checks (CI status) once per poll
+// cycle. Each parked instance is handled on its own goroutine so a long-running
+// follow-on agent step on one woken instance cannot delay the cheap CI re-check of
+// any other parked instance — the head-of-line blocking that, on the single poll
+// loop, once left a parked CI wait un-rechecked for 43 minutes while another
+// instance ran a 35-minute agent.
+//
+// Two phases per instance, mirroring fresh dispatch's split:
+//   - RecheckWait: a cheap CI status query, run UNGATED, so a busy agent never
+//     blocks it. A still-pending wait stops here and stays parked.
+//   - WakeWait: the expensive graph advance (may run a follow-on agent), run only
+//     when CI is terminal and admitted through the agent's semaphore so it respects
+//     max_workers — exactly like fanOut.
+//
+// The waitAdvancing guard keeps a slow advance started on one cycle from being
+// re-checked or re-advanced by the next. A nil DB/engine (no run-history) disables
+// it. This does not block the poll loop: it launches the goroutines and returns.
 func (d *Dispatcher) checkWaits(ctx context.Context) {
 	if d.db == nil || d.engine == nil {
 		return
 	}
-	d.engine.CheckParkedWaits(ctx)
+	for _, w := range d.engine.ParkedWaits() {
+		w := w
+		// Skip an instance already being re-checked/advanced by an earlier cycle.
+		if _, busy := d.waitAdvancing.LoadOrStore(w.InstanceID, struct{}{}); busy {
+			continue
+		}
+		agentCh := d.agentSem[w.AgentID]
+		go func() {
+			defer d.waitAdvancing.Delete(w.InstanceID)
+
+			// Cheap CI re-check, ungated. Still pending → leave it parked.
+			if !d.engine.RecheckWait(ctx, w.InstanceID) {
+				return
+			}
+
+			// Terminal: admit the advance through the agent's semaphore (held for
+			// the whole advance, just like fanOut) so a follow-on agent step honours
+			// max_workers. A run waiting for a slot is not yet counted active.
+			if agentCh != nil {
+				select {
+				case agentCh <- struct{}{}:
+				case <-ctx.Done():
+					return // shutting down before a slot freed; never acquired
+				}
+				defer func() { <-agentCh }()
+			}
+			d.engine.WakeWait(ctx, w.InstanceID)
+		}()
+	}
 }
 
 // wfStepExecutor adapts the dispatcher's runner machinery to the workflow

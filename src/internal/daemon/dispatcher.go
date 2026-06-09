@@ -72,6 +72,10 @@ type Dispatcher struct {
 	inFlight   sync.Map
 	activeRuns sync.Map
 	runCancel  sync.Map
+	// waitAdvancing guards a parked wait_for instance while its CI re-check (and any
+	// follow-on advance) is in flight, so overlapping poll cycles don't double-check
+	// or double-advance the same instance. Mirrors inFlight for polled cells.
+	waitAdvancing sync.Map
 
 	stats  map[string]*sourceStat
 	statMu sync.RWMutex
