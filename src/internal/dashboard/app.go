@@ -2854,38 +2854,43 @@ func (a *App) renderUsageTab(height int) string {
 
 	var b strings.Builder
 
-	// ── Daily cost line chart ─────────────────────────────────────────────
+	// ── Daily cost bar chart ──────────────────────────────────────────────
+	// One bar per day (date as the row label) rather than an interpolated line:
+	// daily totals are discrete, and a line between sparse points implies trends
+	// that don't exist (e.g. a lone day with tokens looks like gradual growth).
 	if len(u.Daily) > 0 {
-		costs := make([]float64, len(u.Daily))
-		labels := make([]string, len(u.Daily))
+		items := make([]barItem, len(u.Daily))
+		anyCost := false
 		for i, d := range u.Daily {
-			costs[i] = d.CostUSD
-			labels[i] = d.Date
+			items[i] = barItem{Label: d.Date, Value: d.CostUSD}
+			if d.CostUSD > 0 {
+				anyCost = true
+			}
 		}
 		b.WriteString(StyleTableHeader.Render("Daily Cost (USD) — last 14 days") + "\n")
-		chart := lineChartLabels(costs, labels, innerW-8, chartHeight, "")
-		if chart == "" {
-			b.WriteString(StyleMuted.Render("  No cost data yet") + "\n")
+		if anyCost {
+			b.WriteString(barChart(items, barOpts{maxWidth: innerW}))
 		} else {
-			b.WriteString(chart + "\n")
+			b.WriteString(StyleMuted.Render("  No cost data yet") + "\n")
 		}
 		b.WriteString("\n")
 	}
 
-	// ── Daily tokens line chart ───────────────────────────────────────────
+	// ── Daily tokens bar chart ────────────────────────────────────────────
 	if len(u.Daily) > 0 {
-		tokens := make([]float64, len(u.Daily))
-		labels := make([]string, len(u.Daily))
+		items := make([]barItem, len(u.Daily))
+		anyTokens := false
 		for i, d := range u.Daily {
-			tokens[i] = float64(d.TotalTokens)
-			labels[i] = d.Date
+			items[i] = barItem{Label: d.Date, Value: float64(d.TotalTokens)}
+			if d.TotalTokens > 0 {
+				anyTokens = true
+			}
 		}
 		b.WriteString(StyleTableHeader.Render("Daily Tokens — last 14 days") + "\n")
-		chart := lineChartLabels(tokens, labels, innerW-8, chartHeight, "")
-		if chart == "" {
-			b.WriteString(StyleMuted.Render("  No token data yet") + "\n")
+		if anyTokens {
+			b.WriteString(barChart(items, barOpts{maxWidth: innerW, valueFmt: formatTokens}))
 		} else {
-			b.WriteString(chart + "\n")
+			b.WriteString(StyleMuted.Render("  No token data yet") + "\n")
 		}
 		b.WriteString("\n")
 	}
@@ -2897,7 +2902,7 @@ func (a *App) renderUsageTab(height int) string {
 			items[i] = barItem{Label: a.AgentID, Value: a.CostUSD}
 		}
 		b.WriteString(StyleTableHeader.Render("Cost by Agent (all time)") + "\n")
-		b.WriteString(barChart(items, innerW))
+		b.WriteString(barChart(items, barOpts{maxWidth: innerW, showPct: true, pctOfTotal: true}))
 	}
 
 	if b.Len() == 0 {
