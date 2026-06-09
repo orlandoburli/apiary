@@ -25,6 +25,10 @@ const (
 	StepStateFailed        = "failed"
 	StepStateSkipped       = "skipped"
 	StepStateSkippedCached = "skipped_cached"
+	// StepStateInterrupted marks a step left non-terminal (running/pending) by a
+	// previously-killed daemon. It is the step-level companion to
+	// InstanceStateInterrupted and is set by ReconcileOrphanStepRuns at startup.
+	StepStateInterrupted = "interrupted"
 )
 
 // Publish states for a step run's APIARY_PUBLISH write-back.
@@ -366,6 +370,31 @@ func (c *Client) ReconcileOrphanWorkflowInstances(ctx context.Context) (int64, e
 		SET state = ?, updated_at = ?
 		WHERE state = ?
 	`, InstanceStateInterrupted, time.Now(), InstanceStateRunning)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// ReconcileOrphanStepRuns marks step_runs left in a non-terminal state
+// (running or pending) as 'interrupted' when their parent workflow_instance is
+// itself interrupted. It is the step-level companion to
+// ReconcileOrphanWorkflowInstances: when a daemon dies mid-step the step_runs
+// row stays 'running' forever, and the dashboard renders a phantom in-progress
+// step under an instance that is actually interrupted. Restricting the update to
+// children of interrupted instances means a live step under a genuinely running
+// instance is never disturbed; it must therefore be called *after*
+// ReconcileOrphanWorkflowInstances has flipped the orphaned parents. finished_at
+// is stamped only when absent so an already-recorded end time is preserved.
+func (c *Client) ReconcileOrphanStepRuns(ctx context.Context) (int64, error) {
+	res, err := c.db.ExecContext(ctx, `
+		UPDATE step_runs
+		SET state = ?, finished_at = COALESCE(finished_at, ?)
+		WHERE state IN (?, ?)
+		  AND workflow_instance_id IN (
+		    SELECT id FROM workflow_instances WHERE state = ?
+		  )
+	`, StepStateInterrupted, time.Now(), StepStateRunning, StepStatePending, InstanceStateInterrupted)
 	if err != nil {
 		return 0, err
 	}

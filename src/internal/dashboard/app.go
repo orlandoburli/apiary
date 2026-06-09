@@ -3499,6 +3499,8 @@ func wfStepGlyph(state string) string {
 		return StyleError.Render("✗")
 	case db.StepStateRunning:
 		return StyleWarning.Render("●")
+	case db.StepStateInterrupted:
+		return StyleError.Render("⊗")
 	case db.StepStateSkipped, db.StepStateSkippedCached:
 		return StyleMuted.Render("⊘")
 	default:
@@ -3510,7 +3512,7 @@ func wfStateStyle(state string) lipgloss.Style {
 	switch state {
 	case db.StepStatePassed:
 		return StyleSuccess
-	case db.StepStateFailed:
+	case db.StepStateFailed, db.StepStateInterrupted:
 		return StyleError
 	case db.StepStateRunning:
 		return StyleWarning
@@ -4809,7 +4811,7 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 			}
 		}
 
-		if s.State == db.StepStateRunning || s.State == db.StepStatePassed || s.State == db.StepStateFailed {
+		if s.State == db.StepStateRunning || s.State == db.StepStatePassed || s.State == db.StepStateFailed || s.State == db.StepStateInterrupted {
 			right.WriteString("\n  " + StyleMuted.Render("enter/l: logs  X: stop workflow  R: restart workflow") + "\n")
 		}
 	} else {
