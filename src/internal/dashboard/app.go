@@ -3055,6 +3055,27 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 	return a.box(title, b.String(), height)
 }
 
+// compareTimePtr is a 3-way comparison for optional timestamps, treating a nil
+// pointer as the smallest value so missing times sort consistently at one end
+// regardless of direction. Returning 0 for equal/both-nil keeps the comparator
+// a valid strict weak ordering.
+func compareTimePtr(a, b *time.Time) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return -1
+	case b == nil:
+		return 1
+	case a.Before(*b):
+		return -1
+	case a.After(*b):
+		return 1
+	default:
+		return 0
+	}
+}
+
 // filteredTasks returns the task list after applying filter and sort.
 func (a *App) filteredTasks(t *TasksTab) []TaskItem {
 	out := t.History
@@ -3078,48 +3099,33 @@ func (a *App) filteredTasks(t *TasksTab) []TaskItem {
 		sortField = "time"
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		var less bool
+		var cmp int
 		switch sortField {
 		case "status":
-			less = out[i].Status < out[j].Status
+			cmp = strings.Compare(out[i].Status, out[j].Status)
 		case "agent":
-			less = out[i].Agent < out[j].Agent
+			cmp = strings.Compare(out[i].Agent, out[j].Agent)
 		case "number":
-			less = out[i].Number < out[j].Number
+			cmp = strings.Compare(out[i].Number, out[j].Number)
 		case "title":
-			less = out[i].Title < out[j].Title
+			cmp = strings.Compare(out[i].Title, out[j].Title)
 		case "updated":
-			ti := lastUpdate(out[i])
-			tj := lastUpdate(out[j])
-			if ti == nil && tj == nil {
-				return false
-			}
-			if ti == nil {
-				return t.SortAsc
-			}
-			if tj == nil {
-				return !t.SortAsc
-			}
-			less = ti.Before(*tj)
+			cmp = compareTimePtr(lastUpdate(out[i]), lastUpdate(out[j]))
 		default:
 			// time: newest first by default (StartedAt desc)
-			ti := out[i].StartedAt
-			tj := out[j].StartedAt
-			if ti == nil && tj == nil {
-				return false
-			}
-			if ti == nil {
-				return t.SortAsc
-			}
-			if tj == nil {
-				return !t.SortAsc
-			}
-			less = ti.Before(*tj)
+			cmp = compareTimePtr(out[i].StartedAt, out[j].StartedAt)
+		}
+		// Equal elements must compare false in both directions, otherwise the
+		// comparator is not a valid strict weak ordering and SliceStable
+		// reshuffles ties on every pass (the list never settles, especially on
+		// status-desc where ties are common).
+		if cmp == 0 {
+			return false
 		}
 		if t.SortAsc {
-			return less
+			return cmp < 0
 		}
-		return !less
+		return cmp > 0
 	})
 
 	return out
