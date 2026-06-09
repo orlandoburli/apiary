@@ -100,6 +100,8 @@ func renderTaskHistory(resp daemon.TaskHistoryResponse) {
 			}
 		}
 
+		printCIPolls(seg.CIPolls)
+
 		for _, l := range seg.Logs {
 			fmt.Printf("  %s %s %s\n",
 				instMuted.Render(l.Timestamp.Format("15:04:05")), logLevelTag(l.Level), l.Message)
