@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const schema = `
@@ -294,5 +295,139 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("migrate (%s): %w", m, err)
 		}
 	}
+	if err := normalizeLegacyTimestamps(ctx, db); err != nil {
+		return fmt.Errorf("normalize legacy timestamps: %w", err)
+	}
 	return nil
+}
+
+// legacyTimestampColumns lists every TIMESTAMP column written from a time.Time.
+// Older builds (and beta binaries before the _time_format=sqlite DSN fix) used
+// modernc's default time.Time.String() encoding — "2006-01-02 15:04:05.999999999
+// -0700 MST m=±…" — which SQLite's DATE()/datetime() cannot parse. Those rows
+// vanish from windowed/grouped dashboard queries. normalizeLegacyTimestamps
+// rewrites them in place to the canonical SQLite layout.
+var legacyTimestampColumns = []struct{ table, column string }{
+	{"task_executions", "started_at"},
+	{"task_executions", "completed_at"},
+	{"task_executions", "next_retry_at"},
+	{"task_executions", "created_at"},
+	{"task_executions", "heartbeat_at"},
+	{"tasks", "started_at"},
+	{"tasks", "completed_at"},
+	{"tasks", "created_at"},
+	{"tasks", "updated_at"},
+	{"task_checkpoints", "created_at"},
+	{"workflow_instances", "created_at"},
+	{"workflow_instances", "updated_at"},
+	{"step_runs", "started_at"},
+	{"step_runs", "finished_at"},
+	{"internal_tasks", "created_at"},
+	{"internal_tasks", "updated_at"},
+	{"source_bindings", "created_at"},
+	{"source_bindings", "updated_at"},
+	{"task_logs", "timestamp"},
+	{"service_logs", "timestamp"},
+}
+
+// sqliteTimeLayout is the canonical on-disk format (parseTimeFormats[0] in
+// modernc) that DATE()/datetime() parse and that _time_format=sqlite now writes.
+const sqliteTimeLayout = "2006-01-02 15:04:05.999999999-07:00"
+
+// normalizeLegacyTimestamps rewrites Go-native time.Time.String() values (which
+// carry two-plus space-separated tokens, e.g. " -0700 MST m=…") into the
+// canonical SQLite layout. It is idempotent: already-canonical values have a
+// single space and are skipped by the LIKE filter, so re-runs on a clean DB are
+// a no-op. Per column, all updates run in one transaction.
+func normalizeLegacyTimestamps(ctx context.Context, db *sql.DB) error {
+	for _, tc := range legacyTimestampColumns {
+		// A canonical value has exactly one space (date/time separator); the
+		// broken Go encoding always has two or more ("… -0700 MST [m=…]").
+		// CAST(... AS TEXT) is essential: scanning a TIMESTAMP column into a Go
+		// string makes modernc auto-parse and reformat it to RFC3339, hiding the
+		// raw bytes we need to normalize. The CAST strips the column's type
+		// affinity so the literal stored text comes through unchanged.
+		q := fmt.Sprintf(
+			"SELECT rowid, CAST(%s AS TEXT) FROM %s WHERE %s LIKE '%% %% %%'",
+			tc.column, tc.table, tc.column,
+		)
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			// Table/column absent on this DB (e.g. partial schema) — skip.
+			if strings.Contains(err.Error(), "no such table") ||
+				strings.Contains(err.Error(), "no such column") {
+				continue
+			}
+			return err
+		}
+		type fix struct {
+			rowid int64
+			val   string
+		}
+		var fixes []fix
+		for rows.Next() {
+			var rowid int64
+			var raw string
+			if err := rows.Scan(&rowid, &raw); err != nil {
+				rows.Close()
+				return err
+			}
+			if norm, ok := normalizeGoTime(raw); ok {
+				fixes = append(fixes, fix{rowid, norm})
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if len(fixes) == 0 {
+			continue
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		upd := fmt.Sprintf("UPDATE %s SET %s = ? WHERE rowid = ?", tc.table, tc.column)
+		stmt, err := tx.PrepareContext(ctx, upd)
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		for _, f := range fixes {
+			if _, err := stmt.ExecContext(ctx, f.val, f.rowid); err != nil {
+				stmt.Close()
+				_ = tx.Rollback()
+				return err
+			}
+		}
+		stmt.Close()
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// normalizeGoTime converts a Go time.Time.String() rendering — e.g.
+// "2026-06-06 18:14:37.630756 -0400 -04 m=+301.17" — into the canonical SQLite
+// layout "2026-06-06 18:14:37.630756-04:00". It returns ok=false for values it
+// cannot parse, leaving them untouched. Already-canonical values never reach
+// here (filtered out by the caller's single-space LIKE).
+func normalizeGoTime(s string) (string, bool) {
+	if i := strings.Index(s, " m="); i >= 0 {
+		s = s[:i] // drop the monotonic-clock suffix
+	}
+	// Fields: date, time, numeric-offset, [zone-abbrev]. The abbreviation is
+	// redundant given the numeric offset, so parse only the first three.
+	parts := strings.Fields(s)
+	if len(parts) < 3 {
+		return "", false
+	}
+	base := parts[0] + " " + parts[1] + " " + parts[2]
+	t, err := time.Parse("2006-01-02 15:04:05.999999999 -0700", base)
+	if err != nil {
+		return "", false
+	}
+	return t.Format(sqliteTimeLayout), true
 }
