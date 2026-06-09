@@ -86,6 +86,7 @@ type taskLogsMsg struct {
 	logs     []LogEntry
 	detail   *TaskItem
 	oldestID int64 // row id of the oldest loaded line (older-page cursor)
+	newestID int64 // row id of the newest loaded line (live-tail cursor)
 	hasMore  bool  // an older page may exist
 }
 
@@ -99,6 +100,25 @@ type olderTaskLogsMsg struct {
 }
 type taskHistoryMsg struct {
 	taskID   string
+	drillKey string // legacy cell id, kept so the open view can re-fetch itself
+	segments []TaskHistorySegmentItem
+	detail   *TaskItem
+}
+
+// Live-refresh messages for the open Detail/Logs sub-views. Mirroring
+// workflowMonitorRefreshMsg, their handlers update data in place and never touch
+// View or the scroll cursor, so a refresh that lands after the user has navigated
+// away is harmless.
+type taskDetailRefreshMsg struct {
+	detail   *TaskItem
+	instance *WorkflowInstanceItem
+}
+type tailTaskLogsMsg struct {
+	taskID   string // must match LogTaskID for the append to apply
+	logs     []LogEntry
+	newestID int64
+}
+type taskHistoryRefreshMsg struct {
 	segments []TaskHistorySegmentItem
 	detail   *TaskItem
 }
@@ -153,6 +173,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		// Re-query the active tab and schedule the next tick.
+		a.model.tickCount++
 		return a, tea.Batch(a.fetchActiveTab(), tickCmd())
 
 	case overviewDataMsg:
@@ -189,8 +210,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.View = TaskViewLogs
 			t.LogTaskID = msg.taskID
 			t.LogOldestID = msg.oldestID
+			t.LogNewestID = msg.newestID
 			t.LogHasMore = msg.hasMore
 			t.LogLoadingMore = false
+			// Flat-log mode: refresh by drill key, not internal id.
+			t.LogDrillKey = msg.taskID
+			t.LogInternalTaskID = ""
 		}
 		a.model.loading = false
 
@@ -219,6 +244,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.LogTaskID = ""
 			t.LogHasMore = false
 			t.LogLoadingMore = false
+			// History mode: refresh re-runs the full per-instance history by id.
+			t.LogInternalTaskID = msg.taskID
+			t.LogDrillKey = msg.drillKey
 		}
 		a.model.loading = false
 
@@ -312,6 +340,43 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		a.model.loading = false
+
+	case taskDetailRefreshMsg:
+		// Live-refresh the open detail panel in place. Skip a nil detail (a transient
+		// query miss) so the panel keeps its last good content instead of blanking.
+		if t := a.model.tasksTab; t != nil && t.View == TaskViewDetail && msg.detail != nil {
+			t.Detail = msg.detail
+			t.DetailInstance = msg.instance
+		}
+
+	case tailTaskLogsMsg:
+		// Append newly-arrived flat-log lines. Follow the tail only when the viewport
+		// is already pinned to the bottom (matches the G/end semantics); otherwise the
+		// appended lines sit below and the reader's position is left untouched.
+		if t := a.model.tasksTab; t != nil && t.View == TaskViewLogs &&
+			len(t.InstanceHistory) == 0 && msg.taskID == t.LogTaskID && len(msg.logs) > 0 {
+			following := t.LogScroll >= lastIndex(len(a.taskLogLines()))
+			t.Logs = append(t.Logs, msg.logs...)
+			t.LogNewestID = msg.newestID
+			if following {
+				t.LogScroll = lastIndex(len(a.taskLogLines()))
+			}
+		}
+
+	case taskHistoryRefreshMsg:
+		// Live-refresh the per-instance history view, preserving scroll. Earlier
+		// (terminal) segments keep a stable line count, so a scrolled-up reader's
+		// top-anchored position holds; a bottom-pinned reader follows the tail.
+		if t := a.model.tasksTab; t != nil && t.View == TaskViewLogs && len(t.InstanceHistory) > 0 {
+			following := t.LogScroll >= lastIndex(len(a.taskLogLines()))
+			t.InstanceHistory = msg.segments
+			if msg.detail != nil {
+				t.Detail = msg.detail
+			}
+			if following {
+				t.LogScroll = lastIndex(len(a.taskLogLines()))
+			}
+		}
 	}
 
 	return a, nil
@@ -1640,17 +1705,35 @@ func (a *App) fetchActiveTab() tea.Cmd {
 	case "Overview":
 		return a.fetchOverview()
 	case "Tasks":
-		// When the workflow monitor is open, refresh the instance on each tick.
-		if t := a.model.tasksTab; t != nil && t.View == TaskViewWorkflow && t.WorkflowInstance != nil {
-			return a.refreshWorkflowMonitor(t.WorkflowInstance.ID, t.WorkflowInstance.CellID)
-		}
-		// Only refresh the list while the list itself is showing. While a detail
-		// or logs sub-view is open we must not refetch — re-sorting History under
-		// the cursor would make the SelectedIdx-keyed reload (r/d/l) target a
-		// different task than the one on screen. The sub-view content is static
-		// until the user reloads it; returning to the list resumes auto-refresh.
-		if t := a.model.tasksTab; t != nil && t.View != TaskViewList {
-			return nil
+		// Sub-views live-refresh by id (not by list index), so the open Detail/Logs
+		// stay current without re-sorting History under the cursor — which would make
+		// the SelectedIdx-keyed reload (r/d/l) target a different task than the one on
+		// screen. The list itself is only re-queried while it (not a sub-view) shows.
+		if t := a.model.tasksTab; t != nil {
+			switch t.View {
+			case TaskViewWorkflow:
+				if t.WorkflowInstance != nil {
+					return a.refreshWorkflowMonitor(t.WorkflowInstance.ID, t.WorkflowInstance.CellID)
+				}
+				return nil
+			case TaskViewDetail:
+				if t.Detail != nil {
+					return a.refreshTaskDetail(t.Detail.TaskID, t.Detail.InternalTaskID)
+				}
+				return nil
+			case TaskViewLogs:
+				// The history query is heavier — throttle it to every other tick (~4s).
+				if a.model.tickCount%2 != 0 {
+					return nil
+				}
+				if t.LogInternalTaskID != "" {
+					return a.refreshTaskHistory(t.LogInternalTaskID, t.LogDrillKey)
+				}
+				if t.LogTaskID != "" {
+					return a.tailTaskLogs(t.LogTaskID, t.LogNewestID)
+				}
+				return nil
+			}
 		}
 		return a.fetchTasks()
 	case "Agents":
@@ -1901,39 +1984,56 @@ func (a *App) fetchTaskDetail(drillKey, internalTaskID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 		defer cancel()
+		detail, instance := a.loadTaskDetail(ctx, dbConn, drillKey, internalTaskID)
+		return taskDetailMsg{taskID: drillKey, detail: detail, instance: instance}
+	}
+}
 
-		var detail *TaskItem
-		if dbConn != nil {
-			if r, err := dbConn.GetTaskDetail(ctx, drillKey); err == nil && r != nil {
-				detail = &TaskItem{
-					TaskID:       r.TaskID,
-					Number:       r.Number,
-					URL:          r.URL,
-					Title:        r.Title,
-					Agent:        r.AgentID,
-					Model:        r.Model,
-					Runner:       r.Runner,
-					Status:       r.Status,
-					Attempt:      r.Attempt,
-					Duration:     time.Duration(r.DurationMs) * time.Millisecond,
-					StartedAt:    r.StartedAt,
-					CompletedAt:  r.CompletedAt,
-					Error:        r.Error,
-					InputTokens:  r.InputTokens,
-					OutputTokens: r.OutputTokens,
-					TotalTokens:  r.TotalTokens,
-					NumTurns:     r.NumTurns,
-					NumToolCalls: r.NumToolCalls,
-					CostUSD:      r.CostUSD,
-				}
-			}
-			if internalTaskID != "" {
-				detail = a.augmentTaskDetail(ctx, dbConn, detail, drillKey, internalTaskID)
+// loadTaskDetail builds the detail panel (the execution row, augmented with
+// InternalTask bindings/lineage/instances) plus its workflow instance. Shared by
+// the initial open (fetchTaskDetail) and the live refresh (refreshTaskDetail).
+func (a *App) loadTaskDetail(ctx context.Context, dbConn *db.Client, drillKey, internalTaskID string) (*TaskItem, *WorkflowInstanceItem) {
+	var detail *TaskItem
+	if dbConn != nil {
+		if r, err := dbConn.GetTaskDetail(ctx, drillKey); err == nil && r != nil {
+			detail = &TaskItem{
+				TaskID:       r.TaskID,
+				Number:       r.Number,
+				URL:          r.URL,
+				Title:        r.Title,
+				Agent:        r.AgentID,
+				Model:        r.Model,
+				Runner:       r.Runner,
+				Status:       r.Status,
+				Attempt:      r.Attempt,
+				Duration:     time.Duration(r.DurationMs) * time.Millisecond,
+				StartedAt:    r.StartedAt,
+				CompletedAt:  r.CompletedAt,
+				Error:        r.Error,
+				InputTokens:  r.InputTokens,
+				OutputTokens: r.OutputTokens,
+				TotalTokens:  r.TotalTokens,
+				NumTurns:     r.NumTurns,
+				NumToolCalls: r.NumToolCalls,
+				CostUSD:      r.CostUSD,
 			}
 		}
+		if internalTaskID != "" {
+			detail = a.augmentTaskDetail(ctx, dbConn, detail, drillKey, internalTaskID)
+		}
+	}
+	return detail, a.fetchWorkflowInstance(ctx, dbConn, drillKey)
+}
 
-		instance := a.fetchWorkflowInstance(ctx, dbConn, drillKey)
-		return taskDetailMsg{taskID: drillKey, detail: detail, instance: instance}
+// refreshTaskDetail re-loads the open detail panel by id (not by list index), so
+// status/tokens/instances stay live without re-sorting the list under the cursor.
+func (a *App) refreshTaskDetail(drillKey, internalTaskID string) tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+		detail, instance := a.loadTaskDetail(ctx, dbConn, drillKey, internalTaskID)
+		return taskDetailRefreshMsg{detail: detail, instance: instance}
 	}
 }
 
@@ -2073,19 +2173,39 @@ func (a *App) fetchTaskLogs(taskID string) tea.Cmd {
 
 		var detail *TaskItem
 		logs := make([]LogEntry, 0)
-		var oldestID int64
+		var oldestID, newestID int64
 		var hasMore bool
 		if dbConn != nil {
 			detail = taskDetailItem(ctx, dbConn, taskID)
 			if rows, err := dbConn.GetTaskLogs(ctx, taskID, taskLogTailLimit); err == nil {
 				logs = mapLogLines(rows)
 				if len(rows) > 0 {
-					oldestID = rows[0].ID // chronological: first row is the oldest loaded
+					oldestID = rows[0].ID           // chronological: first row is the oldest loaded
+					newestID = rows[len(rows)-1].ID // …and the last is the newest (live-tail cursor)
 				}
 				hasMore = len(rows) == taskLogTailLimit // a full page implies older rows exist
 			}
 		}
-		return taskLogsMsg{taskID: taskID, logs: logs, detail: detail, oldestID: oldestID, hasMore: hasMore}
+		return taskLogsMsg{taskID: taskID, logs: logs, detail: detail, oldestID: oldestID, newestID: newestID, hasMore: hasMore}
+	}
+}
+
+// tailTaskLogs fetches flat-log lines newer than afterID for the live logs view,
+// so a running task's logs stream in without resetting the scroll position.
+func (a *App) tailTaskLogs(taskID string, afterID int64) tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+
+		msg := tailTaskLogsMsg{taskID: taskID, newestID: afterID}
+		if dbConn != nil {
+			if rows, err := dbConn.GetTaskLogsAfter(ctx, taskID, afterID, taskLogTailLimit); err == nil && len(rows) > 0 {
+				msg.logs = mapLogLines(rows)
+				msg.newestID = rows[len(rows)-1].ID
+			}
+		}
+		return msg
 	}
 }
 
@@ -2138,30 +2258,49 @@ func (a *App) fetchTaskHistory(internalTaskID, drillKey string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 		defer cancel()
+		detail, segments := a.buildTaskHistory(ctx, dbConn, internalTaskID, drillKey)
+		return taskHistoryMsg{taskID: internalTaskID, drillKey: drillKey, segments: segments, detail: detail}
+	}
+}
 
-		var detail *TaskItem
-		segments := make([]TaskHistorySegmentItem, 0)
-		if dbConn != nil {
-			detail = taskDetailItem(ctx, dbConn, drillKey)
-			if segs, err := dbConn.GetTaskWorkflowHistory(ctx, internalTaskID); err == nil {
-				now := time.Now()
-				for _, seg := range segs {
-					item := mapInstances(ctx, dbConn, []db.WorkflowInstance{seg.Instance})[0]
-					item.Steps = mapStepRuns(seg.Steps, now)
-					if polls, err := dbConn.ListCIPollChecks(ctx, seg.Instance.ID); err == nil {
-						item.CIPolls = mapCIPolls(polls)
-					}
-					if item.State == db.InstanceStateApprovalWaiting {
-						item.Message = "Awaiting human approval — reply on the task to resume or abort."
-					}
-					segments = append(segments, TaskHistorySegmentItem{
-						Instance: item,
-						Logs:     mapLogLines(seg.Logs),
-					})
+// buildTaskHistory assembles the per-instance history (each workflow instance with
+// its steps, CI polls, and time-scoped logs) plus the detail header. Shared by the
+// initial open (fetchTaskHistory) and the live refresh (refreshTaskHistory).
+func (a *App) buildTaskHistory(ctx context.Context, dbConn *db.Client, internalTaskID, drillKey string) (*TaskItem, []TaskHistorySegmentItem) {
+	var detail *TaskItem
+	segments := make([]TaskHistorySegmentItem, 0)
+	if dbConn != nil {
+		detail = taskDetailItem(ctx, dbConn, drillKey)
+		if segs, err := dbConn.GetTaskWorkflowHistory(ctx, internalTaskID); err == nil {
+			now := time.Now()
+			for _, seg := range segs {
+				item := mapInstances(ctx, dbConn, []db.WorkflowInstance{seg.Instance})[0]
+				item.Steps = mapStepRuns(seg.Steps, now)
+				if polls, err := dbConn.ListCIPollChecks(ctx, seg.Instance.ID); err == nil {
+					item.CIPolls = mapCIPolls(polls)
 				}
+				if item.State == db.InstanceStateApprovalWaiting {
+					item.Message = "Awaiting human approval — reply on the task to resume or abort."
+				}
+				segments = append(segments, TaskHistorySegmentItem{
+					Instance: item,
+					Logs:     mapLogLines(seg.Logs),
+				})
 			}
 		}
-		return taskHistoryMsg{taskID: internalTaskID, segments: segments, detail: detail}
+	}
+	return detail, segments
+}
+
+// refreshTaskHistory re-builds the open per-instance history view by id, so a
+// running task's steps and logs stay live. The handler preserves scroll.
+func (a *App) refreshTaskHistory(internalTaskID, drillKey string) tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+		detail, segments := a.buildTaskHistory(ctx, dbConn, internalTaskID, drillKey)
+		return taskHistoryRefreshMsg{segments: segments, detail: detail}
 	}
 }
 
