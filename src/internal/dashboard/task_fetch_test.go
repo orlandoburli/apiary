@@ -31,9 +31,16 @@ func TestTaskItemFromInternal(t *testing.T) {
 		CreatedAt: created, UpdatedAt: updated, OutstandingWorkflows: 0,
 	}
 	bindings := []model.SourceBinding{{SourceID: "github", SourceItemID: "ISSUE-9", SourceItemNumber: "#9", SourceItemURL: "https://x/9"}}
-	it := taskItemFromInternal(done, bindings)
+	prs := []db.TaskPullRequest{
+		{SourceID: "github", PRNumber: 11, PRURL: "https://x/pull/11", Seq: 0},
+		{SourceID: "github", PRNumber: 12, PRURL: "https://x/pull/12", Seq: 1},
+	}
+	it := taskItemFromInternal(done, bindings, prs)
 	if it.InternalTaskID != "tk_done" || it.DrillKey != "ISSUE-9" || it.TaskID != "ISSUE-9" {
 		t.Errorf("ids wrong: InternalTaskID=%q DrillKey=%q TaskID=%q", it.InternalTaskID, it.DrillKey, it.TaskID)
+	}
+	if len(it.PullRequests) != 2 || it.PullRequests[len(it.PullRequests)-1].URL != "https://x/pull/12" {
+		t.Errorf("PullRequests not mapped (tail should be the most recent): %+v", it.PullRequests)
 	}
 	if it.Status != "done" || it.Number != "#9" || it.URL != "https://x/9" {
 		t.Errorf("mapping wrong: Status=%q Number=%q URL=%q", it.Status, it.Number, it.URL)
@@ -50,7 +57,7 @@ func TestTaskItemFromInternal(t *testing.T) {
 
 	// Binding-less running task: drill key = task id, no CompletedAt.
 	running := model.InternalTask{ID: "tk_run", Title: "spawned", State: model.TaskStateRunning, CreatedAt: created}
-	r := taskItemFromInternal(running, nil)
+	r := taskItemFromInternal(running, nil, nil)
 	if r.DrillKey != "tk_run" || r.TaskID != "tk_run" {
 		t.Errorf("binding-less drill key should be the task id, got %q", r.DrillKey)
 	}

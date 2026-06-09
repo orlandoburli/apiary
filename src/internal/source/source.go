@@ -85,6 +85,23 @@ type CIStatusPoller interface {
 	PollCIStatus(ctx context.Context, cellID string) (CIStatus, error)
 }
 
+// PullRequestRef is one pull request linked to a source item (e.g. a PR that
+// cross-references a GitHub issue). State is best-effort and may be empty when
+// the source does not fetch it.
+type PullRequestRef struct {
+	Number int    // PR number
+	URL    string // browser deep-link (html_url)
+	State  string // "open", "closed", "merged", or "" when unknown
+}
+
+// PullRequestLister is an optional interface a source may implement to enumerate
+// every pull request linked to one of its items, oldest first. The dashboard
+// uses it to offer an "open the latest PR" shortcut. Sources that do not
+// implement it simply have no PRs to show.
+type PullRequestLister interface {
+	ListPullRequests(ctx context.Context, cellID string) ([]PullRequestRef, error)
+}
+
 // Factory creates a new, unconfigured Adapter instance.
 type Factory func() Adapter
 

@@ -11,6 +11,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/db"
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
+	"github.com/orlandoburli/apiary/internal/source"
 )
 
 // ErrTaskNotFound is returned by DeleteTask when no task, binding, or workflow
@@ -86,6 +87,113 @@ func ciPollViews(checks []db.CIPollCheck) []CIPollView {
 // InstancesResponse is the JSON payload returned by GET /instances.
 type InstancesResponse struct {
 	Instances []InstanceSummary `json:"instances"`
+}
+
+// PullRequestView is one pull request linked to a task, returned by the PR-refresh
+// endpoint.
+type PullRequestView struct {
+	Number int    `json:"number"`
+	URL    string `json:"url"`
+	State  string `json:"state"`
+}
+
+// TaskPullRequestsResponse is the JSON payload returned by
+// POST /tasks/pulls/refresh/{ref}. Pulls is ordered oldest first; the last entry
+// is the most recent PR.
+type TaskPullRequestsResponse struct {
+	TaskID string            `json:"task_id"`
+	Pulls  []PullRequestView `json:"pulls"`
+}
+
+// RefreshTaskPullRequests resolves a task's source bindings, asks each source that
+// can enumerate PRs for the ones linked to the bound item(s), persists the result,
+// and returns the merged set. It is the daemon-side half of the dashboard's "open
+// PR" shortcut: the dashboard reads its own DB for display, while only the daemon
+// holds the source adapters/credentials to discover PRs.
+//
+// A source that errors or cannot list PRs is skipped WITHOUT touching its persisted
+// rows, so a transient GitHub/auth failure never wipes the last-good PR list.
+func (d *Dispatcher) RefreshTaskPullRequests(ctx context.Context, taskRef string) (*TaskPullRequestsResponse, error) {
+	if d.db == nil {
+		return &TaskPullRequestsResponse{}, nil
+	}
+	taskID, _, err := d.resolveTaskRef(ctx, taskRef)
+	if err != nil {
+		return nil, err
+	}
+	bindings, err := d.db.ListBindingsByTask(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Group bound item ids by source so a task with several bindings on the same
+	// source is replaced in one shot (a per-binding replace would clobber the
+	// earlier binding's rows, since the delete is scoped to source_id).
+	itemsBySource := make(map[string][]string)
+	order := make([]string, 0)
+	for _, b := range bindings {
+		if _, seen := itemsBySource[b.SourceID]; !seen {
+			order = append(order, b.SourceID)
+		}
+		itemsBySource[b.SourceID] = append(itemsBySource[b.SourceID], b.SourceItemID)
+	}
+
+	for _, sourceID := range order {
+		adapter, ok := d.sources[sourceID]
+		if !ok {
+			continue
+		}
+		lister, ok := adapter.(source.PullRequestLister)
+		if !ok {
+			continue // source can't enumerate PRs (e.g. Plane) — leave its rows alone
+		}
+
+		var refs []source.PullRequestRef
+		failed := false
+		seen := make(map[int]bool)
+		for _, itemID := range itemsBySource[sourceID] {
+			prs, err := lister.ListPullRequests(ctx, itemID)
+			if err != nil {
+				// Transient/auth error: keep last-good rows for this source.
+				aplog.Debug("refresh PRs for task %s (%s/%s): %v", taskID, sourceID, itemID, err)
+				failed = true
+				break
+			}
+			for _, p := range prs {
+				if seen[p.Number] {
+					continue
+				}
+				seen[p.Number] = true
+				refs = append(refs, p)
+			}
+		}
+		if failed {
+			continue
+		}
+
+		rows := make([]db.TaskPullRequest, 0, len(refs))
+		for _, p := range refs {
+			rows = append(rows, db.TaskPullRequest{
+				SourceID: sourceID,
+				PRNumber: p.Number,
+				PRURL:    p.URL,
+				PRState:  p.State,
+			})
+		}
+		if err := d.db.ReplaceTaskPullRequests(ctx, taskID, sourceID, rows); err != nil {
+			return nil, err
+		}
+	}
+
+	stored, err := d.db.ListTaskPullRequests(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	resp := &TaskPullRequestsResponse{TaskID: taskID}
+	for _, p := range stored {
+		resp.Pulls = append(resp.Pulls, PullRequestView{Number: p.PRNumber, URL: p.PRURL, State: p.PRState})
+	}
+	return resp, nil
 }
 
 // WorkflowStepDef is one step in a workflow definition, for the Workflows tab.

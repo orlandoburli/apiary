@@ -81,6 +81,12 @@ type taskDetailMsg struct {
 	detail   *TaskItem
 	instance *WorkflowInstanceItem
 }
+
+// taskPullsRefreshedMsg is emitted after the daemon has (re)discovered and
+// persisted a task's pull requests, so the open detail can reload and pick them up.
+type taskPullsRefreshedMsg struct {
+	internalTaskID string
+}
 type taskLogsMsg struct {
 	taskID   string
 	logs     []LogEntry
@@ -200,6 +206,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.model.tasksTab.View = TaskViewDetail
 		}
 		a.model.loading = false
+
+	case taskPullsRefreshedMsg:
+		// Daemon persisted fresh PRs; reload the open detail so they appear and the
+		// (p) shortcut targets the latest one.
+		if t := a.model.tasksTab; t != nil && t.View == TaskViewDetail && t.Detail != nil &&
+			t.Detail.InternalTaskID == msg.internalTaskID && msg.internalTaskID != "" {
+			return a, a.refreshTaskDetail(t.Detail.DrillKey, msg.internalTaskID)
+		}
 
 	case taskLogsMsg:
 		if t := a.model.tasksTab; t != nil {
@@ -393,6 +407,14 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Open the focused task in the browser, from any task-oriented view.
 	if key == "o" {
 		if u, ok := a.focusedTaskURL(); ok {
+			return a, openURLCmd(u)
+		}
+		return a, nil
+	}
+
+	// Open the focused task's most recent pull request in the browser.
+	if key == "p" {
+		if u, ok := a.focusedTaskPRURL(); ok {
 			return a, openURLCmd(u)
 		}
 		return a, nil
@@ -676,7 +698,7 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "Tasks":
 			if row, ok := a.selectedTask(); ok {
 				a.model.loading = true
-				return a, a.fetchTaskDetail(row.TaskID, row.InternalTaskID)
+				return a, tea.Batch(a.fetchTaskDetail(row.TaskID, row.InternalTaskID), a.refreshTaskPullsCmd(row.InternalTaskID))
 			}
 		case "Agents":
 			// Detail uses the already-loaded stats — no DB round-trip needed.
@@ -987,7 +1009,7 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 	case "d":
 		if row, ok := a.selectedTask(); ok {
 			a.model.loading = true
-			return a, a.fetchTaskDetail(row.TaskID, row.InternalTaskID)
+			return a, tea.Batch(a.fetchTaskDetail(row.TaskID, row.InternalTaskID), a.refreshTaskPullsCmd(row.InternalTaskID))
 		}
 	case "l", "enter":
 		if row, ok := a.selectedTask(); ok {
@@ -1000,7 +1022,7 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 			if t.View == TaskViewLogs {
 				return a, a.fetchTaskHistory(row.InternalTaskID, row.TaskID)
 			}
-			return a, a.fetchTaskDetail(row.TaskID, row.InternalTaskID)
+			return a, tea.Batch(a.fetchTaskDetail(row.TaskID, row.InternalTaskID), a.refreshTaskPullsCmd(row.InternalTaskID))
 		}
 	case "up":
 		if t.View == TaskViewLogs {
@@ -1298,6 +1320,48 @@ func (a *App) focusedTaskURL() (string, bool) {
 	return "", false
 }
 
+// focusedTaskPulls returns the persisted pull requests of the task the user is
+// currently looking at, across the same views as focusedTaskURL. Reports false
+// when there is no focused task.
+func (a *App) focusedTaskPulls() ([]PullRequestItem, bool) {
+	switch a.model.ActiveTab() {
+	case "Tasks":
+		t := a.model.tasksTab
+		if t == nil {
+			return nil, false
+		}
+		if t.View == TaskViewDetail && t.Detail != nil {
+			return t.Detail.PullRequests, true
+		}
+		if rows := a.filteredTasks(t); t.SelectedIdx >= 0 && t.SelectedIdx < len(rows) {
+			return rows[t.SelectedIdx].PullRequests, true
+		}
+	case "Agents":
+		ag := a.model.agentsTab
+		if ag == nil {
+			return nil, false
+		}
+		if ag.View == AgentViewActivity || ag.View == AgentViewTaskLogs {
+			if ag.ActivityIdx >= 0 && ag.ActivityIdx < len(ag.Activity) {
+				return ag.Activity[ag.ActivityIdx].PullRequests, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// focusedTaskPRURL returns the most recent pull request URL of the focused task —
+// the tail of its PR list, since the list is ordered oldest-first. Reports false
+// when the task has no PR (then the (p) key is a no-op, like (o) with no URL).
+func (a *App) focusedTaskPRURL() (string, bool) {
+	prs, ok := a.focusedTaskPulls()
+	if !ok || len(prs) == 0 {
+		return "", false
+	}
+	u := prs[len(prs)-1].URL
+	return u, u != ""
+}
+
 // focusedTaskID returns the task ID the user is currently focused on.
 func (a *App) focusedTaskID() (string, bool) {
 	switch a.model.ActiveTab() {
@@ -1343,6 +1407,36 @@ func (a *App) restartTaskCmd(taskID string) tea.Cmd {
 		}
 		resp.Body.Close()
 		return nil
+	}
+}
+
+// refreshTaskPullsCmd asks the daemon to (re)discover the task's pull requests from
+// its source and persist them. The daemon holds the source adapters/credentials;
+// the dashboard then reads the persisted list from its own DB. No-op for rows with
+// no internal task id (e.g. Agents-tab history rows). On success it emits a
+// taskPullsRefreshedMsg so the open detail reloads with the fresh PRs.
+func (a *App) refreshTaskPullsCmd(internalTaskID string) tea.Cmd {
+	if internalTaskID == "" {
+		return nil
+	}
+	socketPath := a.socketPath
+	return func() tea.Msg {
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+			},
+		}
+		client := &http.Client{Transport: transport, Timeout: 8 * time.Second}
+		url := fmt.Sprintf("http://apiary/tasks/pulls/refresh/%s", internalTaskID)
+		resp, err := client.Post(url, "application/json", nil)
+		if err != nil {
+			return nil
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			return nil
+		}
+		return taskPullsRefreshedMsg{internalTaskID: internalTaskID}
 	}
 }
 
@@ -1820,7 +1914,8 @@ func (a *App) fetchTasks() tea.Cmd {
 			if tasks, err := dbConn.InternalTasks().ListTasks(ctx, 100); err == nil {
 				for _, tk := range tasks {
 					bindings, _ := dbConn.ListBindingsByTask(ctx, tk.ID)
-					items = append(items, taskItemFromInternal(tk, bindings))
+					prs, _ := dbConn.ListTaskPullRequests(ctx, tk.ID)
+					items = append(items, taskItemFromInternal(tk, bindings, prs))
 				}
 			}
 		}
@@ -1832,7 +1927,7 @@ func (a *App) fetchTasks() tea.Cmd {
 // dashboard Tasks-tab row. Execution-scoped fields (Agent/Model/tokens/duration)
 // are left zero here and hydrated on drill-down; StartedAt/CompletedAt mirror the
 // task timestamps so the list's "when" column and time sort stay meaningful.
-func taskItemFromInternal(t model.InternalTask, bindings []model.SourceBinding) TaskItem {
+func taskItemFromInternal(t model.InternalTask, bindings []model.SourceBinding, prs []db.TaskPullRequest) TaskItem {
 	created := t.CreatedAt
 	item := TaskItem{
 		TaskID:               drillKeyFor(t, bindings), // legacy machinery key (== DrillKey)
@@ -1844,6 +1939,7 @@ func taskItemFromInternal(t model.InternalTask, bindings []model.SourceBinding) 
 		ParentTaskID:         t.ParentTaskID,
 		OutstandingWorkflows: t.OutstandingWorkflows,
 		Bindings:             mapBindings(bindings),
+		PullRequests:         mapPullRequests(prs),
 	}
 	if t.State == model.TaskStateDone || t.State == model.TaskStateFailed {
 		updated := t.UpdatedAt
@@ -1880,6 +1976,18 @@ func mapBindings(bindings []model.SourceBinding) []SourceBindingItem {
 			ItemURL:    b.SourceItemURL,
 			ItemID:     b.SourceItemID,
 		})
+	}
+	return out
+}
+
+// mapPullRequests converts persisted PR rows (oldest first) to their view items.
+func mapPullRequests(prs []db.TaskPullRequest) []PullRequestItem {
+	if len(prs) == 0 {
+		return nil
+	}
+	out := make([]PullRequestItem, 0, len(prs))
+	for _, p := range prs {
+		out = append(out, PullRequestItem{Number: p.PRNumber, URL: p.PRURL, State: p.PRState})
 	}
 	return out
 }
@@ -2083,6 +2191,12 @@ func (a *App) augmentTaskDetail(ctx context.Context, dbConn *db.Client, detail *
 	}
 	if insts, _ := dbConn.ListWorkflowInstancesByTask(ctx, internalTaskID); len(insts) > 0 {
 		detail.Instances = mapInstances(ctx, dbConn, insts)
+	}
+	// PRs are persisted by the daemon (refreshed on detail open); read them back so
+	// the (p) shortcut and the detail panel stay in sync. Re-runs of this function
+	// from the live tick pick up freshly-discovered PRs automatically.
+	if prs, _ := dbConn.ListTaskPullRequests(ctx, internalTaskID); len(prs) > 0 {
+		detail.PullRequests = mapPullRequests(prs)
 	}
 	return detail
 }
@@ -4322,9 +4436,9 @@ func (a *App) footerKeys() []fkey {
 		if t := a.model.tasksTab; t != nil {
 			switch t.View {
 			case TaskViewDetail:
-				return []fkey{{"esc", "back"}, {"l", "logs"}, {"o", "open"}, {"R", "restart"}, {"C", "clear"}, {"r", "reload"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"l", "logs"}, {"o", "open"}, {"p", "open PR"}, {"R", "restart"}, {"C", "clear"}, {"r", "reload"}, {"q", "quit"}}
 			case TaskViewLogs:
-				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"o", "open"}, {"C", "clear"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"o", "open"}, {"p", "open PR"}, {"C", "clear"}, {"q", "quit"}}
 			case TaskViewWorkflow:
 				if t.WorkflowShowLogs {
 					return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"q", "quit"}}
@@ -4336,7 +4450,7 @@ func (a *App) footerKeys() []fkey {
 				return append(keys, fkey{"r", "refresh"}, fkey{"X", "stop"}, fkey{"R", "restart"}, fkey{"esc", "back"}, fkey{"q", "quit"})
 			}
 		}
-		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"d", "details"}, {"o", "open"}, {"R", "restart"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
+		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"R", "restart"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
 	case "Workflows":
 		if wt := a.model.workflowsTab; wt != nil && wt.Focus == WorkflowsViewSteps {
 			return []fkey{{"↑/↓", "step"}, {"esc/←", "back"}, {"tab", "next tab"}, {"q", "quit"}}
@@ -4348,9 +4462,9 @@ func (a *App) footerKeys() []fkey {
 			case AgentViewDetail:
 				return []fkey{{"esc", "back"}, {"f", "files"}, {"l", "activity"}, {"m", "model"}, {"r", "runner"}, {"w", "workers"}, {"q", "quit"}}
 			case AgentViewActivity:
-				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "logs"}, {"o", "open"}, {"pgup/dn", "page"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "logs"}, {"o", "open"}, {"p", "open PR"}, {"pgup/dn", "page"}, {"q", "quit"}}
 			case AgentViewTaskLogs:
-				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"o", "open"}, {"home/end", "ends"}, {"r", "reload"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"o", "open"}, {"p", "open PR"}, {"home/end", "ends"}, {"r", "reload"}, {"q", "quit"}}
 			case AgentViewFiles:
 				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "view"}, {"q", "quit"}}
 			case AgentViewFileContent:
