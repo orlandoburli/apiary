@@ -13,13 +13,13 @@ import (
 
 // step execution states within a DAG run.
 const (
-	stPending    = "pending"
-	stRunning    = "running"    // dispatched to a worker goroutine, not yet complete
-	stPassed     = "passed"
-	stFailed     = "failed"
-	stSkipped    = "skipped"    // cascade-skipped because a dep failed/was cascade-skipped
+	stPending     = "pending"
+	stRunning     = "running" // dispatched to a worker goroutine, not yet complete
+	stPassed      = "passed"
+	stFailed      = "failed"
+	stSkipped     = "skipped"      // cascade-skipped because a dep failed/was cascade-skipped
 	stCondSkipped = "cond_skipped" // skipped because the step's own condition was false
-	stWaiting    = "waiting"    // an approval step parked awaiting a human response
+	stWaiting     = "waiting"      // an approval step parked awaiting a human response
 )
 
 // dagOutcome is the terminal (or suspended) result of driving a DAG run.
@@ -45,10 +45,11 @@ type dagRun struct {
 	byID  map[string]config.StepConfig
 	order []string // step ids in declaration order (deterministic scheduling)
 
-	state       map[string]string // step id → st* state
-	activated   map[string]bool   // control-flow has reached this step
-	splitTarget map[string]bool   // step id is the goto target of some split branch
-	retries     map[string]int    // on_fail.goto loop counter per failing step
+	state           map[string]string // step id → st* state
+	activated       map[string]bool   // control-flow has reached this step
+	splitTarget     map[string]bool   // step id is the goto target of some split branch
+	retries         map[string]int    // on_fail.goto loop counter per failing step
+	conflictRetries map[string]int    // on_conflict.goto loop counter per conflicting step
 
 	stepStates  map[string]StepState  // terminal states for expression context
 	contrib     map[string]MemoryStep // memory contribution per passed step
@@ -68,20 +69,21 @@ type dagRun struct {
 // is inherited memory for a sub-workflow child; depth tracks nesting.
 func (e *Engine) initDAG(instID string, wf config.WorkflowConfig, task model.InternalTask, bindings []model.SourceBinding, seed []MemoryStep, depth int) *dagRun {
 	r := &dagRun{
-		instID:      instID,
-		wf:          wf,
-		task:        task,
-		bindings:    bindings,
-		cell:        sourceItemView(task, bindings),
-		depth:       depth,
-		seed:        seed,
-		byID:        map[string]config.StepConfig{},
-		state:       map[string]string{},
-		activated:   map[string]bool{},
-		splitTarget: map[string]bool{},
-		retries:     map[string]int{},
-		stepStates:  map[string]StepState{},
-		contrib:     map[string]MemoryStep{},
+		instID:          instID,
+		wf:              wf,
+		task:            task,
+		bindings:        bindings,
+		cell:            sourceItemView(task, bindings),
+		depth:           depth,
+		seed:            seed,
+		byID:            map[string]config.StepConfig{},
+		state:           map[string]string{},
+		activated:       map[string]bool{},
+		splitTarget:     map[string]bool{},
+		retries:         map[string]int{},
+		conflictRetries: map[string]int{},
+		stepStates:      map[string]StepState{},
+		contrib:         map[string]MemoryStep{},
 	}
 	for _, s := range wf.Steps {
 		r.byID[s.ID] = s
@@ -343,8 +345,26 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 			continue
 		}
 
-		// Failure: attempt on_fail.goto loop if retries remain.
-		if !termFail && loopTarget == "" &&
+		// Merge-conflict failure with a dedicated on_conflict route: that edge
+		// governs the loop-back exclusively, with its own retry budget separate from
+		// on_fail (a rebase retry must not consume the CI-failure retry budget, and
+		// vice-versa). Once on_conflict's budget is exhausted the failure is terminal
+		// — it does NOT fall through to on_fail. A conflict on a step with no
+		// on_conflict declared skips this block and is handled by on_fail below.
+		conflictGoverned := res.Conflict && step.OnConflict != nil && step.OnConflict.Goto != ""
+		if !termFail && loopTarget == "" && conflictGoverned &&
+			r.conflictRetries[step.ID] < step.OnConflict.MaxRetries {
+			r.conflictRetries[step.ID]++
+			aplog.Info("workflow %s: step %q hit a merge conflict, looping back to %q (retry %d/%d)",
+				r.wf.ID, step.ID, step.OnConflict.Goto, r.conflictRetries[step.ID], step.OnConflict.MaxRetries)
+			r.state[step.ID] = stPending
+			loopTarget = step.OnConflict.Goto
+			continue
+		}
+
+		// Failure: attempt on_fail.goto loop if retries remain. Skipped when a
+		// conflict is governed by on_conflict (its budget is exhausted → terminal).
+		if !termFail && loopTarget == "" && !conflictGoverned &&
 			step.OnFail != nil && step.OnFail.Goto != "" &&
 			r.retries[step.ID] < step.OnFail.MaxRetries {
 			r.retries[step.ID]++

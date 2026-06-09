@@ -19,7 +19,7 @@ func waitForWorkflow() config.WorkflowConfig {
 		{ID: "implement", Agent: "backend-dev"},
 		{ID: "check-ci", Type: config.StepTypeWaitFor, DependsOn: []string{"implement"},
 			WaitFor: &config.WaitForConfig{Kind: "ci", CheckInterval: "30s", MaxDuration: "2h"},
-			OnFail:     &config.StepOutcome{Goto: "implement", MaxRetries: 3}},
+			OnFail:  &config.StepOutcome{Goto: "implement", MaxRetries: 3}},
 		{ID: "review", Agent: "backend-dev", DependsOn: []string{"check-ci"}},
 	}}
 }
@@ -135,6 +135,107 @@ func TestWaitFor_RedCILoopsBackToImplement(t *testing.T) {
 	}
 	if !contains(executedIDs(exec.seen), "review") {
 		t.Error("review should run once the retried CI passed")
+	}
+}
+
+// A merge conflict ceases the CI wait immediately and fails the step terminally
+// (never parks), so the failure is handed back for the conflict to be resolved
+// instead of burning the whole timeout window waiting for CI that can't matter.
+func TestWaitFor_ConflictFailsImmediately(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	clock := time.Unix(1000, 0)
+	ci := func() (source.CIStatus, error) {
+		return source.CIStatus{Status: "conflict", URL: "https://gh/pr/1"}, nil
+	}
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+
+	// Poll with no on_fail loop, so a conflict fails the instance outright.
+	wf := config.WorkflowConfig{ID: "impl", Steps: []config.StepConfig{
+		{ID: "implement", Agent: "backend-dev"},
+		{ID: "check-ci", Type: config.StepTypeWaitFor, DependsOn: []string{"implement"},
+			WaitFor: &config.WaitForConfig{Kind: "ci", MaxDuration: "2h"}},
+	}}
+	instID, success, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
+	if success {
+		t.Fatal("a conflicting PR must not report success")
+	}
+	if got := store.instances[instID].State; got != db.InstanceStateFailed {
+		t.Errorf("instance state = %q, want failed (conflict is terminal, not parked)", got)
+	}
+	if len(eng.ParkedWaits()) != 0 {
+		t.Error("a conflict must not leave the instance parked waiting on CI")
+	}
+}
+
+// on_conflict routes a merge conflict back to a resolve step even when no on_fail
+// is declared, with its own retry budget. Here CI conflicts once, loops back to
+// implement via on_conflict, then passes on the retry → the workflow completes.
+func TestWaitFor_OnConflictLoopsBack(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	clock := time.Unix(1000, 0)
+	calls := 0
+	ci := func() (source.CIStatus, error) {
+		calls++
+		if calls == 1 {
+			return source.CIStatus{Status: "conflict", URL: "https://gh/pr/1"}, nil
+		}
+		return source.CIStatus{Status: "passed"}, nil
+	}
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+
+	// No on_fail at all — only on_conflict. Without on_conflict a conflict would be
+	// terminal, so a completed run proves on_conflict drove the loop-back.
+	wf := config.WorkflowConfig{ID: "impl", Steps: []config.StepConfig{
+		{ID: "implement", Agent: "backend-dev"},
+		{ID: "check-ci", Type: config.StepTypeWaitFor, DependsOn: []string{"implement"},
+			WaitFor:    &config.WaitForConfig{Kind: "ci", MaxDuration: "2h"},
+			OnConflict: &config.StepOutcome{Goto: "implement", MaxRetries: 3}},
+		{ID: "review", Agent: "backend-dev", DependsOn: []string{"check-ci"}},
+	}}
+	instID, _, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
+
+	if got := store.instances[instID].State; got != db.InstanceStateDone {
+		t.Fatalf("instance state = %q, want done (conflict resolved on retry)", got)
+	}
+	if n := countID(exec.seen, "implement"); n != 2 {
+		t.Errorf("implement should run twice (initial + on_conflict loop-back), got %d", n)
+	}
+	if !contains(executedIDs(exec.seen), "review") {
+		t.Error("review should run once the retried CI passed")
+	}
+}
+
+// on_conflict has its own retry budget and, once exhausted, fails terminally —
+// it does NOT fall through to on_fail. With a persistent conflict, implement runs
+// only initial+1 (on_conflict.max_retries=1), never consuming on_fail's budget.
+func TestWaitFor_OnConflictExhaustsWithoutFallthroughToOnFail(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	clock := time.Unix(1000, 0)
+	ci := func() (source.CIStatus, error) { return source.CIStatus{Status: "conflict"}, nil }
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+
+	wf := config.WorkflowConfig{ID: "impl", Steps: []config.StepConfig{
+		{ID: "implement", Agent: "backend-dev"},
+		{ID: "check-ci", Type: config.StepTypeWaitFor, DependsOn: []string{"implement"},
+			WaitFor:    &config.WaitForConfig{Kind: "ci", MaxDuration: "2h"},
+			OnConflict: &config.StepOutcome{Goto: "implement", MaxRetries: 1},
+			OnFail:     &config.StepOutcome{Goto: "implement", MaxRetries: 5}},
+	}}
+	instID, success, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
+
+	if success {
+		t.Fatal("a persistent conflict must not report success")
+	}
+	if got := store.instances[instID].State; got != db.InstanceStateFailed {
+		t.Errorf("instance state = %q, want failed (on_conflict budget exhausted)", got)
+	}
+	// initial + exactly 1 on_conflict retry. If a conflict had fallen through to
+	// on_fail (max_retries 5) implement would have run 7 times.
+	if n := countID(exec.seen, "implement"); n != 2 {
+		t.Errorf("implement should run twice (initial + 1 on_conflict retry), got %d", n)
 	}
 }
 
