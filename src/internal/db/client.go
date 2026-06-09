@@ -25,12 +25,23 @@ type execer interface {
 
 // New opens a SQLite database and initializes schema.
 func New(ctx context.Context, dbPath string) (*Client, error) {
-	// busy_timeout lets a writer wait for a held lock instead of failing
-	// immediately with SQLITE_BUSY — required for the concurrent SourceBinder
-	// path, where two pollers may bind the same item at once.
+	// Connection pragmas:
+	//   busy_timeout  — wait for a held lock instead of failing immediately with
+	//                   SQLITE_BUSY (concurrent SourceBinder path: two pollers may
+	//                   bind the same item at once).
+	//   journal_mode=WAL — readers don't block the writer and vice versa, so the
+	//                   dashboard's large cold log reads don't stall the daemon.
+	//   synchronous=NORMAL — safe under WAL, far fewer fsyncs.
+	//   cache_size=-20000 — ~20MB page cache; task_logs rows are ~10KB of agent
+	//                   stream text, so a bigger cache cuts cold-read disk hits.
+	//   temp_store=MEMORY — sorts/temp b-trees stay in RAM.
 	dsn := dbPath
 	if !strings.Contains(dsn, "?") {
-		dsn += "?_pragma=busy_timeout(5000)"
+		dsn += "?_pragma=busy_timeout(5000)" +
+			"&_pragma=journal_mode(WAL)" +
+			"&_pragma=synchronous(NORMAL)" +
+			"&_pragma=cache_size(-20000)" +
+			"&_pragma=temp_store(MEMORY)"
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -250,6 +261,36 @@ func (c *Client) GetStepUsage(ctx context.Context, instanceID, stepID string) (*
 		return nil, err
 	}
 	return &e, nil
+}
+
+// GetInstanceStepUsage returns the latest token/cost totals per step for a whole
+// workflow instance in a single query — the batched form of GetStepUsage, so
+// building an instance's step list doesn't fan out into one query per step (the
+// N+1 that made opening a task's workflow view slow). Keyed by step_id; rows are
+// scanned in ascending execution order so the most recent execution per step wins.
+func (c *Client) GetInstanceStepUsage(ctx context.Context, instanceID string) (map[string]Execution, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT step_id,
+		       COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(total_tokens,0),
+		       COALESCE(num_turns,0), COALESCE(num_tool_calls,0), COALESCE(cost_usd,0)
+		FROM task_executions
+		WHERE workflow_instance_id = ?
+		ORDER BY created_at ASC, id ASC
+	`, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]Execution)
+	for rows.Next() {
+		var stepID sql.NullString
+		var e Execution
+		if err := rows.Scan(&stepID, &e.InputTokens, &e.OutputTokens, &e.TotalTokens, &e.NumTurns, &e.NumToolCalls, &e.CostUSD); err != nil {
+			continue
+		}
+		out[stepID.String] = e // ASC order: the last write per step_id is the most recent
+	}
+	return out, nil
 }
 
 // ReconcileOrphanExecutions marks any executions still in the 'running' state
