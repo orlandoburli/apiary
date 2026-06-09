@@ -22,6 +22,7 @@ type Model struct {
 	lastTabRefresh map[int]time.Time // Track refresh per tab
 	loading        bool              // Show loading state
 	tickCount      int               // refresh ticks elapsed; throttles the heavier logs refresh
+	spinnerFrame   int               // advances on the fast spinner tick; animates loading indicators
 
 	confirmAction string // "restart" or "clear" or "stop" when awaiting confirmation
 	confirmTaskID string
