@@ -302,6 +302,18 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		} else if n > 0 {
 			aplog.Info("reconciled %d orphaned running workflow instance(s) from a previous run", n)
 		}
+
+		// Mark step_runs left non-terminal under the instances just interrupted
+		// above. Without this, a step that was mid-flight when the daemon died
+		// stays 'running' in the DB forever and the dashboard Task Detail view
+		// renders a phantom in-progress step under an interrupted instance. Must
+		// run after ReconcileOrphanWorkflowInstances so the orphaned parents are
+		// already 'interrupted'.
+		if n, err := d.db.ReconcileOrphanStepRuns(ctx); err != nil {
+			aplog.Warn("reconcile orphan step runs: %v", err)
+		} else if n > 0 {
+			aplog.Info("reconciled %d orphaned step run(s) from a previous run", n)
+		}
 	}
 
 	// Reconstruct workflow instances parked at an approval step into the engine's

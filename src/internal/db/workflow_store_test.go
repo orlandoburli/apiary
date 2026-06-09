@@ -413,3 +413,74 @@ func TestReconcileOrphanWorkflowInstances_Extended(t *testing.T) {
 		}
 	}
 }
+
+func TestReconcileOrphanStepRuns(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+
+	// One interrupted instance (an orphan reconciled at startup) and one done
+	// instance (a genuinely finished run). Only step_runs under the interrupted
+	// instance should be touched.
+	instances := []*WorkflowInstance{
+		{ID: "wf_interrupted", WorkflowID: "w", CellID: "c", State: InstanceStateInterrupted},
+		{ID: "wf_done", WorkflowID: "w", CellID: "c", State: InstanceStateDone},
+	}
+	for _, inst := range instances {
+		if err := c.CreateWorkflowInstance(ctx, inst); err != nil {
+			t.Fatalf("create instance: %v", err)
+		}
+	}
+
+	// Step runs in a mix of states across both instances.
+	steps := []*StepRun{
+		// Under the interrupted parent: the two non-terminal ones are orphans.
+		{ID: "sr_run", WorkflowInstanceID: "wf_interrupted", StepID: "implement", State: StepStateRunning},
+		{ID: "sr_pend", WorkflowInstanceID: "wf_interrupted", StepID: "review", State: StepStatePending},
+		{ID: "sr_pass", WorkflowInstanceID: "wf_interrupted", StepID: "classify", State: StepStatePassed},
+		// Under the done parent: a leftover 'running' here must NOT be touched,
+		// since its parent was not reconciled to interrupted.
+		{ID: "sr_done_run", WorkflowInstanceID: "wf_done", StepID: "implement", State: StepStateRunning},
+	}
+	for _, sr := range steps {
+		if err := c.CreateStepRun(ctx, sr); err != nil {
+			t.Fatalf("create step run: %v", err)
+		}
+	}
+
+	n, err := c.ReconcileOrphanStepRuns(ctx)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	// Only the running + pending steps under the interrupted instance.
+	if n != 2 {
+		t.Fatalf("expected 2 reconciled, got %d", n)
+	}
+
+	want := map[string]string{
+		"sr_run":      StepStateInterrupted, // running under interrupted → interrupted
+		"sr_pend":     StepStateInterrupted, // pending under interrupted → interrupted
+		"sr_pass":     StepStatePassed,      // terminal, unchanged
+		"sr_done_run": StepStateRunning,     // running but parent is done, untouched
+	}
+	got := map[string]StepRun{}
+	for _, instID := range []string{"wf_interrupted", "wf_done"} {
+		runs, err := c.ListStepRuns(ctx, instID)
+		if err != nil {
+			t.Fatalf("list step runs: %v", err)
+		}
+		for _, r := range runs {
+			got[r.ID] = r
+		}
+	}
+	for id, wantState := range want {
+		if got[id].State != wantState {
+			t.Errorf("%s: expected state %q, got %q", id, wantState, got[id].State)
+		}
+	}
+
+	// A reconciled step should get a finished_at stamp so the dashboard can
+	// render a duration instead of an open-ended in-progress step.
+	if got["sr_run"].FinishedAt == nil {
+		t.Error("sr_run: expected finished_at to be stamped on reconcile")
+	}
+}
