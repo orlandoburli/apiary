@@ -44,9 +44,16 @@ type Usage struct {
 	InputTokens  int
 	OutputTokens int
 	TotalTokens  int
-	NumTurns     int
-	NumToolCalls int
-	CostUSD      float64
+	// CacheCreationTokens and CacheReadTokens break down the cache portion of the
+	// input. InputTokens already includes them (it is the full billed input), so
+	// pure uncached input = InputTokens - CacheCreationTokens - CacheReadTokens.
+	// Reported by the Claude and Cursor CLIs; zero for runners that don't surface
+	// cache usage.
+	CacheCreationTokens int
+	CacheReadTokens     int
+	NumTurns            int
+	NumToolCalls        int
+	CostUSD             float64
 }
 
 type RunResult struct {

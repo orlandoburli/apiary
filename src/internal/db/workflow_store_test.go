@@ -298,6 +298,8 @@ func TestStepRun_CRUD(t *testing.T) {
 	sr.InputTokens = 120
 	sr.OutputTokens = 80
 	sr.TotalTokens = 200
+	sr.CacheCreationTokens = 60
+	sr.CacheReadTokens = 40
 	sr.NumTurns = 3
 	sr.NumToolCalls = 5
 	sr.CostUSD = 0.0123
@@ -331,6 +333,9 @@ func TestStepRun_CRUD(t *testing.T) {
 	}
 	if got.InputTokens != 120 || got.OutputTokens != 80 || got.TotalTokens != 200 {
 		t.Errorf("token columns wrong: %+v", got)
+	}
+	if got.CacheCreationTokens != 60 || got.CacheReadTokens != 40 {
+		t.Errorf("cache token columns wrong: %+v", got)
 	}
 	if got.NumTurns != 3 || got.NumToolCalls != 5 {
 		t.Errorf("turn/tool-call columns wrong: %+v", got)
@@ -394,10 +399,10 @@ func TestReconcileOrphanWorkflowInstances_Extended(t *testing.T) {
 
 	// Verify only running was changed to interrupted, others are untouched.
 	for id, expectedState := range map[string]string{
-		"wf_running":   InstanceStateInterrupted,  // running → interrupted
-		"wf_approval":  InstanceStateApprovalWaiting, // approval_waiting (untouched, rehydrated separately)
-		"wf_done":      InstanceStateDone,         // done (unchanged)
-		"wf_failed":    InstanceStateFailed,       // failed (unchanged)
+		"wf_running":  InstanceStateInterrupted,     // running → interrupted
+		"wf_approval": InstanceStateApprovalWaiting, // approval_waiting (untouched, rehydrated separately)
+		"wf_done":     InstanceStateDone,            // done (unchanged)
+		"wf_failed":   InstanceStateFailed,          // failed (unchanged)
 	} {
 		inst, err := c.GetWorkflowInstance(ctx, id)
 		if err != nil {

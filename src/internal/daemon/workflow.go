@@ -346,6 +346,8 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 			summedUsage.InputTokens += out.Usage.InputTokens
 			summedUsage.OutputTokens += out.Usage.OutputTokens
 			summedUsage.TotalTokens += out.Usage.TotalTokens
+			summedUsage.CacheCreationTokens += out.Usage.CacheCreationTokens
+			summedUsage.CacheReadTokens += out.Usage.CacheReadTokens
 			summedUsage.NumTurns += out.Usage.NumTurns
 			summedUsage.NumToolCalls += out.Usage.NumToolCalls
 			summedUsage.CostUSD += out.Usage.CostUSD
@@ -439,6 +441,8 @@ func (x *wfStepExecutor) finishExecution(ctx context.Context, exec *db.Execution
 		exec.InputTokens = res.Usage.InputTokens
 		exec.OutputTokens = res.Usage.OutputTokens
 		exec.TotalTokens = res.Usage.TotalTokens
+		exec.CacheCreationTokens = res.Usage.CacheCreationTokens
+		exec.CacheReadTokens = res.Usage.CacheReadTokens
 		exec.NumTurns = res.Usage.NumTurns
 		exec.NumToolCalls = res.Usage.NumToolCalls
 		exec.CostUSD = res.Usage.CostUSD

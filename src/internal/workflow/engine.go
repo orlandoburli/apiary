@@ -426,6 +426,8 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 		sr.InputTokens = res.Usage.InputTokens
 		sr.OutputTokens = res.Usage.OutputTokens
 		sr.TotalTokens = res.Usage.TotalTokens
+		sr.CacheCreationTokens = res.Usage.CacheCreationTokens
+		sr.CacheReadTokens = res.Usage.CacheReadTokens
 		sr.NumTurns = res.Usage.NumTurns
 		sr.NumToolCalls = res.Usage.NumToolCalls
 		sr.CostUSD = res.Usage.CostUSD

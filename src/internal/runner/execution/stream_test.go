@@ -76,11 +76,43 @@ func TestAccumulateStreamUsage_Full(t *testing.T) {
 	if u.TotalTokens != 24867+142 {
 		t.Errorf("TotalTokens = %d, want %d", u.TotalTokens, 24867+142)
 	}
+	// The cache portion of the input is also recorded separately (folded into
+	// InputTokens above, broken out here).
+	if u.CacheCreationTokens != 6804 {
+		t.Errorf("CacheCreationTokens = %d, want 6804", u.CacheCreationTokens)
+	}
+	if u.CacheReadTokens != 18053 {
+		t.Errorf("CacheReadTokens = %d, want 18053", u.CacheReadTokens)
+	}
 	if u.NumTurns != 4 {
 		t.Errorf("NumTurns = %d, want 4", u.NumTurns)
 	}
 	if u.CostUSD != 0.087 {
 		t.Errorf("CostUSD = %.4f, want 0.087", u.CostUSD)
+	}
+}
+
+// The Cursor agent CLI emits a result event with the same shape but camelCase
+// usage keys (inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens).
+// Verified against live `cursor-agent -p --output-format stream-json` output.
+func TestAccumulateStreamUsage_CursorCamelCase(t *testing.T) {
+	var u model.Usage
+	accumulateStreamUsage(`{"type":"result","subtype":"success","is_error":false,"result":"hi","usage":{"inputTokens":6,"outputTokens":12,"cacheReadTokens":1500,"cacheWriteTokens":29135}}`, &u)
+	// input folds the cache: 6 + 29135(write) + 1500(read) = 30641.
+	if u.InputTokens != 30641 {
+		t.Errorf("InputTokens = %d, want 30641 (input + cache write + cache read)", u.InputTokens)
+	}
+	if u.OutputTokens != 12 {
+		t.Errorf("OutputTokens = %d, want 12", u.OutputTokens)
+	}
+	if u.CacheCreationTokens != 29135 {
+		t.Errorf("CacheCreationTokens = %d, want 29135 (cacheWriteTokens)", u.CacheCreationTokens)
+	}
+	if u.CacheReadTokens != 1500 {
+		t.Errorf("CacheReadTokens = %d, want 1500", u.CacheReadTokens)
+	}
+	if u.TotalTokens != 30641+12 {
+		t.Errorf("TotalTokens = %d, want %d", u.TotalTokens, 30641+12)
 	}
 }
 

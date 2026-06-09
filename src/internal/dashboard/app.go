@@ -2209,21 +2209,23 @@ func mapStepRuns(steps []db.StepRun, now time.Time) []WorkflowStepItem {
 	out := make([]WorkflowStepItem, 0, len(steps))
 	for _, s := range steps {
 		out = append(out, WorkflowStepItem{
-			StepID:       s.StepID,
-			Agent:        s.AgentID,
-			State:        s.State,
-			Duration:     wfStepDuration(s, now),
-			Cached:       s.SkippedCached,
-			Output:       s.Output,
-			Summary:      s.Summary,
-			InputTokens:  s.InputTokens,
-			OutputTokens: s.OutputTokens,
-			TotalTokens:  s.TotalTokens,
-			CostUSD:      s.CostUSD,
-			NumTurns:     s.NumTurns,
-			NumToolCalls: s.NumToolCalls,
-			StartedAt:    s.StartedAt,
-			FinishedAt:   s.FinishedAt,
+			StepID:              s.StepID,
+			Agent:               s.AgentID,
+			State:               s.State,
+			Duration:            wfStepDuration(s, now),
+			Cached:              s.SkippedCached,
+			Output:              s.Output,
+			Summary:             s.Summary,
+			InputTokens:         s.InputTokens,
+			OutputTokens:        s.OutputTokens,
+			TotalTokens:         s.TotalTokens,
+			CacheCreationTokens: s.CacheCreationTokens,
+			CacheReadTokens:     s.CacheReadTokens,
+			CostUSD:             s.CostUSD,
+			NumTurns:            s.NumTurns,
+			NumToolCalls:        s.NumToolCalls,
+			StartedAt:           s.StartedAt,
+			FinishedAt:          s.FinishedAt,
 		})
 	}
 	return out
@@ -4512,6 +4514,9 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 
 		if s.TotalTokens > 0 {
 			row2("Tokens", fmt.Sprintf("%d in / %d out / %d total", s.InputTokens, s.OutputTokens, s.TotalTokens))
+			if s.CacheCreationTokens > 0 || s.CacheReadTokens > 0 {
+				row2("Cache", fmt.Sprintf("%d write / %d read", s.CacheCreationTokens, s.CacheReadTokens))
+			}
 			row2("Cost", fmt.Sprintf("$%.5f", s.CostUSD))
 			row2("Turns", fmt.Sprintf("%d turns / %d calls", s.NumTurns, s.NumToolCalls))
 			right.WriteString("\n")

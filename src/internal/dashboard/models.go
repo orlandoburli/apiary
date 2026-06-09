@@ -168,21 +168,23 @@ type TaskLineageItem struct {
 
 // WorkflowStepItem is one step row within a WorkflowInstanceItem.
 type WorkflowStepItem struct {
-	StepID       string
-	Agent        string
-	State        string // pending, running, passed, failed, skipped, skipped_cached
-	Duration     string
-	Cached       bool
-	Output       string
-	Summary      string
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
-	CostUSD      float64
-	NumTurns     int
-	NumToolCalls int
-	StartedAt    *time.Time
-	FinishedAt   *time.Time
+	StepID              string
+	Agent               string
+	State               string // pending, running, passed, failed, skipped, skipped_cached
+	Duration            string
+	Cached              bool
+	Output              string
+	Summary             string
+	InputTokens         int
+	OutputTokens        int
+	TotalTokens         int
+	CacheCreationTokens int
+	CacheReadTokens     int
+	CostUSD             float64
+	NumTurns            int
+	NumToolCalls        int
+	StartedAt           *time.Time
+	FinishedAt          *time.Time
 }
 
 // TaskItem is one row in the Tasks tab. Since Phase 9 the list is keyed on the

@@ -31,21 +31,23 @@ type InstanceSummary struct {
 
 // StepRunView is one step row in an instance detail.
 type StepRunView struct {
-	StepID       string     `json:"step_id"`
-	AgentID      string     `json:"agent_id"`
-	State        string     `json:"state"`
-	Duration     string     `json:"duration"`
-	Cached       bool       `json:"cached"`
-	Output       string     `json:"output"`
-	Summary      string     `json:"summary"`
-	InputTokens  int        `json:"input_tokens"`
-	OutputTokens int        `json:"output_tokens"`
-	TotalTokens  int        `json:"total_tokens"`
-	CostUSD      float64    `json:"cost_usd"`
-	NumTurns     int        `json:"num_turns"`
-	NumToolCalls int        `json:"num_tool_calls"`
-	StartedAt    *time.Time `json:"started_at"`
-	FinishedAt   *time.Time `json:"finished_at"`
+	StepID              string     `json:"step_id"`
+	AgentID             string     `json:"agent_id"`
+	State               string     `json:"state"`
+	Duration            string     `json:"duration"`
+	Cached              bool       `json:"cached"`
+	Output              string     `json:"output"`
+	Summary             string     `json:"summary"`
+	InputTokens         int        `json:"input_tokens"`
+	OutputTokens        int        `json:"output_tokens"`
+	TotalTokens         int        `json:"total_tokens"`
+	CacheCreationTokens int        `json:"cache_creation_tokens"`
+	CacheReadTokens     int        `json:"cache_read_tokens"`
+	CostUSD             float64    `json:"cost_usd"`
+	NumTurns            int        `json:"num_turns"`
+	NumToolCalls        int        `json:"num_tool_calls"`
+	StartedAt           *time.Time `json:"started_at"`
+	FinishedAt          *time.Time `json:"finished_at"`
 }
 
 // CIPollView is one recorded wait_for CI poll, surfaced in instance and
@@ -256,6 +258,8 @@ func (d *Dispatcher) stepRunView(ctx context.Context, instanceID string, s db.St
 		srv.InputTokens = s.InputTokens
 		srv.OutputTokens = s.OutputTokens
 		srv.TotalTokens = s.TotalTokens
+		srv.CacheCreationTokens = s.CacheCreationTokens
+		srv.CacheReadTokens = s.CacheReadTokens
 		srv.CostUSD = s.CostUSD
 		srv.NumTurns = s.NumTurns
 		srv.NumToolCalls = s.NumToolCalls
@@ -263,6 +267,8 @@ func (d *Dispatcher) stepRunView(ctx context.Context, instanceID string, s db.St
 		srv.InputTokens = usage.InputTokens
 		srv.OutputTokens = usage.OutputTokens
 		srv.TotalTokens = usage.TotalTokens
+		srv.CacheCreationTokens = usage.CacheCreationTokens
+		srv.CacheReadTokens = usage.CacheReadTokens
 		srv.CostUSD = usage.CostUSD
 		srv.NumTurns = usage.NumTurns
 		srv.NumToolCalls = usage.NumToolCalls

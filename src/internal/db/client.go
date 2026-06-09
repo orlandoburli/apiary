@@ -138,34 +138,36 @@ func (c *Client) UpdateTaskOutput(ctx context.Context, taskID, output string, su
 // Execution tracking (for crash recovery)
 
 type Execution struct {
-	ID             int64
-	TaskID         string
-	AgentID        string
-	Title          string
-	Number         string
-	URL            string
-	Model          string
-	Runner         string
-	Attempt        int
-	Status         string
-	PID            int
-	HeartbeatAt    *time.Time
-	HeartbeatCount int
-	StartedAt      *time.Time
-	CompletedAt    *time.Time
-	DurationMs     int64
-	ErrorMsg       string
-	CanRetry       bool
-	NextRetryAt    *time.Time
-	CreatedAt      time.Time
-	InputTokens        int
-	OutputTokens       int
-	TotalTokens        int
-	NumTurns           int
-	NumToolCalls       int
-	CostUSD            float64
-	WorkflowInstanceID string
-	StepID             string
+	ID                  int64
+	TaskID              string
+	AgentID             string
+	Title               string
+	Number              string
+	URL                 string
+	Model               string
+	Runner              string
+	Attempt             int
+	Status              string
+	PID                 int
+	HeartbeatAt         *time.Time
+	HeartbeatCount      int
+	StartedAt           *time.Time
+	CompletedAt         *time.Time
+	DurationMs          int64
+	ErrorMsg            string
+	CanRetry            bool
+	NextRetryAt         *time.Time
+	CreatedAt           time.Time
+	InputTokens         int
+	OutputTokens        int
+	TotalTokens         int
+	CacheCreationTokens int
+	CacheReadTokens     int
+	NumTurns            int
+	NumToolCalls        int
+	CostUSD             float64
+	WorkflowInstanceID  string
+	StepID              string
 	// InputPrompt is the full composed prompt sent to the agent for this attempt;
 	// OutputText is the agent's raw output. Both are persisted for cost auditing
 	// and replay. Empty when the runner does not report a prompt.
@@ -208,11 +210,13 @@ func (c *Client) UpdateExecution(ctx context.Context, exec *Execution) error {
 	_, err := c.db.ExecContext(ctx, `
 		UPDATE task_executions
 		SET status = ?, completed_at = ?, duration_ms = ?, error_message = ?, can_retry = ?, next_retry_at = ?,
-		    input_tokens = ?, output_tokens = ?, total_tokens = ?, num_turns = ?, num_tool_calls = ?, cost_usd = ?,
+		    input_tokens = ?, output_tokens = ?, total_tokens = ?, cache_creation_tokens = ?, cache_read_tokens = ?,
+		    num_turns = ?, num_tool_calls = ?, cost_usd = ?,
 		    input_prompt = ?, output_text = ?
 		WHERE id = ?
 	`, exec.Status, exec.CompletedAt, exec.DurationMs, exec.ErrorMsg, exec.CanRetry, exec.NextRetryAt,
-		exec.InputTokens, exec.OutputTokens, exec.TotalTokens, exec.NumTurns, exec.NumToolCalls, exec.CostUSD,
+		exec.InputTokens, exec.OutputTokens, exec.TotalTokens, exec.CacheCreationTokens, exec.CacheReadTokens,
+		exec.NumTurns, exec.NumToolCalls, exec.CostUSD,
 		nullStr(exec.InputPrompt), nullStr(exec.OutputText),
 		exec.ID)
 	return err
@@ -250,13 +254,17 @@ func (c *Client) SetStepLink(ctx context.Context, execID int64, instanceID, step
 // specific step within a workflow instance.
 func (c *Client) GetStepUsage(ctx context.Context, instanceID, stepID string) (*Execution, error) {
 	row := c.db.QueryRowContext(ctx, `
-		SELECT input_tokens, output_tokens, total_tokens, num_turns, num_tool_calls, cost_usd
+		SELECT input_tokens, output_tokens, total_tokens,
+		       COALESCE(cache_creation_tokens,0), COALESCE(cache_read_tokens,0),
+		       num_turns, num_tool_calls, cost_usd
 		FROM task_executions
 		WHERE workflow_instance_id = ? AND step_id = ?
 		ORDER BY created_at DESC LIMIT 1
 	`, instanceID, stepID)
 	var e Execution
-	err := row.Scan(&e.InputTokens, &e.OutputTokens, &e.TotalTokens, &e.NumTurns, &e.NumToolCalls, &e.CostUSD)
+	err := row.Scan(&e.InputTokens, &e.OutputTokens, &e.TotalTokens,
+		&e.CacheCreationTokens, &e.CacheReadTokens,
+		&e.NumTurns, &e.NumToolCalls, &e.CostUSD)
 	if err != nil {
 		return nil, err
 	}
@@ -272,6 +280,7 @@ func (c *Client) GetInstanceStepUsage(ctx context.Context, instanceID string) (m
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT step_id,
 		       COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(total_tokens,0),
+		       COALESCE(cache_creation_tokens,0), COALESCE(cache_read_tokens,0),
 		       COALESCE(num_turns,0), COALESCE(num_tool_calls,0), COALESCE(cost_usd,0)
 		FROM task_executions
 		WHERE workflow_instance_id = ?
@@ -285,7 +294,9 @@ func (c *Client) GetInstanceStepUsage(ctx context.Context, instanceID string) (m
 	for rows.Next() {
 		var stepID sql.NullString
 		var e Execution
-		if err := rows.Scan(&stepID, &e.InputTokens, &e.OutputTokens, &e.TotalTokens, &e.NumTurns, &e.NumToolCalls, &e.CostUSD); err != nil {
+		if err := rows.Scan(&stepID, &e.InputTokens, &e.OutputTokens, &e.TotalTokens,
+			&e.CacheCreationTokens, &e.CacheReadTokens,
+			&e.NumTurns, &e.NumToolCalls, &e.CostUSD); err != nil {
 			continue
 		}
 		out[stepID.String] = e // ASC order: the last write per step_id is the most recent
@@ -323,6 +334,7 @@ func (c *Client) GetLastExecution(ctx context.Context, taskID string) (*Executio
 		SELECT id, task_id, agent_id, attempt, status, started_at, completed_at, duration_ms,
 		       error_message, can_retry, next_retry_at, created_at,
 		       COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(total_tokens,0),
+		       COALESCE(cache_creation_tokens,0), COALESCE(cache_read_tokens,0),
 		       COALESCE(num_turns,0), COALESCE(num_tool_calls,0), COALESCE(cost_usd,0),
 		       COALESCE(input_prompt,''), COALESCE(output_text,'')
 		FROM task_executions
@@ -336,6 +348,7 @@ func (c *Client) GetLastExecution(ctx context.Context, taskID string) (*Executio
 		&exec.StartedAt, &exec.CompletedAt, &exec.DurationMs, &exec.ErrorMsg, &exec.CanRetry,
 		&exec.NextRetryAt, &exec.CreatedAt,
 		&exec.InputTokens, &exec.OutputTokens, &exec.TotalTokens,
+		&exec.CacheCreationTokens, &exec.CacheReadTokens,
 		&exec.NumTurns, &exec.NumToolCalls, &exec.CostUSD,
 		&exec.InputPrompt, &exec.OutputText)
 	if err == sql.ErrNoRows {
