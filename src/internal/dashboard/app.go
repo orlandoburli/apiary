@@ -1830,8 +1830,10 @@ func tickCmd() tea.Cmd {
 // refresh tick so the spinner reads as smooth motion while a query is in flight.
 const spinnerInterval = 100 * time.Millisecond
 
-// spinnerFrames are the braille-dot cycle used by every loading indicator.
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+// spinnerFrames are the heavy braille "orbit" cycle used by every loading
+// indicator. The filled cells (vs. a sparse dot pattern) give the rotation
+// strong contrast so the motion reads clearly across terminal fonts.
+var spinnerFrames = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
 
 func spinnerTickCmd() tea.Cmd {
 	return tea.Tick(spinnerInterval, func(t time.Time) tea.Msg {
