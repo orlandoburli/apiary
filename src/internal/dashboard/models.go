@@ -104,6 +104,17 @@ type WorkflowInstanceItem struct {
 	CreatedAt        time.Time
 	Steps            []WorkflowStepItem
 	CIPolls          []CIPollItem // recorded wait_for CI poll history (oldest first)
+
+	// Span and token totals aggregated across this instance's steps (StartedAt =
+	// earliest step start, FinishedAt = latest step finish). Used for the per-
+	// workflow timing/usage line and to roll up the whole-task header, so the
+	// detail no longer reflects only the last execution row.
+	StartedAt    *time.Time
+	FinishedAt   *time.Time
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
+	CostUSD      float64
 }
 
 // CIPollItem is one recorded poll of a wait_for step's CI status, shown in the

@@ -266,7 +266,24 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	return result, nil
 }
 
-// stream-json event types (Claude output format)
+// cliUsage mirrors the usage object the Claude CLI reports on both `assistant`
+// message events and the final `result` event. Cache tokens are real input the
+// model processed (and are billed), so inputTotal folds them into the input side.
+type cliUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
+
+func (u cliUsage) inputTotal() int {
+	return u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+}
+
+// stream-json event types (Claude CLI output format). The CLI emits complete-
+// message events — `system`, `assistant`, `user`, `result` — not the raw
+// Anthropic API's `message_start`/`message_delta` token deltas. Usage rides on
+// the `assistant` message and (authoritatively) on the final `result` event.
 type streamEvent struct {
 	Type    string `json:"type"`
 	Subtype string `json:"subtype"`
@@ -281,47 +298,47 @@ type streamEvent struct {
 			Input   json.RawMessage `json:"input"`
 			Content json.RawMessage `json:"content"`
 		} `json:"content"`
-		Usage *struct {
-			InputTokens int `json:"input_tokens"`
-		} `json:"usage"`
+		Usage *cliUsage `json:"usage"`
 	} `json:"message"`
-	ContentBlock *struct {
-		Type  string          `json:"type"`
-		Name  string          `json:"name"`
-		Input json.RawMessage `json:"input"`
-	} `json:"content_block"`
-	Usage *struct {
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
-	DurationMs   int64   `json:"duration_ms"`
-	NumTurns     int     `json:"num_turns"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
-	IsError      bool    `json:"is_error"`
+	Usage        *cliUsage `json:"usage"` // present on the `result` event
+	DurationMs   int64     `json:"duration_ms"`
+	NumTurns     int       `json:"num_turns"`
+	TotalCostUSD float64   `json:"total_cost_usd"`
+	IsError      bool      `json:"is_error"`
 }
 
+// accumulateStreamUsage folds one stream-json line into the running usage. Token
+// totals come from the final `result` event's usage — authoritative, matches
+// total_cost_usd, and includes cache tokens. Tool calls are counted from the
+// `tool_use` blocks in `assistant` messages. The per-assistant usage is also
+// recorded as a fallback so a run that dies before the `result` event still
+// reports the last message's counts rather than zeros.
 func accumulateStreamUsage(line string, u *model.Usage) {
 	var ev streamEvent
 	if err := json.Unmarshal([]byte(line), &ev); err != nil || ev.Type == "" {
 		return
 	}
 	switch ev.Type {
-	case "message_start":
+	case "assistant":
+		for _, c := range ev.Message.Content {
+			if c.Type == "tool_use" {
+				u.NumToolCalls++
+			}
+		}
 		if ev.Message.Usage != nil {
-			u.InputTokens = ev.Message.Usage.InputTokens
-		}
-	case "message_delta":
-		if ev.Usage != nil {
-			u.OutputTokens = ev.Usage.OutputTokens
-		}
-		u.TotalTokens = u.InputTokens + u.OutputTokens
-	case "content_block_start":
-		if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
-			u.NumToolCalls++
+			u.InputTokens = ev.Message.Usage.inputTotal()
+			u.OutputTokens = ev.Message.Usage.OutputTokens
+			u.TotalTokens = u.InputTokens + u.OutputTokens
 		}
 	case "result":
 		u.NumTurns = ev.NumTurns
 		if ev.TotalCostUSD > 0 {
 			u.CostUSD = ev.TotalCostUSD
+		}
+		if ev.Usage != nil { // authoritative cumulative totals
+			u.InputTokens = ev.Usage.inputTotal()
+			u.OutputTokens = ev.Usage.OutputTokens
+			u.TotalTokens = u.InputTokens + u.OutputTokens
 		}
 	}
 }

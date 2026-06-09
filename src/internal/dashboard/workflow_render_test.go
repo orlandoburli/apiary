@@ -147,6 +147,98 @@ func TestRenderWorkflowSteps_FailedNoSteps(t *testing.T) {
 	}
 }
 
+// The task header span/usage must reflect the whole run: earliest step start,
+// latest step finish, and tokens/cost summed across every instance — not just the
+// last execution row (which would show only the final merge step).
+func TestTaskRollup_SpansAllInstances(t *testing.T) {
+	at := func(s string) *time.Time { v, _ := time.Parse(time.RFC3339, s); return &v }
+	d := &TaskItem{
+		// Execution-row values reflect only the last step (the merge): wrong for the header.
+		StartedAt: at("2026-06-08T15:46:53Z"), CompletedAt: at("2026-06-08T15:47:35Z"),
+		InputTokens: 0, OutputTokens: 0, TotalTokens: 0, CostUSD: 0.1312,
+		Instances: []WorkflowInstanceItem{{
+			StartedAt: at("2026-06-08T13:42:01Z"), FinishedAt: at("2026-06-08T15:47:35Z"),
+			InputTokens: 90000, OutputTokens: 34533, TotalTokens: 124533, CostUSD: 0.95,
+		}},
+	}
+	start, end, in, out, total, cost := taskRollup(d, nil)
+	if start == nil || !start.Equal(*at("2026-06-08T13:42:01Z")) {
+		t.Errorf("rollup start should be the first workflow start, got %v", start)
+	}
+	if end == nil || !end.Equal(*at("2026-06-08T15:47:35Z")) {
+		t.Errorf("rollup end should be the last step finish, got %v", end)
+	}
+	if in != 90000 || out != 34533 || total != 124533 {
+		t.Errorf("rollup tokens should sum instances, got %d/%d/%d", in, out, total)
+	}
+	if cost != 0.95 {
+		t.Errorf("rollup cost should sum instances, got %v", cost)
+	}
+}
+
+// With no instance-level usage the rollup falls back to the execution-row values
+// so legacy single-shot tasks still report a span and spend.
+func TestTaskRollup_FallsBackToExecutionRow(t *testing.T) {
+	at := func(s string) *time.Time { v, _ := time.Parse(time.RFC3339, s); return &v }
+	d := &TaskItem{
+		StartedAt: at("2026-06-08T10:00:00Z"), CompletedAt: at("2026-06-08T10:05:00Z"),
+		InputTokens: 10, OutputTokens: 20, TotalTokens: 30, CostUSD: 0.01,
+	}
+	start, end, in, out, total, cost := taskRollup(d, nil)
+	if start == nil || end == nil || in != 10 || out != 20 || total != 30 || cost != 0.01 {
+		t.Errorf("expected execution-row fallback, got start=%v end=%v %d/%d/%d $%v", start, end, in, out, total, cost)
+	}
+}
+
+// Each step row carries its started/ended timestamps (with date) and token count
+// under a column header; the workflow header carries the dated rollup line.
+func TestRenderWorkflowSteps_StepSpanAndTokens(t *testing.T) {
+	at := func(s string) *time.Time { v, _ := time.Parse("2006-01-02 15:04:05", s); return &v }
+	inst := &WorkflowInstanceItem{
+		ID: "wf_s", Workflow: "implementation", State: "done",
+		StartedAt: at("2026-06-08 13:42:01"), FinishedAt: at("2026-06-08 13:52:11"), TotalTokens: 50300,
+		Steps: []WorkflowStepItem{
+			{StepID: "implement", Agent: "engineer", State: "passed", Duration: "8m15s",
+				StartedAt: at("2026-06-08 13:42:01"), FinishedAt: at("2026-06-08 13:50:16"), TotalTokens: 42100},
+		},
+	}
+	out := stripANSI(renderWorkflowSteps(inst))
+	for _, want := range []string{
+		"STARTED", "ENDED", "DURATION", "TOKENS", "STATE", // column header
+		"06-08 13:42:01", "06-08 13:50:16", "42.1k", // step row cells
+		"06-08 13:42:01 → 06-08 13:52:11", "50.3k tokens", // instance rollup
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered steps missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// A meaningful idle gap between a step's end and the next step's start (CI waits,
+// approvals, queue) is shown as a "waiting" connector; a short dispatch-latency
+// gap below minStepWait is not.
+func TestRenderWorkflowSteps_WaitBetweenSteps(t *testing.T) {
+	at := func(s string) *time.Time { v, _ := time.Parse("2006-01-02 15:04:05", s); return &v }
+	inst := &WorkflowInstanceItem{
+		ID: "wf_w", Workflow: "implementation", State: "running",
+		Steps: []WorkflowStepItem{
+			{StepID: "implement", Agent: "engineer", State: "passed",
+				StartedAt: at("2026-06-08 13:42:01"), FinishedAt: at("2026-06-08 13:50:16")},
+			{StepID: "review", Agent: "reviewer", State: "passed", // 4s gap (< minStepWait) → no connector
+				StartedAt: at("2026-06-08 13:50:20"), FinishedAt: at("2026-06-08 13:52:11")},
+			{StepID: "merge", Agent: "engineer", State: "running", // ~2h CI/approval wait
+				StartedAt: at("2026-06-08 15:46:53")},
+		},
+	}
+	out := stripANSI(renderWorkflowSteps(inst))
+	if !strings.Contains(out, "↓ 1h54m42s waiting") {
+		t.Errorf("expected the long inter-step wait to be shown:\n%s", out)
+	}
+	if strings.Count(out, "waiting") != 1 {
+		t.Errorf("a short sub-threshold gap should not render a wait connector; got %d:\n%s", strings.Count(out, "waiting"), out)
+	}
+}
+
 // A non-failed instance never gets the marker.
 func TestRenderWorkflowSteps_NoMarkerWhenDone(t *testing.T) {
 	inst := &WorkflowInstanceItem{
