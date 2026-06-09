@@ -71,6 +71,7 @@ type TasksTab struct {
 	View            TaskView
 	Detail          *TaskItem                // populated when View == TaskViewDetail
 	DetailInstance  *WorkflowInstanceItem    // workflow instance for Detail, if any
+	DetailScroll    int                      // first visible content line in the detail view
 	Logs            []LogEntry               // legacy flat stream (TaskViewLogs, legacy rows)
 	InstanceHistory []TaskHistorySegmentItem // per-instance history (TaskViewLogs, InternalTask rows)
 	LogScroll       int

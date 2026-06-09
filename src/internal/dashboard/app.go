@@ -201,6 +201,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case taskDetailMsg:
 		if a.model.tasksTab != nil {
+			// A fresh open (d/enter/r) resets the scroll to the top; the in-place
+			// live refresh (taskDetailRefreshMsg) preserves the reader's position.
+			if a.model.tasksTab.Detail == nil || a.model.tasksTab.Detail.TaskID != msg.detail.TaskID {
+				a.model.tasksTab.DetailScroll = 0
+			}
 			a.model.tasksTab.Detail = msg.detail
 			a.model.tasksTab.DetailInstance = msg.instance
 			a.model.tasksTab.View = TaskViewDetail
@@ -1003,6 +1008,7 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 		t.Logs = nil
 		t.InstanceHistory = nil
 		t.LogScroll = 0
+		t.DetailScroll = 0
 		t.LogTaskID = ""
 		t.LogHasMore = false
 		t.LogLoadingMore = false
@@ -1031,18 +1037,26 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 			} else if cmd := a.loadOlderLogsCmd(t); cmd != nil {
 				return a, cmd // at top — pull in the next older page
 			}
+		} else if t.View == TaskViewDetail && t.DetailScroll > 0 {
+			t.DetailScroll--
 		}
 	case "down":
 		if t.View == TaskViewLogs && t.LogScroll < len(a.taskLogLines())-1 {
 			t.LogScroll++
+		} else if t.View == TaskViewDetail {
+			t.DetailScroll++ // render clamps to the last full page
 		}
 	case "g", "home":
 		if t.View == TaskViewLogs {
 			t.LogScroll = 0
+		} else if t.View == TaskViewDetail {
+			t.DetailScroll = 0
 		}
 	case "G", "end":
 		if t.View == TaskViewLogs {
 			t.LogScroll = lastIndex(len(a.taskLogLines()))
+		} else if t.View == TaskViewDetail {
+			t.DetailScroll = len(a.taskDetailLines(t)) // render clamps to the last full page
 		}
 	case "pgup", "ctrl+u":
 		if t.View == TaskViewLogs {
@@ -1052,10 +1066,17 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 				}
 			}
 			t.LogScroll = clampScroll(t.LogScroll-a.pageSize(), len(a.taskLogLines()))
+		} else if t.View == TaskViewDetail {
+			t.DetailScroll -= a.pageSize()
+			if t.DetailScroll < 0 {
+				t.DetailScroll = 0
+			}
 		}
 	case "pgdown", "ctrl+d", " ":
 		if t.View == TaskViewLogs {
 			t.LogScroll = clampScroll(t.LogScroll+a.pageSize(), len(a.taskLogLines()))
+		} else if t.View == TaskViewDetail {
+			t.DetailScroll += a.pageSize() // render clamps to the last full page
 		}
 	}
 	return a, nil
@@ -3108,6 +3129,43 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 		return a.box("TASK DETAILS", StyleMuted.Render("No details")+"\n", height)
 	}
 
+	lines := a.taskDetailLines(t)
+	label := taskDetailLabel(d)
+
+	rows := height - 2 // top + bottom borders
+	if rows < 1 {
+		rows = 1
+	}
+	// Clamp the scroll offset so the window always shows real content: never past
+	// the line that leaves a single page visible at the bottom.
+	maxStart := len(lines) - rows
+	if maxStart < 0 {
+		maxStart = 0
+	}
+	if t.DetailScroll > maxStart {
+		t.DetailScroll = maxStart
+	}
+	if t.DetailScroll < 0 {
+		t.DetailScroll = 0
+	}
+	start := t.DetailScroll
+	end := start + rows
+	if end > len(lines) {
+		end = len(lines)
+	}
+
+	var b strings.Builder
+	for i := start; i < end; i++ {
+		b.WriteString(lines[i] + "\n")
+	}
+	return a.box(label, b.String(), height)
+}
+
+// taskDetailLines builds the full, styled content of the task detail view as
+// individual visual lines. renderTaskDetail windows these by DetailScroll so a
+// task with many workflow instances/children scrolls instead of being cut off.
+func (a *App) taskDetailLines(t *TasksTab) []string {
+	d := t.Detail
 	rStart, rEnd, inTok, outTok, totalTok, cacheCreate, cacheRead, cost := taskRollup(d, t.DetailInstance)
 	started, completed, dur := "—", "—", "—"
 	if rStart != nil {
@@ -3171,8 +3229,7 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	b.WriteString(renderSourceBindings(d))
 	b.WriteString(renderTaskLineage(d))
 	b.WriteString(renderTaskInstances(d))
-	label := taskDetailLabel(d)
-	return a.box(label, b.String(), height)
+	return strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
 }
 
 // renderSourceBindings renders a task's source bindings (9.1.2): one row per
@@ -4438,7 +4495,7 @@ func (a *App) footerKeys() []fkey {
 		if t := a.model.tasksTab; t != nil {
 			switch t.View {
 			case TaskViewDetail:
-				return []fkey{{"esc", "back"}, {"l", "logs"}, {"o", "open"}, {"p", "open PR"}, {"R", "restart"}, {"C", "clear"}, {"r", "reload"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"l", "logs"}, {"o", "open"}, {"p", "open PR"}, {"R", "restart"}, {"C", "clear"}, {"r", "reload"}, {"q", "quit"}}
 			case TaskViewLogs:
 				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"o", "open"}, {"p", "open PR"}, {"C", "clear"}, {"q", "quit"}}
 			case TaskViewWorkflow:
@@ -4498,9 +4555,16 @@ func (a *App) footerStatus(updated string) string {
 	pos := ""
 	switch a.model.ActiveTab() {
 	case "Tasks":
-		if t := a.model.tasksTab; t != nil && t.View == TaskViewLogs {
-			if n := len(a.taskLogLines()); n > 0 {
-				pos = fmt.Sprintf("line %d/%d   ", t.LogScroll+1, n)
+		if t := a.model.tasksTab; t != nil {
+			switch t.View {
+			case TaskViewLogs:
+				if n := len(a.taskLogLines()); n > 0 {
+					pos = fmt.Sprintf("line %d/%d   ", t.LogScroll+1, n)
+				}
+			case TaskViewDetail:
+				if n := len(a.taskDetailLines(t)); n > 0 {
+					pos = fmt.Sprintf("line %d/%d   ", t.DetailScroll+1, n)
+				}
 			}
 		}
 	case "Logs":
