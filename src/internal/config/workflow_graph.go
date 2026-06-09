@@ -32,25 +32,27 @@ func validateStepGraph(ctx string, wf WorkflowConfig, stepIDs map[string]bool) [
 		errs = append(errs, fmt.Errorf("%s: dependency cycle detected involving step %q", ctx, cyc))
 	}
 
-	// on_fail.goto back-edges must target an ancestor (a transitive dependency).
-	// For v2 workflows (no DependsOn edges), sequential order is the implicit graph:
-	// any step that appears earlier in the slice is an ancestor.
+	// on_fail.goto / on_conflict.goto back-edges must target an ancestor (a
+	// transitive dependency). For v2 workflows (no DependsOn edges), sequential
+	// order is the implicit graph: any step earlier in the slice is an ancestor.
 	seqOrder := map[string]int{}
 	for i, s := range wf.Steps {
 		seqOrder[s.ID] = i
 	}
-	for _, s := range wf.Steps {
-		if s.OnFail == nil || s.OnFail.Goto == "" || !stepIDs[s.OnFail.Goto] {
-			continue
-		}
-		var ok bool
+	targetsAncestor := func(stepID, goto_ string) bool {
 		if len(deps) == 0 {
-			ok = seqOrder[s.OnFail.Goto] < seqOrder[s.ID]
-		} else {
-			ok = isAncestor(s.ID, s.OnFail.Goto, deps)
+			return seqOrder[goto_] < seqOrder[stepID]
 		}
-		if !ok {
+		return isAncestor(stepID, goto_, deps)
+	}
+	for _, s := range wf.Steps {
+		if s.OnFail != nil && s.OnFail.Goto != "" && stepIDs[s.OnFail.Goto] &&
+			!targetsAncestor(s.ID, s.OnFail.Goto) {
 			errs = append(errs, fmt.Errorf("%s: step %q on_fail.goto %q must target an ancestor step (a transitive dependency)", ctx, s.ID, s.OnFail.Goto))
+		}
+		if s.OnConflict != nil && s.OnConflict.Goto != "" && stepIDs[s.OnConflict.Goto] &&
+			!targetsAncestor(s.ID, s.OnConflict.Goto) {
+			errs = append(errs, fmt.Errorf("%s: step %q on_conflict.goto %q must target an ancestor step (a transitive dependency)", ctx, s.ID, s.OnConflict.Goto))
 		}
 	}
 

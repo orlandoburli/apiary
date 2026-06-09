@@ -47,10 +47,19 @@ type labelCreateRequest struct {
 }
 
 // PR (pull request) details for checking CI status.
+//
+// Mergeable / MergeableState are GitHub's merge-conflict signals, populated only
+// on a single-PR GET (the detailed /pulls/{number} endpoint). GitHub computes
+// them lazily and asynchronously: the first read of a PR can return
+// mergeable=null / mergeable_state="unknown" while the computation runs, then a
+// later read returns the real value. The definitive "has conflicts" signal is
+// mergeable_state == "dirty".
 type pullRequest struct {
-	Number  int    `json:"number"`
-	HTMLURL string `json:"html_url"`
-	Head    struct {
+	Number         int    `json:"number"`
+	HTMLURL        string `json:"html_url"`
+	Mergeable      *bool  `json:"mergeable"`
+	MergeableState string `json:"mergeable_state"`
+	Head           struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
 }

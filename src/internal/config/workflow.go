@@ -100,8 +100,8 @@ type TriggerConfig struct {
 
 // StepConfig is one node in a workflow graph. The active fields depend on Type.
 type StepConfig struct {
-	ID        string   `yaml:"id"`
-	Type      string   `yaml:"type,omitempty"` // agent(default)|split|approval|foreach|workflow
+	ID   string `yaml:"id"`
+	Type string `yaml:"type,omitempty"` // agent(default)|split|approval|foreach|workflow
 	// DependsOn is set internally by the v2 lowering pass (parallel, foreach).
 	// It cannot be declared in YAML — the engine uses implicit sequential ordering.
 	DependsOn    []string `yaml:"-"`
@@ -131,6 +131,12 @@ type StepConfig struct {
 	Memory          *MemoryConfig `yaml:"memory,omitempty"`
 	OnPass          *StepNext     `yaml:"on_pass,omitempty"`
 	OnFail          *StepOutcome  `yaml:"on_fail,omitempty"`
+	// OnConflict is the merge-conflict edge of a wait_for/ci step (goto +
+	// max_retries, same shape as on_fail). When the step fails because the PR has
+	// merge conflicts, this route governs the loop-back exclusively, with its own
+	// retry budget separate from on_fail. Absent → a conflict falls through to
+	// on_fail like any other failure.
+	OnConflict *StepOutcome `yaml:"on_conflict,omitempty"`
 	// Publish controls whether an APIARY_PUBLISH payload emitted by this step's
 	// agent is written back to the task's source bindings: auto (default) | off.
 	// Empty inherits the auto default.

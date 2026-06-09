@@ -267,6 +267,44 @@ func TestWorkflow_OnFailGotoNotAncestor(t *testing.T) {
 	assertError(t, cfg, "must target an ancestor")
 }
 
+func TestWorkflow_OnConflictGotoUnknownStep(t *testing.T) {
+	cfg := baseWorkflowConfig()
+	cfg.Workflows = []config.WorkflowConfig{
+		{ID: "wf", Steps: []config.StepConfig{
+			{ID: "a", Agent: "architect"},
+			{ID: "ci", Type: config.StepTypeWaitFor, DependsOn: []string{"a"},
+				WaitFor:    &config.WaitForConfig{Kind: "ci"},
+				OnConflict: &config.StepOutcome{Goto: "ghost", MaxRetries: 1}},
+		}},
+	}
+	assertError(t, cfg, "on_conflict.goto references unknown step")
+}
+
+func TestWorkflow_OnConflictMissingMaxRetries(t *testing.T) {
+	cfg := baseWorkflowConfig()
+	cfg.Workflows = []config.WorkflowConfig{
+		{ID: "wf", Steps: []config.StepConfig{
+			{ID: "a", Agent: "architect"},
+			{ID: "ci", Type: config.StepTypeWaitFor, DependsOn: []string{"a"},
+				WaitFor:    &config.WaitForConfig{Kind: "ci"},
+				OnConflict: &config.StepOutcome{Goto: "a"}},
+		}},
+	}
+	assertError(t, cfg, "on_conflict.max_retries must be >= 1")
+}
+
+func TestWorkflow_OnConflictOnNonWaitForStep(t *testing.T) {
+	cfg := baseWorkflowConfig()
+	cfg.Workflows = []config.WorkflowConfig{
+		{ID: "wf", Steps: []config.StepConfig{
+			{ID: "a", Agent: "architect"},
+			{ID: "b", Agent: "backend-dev", DependsOn: []string{"a"},
+				OnConflict: &config.StepOutcome{Goto: "a", MaxRetries: 1}},
+		}},
+	}
+	assertError(t, cfg, "on_conflict is only valid on a wait_for step")
+}
+
 func TestWorkflow_OnPassNextUnknownStep(t *testing.T) {
 	cfg := baseWorkflowConfig()
 	cfg.Workflows = []config.WorkflowConfig{

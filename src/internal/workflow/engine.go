@@ -106,6 +106,10 @@ type StepResult struct {
 	// pass or a fail). The scheduler suspends the run at the wait_for step instead
 	// of marking it passed/failed. Ignored for all other step types.
 	Pending bool
+	// Conflict marks a failure caused specifically by a merge conflict on the PR
+	// (set only by wait_for/ci steps). The scheduler routes it via the step's
+	// on_conflict edge when one is declared; otherwise it is an ordinary failure.
+	Conflict bool
 	// PublishPayload is the APIARY_PUBLISH text the agent emitted, if any. The
 	// engine writes it back to the task's source bindings as a comment. The
 	// executor clears it when the step sets publish: off.
@@ -152,13 +156,13 @@ type SideEffects interface {
 type CIStatusChecker func(ctx context.Context, sourceID, sourceItemID string) (source.CIStatus, error)
 
 type Engine struct {
-	cfg     *config.Config
-	store   Store
-	exec    StepExecutor
-	side    SideEffects
-	mem     MemoryBuilder
-	spawner WorkflowSpawner
-	tracker TaskTracker
+	cfg       *config.Config
+	store     Store
+	exec      StepExecutor
+	side      SideEffects
+	mem       MemoryBuilder
+	spawner   WorkflowSpawner
+	tracker   TaskTracker
 	ciChecker CIStatusChecker
 
 	now   func() time.Time
@@ -191,7 +195,9 @@ func WithSpawner(s WorkflowSpawner) Option { return func(e *Engine) { e.spawner 
 func WithTaskTracker(t TaskTracker) Option { return func(e *Engine) { e.tracker = t } }
 
 // WithCIStatusChecker sets the CI status checker used by wait_for steps.
-func WithCIStatusChecker(checker CIStatusChecker) Option { return func(e *Engine) { e.ciChecker = checker } }
+func WithCIStatusChecker(checker CIStatusChecker) Option {
+	return func(e *Engine) { e.ciChecker = checker }
+}
 
 // NewEngine builds an Engine. cfg, store, and exec are required.
 func NewEngine(cfg *config.Config, store Store, exec StepExecutor, opts ...Option) *Engine {

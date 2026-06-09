@@ -146,6 +146,21 @@ func (c *Config) validateStep(
 		errs = append(errs, fmt.Errorf("%s: unknown step type %q", sctx, s.Type))
 	}
 
+	// on_conflict applies to any step type, so validate it here rather than in a
+	// per-type validator. It is only meaningful on a wait_for step (the sole
+	// producer of a conflict) and otherwise mirrors on_fail (goto + max_retries).
+	if s.OnConflict != nil && s.OnConflict.Goto != "" {
+		if s.StepType() != StepTypeWaitFor {
+			errs = append(errs, fmt.Errorf("%s: on_conflict is only valid on a wait_for step", sctx))
+		}
+		if !stepIDs[s.OnConflict.Goto] {
+			errs = append(errs, fmt.Errorf("%s: on_conflict.goto references unknown step %q", sctx, s.OnConflict.Goto))
+		}
+		if s.OnConflict.MaxRetries < 1 {
+			errs = append(errs, fmt.Errorf("%s: on_conflict.max_retries must be >= 1 when goto is set", sctx))
+		}
+	}
+
 	return errs
 }
 
@@ -452,4 +467,3 @@ func (c *Config) sourceIDSet() map[string]bool {
 	}
 	return set
 }
-

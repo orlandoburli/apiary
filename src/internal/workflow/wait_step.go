@@ -112,6 +112,21 @@ func (e *Engine) checkCIWaitStep(
 		}
 		return result, nil
 
+	case "conflict":
+		// A merge conflict cannot be resolved by waiting — stop polling at once and
+		// fail the step (regardless of fail_if_not_passed) so the conflict is handed
+		// straight back to the engineer agent to rebase/resolve.
+		aplog.Info("wait_for step %q: PR has merge conflicts — aborting CI wait", step.ID)
+		return StepResult{
+			Success:  false,
+			Conflict: true,
+			Err:      fmt.Errorf("PR has merge conflicts"),
+			StructuredOutput: map[string]any{
+				"ci_status": "conflict",
+				"url":       status.URL,
+			},
+		}, nil
+
 	case "pending":
 		aplog.Debug("wait_for step %q: CI still pending", step.ID)
 		return StepResult{Pending: true}, nil
@@ -139,7 +154,7 @@ func checksToMap(checks []struct {
 // recorded poll always carries a meaningful, non-empty status.
 func normalizeCIStatus(s string) string {
 	switch s {
-	case "passed", "failed", "pending":
+	case "passed", "failed", "pending", "conflict":
 		return s
 	default:
 		return "unknown"

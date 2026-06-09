@@ -21,11 +21,11 @@ func init() {
 // Compile-time checks: the GitHub adapter supports the optional source
 // capabilities used by the dispatcher and the workflow engine.
 var (
-	_ source.StateSetter      = (*Adapter)(nil)
-	_ source.LabelAdder       = (*Adapter)(nil)
-	_ source.LabelRemover     = (*Adapter)(nil)
-	_ source.TaskPoller       = (*Adapter)(nil)
-	_ source.CIStatusPoller   = (*Adapter)(nil)
+	_ source.StateSetter    = (*Adapter)(nil)
+	_ source.LabelAdder     = (*Adapter)(nil)
+	_ source.LabelRemover   = (*Adapter)(nil)
+	_ source.TaskPoller     = (*Adapter)(nil)
+	_ source.CIStatusPoller = (*Adapter)(nil)
 )
 
 type Adapter struct {
@@ -333,6 +333,18 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 	var pr pullRequest
 	if err := json.Unmarshal(prBody, &pr); err != nil {
 		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: decoding PR %s: %w", cellID, err)
+	}
+
+	// A PR with merge conflicts can never merge until someone rebases/resolves it,
+	// so waiting for CI on it is pointless. Surface the conflict immediately as a
+	// distinct terminal status and skip the CI aggregation entirely — this lets the
+	// wait_for step abort and hand the conflict back to the engineer agent rather
+	// than burning the whole timeout. mergeable_state == "dirty" is GitHub's
+	// definitive "has conflicts" signal; "unknown"/null means GitHub is still
+	// computing mergeability (lazy, async) so we fall through and keep waiting.
+	if pr.MergeableState == "dirty" {
+		aplog.Info("github: PR #%d for %s has merge conflicts (mergeable_state=dirty)", pr.Number, cellID)
+		return source.CIStatus{Status: "conflict", URL: pr.HTMLURL}, nil
 	}
 
 	headSHA := pr.Head.SHA
