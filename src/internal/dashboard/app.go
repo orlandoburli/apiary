@@ -1321,28 +1321,49 @@ func buildWorkflowInstanceItem(ctx context.Context, dbConn *db.Client, inst *db.
 				StartedAt:  s.StartedAt,
 				FinishedAt: s.FinishedAt,
 			}
-			if db.StepRunHasUsage(s) {
-				si.InputTokens = s.InputTokens
-				si.OutputTokens = s.OutputTokens
-				si.TotalTokens = s.TotalTokens
-				si.CostUSD = s.CostUSD
-				si.NumTurns = s.NumTurns
-				si.NumToolCalls = s.NumToolCalls
-			} else if usage, err := dbConn.GetStepUsage(ctx, inst.ID, s.StepID); err == nil && usage != nil {
-				si.InputTokens = usage.InputTokens
-				si.OutputTokens = usage.OutputTokens
-				si.TotalTokens = usage.TotalTokens
-				si.CostUSD = usage.CostUSD
-				si.NumTurns = usage.NumTurns
-				si.NumToolCalls = usage.NumToolCalls
-			}
+			si.InputTokens, si.OutputTokens, si.TotalTokens, si.NumTurns, si.NumToolCalls, si.CostUSD =
+				resolveStepUsage(ctx, dbConn, inst.ID, s)
 			item.Steps = append(item.Steps, si)
 		}
+		aggregateInstance(item)
 	}
 	if polls, err := dbConn.ListCIPollChecks(ctx, inst.ID); err == nil {
 		item.CIPolls = mapCIPolls(polls)
 	}
 	return item
+}
+
+// resolveStepUsage returns a step's token/turn/cost rollup, preferring the
+// step_runs row's own summed columns and falling back to the linked
+// task_executions rows for older steps that predate the rollup (StepRunHasUsage
+// is false). Returns zeros when neither carries usage.
+func resolveStepUsage(ctx context.Context, dbConn *db.Client, instID string, s db.StepRun) (in, out, total, turns, calls int, cost float64) {
+	if db.StepRunHasUsage(s) {
+		return s.InputTokens, s.OutputTokens, s.TotalTokens, s.NumTurns, s.NumToolCalls, s.CostUSD
+	}
+	if usage, err := dbConn.GetStepUsage(ctx, instID, s.StepID); err == nil && usage != nil {
+		return usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.NumTurns, usage.NumToolCalls, usage.CostUSD
+	}
+	return 0, 0, 0, 0, 0, 0
+}
+
+// aggregateInstance fills an instance's span and token totals from its steps:
+// StartedAt = earliest step start, FinishedAt = latest step finish, tokens/cost
+// summed. This lets a workflow report its true wall-clock span and spend rather
+// than inheriting only the last execution's numbers.
+func aggregateInstance(item *WorkflowInstanceItem) {
+	for _, s := range item.Steps {
+		if s.StartedAt != nil && (item.StartedAt == nil || s.StartedAt.Before(*item.StartedAt)) {
+			item.StartedAt = s.StartedAt
+		}
+		if s.FinishedAt != nil && (item.FinishedAt == nil || s.FinishedAt.After(*item.FinishedAt)) {
+			item.FinishedAt = s.FinishedAt
+		}
+		item.InputTokens += s.InputTokens
+		item.OutputTokens += s.OutputTokens
+		item.TotalTokens += s.TotalTokens
+		item.CostUSD += s.CostUSD
+	}
 }
 
 // mapCIPolls converts recorded CI poll rows into dashboard view-models.
@@ -1890,7 +1911,7 @@ func (a *App) augmentTaskDetail(ctx context.Context, dbConn *db.Client, detail *
 		detail.Children = mapLineage(ctx, dbConn, kids)
 	}
 	if insts, _ := dbConn.ListWorkflowInstancesByTask(ctx, internalTaskID); len(insts) > 0 {
-		detail.Instances = mapInstances(insts)
+		detail.Instances = mapInstances(ctx, dbConn, insts)
 	}
 	return detail
 }
@@ -1913,11 +1934,14 @@ func mapLineage(ctx context.Context, dbConn *db.Client, tasks []model.InternalTa
 	return out
 }
 
-// mapInstances converts db workflow-instance rows into dashboard view-models.
-func mapInstances(insts []db.WorkflowInstance) []WorkflowInstanceItem {
+// mapInstances converts db workflow-instance rows into dashboard view-models,
+// enriching each with its span and token totals (aggregated from its step runs)
+// so the Workflow Instances list can show per-workflow start/end and spend, and
+// the task header can roll them up across every instance.
+func mapInstances(ctx context.Context, dbConn *db.Client, insts []db.WorkflowInstance) []WorkflowInstanceItem {
 	out := make([]WorkflowInstanceItem, 0, len(insts))
 	for _, in := range insts {
-		out = append(out, WorkflowInstanceItem{
+		item := WorkflowInstanceItem{
 			ID:               in.ID,
 			Workflow:         in.WorkflowID,
 			State:            in.State,
@@ -1925,7 +1949,18 @@ func mapInstances(insts []db.WorkflowInstance) []WorkflowInstanceItem {
 			ParentInstanceID: in.ParentInstanceID,
 			ResumedFrom:      in.ResumedFrom,
 			CreatedAt:        in.CreatedAt,
-		})
+		}
+		if steps, err := dbConn.ListStepRuns(ctx, in.ID); err == nil {
+			for _, s := range steps {
+				si := WorkflowStepItem{StartedAt: s.StartedAt, FinishedAt: s.FinishedAt}
+				si.InputTokens, si.OutputTokens, si.TotalTokens, si.NumTurns, si.NumToolCalls, si.CostUSD =
+					resolveStepUsage(ctx, dbConn, in.ID, s)
+				item.Steps = append(item.Steps, si)
+			}
+			aggregateInstance(&item)
+			item.Steps = nil // the list view shows only the rollup, not the rows
+		}
+		out = append(out, item)
 	}
 	return out
 }
@@ -1940,29 +1975,7 @@ func (a *App) fetchWorkflowInstance(ctx context.Context, dbConn *db.Client, task
 	if err != nil || inst == nil {
 		return nil
 	}
-	item := &WorkflowInstanceItem{ID: inst.ID, Workflow: inst.WorkflowID, State: inst.State}
-	if inst.State == db.InstanceStateApprovalWaiting {
-		item.Message = "Awaiting human approval — reply on the task to resume or abort."
-	}
-
-	steps, err := dbConn.ListStepRuns(ctx, inst.ID)
-	if err != nil {
-		return item
-	}
-	now := time.Now()
-	for _, s := range steps {
-		item.Steps = append(item.Steps, WorkflowStepItem{
-			StepID:   s.StepID,
-			Agent:    s.AgentID,
-			State:    s.State,
-			Duration: wfStepDuration(s, now),
-			Cached:   s.SkippedCached,
-		})
-	}
-	if polls, err := dbConn.ListCIPollChecks(ctx, inst.ID); err == nil {
-		item.CIPolls = mapCIPolls(polls)
-	}
-	return item
+	return buildWorkflowInstanceItem(ctx, dbConn, inst)
 }
 
 // wfStepDuration renders a short duration for a step run: final span for a
@@ -2022,7 +2035,7 @@ func (a *App) fetchTaskHistory(internalTaskID, drillKey string) tea.Cmd {
 			if segs, err := dbConn.GetTaskWorkflowHistory(ctx, internalTaskID); err == nil {
 				now := time.Now()
 				for _, seg := range segs {
-					item := mapInstances([]db.WorkflowInstance{seg.Instance})[0]
+					item := mapInstances(ctx, dbConn, []db.WorkflowInstance{seg.Instance})[0]
 					item.Steps = mapStepRuns(seg.Steps, now)
 					if polls, err := dbConn.ListCIPollChecks(ctx, seg.Instance.ID); err == nil {
 						item.CIPolls = mapCIPolls(polls)
@@ -2098,6 +2111,8 @@ func mapStepRuns(steps []db.StepRun, now time.Time) []WorkflowStepItem {
 			CostUSD:      s.CostUSD,
 			NumTurns:     s.NumTurns,
 			NumToolCalls: s.NumToolCalls,
+			StartedAt:    s.StartedAt,
+			FinishedAt:   s.FinishedAt,
 		})
 	}
 	return out
@@ -2683,20 +2698,58 @@ func (a *App) filteredTasks(t *TasksTab) []TaskItem {
 	return out
 }
 
+// taskRollup derives the whole-task span and token totals from its workflow
+// instances (each already aggregated from its steps), so the header reflects the
+// entire run rather than only the last execution row (e.g. the merge step). It
+// falls back to the detail instance when the task has no internal-task instance
+// list, and to the execution-row values when neither carries a span/usage.
+func taskRollup(d *TaskItem, detail *WorkflowInstanceItem) (started, completed *time.Time, inTok, outTok, totalTok int, cost float64) {
+	insts := d.Instances
+	if len(insts) == 0 && detail != nil {
+		insts = []WorkflowInstanceItem{*detail}
+	}
+	for _, in := range insts {
+		if in.StartedAt != nil && (started == nil || in.StartedAt.Before(*started)) {
+			started = in.StartedAt
+		}
+		if in.FinishedAt != nil && (completed == nil || in.FinishedAt.After(*completed)) {
+			completed = in.FinishedAt
+		}
+		inTok += in.InputTokens
+		outTok += in.OutputTokens
+		totalTok += in.TotalTokens
+		cost += in.CostUSD
+	}
+	if started == nil {
+		started = d.StartedAt
+	}
+	if completed == nil {
+		completed = d.CompletedAt
+	}
+	if totalTok == 0 { // no instance-level usage — fall back to the execution row
+		inTok, outTok, totalTok, cost = d.InputTokens, d.OutputTokens, d.TotalTokens, d.CostUSD
+	}
+	return
+}
+
 func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	d := t.Detail
 	if d == nil {
 		return a.box("TASK DETAILS", StyleMuted.Render("No details")+"\n", height)
 	}
 
+	rStart, rEnd, inTok, outTok, totalTok, cost := taskRollup(d, t.DetailInstance)
 	started, completed, dur := "—", "—", "—"
-	if d.StartedAt != nil {
-		started = d.StartedAt.Format("2006-01-02 15:04:05")
+	if rStart != nil {
+		started = rStart.Format("2006-01-02 15:04:05")
 	}
-	if d.CompletedAt != nil {
-		completed = d.CompletedAt.Format("2006-01-02 15:04:05")
+	if rEnd != nil {
+		completed = rEnd.Format("2006-01-02 15:04:05")
 	}
-	if d.Duration > 0 {
+	switch {
+	case rStart != nil && rEnd != nil:
+		dur = rEnd.Sub(*rStart).Round(time.Second).String()
+	case d.Duration > 0:
 		dur = d.Duration.Round(time.Second).String()
 	}
 
@@ -2728,9 +2781,9 @@ func (a *App) renderTaskDetail(t *TasksTab, height int) string {
 	}
 	row(endedLabel, completed)
 	row("Duration", dur)
-	row("Tokens", fmt.Sprintf("%d in / %d out / %d total", d.InputTokens, d.OutputTokens, d.TotalTokens))
+	row("Tokens", fmt.Sprintf("%d in / %d out / %d total", inTok, outTok, totalTok))
 	row("Turns / Calls", fmt.Sprintf("%d / %d", d.NumTurns, d.NumToolCalls))
-	row("Cost", fmt.Sprintf("$%.4f", d.CostUSD))
+	row("Cost", fmt.Sprintf("$%.4f", cost))
 	if d.URL != "" {
 		row("URL", StyleInfo.Render(d.URL))
 	}
@@ -2817,24 +2870,39 @@ func renderTaskInstances(d *TaskItem) string {
 	if len(d.Instances) == 0 {
 		return ""
 	}
+	const (
+		colState = 12
+		colWf    = 18
+	)
 	var b strings.Builder
 	b.WriteString("\n  " + StyleLabel.Render(fmt.Sprintf("Workflow Instances (%d)", len(d.Instances))) + "\n")
+	b.WriteString("    " + StyleLabel.Render(fmt.Sprintf("%s %s %s %s %s %s",
+		pad("STATE", colState),
+		pad("WORKFLOW", colWf),
+		pad("STARTED", colTime),
+		pad("ENDED", colTime),
+		padLeft("DURATION", colDur),
+		padLeft("TOKENS", colTok),
+	)) + "\n")
 	for _, in := range d.Instances {
-		when := "—"
-		if !in.CreatedAt.IsZero() {
-			when = in.CreatedAt.Format("01-02 15:04")
-		}
 		marker := ""
 		switch {
 		case in.ResumedFrom != "":
-			marker = StyleMuted.Render(" (resumed)")
+			marker = StyleMuted.Render("  (resumed)")
 		case in.ParentInstanceID != "":
-			marker = StyleMuted.Render(" (sub)")
+			marker = StyleMuted.Render("  (sub)")
 		}
-		b.WriteString(fmt.Sprintf("    %s  %s  %s%s\n",
-			wfInstanceBadge(in.State),
-			pad(truncate(in.Workflow, 18), 18),
-			StyleMuted.Render(when),
+		dur := "—"
+		if in.StartedAt != nil && in.FinishedAt != nil {
+			dur = in.FinishedAt.Sub(*in.StartedAt).Round(time.Second).String()
+		}
+		b.WriteString(fmt.Sprintf("    %s %s %s %s %s %s%s\n",
+			pad(wfInstanceBadge(in.State), colState),
+			pad(truncate(in.Workflow, colWf), colWf),
+			StyleMuted.Render(pad(tsCell(in.StartedAt), colTime)),
+			StyleMuted.Render(pad(tsCell(in.FinishedAt), colTime)),
+			StyleMuted.Render(padLeft(dur, colDur)),
+			StyleMuted.Render(padLeft(fmtTokensShort(in.TotalTokens), colTok)),
 			marker,
 		))
 	}
@@ -2850,13 +2918,23 @@ func renderWorkflowSteps(inst *WorkflowInstanceItem) string {
 		StyleValueStrong.Render(valueOr(inst.Workflow, "—")) + "  " +
 		wfInstanceBadge(inst.State) + "\n")
 
+	if summary := wfInstanceSummary(inst); summary != "" {
+		b.WriteString("              " + summary + "\n")
+	}
+
 	if inst.State == db.InstanceStateApprovalWaiting && inst.Message != "" {
 		b.WriteString("  " + StyleWarning.Render("⏸ "+inst.Message) + "\n")
 	}
 
 	if len(inst.Steps) > 0 {
 		b.WriteString("\n  " + StyleLabel.Render("Steps") + "\n")
-		for _, s := range inst.Steps {
+		b.WriteString("    " + wfStepHeader() + "\n")
+		for i, s := range inst.Steps {
+			if i > 0 {
+				if w := wfWaitRow(inst.Steps[i-1], s); w != "" {
+					b.WriteString("    " + w + "\n")
+				}
+			}
 			b.WriteString("    " + wfStepRow(s) + "\n")
 		}
 	}
@@ -2931,19 +3009,90 @@ func wfFailureMarker(inst *WorkflowInstanceItem) string {
 	return StyleError.Render("✗ workflow failed " + after + " — no further steps recorded")
 }
 
-// wfStepRow formats a single workflow step as one display row (glyph, step id,
-// agent, duration, state) without indentation or trailing newline, so callers can
-// place it in a panel or a flattened log-line list.
+// wfInstanceSummary renders a one-line dated-span/duration/token/cost rollup for
+// an instance, or "" when it has no recorded span (e.g. a pending instance with no
+// started step). Shown under the Workflow header.
+func wfInstanceSummary(inst *WorkflowInstanceItem) string {
+	if inst.StartedAt == nil {
+		return ""
+	}
+	parts := []string{datedSpan(inst.StartedAt, inst.FinishedAt)}
+	if inst.FinishedAt != nil {
+		parts = append(parts, inst.FinishedAt.Sub(*inst.StartedAt).Round(time.Second).String())
+	}
+	parts = append(parts, fmtTokensShort(inst.TotalTokens)+" tokens")
+	if inst.CostUSD > 0 {
+		parts = append(parts, fmt.Sprintf("$%.4f", inst.CostUSD))
+	}
+	return StyleMuted.Render(strings.Join(parts, "  ·  "))
+}
+
+// Step/instance table column widths, shared by header and rows so they align.
+// colTime fits tsTimeFmt ("01-02 15:04:05").
+const (
+	colStep  = 14
+	colAgent = 14
+	colTime  = 14
+	colDur   = 8
+	colTok   = 8
+)
+
+// stepGapColumn is the number of characters from the start of a step row (after
+// the caller's indent) to where the STARTED cell begins: glyph + sep + step +
+// sep + agent + sep. The wait-between-steps marker is padded to it so it sits
+// under the timestamps.
+const stepGapColumn = 1 + 1 + colStep + 1 + colAgent + 1
+
+// minStepWait is the smallest inter-step gap worth showing: below it the gap is
+// just dispatch/queue latency (a few seconds), which would only add noise lines.
+const minStepWait = 30 * time.Second
+
+// wfWaitRow renders the idle gap between a finished step and the next step's
+// start (CI waits, approvals, queue time), aligned under the STARTED column.
+// Returns "" when either timestamp is missing or the gap is below minStepWait.
+func wfWaitRow(prev, cur WorkflowStepItem) string {
+	if prev.FinishedAt == nil || cur.StartedAt == nil {
+		return ""
+	}
+	gap := cur.StartedAt.Sub(*prev.FinishedAt).Round(time.Second)
+	if gap < minStepWait {
+		return ""
+	}
+	return strings.Repeat(" ", stepGapColumn) + StyleMuted.Render("↓ "+gap.String()+" waiting")
+}
+
+// wfStepHeader renders the column header for the step table. The leading single
+// space stands in for the per-row status glyph so "STEP" aligns over the step id.
+func wfStepHeader() string {
+	return StyleLabel.Render(fmt.Sprintf("%s %s %s %s %s %s %s  %s",
+		" ",
+		pad("STEP", colStep),
+		pad("AGENT", colAgent),
+		pad("STARTED", colTime),
+		pad("ENDED", colTime),
+		padLeft("DURATION", colDur),
+		padLeft("TOKENS", colTok),
+		"STATE",
+	))
+}
+
+// wfStepRow formats a single workflow step as one columnar display row (glyph,
+// step id, agent, started, ended, duration, tokens, state) without indentation or
+// trailing newline, aligned under wfStepHeader. Callers add the indent.
 func wfStepRow(s WorkflowStepItem) string {
 	state := s.State
 	if s.Cached {
 		state += " (cached)"
 	}
-	return fmt.Sprintf("%s  %s  %s  %s",
+	return fmt.Sprintf("%s %s %s %s %s %s %s  %s",
 		wfStepGlyph(s.State),
-		pad(truncate(s.StepID, 16), 16),
-		pad(truncate(s.Agent, 16), 16),
-		StyleMuted.Render(pad(s.Duration, 8))+"  "+wfStateStyle(s.State).Render(state),
+		pad(truncate(s.StepID, colStep), colStep),
+		pad(truncate(s.Agent, colAgent), colAgent),
+		StyleMuted.Render(pad(tsCell(s.StartedAt), colTime)),
+		StyleMuted.Render(pad(tsCell(s.FinishedAt), colTime)),
+		StyleMuted.Render(padLeft(valueOr(s.Duration, "—"), colDur)),
+		StyleMuted.Render(padLeft(fmtTokensShort(s.TotalTokens), colTok)),
+		wfStateStyle(s.State).Render(state),
 	)
 }
 
@@ -3085,7 +3234,15 @@ func (a *App) taskHistoryLines() []string {
 		if seg.Instance.State == db.InstanceStateApprovalWaiting && seg.Instance.Message != "" {
 			out = append(out, "  "+StyleWarning.Render("⏸ "+seg.Instance.Message))
 		}
-		for _, s := range seg.Instance.Steps {
+		if len(seg.Instance.Steps) > 0 {
+			out = append(out, "  "+wfStepHeader())
+		}
+		for i, s := range seg.Instance.Steps {
+			if i > 0 {
+				if w := wfWaitRow(seg.Instance.Steps[i-1], s); w != "" {
+					out = append(out, "  "+w)
+				}
+			}
 			out = append(out, "  "+wfStepRow(s))
 			if s.Summary != "" {
 				out = append(out, "      "+StyleMuted.Render(truncate(s.Summary, sw)))
@@ -4003,6 +4160,46 @@ func valueOr(s, fallback string) string {
 		return fallback
 	}
 	return s
+}
+
+// fmtTokensShort renders a token count compactly (842, 1.2k, 3.4M); "—" for zero.
+func fmtTokensShort(n int) string {
+	switch {
+	case n <= 0:
+		return "—"
+	case n < 1000:
+		return fmt.Sprintf("%d", n)
+	case n < 1_000_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	default:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+}
+
+// tsTimeFmt is the fixed-width timestamp shown in step/instance table cells:
+// month-day plus wall-clock, so a run that spans days (or midnight) is unambiguous.
+const tsTimeFmt = "01-02 15:04:05"
+
+// tsCell renders a single timestamp table cell, or "—" when absent.
+func tsCell(t *time.Time) string {
+	if t == nil {
+		return "—"
+	}
+	return t.Format(tsTimeFmt)
+}
+
+// datedSpan renders "01-02 15:04:05 → 01-02 15:04:05" for a start/end pair, used
+// in the one-line workflow rollup: an unfinished span ends with "…", an unstarted
+// one is "—".
+func datedSpan(start, end *time.Time) string {
+	if start == nil {
+		return "—"
+	}
+	e := "…"
+	if end != nil {
+		e = end.Format(tsTimeFmt)
+	}
+	return start.Format(tsTimeFmt) + " → " + e
 }
 
 // pad right-pads s with spaces to a minimum display width.
