@@ -243,6 +243,46 @@ func TestInternalTask_OutstandingCounter(t *testing.T) {
 	}
 }
 
+// TestInternalTask_IncrementReopensTerminal locks in that a re-dispatch reopens a
+// finished task. Multi-stage pipelines fan out across separate poll cycles, so the
+// counter drains to zero and the task is marked terminal between stages; the next
+// stage's IncrementOutstanding must flip 'done'/'failed' back to 'running' so the
+// task list does not read terminal while a later instance is still in flight.
+func TestInternalTask_IncrementReopensTerminal(t *testing.T) {
+	ctx := context.Background()
+	store := newTestClient(t).InternalTasks()
+
+	for _, terminal := range []model.TaskState{model.TaskStateDone, model.TaskStateFailed} {
+		task := &model.InternalTask{Title: "t", State: terminal}
+		if err := store.CreateTask(ctx, task); err != nil {
+			t.Fatalf("create (%s): %v", terminal, err)
+		}
+		if _, err := store.IncrementOutstanding(ctx, task.ID, 1); err != nil {
+			t.Fatalf("increment (%s): %v", terminal, err)
+		}
+		got, _ := store.GetTask(ctx, task.ID)
+		if got.State != model.TaskStateRunning {
+			t.Errorf("reopen from %s: state = %q, want running", terminal, got.State)
+		}
+	}
+
+	// A non-terminal state is left untouched — increment must not clobber an
+	// active task's lifecycle (e.g. approval_waiting).
+	for _, keep := range []model.TaskState{model.TaskStateRegistered, model.TaskStateApprovalWait} {
+		task := &model.InternalTask{Title: "t", State: keep}
+		if err := store.CreateTask(ctx, task); err != nil {
+			t.Fatalf("create (%s): %v", keep, err)
+		}
+		if _, err := store.IncrementOutstanding(ctx, task.ID, 2); err != nil {
+			t.Fatalf("increment (%s): %v", keep, err)
+		}
+		got, _ := store.GetTask(ctx, task.ID)
+		if got.State != keep {
+			t.Errorf("increment must preserve %q, got %q", keep, got.State)
+		}
+	}
+}
+
 func TestInternalTask_ListByState(t *testing.T) {
 	ctx := context.Background()
 	store := newTestClient(t).InternalTasks()

@@ -158,12 +158,24 @@ func (s *InternalTaskStore) UpdateTaskMetadata(ctx context.Context, id, title, d
 
 // IncrementOutstanding adds delta to a task's outstanding workflow counter and
 // returns the new count. The dispatcher uses this at fan-out time (delta = N).
+//
+// A re-dispatch also reopens a finished task: when delta > 0 and the task sits in
+// a terminal state ('done'/'failed'), the same UPDATE flips it back to 'running'.
+// Multi-stage pipelines fan out across separate poll cycles (e.g. triage labels an
+// issue, then a later poll matches the implementation workflow), so the counter
+// drains to zero and completeTask marks the task terminal *between* stages. Without
+// this reopen the task would read 'done' in the list while the next stage's
+// instance is still running/waiting in the detail view. completeTask sets the real
+// terminal state again once the new stage settles. The literals mirror
+// model.TaskState ('done'/'failed'/'running').
 func (s *InternalTaskStore) IncrementOutstanding(ctx context.Context, id string, delta int) (int, error) {
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE internal_tasks
-		SET outstanding_workflows = outstanding_workflows + ?, updated_at = ?
+		SET outstanding_workflows = outstanding_workflows + ?,
+		    state = CASE WHEN ? > 0 AND state IN ('done','failed') THEN 'running' ELSE state END,
+		    updated_at = ?
 		WHERE id = ?
-	`, delta, time.Now(), id); err != nil {
+	`, delta, delta, time.Now(), id); err != nil {
 		return 0, err
 	}
 	return s.outstanding(ctx, id)
