@@ -71,6 +71,9 @@ func New(dbConn *db.Client, socketPath string, cfg *config.Config) *App {
 // tickMsg fires on the refresh timer.
 type tickMsg time.Time
 
+// spinnerTickMsg fires on the fast spinner timer to advance loading animations.
+type spinnerTickMsg time.Time
+
 // Each *DataMsg carries the result of a background query. They are produced by
 // commands (goroutines) and consumed by Update (event loop), never sharing
 // memory with the model directly.
@@ -160,6 +163,7 @@ func (a *App) Init() tea.Cmd {
 		a.fetchActiveTab(),
 		a.fetchWorkflowsConfig(),
 		tickCmd(),
+		spinnerTickCmd(),
 	)
 }
 
@@ -181,6 +185,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Re-query the active tab and schedule the next tick.
 		a.model.tickCount++
 		return a, tea.Batch(a.fetchActiveTab(), tickCmd())
+
+	case spinnerTickMsg:
+		// Advance the loading-spinner animation and keep the fast tick alive. The
+		// frame only matters while a view is rendering a loading indicator, but the
+		// loop runs continuously so the animation is ready the instant loading flips.
+		a.model.spinnerFrame++
+		return a, spinnerTickCmd()
 
 	case overviewDataMsg:
 		if a.model.overviewTab != nil {
@@ -1813,6 +1824,26 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+// spinnerInterval drives the loading animation. It is far faster than the data
+// refresh tick so the spinner reads as smooth motion while a query is in flight.
+const spinnerInterval = 100 * time.Millisecond
+
+// spinnerFrames are the braille-dot cycle used by every loading indicator.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+func spinnerTickCmd() tea.Cmd {
+	return tea.Tick(spinnerInterval, func(t time.Time) tea.Msg {
+		return spinnerTickMsg(t)
+	})
+}
+
+// loadingLine renders the current spinner frame followed by a muted label, used
+// in place of an "empty" message while a view is waiting on its first query.
+func (a *App) loadingLine(label string) string {
+	frame := spinnerFrames[a.model.spinnerFrame%len(spinnerFrames)]
+	return StyleWarning.Render(frame) + " " + StyleMuted.Render(label)
 }
 
 // fetchActiveTab returns the query command for whichever tab is active. It is
@@ -3600,7 +3631,11 @@ func (a *App) renderTaskLogs(t *TasksTab, height int) string {
 		if t.Detail != nil {
 			label = taskDetailLabel(t.Detail)
 		}
-		return a.box(label, StyleMuted.Render("No logs recorded for this task.")+"\n", height)
+		body := StyleMuted.Render("No logs recorded for this task.")
+		if a.model.loading {
+			body = a.loadingLine("Loading logs…")
+		}
+		return a.box(label, body+"\n", height)
 	}
 
 	lines := a.taskLogLines()
@@ -4328,7 +4363,11 @@ func (a *App) renderAgentTaskLogs(ag *AgentsTab, height int) string {
 		title = taskDetailLabel(ag.LogsTask)
 	}
 	if len(ag.TaskLogs) == 0 {
-		return a.box(title, StyleMuted.Render("No logs recorded for this task.")+"\n", height)
+		body := StyleMuted.Render("No logs recorded for this task.")
+		if a.model.loading {
+			body = a.loadingLine("Loading logs…")
+		}
+		return a.box(title, body+"\n", height)
 	}
 
 	lines := a.agentTaskLogLines()
@@ -4383,7 +4422,11 @@ func successRateStyled(rate float64) string {
 func (a *App) renderLogsTab(height int) string {
 	l := a.model.logsTab
 	if l == nil || len(l.Logs) == 0 {
-		return a.box("LOGS", StyleMuted.Render("No logs yet")+"\n", height)
+		body := StyleMuted.Render("No logs yet")
+		if a.model.loading {
+			body = a.loadingLine("Loading logs…")
+		}
+		return a.box("LOGS", body+"\n", height)
 	}
 
 	lines := a.logVisualLines()
@@ -4824,7 +4867,11 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 			right.WriteString(fitLine(lines[i], rightW) + "\n")
 		}
 		if len(lines) == 0 {
-			right.WriteString(StyleMuted.Render("No logs for this step.") + "\n")
+			if a.model.loading {
+				right.WriteString(a.loadingLine("Loading logs…") + "\n")
+			} else {
+				right.WriteString(StyleMuted.Render("No logs for this step.") + "\n")
+			}
 		}
 	} else if t.WorkflowStepIdx < len(inst.Steps) {
 		// Detail panel for selected step.
