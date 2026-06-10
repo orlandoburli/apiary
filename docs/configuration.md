@@ -166,6 +166,7 @@ agents:
 | `soul_file` | no | Path to the agent's system prompt / persona file |
 | `skills` | no | Skill names injected into the agent's context |
 | `max_workers` | no | Per-agent concurrency cap (default 1) — see [concurrency](#concurrency) |
+| `max_turns` | no | Max agent turns per step run (default 0 = unlimited). CLI runners pass it as the provider's turns flag (e.g. claude's `--max-turns`); 0 omits the flag |
 | `source_token` | no | Source API token for this agent's write operations — see [Agent identity](#agent-identity) |
 | `source_email` / `source_name` | no | Git author identity exported to the runner environment |
 | `fallbacks` | no | Ordered `{runner, model}` list for [rate-limit failover](resilience.md#provider-rate-limits-failover); `model` optional (empty = that runner's default) |

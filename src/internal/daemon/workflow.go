@@ -358,7 +358,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		Cell:               req.Cell,
 		WorkerID:           req.Step.Agent,
 		Model:              req.Model,
-		MaxTurns:           15,
+		MaxTurns:           req.Agent.MaxTurns,
 		SystemPrepend:      req.MemoryDoc,
 		SystemAppend:       composeSystemAppend(req.Prompt, readSoulFile(req.Agent, req.Cell.ID)),
 		SummaryPrompt:      req.Step.SummaryPrompt,

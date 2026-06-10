@@ -210,6 +210,11 @@
             "description": "Maximum concurrent workers for this agent",
             "minimum": 1
           },
+          "max_turns": {
+            "type": "integer",
+            "description": "Maximum agent turns per step run. 0 (default) = unlimited: CLI runners omit the provider's turns flag",
+            "minimum": 0
+          },
           "source_token": {
             "type": "string",
             "description": "Per-agent source auth token; write operations (comments, labels, state changes) use this identity"

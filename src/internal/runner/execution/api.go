@@ -62,7 +62,14 @@ func (r *ApiRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		parseResp = defaultParseResponse
 	}
 
-	raw, err := buildBody(prompt, req.Model, req.MaxTurns*4096)
+	// MaxTurns sizes the response token budget here: a turn cap has no direct
+	// equivalent for a single-shot HTTP call. 0 means uncapped upstream, so
+	// fall back to the budget the old hardcoded 15-turn default produced.
+	maxTokens := req.MaxTurns * 4096
+	if maxTokens <= 0 {
+		maxTokens = 15 * 4096
+	}
+	raw, err := buildBody(prompt, req.Model, maxTokens)
 	if err != nil {
 		return model.RunResult{}, fmt.Errorf("api runner: build body: %w", err)
 	}

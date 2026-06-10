@@ -42,7 +42,6 @@ func (s SourceConfig) ParsedPollInterval() (time.Duration, error) {
 	return time.ParseDuration(s.PollInterval)
 }
 
-
 type SourceFilters struct {
 	States []string `yaml:"states"`
 	Labels []string `yaml:"labels"`
@@ -79,9 +78,13 @@ type AgentConfig struct {
 	Skills      []string `yaml:"skills,omitempty"`
 	Runner      string   `yaml:"runner,omitempty"`
 	MaxWorkers  int      `yaml:"max_workers,omitempty"`
-	SourceToken string   `yaml:"source_token,omitempty"`
-	SourceEmail string   `yaml:"source_email,omitempty"`
-	SourceName  string   `yaml:"source_name,omitempty"`
+	// MaxTurns caps the number of agent turns per step run. 0 (the default)
+	// means unlimited: CLI runners omit the provider's turns flag entirely, so
+	// long-running coding tasks are never cut short unless explicitly capped.
+	MaxTurns    int    `yaml:"max_turns,omitempty"`
+	SourceToken string `yaml:"source_token,omitempty"`
+	SourceEmail string `yaml:"source_email,omitempty"`
+	SourceName  string `yaml:"source_name,omitempty"`
 	// Env is the agent-scope environment overlay applied to every step that runs
 	// this agent, in any workflow. It is the lowest-precedence explicit env scope
 	// (below workflow.env and step.env), layered on top of the identity overlay.
