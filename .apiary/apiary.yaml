@@ -193,6 +193,9 @@ workflows:
       match:
         source: project-erp
         exclude_label_prefix: "agent:"
+        # Skip work-in-progress issues. Add the `draft` label to keep apiary from
+        # auto-triaging an issue; remove it when the issue is ready to be picked up.
+        exclude_labels: [draft]
 
     steps:
       # 1) Classify. The investigator emits a structured `agent` decision, which

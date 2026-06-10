@@ -140,7 +140,11 @@ func formatComment(result model.RunResult) adfNode {
 		blocks = append(blocks, adfParagraph(adfText("🔗 Pull Request: ", "strong"), adfLink(prURL)))
 	}
 	if result.Output != "" {
-		blocks = append(blocks, adfCodeBlock(result.Output))
+		if rich, ok := markdownToADF(result.Output); ok {
+			blocks = append(blocks, rich...)
+		} else {
+			blocks = append(blocks, adfCodeBlock(result.Output))
+		}
 	}
 	if result.Error != nil && result.Error.Error() != "" {
 		blocks = append(blocks, adfParagraph(adfText("Error: ", "strong"), adfText(result.Error.Error(), "code")))
