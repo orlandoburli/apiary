@@ -2,6 +2,10 @@
 
 ## Ativas
 
+### agent-memory
+
+Memória persistente em camadas para agentes: tier global (fatos duráveis, daemon-wide) + tier de task (notas de trabalho que sobrevivem a instâncias e seguem a linhagem via `parent_task_id`), gravadas pelo marker `APIARY_MEMORIZE` e armazenadas como markdown em disco (`<data-dir>/memory`, índice `MEMORY.md`). Recall injetado no `SystemPrepend` (índice + notas, com budget) e leitura direta via `APIARY_MEMORY_DIR`; curadoria via `apiary memory` CLI. Opt-in (`settings.memory.enabled: false` por padrão).
+
 ### binary-distribution
 
 Publicação dos binários por release: GoReleaser dirigido por push de tag `v*` produz archives + checksums (GitHub Releases), Homebrew tap, Scoop bucket, winget, pacotes Linux (`.deb`/`.rpm` + AUR) e imagem OCI multi-arch (`ghcr.io`). Assinatura/notarização (macOS/Windows) fica fora do escopo v1. Restrição dominante: `mattn/go-sqlite3` exige cgo, então cross-compile precisa de toolchains C.
