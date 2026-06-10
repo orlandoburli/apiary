@@ -129,4 +129,3 @@ workflows:
 settings:
   concurrency: 2
   state_lock: true
-  result_comment: true

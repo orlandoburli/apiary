@@ -26,7 +26,7 @@ agents:
     runner: claude
     model: claude-sonnet-4-6
     fallbacks:
-      - {runner: opencode-go-cli, model: opencode-go/deepseek-v4-pro}
+      - {runner: opencode, model: opencode-go/deepseek-v4-pro}
       - {runner: cursor, model: composer-2.5-fast}
 ```
 

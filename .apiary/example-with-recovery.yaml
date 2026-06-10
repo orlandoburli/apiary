@@ -1,13 +1,11 @@
-version: "1.0"
+version: "1"
 
 runners:
   - id: claude-cli
     type: cli
+    provider: claude
     config:
-      command: claude
-      model_flag: --model
-      prompt_flag: --input-text
-      turns_flag: --turns
+      args: ["--output-format", "stream-json", "--verbose"]
 
 default_runner: claude-cli
 
@@ -15,9 +13,10 @@ sources:
   - id: project-erp
     type: plane
     config:
-      workspace_id: ${PLANE_WORKSPACE_ID}
-      project_id: ${PLANE_PROJECT_ID}
-      api_token: ${PLANE_API_TOKEN}
+      workspace: my-workspace
+      project: ${PLANE_PROJECT_ID}
+      api_key: ${PLANE_API_KEY}
+      base_url: https://plane.example.com
     poll_interval: 60s
     filters:
       states: [backlog, todo]
@@ -66,5 +65,4 @@ settings:
   concurrency: 4
   log_level: info
   state_lock: true
-  result_comment: true
 
