@@ -2,18 +2,14 @@
 
 ## Ativas
 
-### binary-distribution
-
-Publicação dos binários por release: GoReleaser dirigido por push de tag `v*` produz archives + checksums (GitHub Releases), Homebrew tap, Scoop bucket, winget, pacotes Linux (`.deb`/`.rpm` + AUR) e imagem OCI multi-arch (`ghcr.io`). Assinatura/notarização (macOS/Windows) fica fora do escopo v1. Restrição dominante: `mattn/go-sqlite3` exige cgo, então cross-compile precisa de toolchains C.
-
-### internal-task-model
-
-InternalTask como unidade canônica de trabalho: sources viram binders (registram items, recebem output); fan-out de múltiplos workflows por task; write-back por step controlado pelo agente via `APIARY_PUBLISH`.
+_Nenhuma change ativa no momento._
 
 ## Arquivadas
 
 ### 2026-06-10
 
+- **binary-distribution** — Publicação dos binários por release: GoReleaser dirigido por push de tag `v*` produz archives + checksums (GitHub Releases), Homebrew tap (cask), Scoop bucket, pacotes Linux (`.deb`/`.rpm`) e imagem OCI multi-arch (`ghcr.io`, pull anônimo). cgo eliminado via migração `mattn/go-sqlite3` → `modernc.org/sqlite` (cross-compile puro-Go). winget/AUR dropados; assinatura/notarização e SLSA/cosign deferidos para changes futuras. Releases estáveis v0.1.0–v0.4.0 publicados em todos os canais.
+- **internal-task-model** — InternalTask como unidade canônica de trabalho: sources viram binders (registram items, recebem output); fan-out de múltiplos workflows por task (`RouteAll` + `trigger.exclusive`); write-back por step via marker `APIARY_PUBLISH`; spawn de sub-tasks via `APIARY_SPAWN` (com `spawn: await`); hooks agregados `tasks.on_complete`/`on_fail` por contador de outstanding; dashboard com lineage e bindings. Todas as 9 fases + docs cross-cutting mergeadas.
 - **agent-memory** — Memória persistente em camadas para agentes: tier global (fatos duráveis, daemon-wide) + tier de task (notas que sobrevivem a instâncias e seguem a linhagem via `parent_task_id`), gravadas pelo marker `APIARY_MEMORIZE` e armazenadas como markdown em `<data-dir>/memory` (índice `MEMORY.md`). Recall injetado no prompt (índice + notas, com budget) e leitura direta via `APIARY_MEMORY_DIR`; curadoria via `apiary memory` CLI; sweep de retenção para notas de task. Opt-in (`settings.memory.enabled: false` por padrão). PRs #162 (feature) e #163 (docs).
 
 ### 2026-06-06

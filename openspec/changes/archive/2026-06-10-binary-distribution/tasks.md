@@ -33,14 +33,14 @@ Minimum shippable: tag → cross-platform archives + checksums on the GitHub Rel
 
 - [x] 3.1 Add `Dockerfile` (distroless/static, nonroot) and `dockers` + `docker_manifests` blocks (linux/amd64 + arm64). **Note:** `dockers`/`docker_manifests` are deprecated in favor of `dockers_v2` — migrate later (Phase 7-ish).
 - [x] 3.2 Add ghcr.io login + QEMU + buildx + `packages:write` to `release.yml`; multi-arch manifest (`:latest` stable-only via `skip_push: auto`)
-- [~] 3.3 Images + manifest pushed live by `v0.1.0-rc.1` (tag is `0.1.0-rc.1`, no `v`). **(user)** still must flip the ghcr package visibility to **public** (access-control change); then `docker pull ghcr.io/orlandoburli/apiary:0.1.0-rc.1` works anonymously
+- [x] 3.3 Images + manifest pushed live by `v0.1.0-rc.1` (tag is `0.1.0-rc.1`, no `v`). ghcr package flipped to **public** — anonymous pull verified (tags listed through `0.4.0` + `latest`)
 
 ## Phase 4 — Homebrew + Scoop
 
-- [ ] 4.1 **(user)** Create `orlandoburli/homebrew-tap` and `orlandoburli/scoop-bucket` repos (public)
-- [ ] 4.2 **(user)** Create fine-grained PAT `TAP_GITHUB_TOKEN` (contents:write on the tap/bucket repos); add as Actions secret
+- [x] 4.1 **(user)** Create `orlandoburli/homebrew-tap` and `orlandoburli/scoop-bucket` repos (public) — both exist and are public
+- [x] 4.2 **(user)** Create fine-grained PAT `TAP_GITHUB_TOKEN` (contents:write on the tap/bucket repos); add as Actions secret — done (stable releases published to both via the pipeline)
 - [x] 4.3 Add `homebrew_casks` + `scoops` blocks (config landed ahead of the repos/token); wire `TAP_GITHUB_TOKEN` into `release.yml` (+ dummy in `release-check.yml`). `skip_upload: auto` → only stable tags publish. **Note:** `brews` (formula) is deprecated → used `homebrew_casks`, so install is `brew install --cask orlandoburli/tap/apiary`. Cask includes an `xattr` postflight to strip Gatekeeper quarantine (unsigned binary). Validated: snapshot writes `Casks/apiary.rb` (per-arch URLs+sha) and `scoop/apiary.json`.
-- [ ] 4.4 After 4.1+4.2: cut a **stable** tag (`v0.1.0`), then verify `brew install --cask orlandoburli/tap/apiary` (macOS + Linux) and `scoop install apiary`
+- [x] 4.4 After 4.1+4.2: cut a **stable** tag (`v0.1.0`), then verify `brew install --cask orlandoburli/tap/apiary` (macOS + Linux) and `scoop install apiary` — v0.1.0 through v0.4.0 shipped; brew/scoop channels live
 
 ## Phase 5 — winget + AUR — DROPPED
 
