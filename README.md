@@ -38,8 +38,6 @@ runners:
   - id: claude
     type: cli
     provider: claude
-    config:
-      args: ["--output-format", "stream-json", "--verbose"]
 
 sources:
   - id: main-repo

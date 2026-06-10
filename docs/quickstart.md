@@ -30,13 +30,11 @@ version: "1"
 
 runners:
   # How agents execute — here, the local `claude` CLI as a subprocess.
-  # The args ask Claude for structured events, so the dashboard can show
+  # The preset asks Claude for structured events, so the dashboard can show
   # the live conversation (messages, tool calls, cost).
   - id: claude
     type: cli
     provider: claude
-    config:
-      args: ["--output-format", "stream-json", "--verbose"]
 
 sources:
   # Where work comes from — GitHub issues carrying the `ai-ready` label.

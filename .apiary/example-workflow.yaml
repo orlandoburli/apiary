@@ -21,8 +21,6 @@ runners:
   - id: claude
     type: cli
     provider: claude
-    config:
-      args: ["--output-format", "stream-json", "--verbose"]
     models: [claude-opus-4-8, claude-sonnet-4-6]
 
 default_runner: claude

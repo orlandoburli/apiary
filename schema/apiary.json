@@ -45,7 +45,7 @@
               },
               "args": {
                 "type": "array",
-                "description": "Extra argv prepended to every run (e.g. ['--output-format', 'stream-json', '--verbose'] for claude)",
+                "description": "Extra argv appended after the preset's args on every run. Presets: claude '--output-format stream-json --verbose', opencode 'run', cursor '-p --output-format stream-json --force'",
                 "items": {
                   "type": "string"
                 }

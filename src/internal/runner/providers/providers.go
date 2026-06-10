@@ -23,7 +23,11 @@ func init() {
 
 	// mcp_format selects how the CLI runner serialises MCP servers into the
 	// provider's native config (see execution.CliRunner.setupMCP).
+	// stream-json output is required for usage accounting, final-result
+	// extraction, and rate-limit detection (see execution/cli.go); user `args`
+	// are appended after these, and claude tolerates repeated flags (last wins).
 	runner.Register("claude-cli", cliFactory("claude", map[string]any{
+		"args":       []any{"--output-format", "stream-json", "--verbose"},
 		"mcp_format": "claude",
 	}))
 
