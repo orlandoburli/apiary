@@ -117,14 +117,34 @@ func TestLogMarkdownInlineRender(t *testing.T) {
 		t.Fatal("operational one-liner should not be treated as markdown")
 	}
 
-	msgWidth := a.model.width - 2 - 15 // prefix column is 15 wide
-	rendered := a.logMessageLines(md, msgWidth)
-	if len(rendered) == 0 {
-		t.Fatal("no rendered lines for markdown log")
+	// glamour never runs synchronously (#175): before the warm-up lands, markdown
+	// paints plain-wrapped so the first frame is instant.
+	msgWidth := a.logMsgWidth()
+	if got := a.logMessageLines(md, msgWidth); strings.Join(got, "\n") != strings.Join(wrapPlain(md, msgWidth), "\n") {
+		t.Error("markdown should paint plain-wrapped before the warm-up delivers")
 	}
-	// Rendered markdown reflows differently from a plain wrap, but keeps the text.
-	if strings.Join(rendered, "\n") == strings.Join(wrapPlain(md, msgWidth), "\n") {
-		t.Error("markdown log should render differently from plain wrapping")
+
+	// The warm-up renders the markdown off-thread and skips the one-liner.
+	cmd := a.warmMarkdownCmd([]LogEntry{{Message: md}, {Message: plain}})
+	if cmd == nil {
+		t.Fatal("warm-up should have work for the markdown entry")
+	}
+	wm, ok := cmd().(mdWarmedMsg)
+	if !ok {
+		t.Fatalf("warm command returned %T, want mdWarmedMsg", wm)
+	}
+	if _, ok := wm.rendered[md]; !ok {
+		t.Fatal("markdown entry missing from the warmed batch")
+	}
+	if _, ok := wm.rendered[plain]; ok {
+		t.Error("operational one-liner must not be glamour-rendered")
+	}
+
+	// Merging serves the styled lines from the cache and clears pending.
+	a.Update(wm)
+	rendered := a.logMessageLines(md, msgWidth)
+	if strings.Join(rendered, "\n") != strings.Join(wm.rendered[md], "\n") {
+		t.Error("warmed lines should be served from the cache")
 	}
 	joined := stripANSI(strings.Join(rendered, "\n"))
 	if !strings.Contains(joined, "Status") || !strings.Contains(joined, "verified") {
@@ -136,15 +156,18 @@ func TestLogMarkdownInlineRender(t *testing.T) {
 			t.Errorf("rendered line %d width %d exceeds msgWidth %d: %q", i, w, msgWidth, stripANSI(ln))
 		}
 	}
+	if a.logMDPending[md] {
+		t.Error("pending flag should clear once the batch merges")
+	}
 
 	// Plain operational lines pass through wrapPlain untouched.
 	if got := a.logMessageLines(plain, msgWidth); strings.Join(got, "\n") != strings.Join(wrapPlain(plain, msgWidth), "\n") {
 		t.Error("plain message should pass through wrapPlain unchanged")
 	}
 
-	// The markdown render is memoized.
-	if a.logMDWidth != msgWidth || len(a.logMDCache) == 0 {
-		t.Errorf("markdown cache not populated: width=%d size=%d", a.logMDWidth, len(a.logMDCache))
+	// Everything cached/pending-free: a second warm-up is a no-op.
+	if a.warmMarkdownCmd([]LogEntry{{Message: md}, {Message: plain}}) != nil {
+		t.Error("second warm-up should have nothing to do")
 	}
 
 	// All three log paths render framed with the markdown entry inline.
