@@ -24,6 +24,7 @@ var rootCmd = &cobra.Command{
 		aplog.Enable(v)
 		loadDotEnv(cmd)
 		configFile = resolveConfigFile()
+		maybeNotifyUpdate(cmd)
 	},
 }
 
@@ -56,6 +57,7 @@ func init() {
 		newVersionCmd(),
 		newRestartCmd(),
 		newDeleteCmd(),
+		newUpdateCmd(),
 	)
 }
 
