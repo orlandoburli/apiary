@@ -210,8 +210,13 @@ type Settings struct {
 	// runs are recorded as success (they fail over), so they do not count. This
 	// is an internal backstop independent of source-side labels — it stops
 	// runaway loops even for workflows with no on_fail. Default 3; <=0 disables.
-	MaxAttempts int       `yaml:"max_attempts"`
-	Telemetry   Telemetry `yaml:"telemetry"`
+	MaxAttempts int `yaml:"max_attempts"`
+	// Log rotation for the shared apiary.log file and retention for rotated
+	// backups and per-task log files. 0 means default; negative disables.
+	LogMaxSizeMB  int       `yaml:"log_max_size_mb"`  // rotate apiary.log past this size; default 50
+	LogMaxBackups int       `yaml:"log_max_backups"`  // rotated files to keep; default 5
+	LogMaxAgeDays int       `yaml:"log_max_age_days"` // prune backups and task logs older than this; default 30
+	Telemetry     Telemetry `yaml:"telemetry"`
 }
 
 func (s *Settings) TaskTimeoutDuration() time.Duration {
@@ -474,6 +479,15 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Settings.MaxAttempts == 0 {
 		cfg.Settings.MaxAttempts = 3
+	}
+	if cfg.Settings.LogMaxSizeMB == 0 {
+		cfg.Settings.LogMaxSizeMB = 50
+	}
+	if cfg.Settings.LogMaxBackups == 0 {
+		cfg.Settings.LogMaxBackups = 5
+	}
+	if cfg.Settings.LogMaxAgeDays == 0 {
+		cfg.Settings.LogMaxAgeDays = 30
 	}
 	warnDeprecatedResultComment(&cfg)
 	return &cfg, nil
