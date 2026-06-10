@@ -348,9 +348,15 @@ apply to the task's source item:
 on_complete:
   set_state: in review
   add_labels: [reviewed]
+  remove_labels: [create-spec]
 on_fail:
   add_labels: [needs-attention]
 ```
+
+`remove_labels` strips labels from the source item — typically the label that
+triggered the workflow, so a label-driven trigger fires once and the item
+stops matching on the next poll. Removals run after `add_labels`, and sources
+that don't support label removal skip the directive.
 
 A workflow can also override the global result-comment behavior:
 `result_comment: on_complete | per_step | off`.

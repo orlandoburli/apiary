@@ -177,6 +177,11 @@ type RouteMatch struct {
 type OnComplete struct {
 	SetState  string   `yaml:"set_state"`
 	AddLabels []string `yaml:"add_labels"`
+	// RemoveLabels strips labels from the source item, so a label-driven trigger
+	// (e.g. `labels: [create-spec]`) can clear its own trigger label on
+	// completion instead of matching again on every poll. Removals are applied
+	// after AddLabels; a label listed in both ends up removed.
+	RemoveLabels []string `yaml:"remove_labels"`
 	// AssignFromOutput parses the agent's output for an `APIARY-ASSIGN: <agent>`
 	// directive and adds the corresponding `<prefix><agent>` label, so a
 	// classifier agent can route a task to the agent it picked.
@@ -191,8 +196,8 @@ type OnComplete struct {
 // terminal state — as opposed to the per-workflow on_complete/on_fail hooks
 // which fire once per workflow instance. OnComplete applies when every instance
 // succeeded; OnFail applies when any instance failed. Both follow the same rules
-// as per-workflow hooks (set_state, add_labels; the removed assign_* directives
-// are rejected by lint).
+// as per-workflow hooks (set_state, add_labels, remove_labels; the removed
+// assign_* directives are rejected by lint).
 type TasksConfig struct {
 	OnComplete *OnComplete `yaml:"on_complete"`
 	OnFail     *OnComplete `yaml:"on_fail"`
