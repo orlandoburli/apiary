@@ -218,11 +218,54 @@ type Settings struct {
 	MaxAttempts int `yaml:"max_attempts"`
 	// Log rotation for the shared apiary.log file and retention for rotated
 	// backups and per-task log files. 0 means default; negative disables.
-	LogMaxSizeMB  int            `yaml:"log_max_size_mb"`  // rotate apiary.log past this size; default 50
-	LogMaxBackups int            `yaml:"log_max_backups"`  // rotated files to keep; default 5
-	LogMaxAgeDays int            `yaml:"log_max_age_days"` // prune backups and task logs older than this; default 30
-	Memory        MemorySettings `yaml:"memory"`
-	Telemetry     Telemetry      `yaml:"telemetry"`
+	LogMaxSizeMB  int                `yaml:"log_max_size_mb"`  // rotate apiary.log past this size; default 50
+	LogMaxBackups int                `yaml:"log_max_backups"`  // rotated files to keep; default 5
+	LogMaxAgeDays int                `yaml:"log_max_age_days"` // prune backups and task logs older than this; default 30
+	Memory        MemorySettings     `yaml:"memory"`
+	Telemetry     Telemetry          `yaml:"telemetry"`
+	CursorCost    CursorCostSettings `yaml:"cursor_cost"`
+}
+
+// CursorCostSettings configures the cursor-cli cost back-fill. The Cursor
+// agent CLI reports token counts but no dollar cost in its stream output, so
+// when enabled the daemon periodically queries Cursor's dashboard usage API
+// (cookie auth) and back-fills cost_usd on finished cursor-cli executions by
+// matching usage events to run time windows. Best-effort: the endpoint is
+// undocumented, and overlapping concurrent cursor runs leave ambiguous events
+// unattributed (cost becomes a lower bound). Disabled by default.
+type CursorCostSettings struct {
+	Enabled bool `yaml:"enabled"`
+	// SessionToken is the WorkosCursorSessionToken cookie from a logged-in
+	// cursor.com browser session (valid ~60 days). Usually set as
+	// "${CURSOR_SESSION_TOKEN}" resolved from the .env file beside apiary.yaml.
+	// Empty falls back to the CURSOR_SESSION_TOKEN environment variable.
+	SessionToken string `yaml:"session_token"`
+	// Interval between back-fill sweeps (duration string). Default "5m".
+	Interval string `yaml:"interval"`
+	// MaxAge is how far back unpriced executions are considered (duration
+	// string). Default "72h".
+	MaxAge string `yaml:"max_age"`
+}
+
+// IntervalDuration returns the parsed sweep interval (default 5m, floor 1m).
+func (c CursorCostSettings) IntervalDuration() time.Duration {
+	d, err := time.ParseDuration(c.Interval)
+	if err != nil || d <= 0 {
+		return 5 * time.Minute
+	}
+	if d < time.Minute {
+		return time.Minute
+	}
+	return d
+}
+
+// MaxAgeDuration returns the parsed back-fill window (default 72h).
+func (c CursorCostSettings) MaxAgeDuration() time.Duration {
+	d, err := time.ParseDuration(c.MaxAge)
+	if err != nil || d <= 0 {
+		return 72 * time.Hour
+	}
+	return d
 }
 
 // MemorySettings configures the persistent agent memory store (the task and

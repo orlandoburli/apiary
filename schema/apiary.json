@@ -488,6 +488,32 @@
               "format": "uri"
             }
           }
+        },
+        "cursor_cost": {
+          "type": "object",
+          "description": "Back-fill cost_usd on finished cursor-cli executions from Cursor's dashboard usage API (cookie auth). The Cursor agent CLI streams token counts but no dollar cost, so when enabled the daemon periodically matches dashboard usage events to run time windows and records the billed amount. Best-effort: the endpoint is undocumented, and events overlapping concurrent cursor runs are left unattributed (recorded cost is a lower bound). Disabled by default",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable the cursor-cli cost back-fill sweep",
+              "default": false
+            },
+            "session_token": {
+              "type": "string",
+              "description": "WorkosCursorSessionToken cookie value from a logged-in cursor.com browser session (valid ~60 days). Usually \"${CURSOR_SESSION_TOKEN}\" resolved from the .env file beside apiary.yaml; empty falls back to the CURSOR_SESSION_TOKEN environment variable"
+            },
+            "interval": {
+              "type": "string",
+              "description": "Time between back-fill sweeps, as a Go duration (minimum 1m)",
+              "default": "5m"
+            },
+            "max_age": {
+              "type": "string",
+              "description": "How far back unpriced executions are considered, as a Go duration",
+              "default": "72h"
+            }
+          }
         }
       }
     },

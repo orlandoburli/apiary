@@ -1,0 +1,93 @@
+package cursorusage
+
+import (
+	"strconv"
+	"testing"
+	"time"
+)
+
+func ts(t time.Time) string { return strconv.FormatInt(t.UnixMilli(), 10) }
+
+func chargedEvent(at time.Time, cents float64) UsageEvent {
+	return UsageEvent{
+		Timestamp:    ts(at),
+		Kind:         "USAGE_EVENT_KIND_USAGE_BASED",
+		ChargedCents: cents,
+		TokenUsage:   &TokenUsage{InputTokens: 10, OutputTokens: 5},
+	}
+}
+
+func TestAttributeSingleRun(t *testing.T) {
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	run := RunWindow{ID: 1, Start: base, End: base.Add(10 * time.Minute)}
+
+	events := []UsageEvent{
+		chargedEvent(base.Add(time.Minute), 100),      // inside
+		chargedEvent(base.Add(5*time.Minute), 50),     // inside
+		chargedEvent(base.Add(11*time.Minute), 25),    // inside via skew
+		chargedEvent(base.Add(30*time.Minute), 99999), // outside: dropped
+	}
+
+	got := Attribute(events, []RunWindow{run}, 2*time.Minute)
+	a := got[1]
+	if a.Events != 3 || a.Ambiguous != 0 {
+		t.Fatalf("attribution = %+v, want 3 events, 0 ambiguous", a)
+	}
+	if a.CostUSD != 1.75 {
+		t.Errorf("CostUSD = %v, want 1.75", a.CostUSD)
+	}
+	if a.InputTokens != 30 || a.OutputTokens != 15 {
+		t.Errorf("tokens = %d/%d, want 30/15", a.InputTokens, a.OutputTokens)
+	}
+}
+
+func TestAttributeOverlapIsAmbiguous(t *testing.T) {
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	runs := []RunWindow{
+		{ID: 1, Start: base, End: base.Add(10 * time.Minute)},
+		{ID: 2, Start: base.Add(5 * time.Minute), End: base.Add(15 * time.Minute)},
+	}
+	events := []UsageEvent{
+		chargedEvent(base.Add(2*time.Minute), 100),  // only run 1
+		chargedEvent(base.Add(7*time.Minute), 200),  // overlap: ambiguous
+		chargedEvent(base.Add(14*time.Minute), 300), // only run 2
+	}
+
+	got := Attribute(events, runs, 0)
+	if got[1].Events != 1 || got[1].CostUSD != 1.00 || got[1].Ambiguous != 1 {
+		t.Errorf("run 1 = %+v, want 1 event $1.00 with 1 ambiguous", got[1])
+	}
+	if got[2].Events != 1 || got[2].CostUSD != 3.00 || got[2].Ambiguous != 1 {
+		t.Errorf("run 2 = %+v, want 1 event $3.00 with 1 ambiguous", got[2])
+	}
+}
+
+func TestAttributeSkipsInteractiveEvents(t *testing.T) {
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	run := RunWindow{ID: 1, Start: base, End: base.Add(10 * time.Minute)}
+
+	headless, ide := true, false
+	evHeadless := chargedEvent(base.Add(time.Minute), 100)
+	evHeadless.IsHeadless = &headless
+	evIDE := chargedEvent(base.Add(2*time.Minute), 500)
+	evIDE.IsHeadless = &ide
+	evLegacy := chargedEvent(base.Add(3*time.Minute), 50) // no flag: kept
+
+	got := Attribute([]UsageEvent{evHeadless, evIDE, evLegacy}, []RunWindow{run}, 0)
+	a := got[1]
+	if a.Events != 2 || a.CostUSD != 1.50 {
+		t.Errorf("attribution = %+v, want IDE event excluded (2 events, $1.50)", a)
+	}
+}
+
+func TestAttributeIgnoresGarbageTimestamps(t *testing.T) {
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	run := RunWindow{ID: 1, Start: base, End: base.Add(10 * time.Minute)}
+	ev := chargedEvent(base.Add(time.Minute), 100)
+	ev.Timestamp = "not-a-number"
+
+	got := Attribute([]UsageEvent{ev}, []RunWindow{run}, 0)
+	if got[1].Events != 0 {
+		t.Errorf("attribution = %+v, want garbage timestamp dropped", got[1])
+	}
+}
