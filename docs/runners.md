@@ -112,6 +112,12 @@ runners:
     provider: cursor
 ```
 
+!!! note "Cost reporting"
+    The Cursor CLI streams token counts but no dollar cost, so cursor runs
+    show `$0.00` out of the box. On usage-based Cursor plans the daemon can
+    back-fill real billed amounts from the Cursor dashboard API — see
+    [`settings.cursor_cost`](configuration.md#cursor-cost-back-fill-cursor_cost).
+
 ### CLI engine configuration
 
 All `config` keys, with each provider's preset defaults:

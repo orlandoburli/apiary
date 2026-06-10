@@ -465,6 +465,16 @@ settings:
     # max_inject_chars: 4000         # prompt budget for the recall sections
     # max_entry_bytes: 16384         # cap on a single memorized fact
     # task_retention: 720h           # prune task notes this long after the task ends
+  # Cursor cost back-fill (opt-in): the Cursor agent CLI streams token counts
+  # but no dollar cost, so cursor-cli runs record $0.00. On usage-based Cursor
+  # plans the daemon can recover real billed amounts from the cursor.com
+  # dashboard API and back-fill cost_usd on finished executions. Needs the
+  # WorkosCursorSessionToken browser cookie (valid ~60 days) in .env.
+  cursor_cost:
+    enabled: false
+    # session_token: ${CURSOR_SESSION_TOKEN}  # default: CURSOR_SESSION_TOKEN env var
+    # interval: 5m                   # sweep cadence
+    # max_age: 72h                   # how far back to back-fill
 
 # ── Task completion hook (internal-task-model) ───────────────────────────────────
 # Fires once per InternalTask, when the LAST of its fanned-out workflows reaches a

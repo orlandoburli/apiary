@@ -387,6 +387,17 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		}()
 	}
 
+	// Back-fill cost_usd on finished cursor-cli executions from Cursor's
+	// dashboard usage API (settings.cursor_cost), at startup and then every
+	// sweep interval. The Cursor agent CLI streams token counts but no cost.
+	if d.db != nil && d.cfg.Settings.CursorCost.Enabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.cursorCostLoop(ctx)
+		}()
+	}
+
 	for _, sc := range d.cfg.Sources {
 		sc := sc
 		adapter, ok := d.sources[sc.ID]

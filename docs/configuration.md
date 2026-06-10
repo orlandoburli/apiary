@@ -238,6 +238,57 @@ pages — the file stops growing but does not shrink; to compact a database
 that grew before retention existed, stop the daemon and run
 `sqlite3 .apiary/apiary.db 'VACUUM;'` once.
 
+### Cursor cost back-fill (`cursor_cost`)
+
+The Cursor agent CLI streams token counts but **no dollar cost** — unlike the
+Claude CLI's `total_cost_usd`, cursor runs always record `$0.00`. If your
+Cursor plan is usage-based, the daemon can recover the real billed amounts
+from the same private API the [cursor.com dashboard](https://cursor.com/dashboard)
+usage tab uses, and back-fill `cost_usd` on finished `cursor-cli` executions:
+
+```yaml
+settings:
+  cursor_cost:
+    enabled: true
+    session_token: ${CURSOR_SESSION_TOKEN}  # from .env beside apiary.yaml
+    interval: 5m   # sweep cadence (default)
+    max_age: 72h   # how far back to back-fill (default)
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Enable the back-fill sweep (runs at startup, then every `interval`) |
+| `session_token` | — | `WorkosCursorSessionToken` cookie from a logged-in cursor.com browser session; empty falls back to the `CURSOR_SESSION_TOKEN` env var |
+| `interval` | `5m` | Time between sweeps (minimum `1m`) |
+| `max_age` | `72h` | Unpriced executions older than this are left alone |
+
+To get the token: log into [cursor.com/dashboard](https://cursor.com/dashboard),
+open DevTools (F12) → Application → Cookies → `https://cursor.com`, and copy
+the `WorkosCursorSessionToken` value into your `.env`:
+
+```bash
+CURSOR_SESSION_TOKEN=user_XXXX%3A%3AeyJhbGci...
+```
+
+The token is valid for about 60 days; when it expires the sweep logs an auth
+warning and the daemon keeps running (costs simply stop back-filling until
+you refresh it).
+
+How it works, and the fine print:
+
+- Cursor's usage events carry no session or request id, so each event is
+  attributed to the one run whose `[started_at, completed_at]` window (±2min
+  skew) contains its timestamp. Events explicitly marked as interactive IDE
+  usage (`isHeadless: false`) are ignored.
+- **Overlapping concurrent cursor runs**: an event that falls inside two run
+  windows is attributed to *neither* (wrongly attributing money is worse than
+  undercounting). The affected runs keep a lower-bound cost and a warning is
+  logged. Runs that never resolve are abandoned after 10 sweeps.
+- The endpoint is **undocumented** and may change without notice — the whole
+  feature is best-effort and degrades to "no cost recorded" on any failure.
+- Plan-included requests (`INCLUDED_IN_PRO` etc.) and errored/aborted requests
+  are counted as $0, which is the real marginal charge.
+
 ### Concurrency
 
 Each agent has its own semaphore sized by its `max_workers` (default 1), so
