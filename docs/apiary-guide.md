@@ -8,6 +8,8 @@ This page has been split into focused sections:
   of a task.
 - **[Configuration](configuration.md)** — every field of `apiary.yaml`:
   runners, sources, agents, settings, environment variables.
+- **[Runners](runners.md)** — CLI and API execution engines, provider
+  presets, MCP servers.
 - **[Workflows](workflows.md)** — triggers, steps, structured outputs,
   approval gates, CI waits, retry loops.
 - **[Tasks & Fan-out](tasks-and-fanout.md)** — `APIARY_PUBLISH`,
