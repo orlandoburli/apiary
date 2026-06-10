@@ -26,9 +26,12 @@ func init() {
 	// stream-json output is required for usage accounting, final-result
 	// extraction, and rate-limit detection (see execution/cli.go); user `args`
 	// are appended after these, and claude tolerates repeated flags (last wins).
+	// turns_flag is only emitted when the agent sets max_turns > 0 (see
+	// execution.CliRunner.Run), so runs stay uncapped by default.
 	runner.Register("claude-cli", cliFactory("claude", map[string]any{
 		"args":       []any{"--output-format", "stream-json", "--verbose"},
 		"mcp_format": "claude",
+		"turns_flag": "--max-turns",
 	}))
 
 	runner.Register("opencode-cli", cliFactory("opencode", map[string]any{
