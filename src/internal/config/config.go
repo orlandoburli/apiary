@@ -213,10 +213,42 @@ type Settings struct {
 	MaxAttempts int `yaml:"max_attempts"`
 	// Log rotation for the shared apiary.log file and retention for rotated
 	// backups and per-task log files. 0 means default; negative disables.
-	LogMaxSizeMB  int       `yaml:"log_max_size_mb"`  // rotate apiary.log past this size; default 50
-	LogMaxBackups int       `yaml:"log_max_backups"`  // rotated files to keep; default 5
-	LogMaxAgeDays int       `yaml:"log_max_age_days"` // prune backups and task logs older than this; default 30
-	Telemetry     Telemetry `yaml:"telemetry"`
+	LogMaxSizeMB  int            `yaml:"log_max_size_mb"`  // rotate apiary.log past this size; default 50
+	LogMaxBackups int            `yaml:"log_max_backups"`  // rotated files to keep; default 5
+	LogMaxAgeDays int            `yaml:"log_max_age_days"` // prune backups and task logs older than this; default 30
+	Memory        MemorySettings `yaml:"memory"`
+	Telemetry     Telemetry      `yaml:"telemetry"`
+}
+
+// MemorySettings configures the persistent agent memory store (the task and
+// global tiers written via APIARY_MEMORIZE). Disabled by default: with
+// Enabled false nothing is persisted or injected, and emitted markers are
+// stripped from output and dropped.
+type MemorySettings struct {
+	Enabled bool `yaml:"enabled"`
+	// Path is the memory root directory. Empty means <data-dir>/memory — the
+	// .apiary/ folder beside the config file, next to apiary.db.
+	Path string `yaml:"path"`
+	// MaxInjectChars bounds the recall sections ([Long-term Memory] index +
+	// [Task Memory] notes) injected into each step prompt. Default 4000.
+	MaxInjectChars int `yaml:"max_inject_chars"`
+	// MaxEntryBytes caps a single APIARY_MEMORIZE content. Default 16384.
+	MaxEntryBytes int `yaml:"max_entry_bytes"`
+	// TaskRetention is how long a task's notes are kept after the task reaches a
+	// terminal state (duration string). Default "720h" (30 days).
+	TaskRetention string `yaml:"task_retention"`
+}
+
+// TaskRetentionDuration returns the parsed retention window (default 720h).
+func (m MemorySettings) TaskRetentionDuration() time.Duration {
+	if m.TaskRetention == "" {
+		return 720 * time.Hour
+	}
+	d, err := time.ParseDuration(m.TaskRetention)
+	if err != nil {
+		return 720 * time.Hour
+	}
+	return d
 }
 
 func (s *Settings) TaskTimeoutDuration() time.Duration {
@@ -488,6 +520,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Settings.LogMaxAgeDays == 0 {
 		cfg.Settings.LogMaxAgeDays = 30
+	}
+	if cfg.Settings.Memory.MaxInjectChars == 0 {
+		cfg.Settings.Memory.MaxInjectChars = 4000
+	}
+	if cfg.Settings.Memory.MaxEntryBytes == 0 {
+		cfg.Settings.Memory.MaxEntryBytes = 16384
 	}
 	warnDeprecatedResultComment(&cfg)
 	return &cfg, nil

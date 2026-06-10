@@ -454,6 +454,17 @@ settings:
   log_max_size_mb: 50
   log_max_backups: 5
   log_max_age_days: 30
+  # Persistent agent memory (opt-in): agents save durable facts and per-task
+  # working notes via the APIARY_MEMORIZE marker, stored as markdown under
+  # <data-dir>/memory (next to apiary.db). The MEMORY.md index plus the task's
+  # notes are injected into every step prompt (budget-capped); agents read full
+  # entries from $APIARY_MEMORY_DIR. Curate with `apiary memory list|show|rm|prune`.
+  memory:
+    enabled: false
+    # path: /custom/memory/root      # default: <data-dir>/memory
+    # max_inject_chars: 4000         # prompt budget for the recall sections
+    # max_entry_bytes: 16384         # cap on a single memorized fact
+    # task_retention: 720h           # prune task notes this long after the task ends
 
 # ── Task completion hook (internal-task-model) ───────────────────────────────────
 # Fires once per InternalTask, when the LAST of its fanned-out workflows reaches a

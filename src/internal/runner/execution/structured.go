@@ -12,31 +12,36 @@ import (
 // summary from an agent's raw stdout. Runners strip these from the visible
 // Output and surface the parsed values on RunResult.
 const (
-	apiaryOutputPrefix = "APIARY_OUTPUT:"
-	summaryStartMarker = "APIARY_SUMMARY_START"
-	summaryEndMarker   = "APIARY_SUMMARY_END"
-	publishStartMarker = "APIARY_PUBLISH_BEGIN"
-	publishEndMarker   = "APIARY_PUBLISH_END"
-	spawnStartMarker   = "APIARY_SPAWN_BEGIN"
-	spawnEndMarker     = "APIARY_SPAWN_END"
+	apiaryOutputPrefix  = "APIARY_OUTPUT:"
+	summaryStartMarker  = "APIARY_SUMMARY_START"
+	summaryEndMarker    = "APIARY_SUMMARY_END"
+	publishStartMarker  = "APIARY_PUBLISH_BEGIN"
+	publishEndMarker    = "APIARY_PUBLISH_END"
+	spawnStartMarker    = "APIARY_SPAWN_BEGIN"
+	spawnEndMarker      = "APIARY_SPAWN_END"
+	memorizeStartMarker = "APIARY_MEMORIZE_BEGIN"
+	memorizeEndMarker   = "APIARY_MEMORIZE_END"
 )
 
 // extractStructured scans an agent's raw output for the APIARY_OUTPUT: sentinel,
-// the APIARY_SUMMARY_START/END block, the APIARY_PUBLISH_BEGIN/END block, and the
-// APIARY_SPAWN_BEGIN/END block. It returns the cleaned output (with those lines
-// removed), the parsed structured object (nil when absent or unparseable), the
-// summary text, the publish payload, and the raw spawn payload (all empty when
-// absent). The last valid APIARY_OUTPUT line wins; block payloads are taken
-// verbatim between their markers.
-func extractStructured(output string) (cleaned string, structured map[string]any, summary, publish, spawn string) {
+// the APIARY_SUMMARY_START/END block, the APIARY_PUBLISH_BEGIN/END block, the
+// APIARY_SPAWN_BEGIN/END block, and the APIARY_MEMORIZE_BEGIN/END block. It
+// returns the cleaned output (with those lines removed), the parsed structured
+// object (nil when absent or unparseable), the summary text, the publish
+// payload, and the raw spawn and memorize payloads (all empty when absent). The
+// last valid APIARY_OUTPUT line wins; block payloads are taken verbatim between
+// their markers.
+func extractStructured(output string) (cleaned string, structured map[string]any, summary, publish, spawn, memorize string) {
 	lines := strings.Split(output, "\n")
 	kept := make([]string, 0, len(lines))
 	var summaryLines []string
 	var publishLines []string
 	var spawnLines []string
+	var memorizeLines []string
 	inSummary := false
 	inPublish := false
 	inSpawn := false
+	inMemorize := false
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -53,12 +58,18 @@ func extractStructured(output string) (cleaned string, structured map[string]any
 			inSpawn = true
 		case trimmed == spawnEndMarker:
 			inSpawn = false
+		case trimmed == memorizeStartMarker:
+			inMemorize = true
+		case trimmed == memorizeEndMarker:
+			inMemorize = false
 		case inSummary:
 			summaryLines = append(summaryLines, line)
 		case inPublish:
 			publishLines = append(publishLines, line)
 		case inSpawn:
 			spawnLines = append(spawnLines, line)
+		case inMemorize:
+			memorizeLines = append(memorizeLines, line)
 		default:
 			// The APIARY_OUTPUT: sentinel may arrive bare, or wrapped by an
 			// agent in markdown — inline backticks, code fences, or list /
@@ -79,7 +90,8 @@ func extractStructured(output string) (cleaned string, structured map[string]any
 	summary = strings.TrimSpace(strings.Join(summaryLines, "\n"))
 	publish = strings.TrimSpace(strings.Join(publishLines, "\n"))
 	spawn = strings.TrimSpace(strings.Join(spawnLines, "\n"))
-	return cleaned, structured, summary, publish, spawn
+	memorize = strings.TrimSpace(strings.Join(memorizeLines, "\n"))
+	return cleaned, structured, summary, publish, spawn, memorize
 }
 
 // outputSentinelJSON reports whether a trimmed line carries an APIARY_OUTPUT:
@@ -169,16 +181,36 @@ func balancedJSON(s string) string {
 }
 
 // applyStructured post-processes a RunResult's Output, moving any structured
-// output, summary, publish payload, and spawn request into their dedicated
-// fields. Safe to call for plain runs: when no sentinels are present, Output is
-// unchanged and the new fields stay nil/empty. A malformed APIARY_SPAWN block
-// (invalid JSON) is surfaced via RunResult.SpawnError so the engine fails the step.
+// output, summary, publish payload, spawn request, and memorize request into
+// their dedicated fields. Safe to call for plain runs: when no sentinels are
+// present, Output is unchanged and the new fields stay nil/empty. A malformed
+// APIARY_SPAWN block (invalid JSON) is surfaced via RunResult.SpawnError so the
+// engine fails the step; a malformed APIARY_MEMORIZE block is surfaced via
+// RunResult.MemorizeError, which only ever becomes a warning.
 func applyStructured(result *model.RunResult) {
-	cleaned, structured, summary, publish, spawn := extractStructured(result.Output)
+	cleaned, structured, summary, publish, spawn, memorize := extractStructured(result.Output)
 	result.Output = cleaned
 	result.StructuredOutput = structured
 	result.Summary = summary
 	result.PublishPayload = publish
+	if memorize != "" {
+		// Like APIARY_SPAWN, the block may carry a single object or a JSON array.
+		if strings.HasPrefix(memorize, "[") {
+			var reqs []model.MemorizeRequest
+			if err := json.Unmarshal([]byte(memorize), &reqs); err != nil {
+				result.MemorizeError = fmt.Errorf("APIARY_MEMORIZE: invalid JSON array: %w", err)
+			} else {
+				result.MemorizeRequests = reqs
+			}
+		} else {
+			var req model.MemorizeRequest
+			if err := json.Unmarshal([]byte(memorize), &req); err != nil {
+				result.MemorizeError = fmt.Errorf("APIARY_MEMORIZE: invalid JSON: %w", err)
+			} else {
+				result.MemorizeRequests = []model.MemorizeRequest{req}
+			}
+		}
+	}
 	if spawn != "" {
 		// The block may carry a single object (one child) or a JSON array (a
 		// decomposition fanning out into several). A leading '[' selects the array

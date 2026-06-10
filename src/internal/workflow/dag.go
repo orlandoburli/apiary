@@ -68,6 +68,10 @@ type dagRun struct {
 // execution view (cell) is projected from the task + its primary binding. seed
 // is inherited memory for a sub-workflow child; depth tracks nesting.
 func (e *Engine) initDAG(instID string, wf config.WorkflowConfig, task model.InternalTask, bindings []model.SourceBinding, seed []MemoryStep, depth int) *dagRun {
+	// Memory provenance: parallel/foreach worker paths only carry the instance
+	// ID, so memorizeStep resolves the workflow ID through this map. Removed on
+	// terminal settle; parked instances keep their mapping for the resume path.
+	e.instWF.Store(instID, wf.ID)
 	r := &dagRun{
 		instID:          instID,
 		wf:              wf,

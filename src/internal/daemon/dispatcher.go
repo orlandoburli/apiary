@@ -22,6 +22,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/db"
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/logging"
+	"github.com/orlandoburli/apiary/internal/memory"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/router"
 	runnerimpl "github.com/orlandoburli/apiary/internal/runner"
@@ -61,6 +62,12 @@ type Dispatcher struct {
 
 	db     *db.Client
 	logger *logging.Logger
+
+	// memStore is the persistent agent memory store (settings.memory). nil when
+	// memory is disabled; memDir is its root, exported to agent subprocesses as
+	// APIARY_MEMORY_DIR.
+	memStore *memory.Store
+	memDir   string
 
 	// binder records each polled SourceItem as an InternalTask + SourceBinding.
 	// nil when no DB is configured (tests / dry-run without persistence).
@@ -136,25 +143,42 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 	}
 
 	d := &Dispatcher{
-		cfg:         cfg,
-		configFile:  configFile,
-		startedAt:   time.Now(),
-		router:      r,
+		cfg:             cfg,
+		configFile:      configFile,
+		startedAt:       time.Now(),
+		router:          r,
 		sources:         make(map[string]source.Adapter),
 		runners:         make(map[string]runnerimpl.Runner),
 		agentRunner:     make(map[string]string),
 		agentFallbacks:  make(map[string][]runnerCandidate),
 		rateLimitPaused: make(map[string]time.Time),
-		db:          dbClient,
-		logger:      logger,
-		sem:         make(chan struct{}, 1), // poll: one at a time
-		agentSem:    make(map[string]chan struct{}),
-		stats:       make(map[string]*sourceStat),
+		db:              dbClient,
+		logger:          logger,
+		sem:             make(chan struct{}, 1), // poll: one at a time
+		agentSem:        make(map[string]chan struct{}),
+		stats:           make(map[string]*sourceStat),
 	}
 
 	// The binder persists InternalTasks + SourceBindings; it needs the DB.
 	if dbClient != nil {
 		d.binder = source.NewSourceBinder(dbClient)
+	}
+
+	// Persistent agent memory (settings.memory). The root defaults to
+	// <data-dir>/memory, beside apiary.db.
+	if cfg.Settings.Memory.Enabled {
+		root := cfg.Settings.Memory.Path
+		if root == "" {
+			root = filepath.Join(config.DataDir(configFile), "memory")
+		}
+		store, err := memory.Open(root)
+		if err != nil {
+			return nil, fmt.Errorf("memory store: %w", err)
+		}
+		store.MaxEntryBytes = cfg.Settings.Memory.MaxEntryBytes
+		d.memStore = store
+		d.memDir = root
+		aplog.Info("agent memory enabled at %s", root)
 	}
 
 	// Per-agent concurrency: each agent gets its own semaphore so that
@@ -352,6 +376,17 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		}()
 	}
 
+	// Prune task-memory notes whose task has been terminal longer than the
+	// retention window (settings.memory.task_retention), at startup and then
+	// every 6 hours. Global entries are never auto-pruned.
+	if d.memStore != nil && d.db != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.pruneMemoryLoop(ctx)
+		}()
+	}
+
 	for _, sc := range d.cfg.Sources {
 		sc := sc
 		adapter, ok := d.sources[sc.ID]
@@ -389,6 +424,89 @@ func (d *Dispatcher) pruneLogsLoop(ctx context.Context, maxAge time.Duration) {
 			prune()
 		}
 	}
+}
+
+// pruneMemoryLoop deletes task-memory note files whose task has been terminal
+// (done/failed) longer than settings.memory.task_retention, at startup and then
+// every 6 hours. A task is kept while any descendant is still non-terminal —
+// spawned children inherit their ancestors' notes, so the chain must stay
+// readable while work is in flight. Notes whose task ID is unknown (e.g. after
+// a DB reset) fall back to the file's mtime against the same retention window.
+func (d *Dispatcher) pruneMemoryLoop(ctx context.Context) {
+	d.pruneTaskMemoryOnce(ctx)
+
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.pruneTaskMemoryOnce(ctx)
+		}
+	}
+}
+
+// pruneTaskMemoryOnce runs one retention sweep over the task-memory note files
+// and returns how many were deleted.
+func (d *Dispatcher) pruneTaskMemoryOnce(ctx context.Context) int {
+	retention := d.cfg.Settings.Memory.TaskRetentionDuration()
+	notes, err := d.memStore.ListTaskNotes()
+	if err != nil {
+		aplog.Warn("prune task memory: %v", err)
+		return 0
+	}
+	pruned := 0
+	cutoff := time.Now().Add(-retention)
+	for _, tn := range notes {
+		task, err := d.db.InternalTasks().GetTask(ctx, tn.TaskID)
+		if err != nil || task == nil {
+			// Unknown task (DB reset / hand-created file): mtime fallback.
+			if tn.ModTime.Before(cutoff) {
+				if d.memStore.DeleteTaskNotes(tn.TaskID) == nil {
+					pruned++
+				}
+			}
+			continue
+		}
+		terminal := task.State == model.TaskStateDone || task.State == model.TaskStateFailed
+		if !terminal || task.UpdatedAt.After(cutoff) {
+			continue
+		}
+		if d.hasLiveDescendant(ctx, tn.TaskID, 0) {
+			continue
+		}
+		if err := d.memStore.DeleteTaskNotes(tn.TaskID); err != nil {
+			aplog.Warn("prune task memory %s: %v", tn.TaskID, err)
+		} else {
+			pruned++
+		}
+	}
+	if pruned > 0 {
+		aplog.Info("pruned %d task memory file(s) past the %s retention", pruned, retention)
+	}
+	return pruned
+}
+
+// hasLiveDescendant reports whether any spawned descendant of the task is still
+// non-terminal. Depth-capped as cheap insurance against an accidental cycle.
+func (d *Dispatcher) hasLiveDescendant(ctx context.Context, taskID string, depth int) bool {
+	if depth > 32 {
+		return false
+	}
+	children, err := d.db.InternalTasks().ListChildTasks(ctx, taskID)
+	if err != nil {
+		return true // unsure — keep the notes
+	}
+	for _, c := range children {
+		if c.State != model.TaskStateDone && c.State != model.TaskStateFailed {
+			return true
+		}
+		if d.hasLiveDescendant(ctx, c.ID, depth+1) {
+			return true
+		}
+	}
+	return false
 }
 
 // DryRun polls every source once, routes cells, and prints what would be

@@ -441,6 +441,37 @@
           "description": "Delete rotated backups, per-task log files, and SQLite log rows (service_logs/task_logs) older than this many days. Files are checked at startup and after each rotation; DB rows at startup and then daily. Default 30; negative disables",
           "default": 30
         },
+        "memory": {
+          "type": "object",
+          "description": "Persistent agent memory: per-task working notes plus daemon-wide durable facts, written via the APIARY_MEMORIZE marker and stored as markdown files under the memory root. Disabled by default",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable the persistent memory store",
+              "default": false
+            },
+            "path": {
+              "type": "string",
+              "description": "Memory root directory. Empty means <data-dir>/memory — the .apiary/ folder beside the config file, next to apiary.db"
+            },
+            "max_inject_chars": {
+              "type": "integer",
+              "description": "Budget for the recall sections ([Long-term Memory] index + [Task Memory] notes) injected into each step prompt",
+              "default": 4000
+            },
+            "max_entry_bytes": {
+              "type": "integer",
+              "description": "Cap on a single APIARY_MEMORIZE content",
+              "default": 16384
+            },
+            "task_retention": {
+              "type": "string",
+              "description": "How long task notes are kept after the task reaches a terminal state, as a Go duration. Global entries are never auto-pruned",
+              "default": "720h"
+            }
+          }
+        },
         "telemetry": {
           "type": "object",
           "description": "Telemetry configuration",
@@ -889,12 +920,12 @@
     },
     "MemoryConfig": {
       "type": "object",
-      "description": "How a step interacts with the workflow memory object",
+      "description": "How a step interacts with the workflow memory object and the persistent memory store (settings.memory)",
       "additionalProperties": false,
       "properties": {
         "read": {
           "type": "boolean",
-          "description": "Inject the workflow memory document into this step (default true; only an explicit false disables it)",
+          "description": "Inject the workflow memory document into this step (default true; only an explicit false disables it). Gates the persistent recall sections too",
           "default": true
         },
         "write": {
@@ -903,6 +934,20 @@
           "items": {
             "type": "string"
           }
+        },
+        "recall": {
+          "type": "array",
+          "description": "Persistent memory tiers injected into this step's prompt. Empty/omitted means both. Only meaningful when settings.memory.enabled is true",
+          "items": {
+            "type": "string",
+            "enum": ["task", "global"]
+          }
+        },
+        "memorize": {
+          "type": "string",
+          "description": "How APIARY_MEMORIZE requests emitted by this step's agent are handled: auto (default, persist) or off (drop)",
+          "enum": ["auto", "off"],
+          "default": "auto"
         }
       }
     },

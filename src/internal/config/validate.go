@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/orlandoburli/apiary/internal/model"
 )
@@ -153,6 +154,19 @@ func (c *Config) Validate() []error {
 			errs = append(errs, fmt.Errorf("workers[%d]: duplicate id %q", i, w.ID))
 		}
 		workerIDs[w.ID] = true
+	}
+
+	// settings.memory value checks (the block itself is optional).
+	if m := c.Settings.Memory; m.TaskRetention != "" {
+		if _, err := time.ParseDuration(m.TaskRetention); err != nil {
+			errs = append(errs, fmt.Errorf("settings.memory.task_retention %q: invalid duration: %w", m.TaskRetention, err))
+		}
+	}
+	if c.Settings.Memory.MaxInjectChars < 0 {
+		errs = append(errs, fmt.Errorf("settings.memory.max_inject_chars must be >= 0"))
+	}
+	if c.Settings.Memory.MaxEntryBytes < 0 {
+		errs = append(errs, fmt.Errorf("settings.memory.max_entry_bytes must be >= 0"))
 	}
 
 	// Validate v2-specific authoring rules before lowering (while v2 fields are

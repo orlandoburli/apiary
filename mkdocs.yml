@@ -48,6 +48,7 @@ nav:
       - Runners: runners.md
       - Workflows: workflows.md
       - Tasks & Fan-out: tasks-and-fanout.md
+      - Agent Memory: memory.md
       - Rate Limits & Resilience: resilience.md
   - Sources:
       - GitHub: github-source.md

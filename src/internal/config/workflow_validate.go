@@ -203,6 +203,22 @@ func (c *Config) validateAgentStep(sctx string, s StepConfig, agentIDs, stepIDs 
 		errs = append(errs, fmt.Errorf("%s: materialize: sub_issue is incompatible with spawn: await", sctx))
 	}
 
+	// memory.memorize and memory.recall take closed enums.
+	if s.Memory != nil {
+		switch s.Memory.Memorize {
+		case "", MemorizeAuto, MemorizeOff:
+		default:
+			errs = append(errs, fmt.Errorf("%s: invalid memory.memorize %q (want auto|off)", sctx, s.Memory.Memorize))
+		}
+		for _, tier := range s.Memory.Recall {
+			switch tier {
+			case MemoryTierTask, MemoryTierGlobal:
+			default:
+				errs = append(errs, fmt.Errorf("%s: invalid memory.recall tier %q (want task|global)", sctx, tier))
+			}
+		}
+	}
+
 	// memory.write requires output_schema with matching top-level fields.
 	if w := s.MemoryWriteFields(); len(w) > 0 {
 		if s.OutputSchema == nil {
