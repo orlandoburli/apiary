@@ -137,6 +137,11 @@ by persisting structured-output fields (`memory.write: [field, …]`), and
 every later step reads it automatically — the document is injected into the
 agent's context unless the step opts out with `memory: {read: false}`.
 
+This is the *instance* tier: it dies with the workflow instance. For memory
+that survives across instances — per-task working notes and durable
+daemon-wide facts written via `APIARY_MEMORIZE` — see
+[Agent Memory](memory.md).
+
 Memory also drives all control-flow expressions:
 
 ```yaml

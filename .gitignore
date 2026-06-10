@@ -18,6 +18,7 @@ apiary.yaml.local
 **/.apiary/apiary.db-*
 **/.apiary/apiary.sock
 **/.apiary/logs/
+**/.apiary/memory/
 
 # editor
 .DS_Store

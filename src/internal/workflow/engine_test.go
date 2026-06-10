@@ -38,6 +38,7 @@ type fakeStore struct {
 	stepOrder []string
 	bindings  map[string][]model.SourceBinding // task id → bindings (for bindingLister)
 	ciPolls   []db.CIPollCheck                 // recorded wait_for CI polls (for ciPollRecorder)
+	ancestors map[string][]model.InternalTask  // task id → lineage (for ancestorLister)
 }
 
 func newFakeStore() *fakeStore {
@@ -67,6 +68,14 @@ func (f *fakeStore) pollStatuses() []string {
 		out[i] = p.Status
 	}
 	return out
+}
+
+// GetTaskAncestors satisfies ancestorLister so the engine resolves a task's
+// lineage (root first, self last) the same way the production *db.Client does.
+func (f *fakeStore) GetTaskAncestors(_ context.Context, id string) ([]model.InternalTask, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ancestors[id], nil
 }
 
 // ListBindingsByTask satisfies bindingLister so the engine resolves a task's

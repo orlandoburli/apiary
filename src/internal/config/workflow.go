@@ -247,6 +247,22 @@ func (s StepConfig) MemoryWriteFields() []string {
 	return s.Memory.Write
 }
 
+// MemorizeEnabled reports whether APIARY_MEMORIZE requests emitted by this
+// step's agent should be persisted. Defaults to true; only an explicit
+// `memory.memorize: off` disables it.
+func (s StepConfig) MemorizeEnabled() bool {
+	return s.Memory == nil || s.Memory.Memorize != MemorizeOff
+}
+
+// MemoryRecallTiers returns the persistent memory tiers to inject into this
+// step's prompt. An unset/empty `memory.recall` means both tiers.
+func (s StepConfig) MemoryRecallTiers() []string {
+	if s.Memory == nil || len(s.Memory.Recall) == 0 {
+		return []string{MemoryTierTask, MemoryTierGlobal}
+	}
+	return s.Memory.Recall
+}
+
 // ParsedTimeout returns the approval-step timeout, or 0 when unset/invalid
 // (meaning no timeout).
 func (s StepConfig) ParsedTimeout() time.Duration {
@@ -260,12 +276,33 @@ func (s StepConfig) ParsedTimeout() time.Duration {
 	return d
 }
 
-// MemoryConfig controls how a step interacts with the workflow memory object.
+// Memorize handling for a step's APIARY_MEMORIZE requests.
+const (
+	MemorizeAuto = "auto" // default: persist requests the agent emits
+	MemorizeOff  = "off"  // drop requests, even if the agent emits them
+)
+
+// Persistent memory tiers a step may recall (step.memory.recall values).
+const (
+	MemoryTierTask   = "task"
+	MemoryTierGlobal = "global"
+)
+
+// MemoryConfig controls how a step interacts with the workflow memory object
+// (the per-instance document) and the persistent memory store (the task and
+// global tiers).
 type MemoryConfig struct {
 	// Read is a pointer so an explicit `read: false` is distinguishable from an
 	// unset value (which defaults to true). Use StepConfig.MemoryReadEnabled().
+	// It gates the entire memory document, persistent recall sections included.
 	Read  *bool    `yaml:"read,omitempty"`
 	Write []string `yaml:"write,omitempty"`
+	// Recall lists the persistent tiers injected into this step's prompt: any
+	// subset of "task" and "global". Empty means both. Use
+	// StepConfig.MemoryRecallTiers().
+	Recall []string `yaml:"recall,omitempty"`
+	// Memorize controls the step's APIARY_MEMORIZE handling: auto (default) | off.
+	Memorize string `yaml:"memorize,omitempty"`
 }
 
 // StepNext is the explicit success edge of an agent step (on_pass.next).

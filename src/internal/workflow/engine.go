@@ -13,6 +13,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
 	aplog "github.com/orlandoburli/apiary/internal/log"
+	"github.com/orlandoburli/apiary/internal/memory"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/source"
 )
@@ -123,6 +124,15 @@ type StepResult struct {
 	// JSON array — one step fanning out into several children (e.g. a spec
 	// decomposed into sub-issues). The engine handles it uniformly with SpawnRequest.
 	SpawnRequests []model.SpawnRequest
+	// MemorizeRequests are the agent's APIARY_MEMORIZE requests. The engine
+	// persists each to the memory store (task notes or global entries) when a
+	// store is wired and the step has not set memory.memorize: off (the executor
+	// clears them in that case, mirroring publish: off).
+	MemorizeRequests []model.MemorizeRequest
+	// MemorizeError is set when an APIARY_MEMORIZE block was present but
+	// malformed. Unlike SpawnError it is only ever surfaced as a warning — a
+	// failed memorize never fails the step.
+	MemorizeError error
 	// Usage is the token/cost rollup for the step, summed across the step's
 	// failover attempts (each attempt is also its own task_executions row). Nil
 	// when the runner reported no usage. The engine persists it onto the step run.
@@ -137,6 +147,28 @@ type StepResult struct {
 // The engine owns persistence, memory, and hooks; the executor owns execution.
 type StepExecutor interface {
 	ExecuteStep(ctx context.Context, req StepRequest) StepResult
+}
+
+// MemoryStore is the persistent agent memory the engine writes APIARY_MEMORIZE
+// requests to and reads recall sections from. *memory.Store satisfies it; nil
+// disables persistent memory entirely (the per-instance memory document is
+// unaffected).
+type MemoryStore interface {
+	// UpsertGlobal writes one durable daemon-wide fact (same name = update).
+	UpsertGlobal(e memory.Entry) error
+	// AppendTaskNote appends one working note to a task's notes file.
+	AppendTaskNote(taskID string, n memory.Note) error
+	// RenderRecall renders the prompt sections for the given task lineage (self
+	// first) and tiers, bounded by budget. "" when there is nothing to recall.
+	RenderRecall(taskIDs []string, tiers []string, budget int) string
+}
+
+// ancestorLister is the optional capability the engine uses to resolve a task's
+// ancestor chain for task-memory recall (spawned children inherit their
+// ancestors' notes). *db.Client satisfies it; fake stores that omit it limit
+// recall to the task's own notes.
+type ancestorLister interface {
+	GetTaskAncestors(ctx context.Context, id string) ([]model.InternalTask, error)
 }
 
 // SideEffects applies source-facing actions for an InternalTask. Each action
@@ -174,6 +206,7 @@ type Engine struct {
 	exec      StepExecutor
 	side      SideEffects
 	mem       MemoryBuilder
+	memStore  MemoryStore
 	spawner   WorkflowSpawner
 	tracker   TaskTracker
 	ciChecker CIStatusChecker
@@ -183,6 +216,11 @@ type Engine struct {
 
 	mu     sync.Mutex         // guards parked
 	parked map[string]*dagRun // instances suspended at an approval step, by id
+
+	// instWF maps a live instance ID to its workflow ID, for memory provenance in
+	// code paths (parallel / foreach workers) that do not carry the dagRun.
+	// Entries are added in initDAG and removed when the instance settles terminal.
+	instWF sync.Map
 }
 
 // Option customizes an Engine.
@@ -199,6 +237,10 @@ func WithIDGen(gen func(prefix string) string) Option { return func(e *Engine) {
 
 // WithMemoryBuilder overrides the memory builder.
 func WithMemoryBuilder(b MemoryBuilder) Option { return func(e *Engine) { e.mem = b } }
+
+// WithMemoryStore wires the persistent agent memory store (APIARY_MEMORIZE
+// write path + recall injection). Nil disables persistent memory.
+func WithMemoryStore(s MemoryStore) Option { return func(e *Engine) { e.memStore = s } }
 
 // WithSpawner sets the APIARY_SPAWN handler used to create child tasks.
 func WithSpawner(s WorkflowSpawner) Option { return func(e *Engine) { e.spawner = s } }
@@ -338,6 +380,7 @@ func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool
 	e.mu.Lock()
 	delete(e.parked, r.instID)
 	e.mu.Unlock()
+	e.instWF.Delete(r.instID)
 	e.applyCompletion(ctx, r, failed)
 	e.completeTask(ctx, r, failed)
 	return !failed
@@ -419,6 +462,12 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 	memDoc := ""
 	if step.MemoryReadEnabled() {
 		memDoc = e.mem.Build(cell, memSteps)
+		// Persistent recall ([Long-term Memory] + [Task Memory]) rides ahead of the
+		// per-instance document on the same SystemPrepend channel. memory.read: false
+		// suppresses everything; memory.recall filters tiers.
+		if recall := e.renderRecall(ctx, task, step); recall != "" {
+			memDoc = recall + "\n" + memDoc
+		}
 	}
 
 	var ag config.AgentConfig
@@ -464,9 +513,120 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 	} else {
 		sr.State = db.StepStateFailed
 	}
+	// Memorize runs before publish so knowledge is persisted even when the
+	// source write-back fails; neither outcome affects the step state.
+	e.memorizeStep(instID, task, step, res)
 	e.publishStep(ctx, task, bindings, res, sr)
 	_ = e.store.UpdateStepRun(ctx, sr)
 	return res
+}
+
+// secretPattern returns the name of the first common credential pattern found
+// in s, or "" when none match. Heuristic by design (see memorizeStep).
+func secretPattern(s string) string {
+	for _, p := range []struct{ name, marker string }{
+		{"GitHub token", "ghp_"},
+		{"GitHub fine-grained token", "github_pat_"},
+		{"Slack token", "xoxb-"},
+		{"Slack user token", "xoxp-"},
+		{"AWS access key", "AKIA"},
+		{"private key", "-----BEGIN"},
+	} {
+		if strings.Contains(s, p.marker) {
+			return p.name
+		}
+	}
+	return ""
+}
+
+// renderRecall renders the persistent-memory sections for one step's prompt:
+// the global index and the task notes of the task plus its ancestors (so
+// spawned children inherit working context). Best-effort — a store or lineage
+// failure degrades to no recall, never blocks the step.
+func (e *Engine) renderRecall(ctx context.Context, task model.InternalTask, step config.StepConfig) string {
+	if e.memStore == nil {
+		return ""
+	}
+	lineage := []string{}
+	if task.ID != "" {
+		lineage = append(lineage, task.ID)
+		if al, ok := e.store.(ancestorLister); ok {
+			// GetTaskAncestors returns root first, self last; recall wants nearest
+			// context first (self, parent, grandparent, …) so reverse, skipping self.
+			if ancestors, err := al.GetTaskAncestors(ctx, task.ID); err == nil {
+				for i := len(ancestors) - 1; i >= 0; i-- {
+					if ancestors[i].ID != task.ID {
+						lineage = append(lineage, ancestors[i].ID)
+					}
+				}
+			}
+		}
+	}
+	return e.memStore.RenderRecall(lineage, step.MemoryRecallTiers(), e.cfg.Settings.Memory.MaxInjectChars)
+}
+
+// memorizeStep persists the step's APIARY_MEMORIZE requests: global-scope
+// requests upsert durable entries, task-scope requests (the default) append
+// working notes to the task. Every failure — malformed block, validation,
+// store error — is a warning only; a memorize can never fail a step. The
+// executor has already dropped the requests when the step set
+// memory.memorize: off.
+func (e *Engine) memorizeStep(instID string, task model.InternalTask, step config.StepConfig, res StepResult) {
+	if res.MemorizeError != nil {
+		aplog.Warn("step %q: %v (block ignored)", step.ID, res.MemorizeError)
+	}
+	if e.memStore == nil || len(res.MemorizeRequests) == 0 {
+		if len(res.MemorizeRequests) > 0 {
+			aplog.Debug("step %q: %d APIARY_MEMORIZE request(s) dropped (memory disabled)", step.ID, len(res.MemorizeRequests))
+		}
+		return
+	}
+
+	wfID := ""
+	if v, ok := e.instWF.Load(instID); ok {
+		wfID, _ = v.(string)
+	}
+	for _, req := range res.MemorizeRequests {
+		// Best-effort guard: memory files are plain text read by every agent, so
+		// flag content that looks like a credential. Warn-only — patterns are
+		// heuristic and a false positive must not lose a legitimate fact.
+		if pat := secretPattern(req.Content); pat != "" {
+			aplog.Warn("step %q: APIARY_MEMORIZE content matches a credential pattern (%s) — memory is not a secret store", step.ID, pat)
+		}
+		scope := req.Scope
+		if scope == "" {
+			scope = model.MemorizeScopeTask
+		}
+		var err error
+		switch scope {
+		case model.MemorizeScopeGlobal:
+			err = e.memStore.UpsertGlobal(memory.Entry{
+				Name:        req.Name,
+				Description: req.Description,
+				Content:     req.Content,
+				Agent:       step.Agent,
+				Task:        task.ID,
+				Workflow:    wfID,
+			})
+		case model.MemorizeScopeTask:
+			if task.ID == "" {
+				err = fmt.Errorf("task-scope memorize on a transient task with no id")
+				break
+			}
+			err = e.memStore.AppendTaskNote(task.ID, memory.Note{
+				Content:  req.Content,
+				Agent:    step.Agent,
+				Workflow: wfID,
+				Step:     step.ID,
+				At:       e.now(),
+			})
+		default:
+			err = fmt.Errorf("unknown scope %q (want task|global)", scope)
+		}
+		if err != nil {
+			aplog.Warn("step %q: APIARY_MEMORIZE: %v", step.ID, err)
+		}
+	}
 }
 
 // spawnStep handles one or more agent-emitted APIARY_SPAWN requests: for each it

@@ -297,6 +297,13 @@ func (s *InternalTaskStore) ListChildTasks(ctx context.Context, parentTaskID str
 	return out, rows.Err()
 }
 
+// GetTaskAncestors is a Client-level convenience so the workflow engine can
+// resolve a task's lineage (for task-memory recall) through the same Store it
+// already holds, mirroring ListBindingsByTask.
+func (c *Client) GetTaskAncestors(ctx context.Context, id string) ([]model.InternalTask, error) {
+	return c.InternalTasks().GetTaskAncestors(ctx, id)
+}
+
 // GetTaskAncestors returns the task's lineage from root to the task itself
 // (root first, the task last), walking parent_task_id via a recursive CTE. The
 // depth cap (32) is cheap insurance against an accidental cycle. For a root task

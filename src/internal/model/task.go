@@ -97,3 +97,25 @@ type SpawnRequest struct {
 	// materialized (the spec / acceptance criteria for the downstream agent).
 	Body string `json:"body,omitempty"`
 }
+
+// Memorize scopes — which memory tier an APIARY_MEMORIZE request targets.
+const (
+	// MemorizeScopeTask appends a working note to the current task's memory,
+	// visible to every workflow instance of the task and its descendants.
+	MemorizeScopeTask = "task"
+	// MemorizeScopeGlobal upserts a durable daemon-wide fact by name.
+	MemorizeScopeGlobal = "global"
+)
+
+// MemorizeRequest is one agent-emitted APIARY_MEMORIZE_BEGIN/END payload (the
+// block carries a single object or a JSON array of them, mirroring
+// APIARY_SPAWN). Scope defaults to "task" when empty. Name and Description are
+// required for the global scope: Name is the upsert key (kebab-case slug, it
+// becomes the entry's filename) and Description is the one-liner shown in the
+// injected memory index.
+type MemorizeRequest struct {
+	Scope       string `json:"scope,omitempty"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	Content     string `json:"content"`
+}

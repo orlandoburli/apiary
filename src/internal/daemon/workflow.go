@@ -27,6 +27,9 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 				workflow.WithTaskTracker(dbTaskTracker{db: d.db}),
 			)
 		}
+		if d.memStore != nil {
+			opts = append(opts, workflow.WithMemoryStore(d.memStore))
+		}
 		// Wire up CI status polling for wait_for steps.
 		opts = append(opts, workflow.WithCIStatusChecker(func(ctx context.Context, sourceID, sourceItemID string) (source.CIStatus, error) {
 			adapter, ok := d.sources[sourceID]
@@ -354,6 +357,8 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		ctx = context.WithValue(ctx, source.SourceTokenCtxKey, req.Agent.SourceToken)
 	}
 
+	env := withMemoryDir(stepEnv(req.Agent, req.WorkflowEnv, req.Step.Env), x.d.memDir)
+
 	rr := model.RunRequest{
 		Cell:               req.Cell,
 		WorkerID:           req.Step.Agent,
@@ -365,7 +370,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		StepID:             req.Step.ID,
 		WorkflowInstanceID: req.InstanceID,
 		WorkingDir:         "/",
-		Env:                stepEnv(req.Agent, req.WorkflowEnv, req.Step.Env),
+		Env:                env,
 		Timeout:            x.d.cfg.Settings.TaskTimeoutDuration(),
 	}
 
@@ -462,6 +467,15 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		publishPayload = ""
 	}
 
+	// memory.memorize: off mirrors publish: off — requests (and any parse error)
+	// are dropped before the engine ever sees them.
+	memorizeRequests := res.MemorizeRequests
+	memorizeError := res.MemorizeError
+	if !req.Step.MemorizeEnabled() {
+		memorizeRequests = nil
+		memorizeError = nil
+	}
+
 	var usage *model.Usage
 	if anyUsage {
 		u := summedUsage
@@ -469,9 +483,12 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 	}
 
 	// A malformed APIARY_SPAWN block is a step-level error so the workflow fails
-	// with a descriptive message rather than silently dropping the request.
+	// with a descriptive message rather than silently dropping the request. The
+	// step's memorize requests still travel — persisted knowledge should survive
+	// an unrelated spawn failure.
 	if res.SpawnError != nil {
-		return workflow.StepResult{Success: false, Output: res.Output, Usage: usage, InputPrompt: res.InputPrompt, Err: res.SpawnError}
+		return workflow.StepResult{Success: false, Output: res.Output, Usage: usage, InputPrompt: res.InputPrompt,
+			MemorizeRequests: memorizeRequests, MemorizeError: memorizeError, Err: res.SpawnError}
 	}
 
 	return workflow.StepResult{
@@ -482,6 +499,8 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		PublishPayload:   publishPayload,
 		SpawnRequest:     res.SpawnRequest,
 		SpawnRequests:    res.SpawnRequests,
+		MemorizeRequests: memorizeRequests,
+		MemorizeError:    memorizeError,
 		Usage:            usage,
 		InputPrompt:      res.InputPrompt,
 		Err:              res.Error,
@@ -763,6 +782,20 @@ func stepEnv(agent config.AgentConfig, wfEnv, stepEnv map[string]string) map[str
 	}
 	for k, v := range stepEnv {
 		env[k] = v
+	}
+	return env
+}
+
+// withMemoryDir exposes the memory root to the agent subprocess as
+// APIARY_MEMORY_DIR, so it can read full memory entries directly (recall only
+// injects the index). Part of the identity base: an explicit env value already
+// present (any scope) wins. A "" dir (memory disabled) leaves env untouched.
+func withMemoryDir(env map[string]string, dir string) map[string]string {
+	if dir == "" {
+		return env
+	}
+	if _, ok := env["APIARY_MEMORY_DIR"]; !ok {
+		env["APIARY_MEMORY_DIR"] = dir
 	}
 	return env
 }

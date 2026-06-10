@@ -18,7 +18,7 @@ func TestExtractStructured_OutputAndSummary(t *testing.T) {
 		`APIARY_OUTPUT: {"complexity":"high","action":"implement"}`,
 	}, "\n")
 
-	cleaned, structured, summary, _, _ := extractStructured(raw)
+	cleaned, structured, summary, _, _, _ := extractStructured(raw)
 
 	if strings.Contains(cleaned, "APIARY_OUTPUT") || strings.Contains(cleaned, "APIARY_SUMMARY") {
 		t.Errorf("cleaned output still contains sentinels:\n%s", cleaned)
@@ -39,7 +39,7 @@ func TestExtractStructured_OutputAndSummary(t *testing.T) {
 
 func TestExtractStructured_NoSentinels(t *testing.T) {
 	raw := "Just a normal agent response.\nNothing structured here."
-	cleaned, structured, summary, publish, _ := extractStructured(raw)
+	cleaned, structured, summary, publish, _, _ := extractStructured(raw)
 	if publish != "" {
 		t.Errorf("expected empty publish, got: %q", publish)
 	}
@@ -60,7 +60,7 @@ func TestExtractStructured_LastOutputWins(t *testing.T) {
 		"some text",
 		`APIARY_OUTPUT: {"v":2}`,
 	}, "\n")
-	_, structured, _, _, _ := extractStructured(raw)
+	_, structured, _, _, _, _ := extractStructured(raw)
 	if structured == nil || structured["v"] != float64(2) {
 		t.Errorf("expected last APIARY_OUTPUT to win, got: %#v", structured)
 	}
@@ -71,7 +71,7 @@ func TestExtractStructured_BareLineRegression(t *testing.T) {
 		"real output",
 		`APIARY_OUTPUT: {"review_verdict":"rejected","reason":"missing tests"}`,
 	}, "\n")
-	cleaned, structured, _, _, _ := extractStructured(raw)
+	cleaned, structured, _, _, _, _ := extractStructured(raw)
 	if structured == nil {
 		t.Fatal("expected structured output for bare sentinel, got nil")
 	}
@@ -91,7 +91,7 @@ func TestExtractStructured_InlineBacktickWrapped(t *testing.T) {
 		"Here is my verdict:",
 		"`APIARY_OUTPUT: {\"review_verdict\": \"rejected\", \"reason\": \"flaky test\"}`",
 	}, "\n")
-	cleaned, structured, _, _, _ := extractStructured(raw)
+	cleaned, structured, _, _, _, _ := extractStructured(raw)
 	if structured == nil {
 		t.Fatal("expected structured output for backtick-wrapped sentinel, got nil")
 	}
@@ -116,7 +116,7 @@ func TestExtractStructured_FencedCodeBlock(t *testing.T) {
 		`APIARY_OUTPUT: {"review_verdict":"approved"}`,
 		"```",
 	}, "\n")
-	_, structured, _, _, _ := extractStructured(raw)
+	_, structured, _, _, _, _ := extractStructured(raw)
 	if structured == nil {
 		t.Fatal("expected structured output inside fenced block, got nil")
 	}
@@ -131,7 +131,7 @@ func TestExtractStructured_WrappedLastWins(t *testing.T) {
 		"some reconsideration",
 		"`APIARY_OUTPUT: {\"review_verdict\": \"rejected\"}`",
 	}, "\n")
-	_, structured, _, _, _ := extractStructured(raw)
+	_, structured, _, _, _, _ := extractStructured(raw)
 	if structured == nil {
 		t.Fatal("expected structured output, got nil")
 	}
@@ -142,7 +142,7 @@ func TestExtractStructured_WrappedLastWins(t *testing.T) {
 
 func TestExtractStructured_ProseMentionNotStripped(t *testing.T) {
 	raw := "I will now emit APIARY_OUTPUT: with the final verdict."
-	cleaned, structured, _, _, _ := extractStructured(raw)
+	cleaned, structured, _, _, _, _ := extractStructured(raw)
 	if structured != nil {
 		t.Errorf("prose mention should not parse as structured, got: %#v", structured)
 	}
@@ -153,7 +153,7 @@ func TestExtractStructured_ProseMentionNotStripped(t *testing.T) {
 
 func TestExtractStructured_InvalidJSONStrippedButNil(t *testing.T) {
 	raw := "real output\nAPIARY_OUTPUT: {not valid json}"
-	cleaned, structured, _, _, _ := extractStructured(raw)
+	cleaned, structured, _, _, _, _ := extractStructured(raw)
 	if structured != nil {
 		t.Errorf("expected nil structured for invalid JSON, got: %#v", structured)
 	}
@@ -175,7 +175,7 @@ func TestExtractStructured_PublishBlock(t *testing.T) {
 		"Trailing line.",
 	}, "\n")
 
-	cleaned, structured, summary, publish, _ := extractStructured(raw)
+	cleaned, structured, summary, publish, _, _ := extractStructured(raw)
 
 	if structured != nil || summary != "" {
 		t.Errorf("expected no structured/summary, got %#v / %q", structured, summary)
@@ -325,5 +325,63 @@ func TestBuildPrompt_NoWorkflowFieldsUnchanged(t *testing.T) {
 	}
 	if !strings.HasPrefix(prompt, "Task: Plain task") {
 		t.Errorf("plain prompt should start with the task line, got:\n%s", prompt)
+	}
+}
+
+func TestApplyStructured_MemorizeBlock(t *testing.T) {
+	result := model.RunResult{Output: "done\n" +
+		"APIARY_MEMORIZE_BEGIN\n" +
+		`{"scope":"global","name":"ci-duration","description":"CI takes 12m","content":"plan accordingly"}` + "\n" +
+		"APIARY_MEMORIZE_END\n"}
+	applyStructured(&result)
+
+	if result.MemorizeError != nil {
+		t.Fatalf("unexpected error: %v", result.MemorizeError)
+	}
+	if len(result.MemorizeRequests) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(result.MemorizeRequests))
+	}
+	req := result.MemorizeRequests[0]
+	if req.Scope != "global" || req.Name != "ci-duration" || req.Content != "plan accordingly" {
+		t.Fatalf("unexpected request: %+v", req)
+	}
+	if strings.Contains(result.Output, "APIARY_MEMORIZE") {
+		t.Fatalf("markers not stripped: %q", result.Output)
+	}
+	if result.Output != "done" {
+		t.Fatalf("unexpected cleaned output: %q", result.Output)
+	}
+}
+
+func TestApplyStructured_MemorizeArrayAndDefaults(t *testing.T) {
+	result := model.RunResult{Output: "APIARY_MEMORIZE_BEGIN\n" +
+		`[{"content":"task note, no scope"},{"scope":"global","name":"x-y","description":"d","content":"c"}]` + "\n" +
+		"APIARY_MEMORIZE_END"}
+	applyStructured(&result)
+
+	if result.MemorizeError != nil {
+		t.Fatalf("unexpected error: %v", result.MemorizeError)
+	}
+	if len(result.MemorizeRequests) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(result.MemorizeRequests))
+	}
+	if result.MemorizeRequests[0].Scope != "" {
+		t.Fatalf("scope should stay empty (task default applied later): %+v", result.MemorizeRequests[0])
+	}
+}
+
+func TestApplyStructured_MemorizeInvalidJSON(t *testing.T) {
+	result := model.RunResult{Output: "ok\nAPIARY_MEMORIZE_BEGIN\nnot json\nAPIARY_MEMORIZE_END"}
+	applyStructured(&result)
+
+	if result.MemorizeError == nil {
+		t.Fatal("expected MemorizeError")
+	}
+	if len(result.MemorizeRequests) != 0 {
+		t.Fatalf("no requests expected, got %v", result.MemorizeRequests)
+	}
+	// The block is stripped even when malformed, so it never leaks downstream.
+	if strings.Contains(result.Output, "APIARY_MEMORIZE") || strings.Contains(result.Output, "not json") {
+		t.Fatalf("block not stripped: %q", result.Output)
 	}
 }

@@ -97,6 +97,14 @@ type RunResult struct {
 	// SpawnError is set when an APIARY_SPAWN block was present but its body was
 	// not valid JSON. The workflow executor turns this into a failed step.
 	SpawnError error
+	// MemorizeRequests are the parsed APIARY_MEMORIZE_BEGIN/END requests (a single
+	// object or a JSON array). The markers are stripped from Output. The workflow
+	// engine persists each request to the memory store when memory is enabled.
+	MemorizeRequests []MemorizeRequest
+	// MemorizeError is set when an APIARY_MEMORIZE block was present but its body
+	// was not valid JSON. Unlike SpawnError it never fails the step — the engine
+	// surfaces it as a warning and the run's outcome is untouched.
+	MemorizeError error
 
 	// RateLimited is true when the provider rejected the run because of a
 	// usage/rate limit (e.g. Claude's 5-hour session limit). Such a run does no
