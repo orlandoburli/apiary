@@ -426,6 +426,21 @@
           "description": "Stop re-dispatching a (task, workflow) pair after this many consecutive failed instances (rate-limited runs fail over and don't count). Default 3; negative disables",
           "default": 3
         },
+        "log_max_size_mb": {
+          "type": "integer",
+          "description": "Rotate apiary.log when it grows past this size in MB. Default 50; negative disables rotation",
+          "default": 50
+        },
+        "log_max_backups": {
+          "type": "integer",
+          "description": "Rotated log files to keep (apiary.log.1 .. .N, oldest dropped). Default 5; negative keeps none",
+          "default": 5
+        },
+        "log_max_age_days": {
+          "type": "integer",
+          "description": "Delete rotated backups and per-task log files older than this many days (checked at startup and after each rotation). Default 30; negative disables",
+          "default": 30
+        },
         "telemetry": {
           "type": "object",
           "description": "Telemetry configuration",

@@ -448,6 +448,12 @@ settings:
   # Stop re-dispatching a (task, workflow) after this many consecutive failed
   # instances (rate-limited runs fail over and don't count). <=0 disables.
   max_attempts: 3
+  # Log rotation: rotate apiary.log past this size (MB), keep this many
+  # rotated backups, and prune backups + per-task logs older than this many
+  # days. Negative values disable the corresponding behaviour.
+  log_max_size_mb: 50
+  log_max_backups: 5
+  log_max_age_days: 30
 
 # ── Task completion hook (internal-task-model) ───────────────────────────────────
 # Fires once per InternalTask, when the LAST of its fanned-out workflows reaches a

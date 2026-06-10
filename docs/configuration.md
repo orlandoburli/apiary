@@ -202,6 +202,9 @@ settings:
   result_comment: true
   task_timeout: 30m
   max_attempts: 3
+  log_max_size_mb: 50
+  log_max_backups: 5
+  log_max_age_days: 30
 ```
 
 | Field | Default | Description |
@@ -212,6 +215,20 @@ settings:
 | `result_comment` | `false` | Post the agent's final output back as a comment |
 | `task_timeout` | `30m` | Default per-run timeout (e.g. `2h`) |
 | `max_attempts` | 3 | Stop re-dispatching a `(task, workflow)` after this many **consecutive failed** instances; `<=0` disables — see [resilience](resilience.md#re-dispatch-failure-cap) |
+| `log_max_size_mb` | 50 | Rotate `apiary.log` past this size (MB); negative disables rotation |
+| `log_max_backups` | 5 | Rotated files kept as `apiary.log.1` … `.N`, oldest dropped; negative keeps none |
+| `log_max_age_days` | 30 | Prune rotated backups **and** per-task logs (`logs/tasks/*.log`) older than this, at startup and after each rotation; negative disables |
+
+### Log rotation
+
+The daemon writes its service log to `<config-dir>/.apiary/logs/apiary.log`
+and one file per task under `logs/tasks/`. Without limits these grow
+unbounded, so rotation is on by default: when a write would push `apiary.log`
+past `log_max_size_mb`, the file is renamed to `apiary.log.1` (older backups
+shift up, the one past `log_max_backups` is dropped) and a fresh file is
+started. Backups and task-log files untouched for `log_max_age_days` are
+deleted. Task history shown in the dashboard lives in SQLite and is not
+affected by file pruning.
 
 ### Concurrency
 

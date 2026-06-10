@@ -45,18 +45,35 @@ type LogEntry struct {
 	Timestamp time.Time
 }
 
+// Rotation controls size-based rotation of the shared apiary.log file and
+// age-based pruning of rotated backups and per-task log files. Values <= 0
+// disable the corresponding behaviour.
+type Rotation struct {
+	MaxSizeMB  int // rotate apiary.log past this size; <=0 disables rotation
+	MaxBackups int // rotated files to keep (apiary.log.1 .. .N); <=0 keeps none
+	MaxAgeDays int // delete backups and task logs older than this; <=0 disables
+}
+
+// DefaultRotation mirrors the defaults config.Load applies when the settings
+// are absent from apiary.yaml.
+func DefaultRotation() Rotation {
+	return Rotation{MaxSizeMB: 50, MaxBackups: 5, MaxAgeDays: 30}
+}
+
 // Logger writes to file and optional SQLite.
 type Logger struct {
-	file   io.WriteCloser
+	file   *os.File
+	size   int64
 	db     *db.Client
 	mu     sync.Mutex
 	level  Level
 	logDir string
+	rot    Rotation
 }
 
 // New creates a logger that writes to a log file in logDir.
 // If db is provided, logs also go to SQLite.
-func New(logDir string, dbClient *db.Client, level Level) (*Logger, error) {
+func New(logDir string, dbClient *db.Client, level Level, rot Rotation) (*Logger, error) {
 	if logDir != "" {
 		if err := os.MkdirAll(logDir, 0755); err != nil {
 			return nil, fmt.Errorf("create log dir: %w", err)
@@ -69,12 +86,21 @@ func New(logDir string, dbClient *db.Client, level Level) (*Logger, error) {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
 
-	return &Logger{
+	var size int64
+	if fi, err := f.Stat(); err == nil {
+		size = fi.Size()
+	}
+
+	l := &Logger{
 		file:   f,
+		size:   size,
 		db:     dbClient,
 		level:  level,
 		logDir: logDir,
-	}, nil
+		rot:    rot,
+	}
+	l.pruneOldLogs()
+	return l, nil
 }
 
 func (l *Logger) Close() error {
@@ -153,7 +179,7 @@ func (l *Logger) log(ctx context.Context, level Level, msg, component, taskID st
 		if component != "" {
 			line = fmt.Sprintf("[%s] [%s] [%s] %s\n", entry.Timestamp.Format("2006-01-02 15:04:05"), level, component, msg)
 		}
-		l.file.Write([]byte(line))
+		l.writeLine(line)
 	}
 
 	// Write to database
@@ -162,6 +188,68 @@ func (l *Logger) log(ctx context.Context, level Level, msg, component, taskID st
 			l.db.WriteTaskLog(ctx, taskID, string(level), msg)
 		} else {
 			l.db.WriteServiceLog(ctx, string(level), msg, component)
+		}
+	}
+}
+
+// writeLine appends a line to apiary.log, rotating first when the write would
+// push the file past the configured size limit. Caller must hold l.mu.
+func (l *Logger) writeLine(line string) {
+	if l.rot.MaxSizeMB > 0 && l.size > 0 && l.size+int64(len(line)) > int64(l.rot.MaxSizeMB)*1024*1024 {
+		l.rotate()
+	}
+	n, _ := l.file.Write([]byte(line))
+	l.size += int64(n)
+}
+
+// rotate closes apiary.log, shifts existing backups up one slot
+// (apiary.log.1 -> apiary.log.2, ..., dropping the oldest), and reopens a
+// fresh file. With MaxBackups <= 0 the current file is simply removed.
+// Caller must hold l.mu.
+func (l *Logger) rotate() {
+	logFile := filepath.Join(l.logDir, "apiary.log")
+
+	l.file.Close()
+
+	if l.rot.MaxBackups > 0 {
+		for i := l.rot.MaxBackups - 1; i >= 1; i-- {
+			src := fmt.Sprintf("%s.%d", logFile, i)
+			dst := fmt.Sprintf("%s.%d", logFile, i+1)
+			os.Remove(dst) // os.Rename does not overwrite on Windows
+			os.Rename(src, dst)
+		}
+		os.Remove(logFile + ".1")
+		os.Rename(logFile, logFile+".1")
+	} else {
+		os.Remove(logFile)
+	}
+
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		// Leave size past the limit so the next write retries the rotation
+		// (and the reopen) instead of silently giving up for good.
+		return
+	}
+	l.file = f
+	l.size = 0
+	l.pruneOldLogs()
+}
+
+// pruneOldLogs deletes rotated backups (apiary.log.N) and per-task log files
+// older than the retention window. Files touched within the window — including
+// logs of still-running tasks — are left alone. Pruning is best-effort
+// housekeeping, so errors are ignored.
+func (l *Logger) pruneOldLogs() {
+	if l.rot.MaxAgeDays <= 0 || l.logDir == "" {
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -l.rot.MaxAgeDays)
+
+	backups, _ := filepath.Glob(filepath.Join(l.logDir, "apiary.log.*"))
+	taskLogs, _ := filepath.Glob(filepath.Join(l.logDir, "tasks", "*.log"))
+	for _, path := range append(backups, taskLogs...) {
+		if fi, err := os.Stat(path); err == nil && fi.ModTime().Before(cutoff) {
+			os.Remove(path)
 		}
 	}
 }

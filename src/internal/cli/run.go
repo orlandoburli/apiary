@@ -73,7 +73,12 @@ func newRunCmd() *cobra.Command {
 				logLevel = logging.LevelDebug
 				aplog.Enable(true)
 			}
-			logger, err := logging.New(logDir, dbClient, logLevel)
+			rotation := logging.Rotation{
+				MaxSizeMB:  cfg.Settings.LogMaxSizeMB,
+				MaxBackups: cfg.Settings.LogMaxBackups,
+				MaxAgeDays: cfg.Settings.LogMaxAgeDays,
+			}
+			logger, err := logging.New(logDir, dbClient, logLevel, rotation)
 			if err != nil {
 				return fmt.Errorf("initializing logger: %w", err)
 			}
