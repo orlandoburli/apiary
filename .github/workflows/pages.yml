@@ -30,7 +30,8 @@ jobs:
           cp README.md docs/index.md
           cp DEVELOPMENT.md docs/development.md
           # Fix relative paths from root-level docs
-          sed -i 's|docs/dashboard.md|dashboard.md|g' docs/index.md
+          # Strip the docs/ prefix from all markdown links so they resolve on the site
+          sed -i 's|](docs/|](|g' docs/index.md
           sed -i 's|DEVELOPMENT.md|development.md|g' docs/index.md
           sed -i 's|docs/logo.svg|logo.svg|g' docs/index.md
           sed -i 's|docs/screenshots/|screenshots/|g' docs/index.md

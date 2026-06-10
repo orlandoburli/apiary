@@ -75,6 +75,8 @@ workflows:
 apiary run
 ```
 
+New here? The [Quickstart](docs/quickstart.md) walks this whole loop end to end.
+
 ## What's in the beta
 
 Apiary runs end-to-end today and ships with the safeguards that make unattended agent dispatch safe to leave running:
@@ -86,7 +88,21 @@ Apiary runs end-to-end today and ships with the safeguards that make unattended 
 - **Scoped env vars** — set environment variables per agent, workflow, or step, merged with precedence.
 - **Schema-validated config** — `apiary.yaml` is validated against a JSON Schema, with live validation in the VS Code extension.
 
-See the [Apiary Guide](docs/apiary-guide.md#rate-limits--resilience) for details.
+See [Rate Limits & Resilience](docs/resilience.md) for details.
+
+## Documentation
+
+| Page | What's there |
+|---|---|
+| [Installation](docs/installation.md) | Homebrew, Scoop, Docker, deb/rpm, direct download |
+| [Quickstart](docs/quickstart.md) | From install to your first autonomously handled issue |
+| [Concepts](docs/concepts.md) | Vocabulary, architecture, lifecycle of a task |
+| [Configuration](docs/configuration.md) | Every field of `apiary.yaml` — runners, sources, agents, settings |
+| [Workflows](docs/workflows.md) | Triggers, steps, approval gates, CI waits, retry loops |
+| [Tasks & Fan-out](docs/tasks-and-fanout.md) | `APIARY_PUBLISH`, `APIARY_SPAWN`, task-level hooks |
+| [Rate Limits & Resilience](docs/resilience.md) | Failover chains and unattended-dispatch safeguards |
+| [CLI Reference](docs/cli.md) | Every command and flag |
+| [Dashboard](docs/dashboard.md) | The terminal UI, tab by tab |
 
 ## Installation
 
