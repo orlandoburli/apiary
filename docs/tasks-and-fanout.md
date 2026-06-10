@@ -28,13 +28,14 @@ and logs.
 
 ## Output markers
 
-Apiary scans agent output for three markers:
+Apiary scans agent output for these markers:
 
 | Marker | Purpose |
 |---|---|
 | `APIARY_OUTPUT: {…}` | [Structured output](workflows.md#agent-steps) validated against the step's schema |
 | `APIARY_PUBLISH_BEGIN … END` | Publish human-facing text back to the source item |
 | `APIARY_SPAWN_BEGIN … END` | Create a child task and run a named workflow on it |
+| `APIARY_MEMORIZE_BEGIN … END` | Save a task note or durable fact to [agent memory](memory.md) |
 
 Because they are plain text, they work identically across every runner — the
 agent does not need credentials or tracker-specific tooling.
