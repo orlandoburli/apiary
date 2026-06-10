@@ -217,7 +217,7 @@ settings:
 | `max_attempts` | 3 | Stop re-dispatching a `(task, workflow)` after this many **consecutive failed** instances; `<=0` disables — see [resilience](resilience.md#re-dispatch-failure-cap) |
 | `log_max_size_mb` | 50 | Rotate `apiary.log` past this size (MB); negative disables rotation |
 | `log_max_backups` | 5 | Rotated files kept as `apiary.log.1` … `.N`, oldest dropped; negative keeps none |
-| `log_max_age_days` | 30 | Prune rotated backups **and** per-task logs (`logs/tasks/*.log`) older than this, at startup and after each rotation; negative disables |
+| `log_max_age_days` | 30 | Prune rotated backups, per-task logs (`logs/tasks/*.log`) **and** SQLite log rows (`service_logs`/`task_logs`) older than this; negative disables |
 
 ### Log rotation
 
@@ -227,8 +227,16 @@ unbounded, so rotation is on by default: when a write would push `apiary.log`
 past `log_max_size_mb`, the file is renamed to `apiary.log.1` (older backups
 shift up, the one past `log_max_backups` is dropped) and a fresh file is
 started. Backups and task-log files untouched for `log_max_age_days` are
-deleted. Task history shown in the dashboard lives in SQLite and is not
-affected by file pruning.
+deleted.
+
+The same log stream is persisted to SQLite for the dashboard (`service_logs`
+and `task_logs` in `apiary.db`), and those tables get the same retention: rows
+older than `log_max_age_days` are deleted at daemon startup and then daily,
+in small batches so log writes are never blocked for long. Older lines remain
+readable in the rotated log files. Deleting rows lets SQLite reuse the freed
+pages — the file stops growing but does not shrink; to compact a database
+that grew before retention existed, stop the daemon and run
+`sqlite3 .apiary/apiary.db 'VACUUM;'` once.
 
 ### Concurrency
 

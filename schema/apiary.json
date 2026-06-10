@@ -438,7 +438,7 @@
         },
         "log_max_age_days": {
           "type": "integer",
-          "description": "Delete rotated backups and per-task log files older than this many days (checked at startup and after each rotation). Default 30; negative disables",
+          "description": "Delete rotated backups, per-task log files, and SQLite log rows (service_logs/task_logs) older than this many days. Files are checked at startup and after each rotation; DB rows at startup and then daily. Default 30; negative disables",
           "default": 30
         },
         "telemetry": {

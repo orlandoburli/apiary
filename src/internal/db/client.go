@@ -406,6 +406,33 @@ func (c *Client) WriteServiceLog(ctx context.Context, level, message, component 
 	return err
 }
 
+// PruneLogsBefore deletes service_logs and task_logs rows older than cutoff.
+// Deletes run in batches so the single SQLite writer lock is never held long
+// while the dispatcher keeps streaming log writes. Returns rows deleted.
+// Lines past the retention window remain available in the rotated log files.
+func (c *Client) PruneLogsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	const batch = 5000
+	var total int64
+	for _, table := range []string{"service_logs", "task_logs"} {
+		stmt := fmt.Sprintf(`
+			DELETE FROM %s WHERE id IN (
+				SELECT id FROM %s WHERE timestamp < ? LIMIT %d
+			)`, table, table, batch)
+		for {
+			res, err := c.db.ExecContext(ctx, stmt, cutoff)
+			if err != nil {
+				return total, fmt.Errorf("prune %s: %w", table, err)
+			}
+			n, _ := res.RowsAffected()
+			total += n
+			if n < batch {
+				break
+			}
+		}
+	}
+	return total, nil
+}
+
 // Agent tracking
 
 func (c *Client) UpsertAgent(ctx context.Context, id, description string) error {
