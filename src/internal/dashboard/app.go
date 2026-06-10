@@ -150,6 +150,7 @@ type workflowMonitorMsg struct {
 }
 type workflowStepLogsMsg struct {
 	stepID string
+	open   bool // user opened the panel (vs a live-tail refresh of an open panel)
 	logs   []LogEntry
 }
 
@@ -237,6 +238,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.InstanceHistory = nil
 			t.Detail = msg.detail
 			t.LogScroll = 0
+			t.LogFollow = true // open pinned to the tail; render anchors the viewport
 			t.View = TaskViewLogs
 			t.LogTaskID = msg.taskID
 			t.LogOldestID = msg.oldestID
@@ -269,6 +271,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.Logs = nil
 			t.Detail = msg.detail
 			t.LogScroll = 0
+			t.LogFollow = true // open pinned to the tail; render anchors the viewport
 			t.View = TaskViewLogs
 			// History (per-instance) path is segment-bounded — no flat-log cursor.
 			t.LogTaskID = ""
@@ -308,12 +311,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.model.loading = false
 
 	case agentTaskLogsMsg:
-		if a.model.agentsTab != nil {
-			a.model.agentsTab.LogsTaskID = msg.taskID
-			a.model.agentsTab.LogsTask = msg.detail
-			a.model.agentsTab.TaskLogs = msg.logs
-			a.model.agentsTab.TaskLogIdx = 0
-			a.model.agentsTab.View = AgentViewTaskLogs
+		if ag := a.model.agentsTab; ag != nil {
+			// A live-tail refresh of the already-open view swaps the data in place
+			// and leaves the scroll cursor alone (render re-pins when following).
+			refresh := ag.View == AgentViewTaskLogs && ag.LogsTaskID == msg.taskID
+			ag.LogsTaskID = msg.taskID
+			ag.LogsTask = msg.detail
+			ag.TaskLogs = msg.logs
+			if !refresh {
+				ag.TaskLogIdx = 0
+				ag.TaskLogFollow = true // open pinned to the tail
+				ag.View = AgentViewTaskLogs
+			}
 		}
 		a.model.loading = false
 
@@ -346,16 +355,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.model.tasksTab.WorkflowStepIdx = 0
 			a.model.tasksTab.WorkflowLogs = nil
 			a.model.tasksTab.WorkflowLogScroll = 0
+			a.model.tasksTab.WorkflowLogStepID = ""
 			a.model.tasksTab.WorkflowShowLogs = false
 			a.model.tasksTab.View = TaskViewWorkflow
 		}
 		a.model.loading = false
 
 	case workflowStepLogsMsg:
-		if a.model.tasksTab != nil {
-			a.model.tasksTab.WorkflowLogs = msg.logs
-			a.model.tasksTab.WorkflowLogScroll = 0
-			a.model.tasksTab.WorkflowShowLogs = true
+		if t := a.model.tasksTab; t != nil {
+			if msg.open {
+				t.WorkflowLogs = msg.logs
+				t.WorkflowLogStepID = msg.stepID
+				t.WorkflowLogScroll = 0
+				t.WorkflowLogFollow = true // open pinned to the tail
+				t.WorkflowShowLogs = true
+			} else if t.WorkflowShowLogs && t.WorkflowLogStepID == msg.stepID {
+				// Live-tail refresh: swap data only; a stale refresh for a closed
+				// panel or another step is dropped.
+				t.WorkflowLogs = msg.logs
+			}
 		}
 		a.model.loading = false
 
@@ -380,31 +398,23 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tailTaskLogsMsg:
-		// Append newly-arrived flat-log lines. Follow the tail only when the viewport
-		// is already pinned to the bottom (matches the G/end semantics); otherwise the
-		// appended lines sit below and the reader's position is left untouched.
+		// Append newly-arrived flat-log lines. While LogFollow is on, render keeps
+		// the viewport pinned to the tail; otherwise the appended lines sit below
+		// and the reader's position is left untouched.
 		if t := a.model.tasksTab; t != nil && t.View == TaskViewLogs &&
 			len(t.InstanceHistory) == 0 && msg.taskID == t.LogTaskID && len(msg.logs) > 0 {
-			following := t.LogScroll >= lastIndex(len(a.taskLogLines()))
 			t.Logs = append(t.Logs, msg.logs...)
 			t.LogNewestID = msg.newestID
-			if following {
-				t.LogScroll = lastIndex(len(a.taskLogLines()))
-			}
 		}
 
 	case taskHistoryRefreshMsg:
-		// Live-refresh the per-instance history view, preserving scroll. Earlier
-		// (terminal) segments keep a stable line count, so a scrolled-up reader's
-		// top-anchored position holds; a bottom-pinned reader follows the tail.
+		// Live-refresh the per-instance history view. Earlier (terminal) segments
+		// keep a stable line count, so a scrolled-up reader's top-anchored position
+		// holds; while LogFollow is on, render keeps the viewport on the tail.
 		if t := a.model.tasksTab; t != nil && t.View == TaskViewLogs && len(t.InstanceHistory) > 0 {
-			following := t.LogScroll >= lastIndex(len(a.taskLogLines()))
 			t.InstanceHistory = msg.segments
 			if msg.detail != nil {
 				t.Detail = msg.detail
-			}
-			if following {
-				t.LogScroll = lastIndex(len(a.taskLogLines()))
 			}
 		}
 	}
@@ -600,6 +610,7 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "Logs":
 			if a.model.logsTab != nil && a.model.logsTab.Scrolled > 0 {
 				a.model.logsTab.Scrolled--
+				a.model.logsTab.Follow = false
 			}
 		}
 	case "down":
@@ -633,6 +644,7 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "Logs":
 			if a.model.logsTab != nil {
 				a.model.logsTab.Scrolled = 0
+				a.model.logsTab.Follow = false
 			}
 		}
 	case "end":
@@ -648,6 +660,7 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "Logs":
 			if a.model.logsTab != nil {
 				a.model.logsTab.Scrolled = lastIndex(len(a.logVisualLines()))
+				a.model.logsTab.Follow = true
 			}
 		}
 	case "pgup", "ctrl+u":
@@ -669,6 +682,7 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "Logs":
 			if a.model.logsTab != nil {
 				a.model.logsTab.Scrolled = clampScroll(a.model.logsTab.Scrolled-a.pageSize(), len(a.logVisualLines()))
+				a.model.logsTab.Follow = false
 			}
 		}
 	case "pgdown", "ctrl+d", " ":
@@ -767,6 +781,7 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 			ag.LogsTaskID = ""
 			ag.TaskLogIdx = 0
 		case "up":
+			ag.TaskLogFollow = false
 			if ag.TaskLogIdx > 0 {
 				ag.TaskLogIdx--
 			}
@@ -776,10 +791,13 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 			}
 		case "g", "home":
 			ag.TaskLogIdx = 0
+			ag.TaskLogFollow = false
 		case "G", "end":
 			ag.TaskLogIdx = lastIndex(len(a.agentTaskLogLines()))
+			ag.TaskLogFollow = true
 		case "pgup", "ctrl+u":
 			ag.TaskLogIdx = clampScroll(ag.TaskLogIdx-a.pageSize(), len(a.agentTaskLogLines()))
+			ag.TaskLogFollow = false
 		case "pgdown", "ctrl+d", " ":
 			ag.TaskLogIdx = clampScroll(ag.TaskLogIdx+a.pageSize(), len(a.agentTaskLogLines()))
 		case "r":
@@ -1043,6 +1061,7 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 		}
 	case "up":
 		if t.View == TaskViewLogs {
+			t.LogFollow = false
 			if t.LogScroll > 0 {
 				t.LogScroll--
 			} else if cmd := a.loadOlderLogsCmd(t); cmd != nil {
@@ -1060,17 +1079,20 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 	case "g", "home":
 		if t.View == TaskViewLogs {
 			t.LogScroll = 0
+			t.LogFollow = false
 		} else if t.View == TaskViewDetail {
 			t.DetailScroll = 0
 		}
 	case "G", "end":
 		if t.View == TaskViewLogs {
 			t.LogScroll = lastIndex(len(a.taskLogLines()))
+			t.LogFollow = true
 		} else if t.View == TaskViewDetail {
 			t.DetailScroll = len(a.taskDetailLines(t)) // render clamps to the last full page
 		}
 	case "pgup", "ctrl+u":
 		if t.View == TaskViewLogs {
+			t.LogFollow = false
 			if t.LogScroll == 0 {
 				if cmd := a.loadOlderLogsCmd(t); cmd != nil {
 					return a, cmd
@@ -1107,6 +1129,7 @@ func (a *App) handleWorkflowMonitorKey(key string) (tea.Model, tea.Cmd) {
 		if t.WorkflowShowLogs {
 			t.WorkflowShowLogs = false
 			t.WorkflowLogs = nil
+			t.WorkflowLogStepID = ""
 		} else {
 			t.View = TaskViewList
 			t.WorkflowInstance = nil
@@ -1116,12 +1139,14 @@ func (a *App) handleWorkflowMonitorKey(key string) (tea.Model, tea.Cmd) {
 
 	case "up", "k":
 		if t.WorkflowShowLogs {
+			t.WorkflowLogFollow = false
 			if t.WorkflowLogScroll > 0 {
 				t.WorkflowLogScroll--
 			}
 		} else if t.WorkflowStepIdx > 0 {
 			t.WorkflowStepIdx--
 			t.WorkflowLogs = nil
+			t.WorkflowLogStepID = ""
 			t.WorkflowShowLogs = false
 		}
 
@@ -1134,12 +1159,14 @@ func (a *App) handleWorkflowMonitorKey(key string) (tea.Model, tea.Cmd) {
 		} else if t.WorkflowStepIdx < len(inst.Steps)-1 {
 			t.WorkflowStepIdx++
 			t.WorkflowLogs = nil
+			t.WorkflowLogStepID = ""
 			t.WorkflowShowLogs = false
 		}
 
 	case "g", "home":
 		if t.WorkflowShowLogs {
 			t.WorkflowLogScroll = 0
+			t.WorkflowLogFollow = false
 		} else {
 			t.WorkflowStepIdx = 0
 		}
@@ -1147,6 +1174,7 @@ func (a *App) handleWorkflowMonitorKey(key string) (tea.Model, tea.Cmd) {
 	case "G", "end":
 		if t.WorkflowShowLogs {
 			t.WorkflowLogScroll = lastIndex(len(a.wfStepLogLines()))
+			t.WorkflowLogFollow = true
 		} else {
 			t.WorkflowStepIdx = lastIndex(len(inst.Steps))
 		}
@@ -1154,6 +1182,7 @@ func (a *App) handleWorkflowMonitorKey(key string) (tea.Model, tea.Cmd) {
 	case "pgup", "ctrl+u":
 		if t.WorkflowShowLogs {
 			t.WorkflowLogScroll = clampScroll(t.WorkflowLogScroll-a.pageSize(), len(a.wfStepLogLines()))
+			t.WorkflowLogFollow = false
 		} else {
 			t.WorkflowStepIdx = clampScroll(t.WorkflowStepIdx-a.pageSize(), len(inst.Steps))
 		}
@@ -1183,7 +1212,7 @@ func (a *App) handleWorkflowMonitorKey(key string) (tea.Model, tea.Cmd) {
 		if !t.WorkflowShowLogs && t.WorkflowStepIdx < len(inst.Steps) {
 			step := inst.Steps[t.WorkflowStepIdx]
 			a.model.loading = true
-			return a, a.fetchWorkflowStepLogs(inst.CellID, step.StepID, step.StartedAt, step.FinishedAt)
+			return a, a.fetchWorkflowStepLogs(inst.CellID, step.StepID, step.StartedAt, step.FinishedAt, true)
 		}
 
 	case "r":
@@ -1217,6 +1246,7 @@ func (a *App) selectWorkflowInstance(t *TasksTab, idx int) {
 	t.WorkflowStepIdx = 0
 	t.WorkflowLogs = nil
 	t.WorkflowLogScroll = 0
+	t.WorkflowLogStepID = ""
 	t.WorkflowShowLogs = false
 }
 
@@ -1274,6 +1304,17 @@ func (a *App) pageSize() int {
 		n = 1
 	}
 	return n
+}
+
+// pinToTail returns the scroll offset that anchors a viewport of rows lines to
+// the end of total lines — the start of the last full page (0 when everything
+// fits). Renderers use it to keep follow-mode log views pinned to the tail.
+func pinToTail(total, rows int) int {
+	off := total - rows
+	if off < 0 {
+		return 0
+	}
+	return off
 }
 
 // clampScroll clamps a scroll offset to [0, total-1].
@@ -1666,7 +1707,9 @@ func (a *App) refreshWorkflowMonitor(instanceID, cellID string) tea.Cmd {
 type workflowMonitorRefreshMsg struct{ instance *WorkflowInstanceItem }
 
 // fetchWorkflowStepLogs fetches task logs scoped to a specific step's time window.
-func (a *App) fetchWorkflowStepLogs(cellID, stepID string, from, to *time.Time) tea.Cmd {
+// open marks a user-initiated panel open; a live-tail refresh passes false so the
+// handler swaps data without resetting the scroll position.
+func (a *App) fetchWorkflowStepLogs(cellID, stepID string, from, to *time.Time, open bool) tea.Cmd {
 	dbConn := a.dbConn
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
@@ -1683,7 +1726,7 @@ func (a *App) fetchWorkflowStepLogs(cellID, stepID string, from, to *time.Time) 
 				}
 			}
 		}
-		return workflowStepLogsMsg{stepID: stepID, logs: logs}
+		return workflowStepLogsMsg{stepID: stepID, open: open, logs: logs}
 	}
 }
 
@@ -1862,8 +1905,17 @@ func (a *App) fetchActiveTab() tea.Cmd {
 		if t := a.model.tasksTab; t != nil {
 			switch t.View {
 			case TaskViewWorkflow:
-				if t.WorkflowInstance != nil {
-					return a.refreshWorkflowMonitor(t.WorkflowInstance.ID, t.WorkflowInstance.CellID)
+				if inst := t.WorkflowInstance; inst != nil {
+					cmds := []tea.Cmd{a.refreshWorkflowMonitor(inst.ID, inst.CellID)}
+					// Live-tail the open step-log panel (throttled like the logs view).
+					if t.WorkflowShowLogs && t.WorkflowLogStepID != "" &&
+						t.WorkflowStepIdx < len(inst.Steps) && a.model.tickCount%2 == 0 {
+						step := inst.Steps[t.WorkflowStepIdx]
+						if step.StepID == t.WorkflowLogStepID {
+							cmds = append(cmds, a.fetchWorkflowStepLogs(inst.CellID, step.StepID, step.StartedAt, step.FinishedAt, false))
+						}
+					}
+					return tea.Batch(cmds...)
 				}
 				return nil
 			case TaskViewDetail:
@@ -1887,6 +1939,14 @@ func (a *App) fetchActiveTab() tea.Cmd {
 		}
 		return a.fetchTasks()
 	case "Agents":
+		// Live-tail the open task-log drill-down (throttled like the Tasks logs
+		// view); the agent list itself only re-queries while it is on screen.
+		if ag := a.model.agentsTab; ag != nil && ag.View == AgentViewTaskLogs {
+			if ag.LogsTaskID != "" && a.model.tickCount%2 == 0 {
+				return a.fetchAgentTaskLogs(ag.LogsTaskID)
+			}
+			return nil
+		}
 		return a.fetchAgents()
 	case "Usage":
 		return a.fetchUsage()
@@ -3657,6 +3717,15 @@ func (a *App) renderTaskLogs(t *TasksTab, height int) string {
 	if rows < 1 {
 		rows = 1
 	}
+	// Follow mode: keep the viewport pinned to the tail; scrolling down to the
+	// last page re-engages it (matching the G/end semantics).
+	maxStart := pinToTail(len(lines), rows)
+	if t.LogScroll >= maxStart {
+		t.LogFollow = true
+	}
+	if t.LogFollow {
+		t.LogScroll = maxStart
+	}
 	// A "load older" hint takes the top row when the flat-log tail is scrolled to
 	// its start and an older page is available (or being fetched).
 	hint := ""
@@ -4388,6 +4457,15 @@ func (a *App) renderAgentTaskLogs(ag *AgentsTab, height int) string {
 	if rows < 1 {
 		rows = 1
 	}
+	// Follow mode: keep the viewport pinned to the tail; scrolling down to the
+	// last page re-engages it (matching the G/end semantics).
+	maxStart := pinToTail(len(lines), rows)
+	if ag.TaskLogIdx >= maxStart {
+		ag.TaskLogFollow = true
+	}
+	if ag.TaskLogFollow {
+		ag.TaskLogIdx = maxStart
+	}
 	start := clampScroll(ag.TaskLogIdx, len(lines))
 	end := start + rows
 	if end > len(lines) {
@@ -4447,6 +4525,15 @@ func (a *App) renderLogsTab(height int) string {
 	rows := height - 2 // top + bottom borders
 	if rows < 1 {
 		rows = 1
+	}
+	// Follow mode: keep the viewport pinned to the tail; scrolling down to the
+	// last page re-engages it (matching the end-key semantics).
+	maxStart := pinToTail(len(lines), rows)
+	if l.Scrolled >= maxStart {
+		l.Follow = true
+	}
+	if l.Follow {
+		l.Scrolled = maxStart
 	}
 	start := l.Scrolled
 	if start > len(lines)-1 {
@@ -4865,6 +4952,18 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 		right.WriteString(StyleTableHeader.Render(fitLine("STEP LOGS", rightW)) + "\n")
 		lines := a.wfStepLogLines()
 		logRows := height - 4
+		if logRows < 1 {
+			logRows = 1
+		}
+		// Follow mode: keep the panel pinned to the tail; scrolling down to the
+		// last page re-engages it (matching the G/end semantics).
+		maxStart := pinToTail(len(lines), logRows)
+		if t.WorkflowLogScroll >= maxStart {
+			t.WorkflowLogFollow = true
+		}
+		if t.WorkflowLogFollow {
+			t.WorkflowLogScroll = maxStart
+		}
 		ls := t.WorkflowLogScroll
 		if ls > len(lines)-1 {
 			ls = len(lines) - 1
