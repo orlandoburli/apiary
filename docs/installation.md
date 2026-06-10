@@ -64,3 +64,35 @@ Grab the archive for your OS/arch from the
 
 See the [Development guide](development.md#clone-and-build) for building with
 the Go toolchain.
+
+## Verify the install
+
+```sh
+apiary version
+```
+
+## Upgrading
+
+Apiary is a single binary; upgrading replaces it in place and your project
+state (`.apiary/` directories) is untouched.
+
+```sh
+brew upgrade --cask orlandoburli/tap/apiary     # Homebrew
+scoop update apiary                             # Scoop
+docker pull ghcr.io/orlandoburli/apiary:latest  # Docker
+```
+
+For `.deb`/`.rpm` and direct downloads, install the new release the same way
+as the original.
+
+!!! tip "Pin a version"
+    Apiary is in public beta — config and adapter APIs may still change
+    before `v1.0`. For anything you depend on, pin a release (e.g. the
+    `ghcr.io/orlandoburli/apiary:0.2.0` Docker tag) and read the
+    [release notes](https://github.com/orlandoburli/apiary/releases) before
+    upgrading.
+
+## Next step
+
+Continue with the [Quickstart](quickstart.md) — from a fresh install to your
+first autonomously handled issue in about ten minutes.

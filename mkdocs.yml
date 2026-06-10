@@ -39,12 +39,23 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Installation: installation.md
-  - Apiary Guide: apiary-guide.md
-  - Data Model: data-model.md
-  - Dashboard: dashboard.md
-  - GitHub Source: github-source.md
-  - VS Code Extension: vscode-extension.md
+  - Getting Started:
+      - Installation: installation.md
+      - Quickstart: quickstart.md
+  - Guide:
+      - Concepts: concepts.md
+      - Configuration: configuration.md
+      - Workflows: workflows.md
+      - Tasks & Fan-out: tasks-and-fanout.md
+      - Rate Limits & Resilience: resilience.md
+  - Sources:
+      - GitHub: github-source.md
+      - Plane: plane-source.md
+  - Reference:
+      - CLI: cli.md
+      - Dashboard: dashboard.md
+      - VS Code Extension: vscode-extension.md
+      - Data Model: data-model.md
   - Development: development.md
 
 extra:
