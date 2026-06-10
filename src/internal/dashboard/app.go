@@ -38,6 +38,14 @@ const queryTimeout = 2 * time.Second
 // fetchOlderTaskLogs).
 const taskLogTailLimit = 1000
 
+// maxGlamourBytes caps which log messages get glamour-styled markdown. Above
+// this, plain wrapping is used unconditionally: giant agent dumps gain little
+// from styling and are exactly the messages that cost the most to render (#175).
+const maxGlamourBytes = 8 * 1024
+
+// logPrefixWidth is the fixed "15:04:05 LEVEL " prefix column of log lines.
+const logPrefixWidth = 15
+
 // App is the main dashboard application.
 //
 // It follows the Elm architecture used by Bubble Tea: commands run in
@@ -50,11 +58,17 @@ type App struct {
 	socketPath string
 	cfg        *config.Config
 
-	// logMDCache memoizes glamour-rendered markdown log messages, keyed by the
-	// message text. glamour is expensive, so each distinct message renders once;
-	// the cache is dropped whenever the render width changes (logMDWidth).
-	logMDCache map[string][]string
-	logMDWidth int
+	// logMDCache memoizes the display lines of multi-line log messages, keyed by
+	// the message text: glamour-rendered markdown delivered by the async warm-up
+	// (warmMarkdownCmd), and plain wraps of messages glamour will never touch
+	// (oversized or non-markdown). glamour is too slow for the render path (#175),
+	// so a markdown message shows plain-wrapped until its warmed lines land in the
+	// cache. logMDPending tracks messages already handed to an in-flight warm-up so
+	// periodic refreshes don't re-render them. Both maps are dropped whenever the
+	// render width changes (logMDWidth).
+	logMDCache   map[string][]string
+	logMDPending map[string]bool
+	logMDWidth   int
 }
 
 func New(dbConn *db.Client, socketPath string, cfg *config.Config) *App {
@@ -154,6 +168,14 @@ type workflowStepLogsMsg struct {
 	logs   []LogEntry
 }
 
+// mdWarmedMsg delivers glamour-rendered markdown log lines computed off the UI
+// thread by warmMarkdownCmd. width is the wrap width the batch was rendered at;
+// a batch that no longer matches the cache width (resize mid-flight) is dropped.
+type mdWarmedMsg struct {
+	width    int
+	rendered map[string][]string
+}
+
 // ── lifecycle ───────────────────────────────────────────────────────────────
 
 // Init initializes the app: enter alt-screen, fetch the first tab, start timer.
@@ -181,6 +203,20 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.model.width = msg.Width
 		a.model.height = msg.Height
+		// The resize drops the width-scoped markdown cache; re-warm whatever log
+		// entries are currently loaded so styled output comes back.
+		return a, a.warmOpenLogsCmd()
+
+	case mdWarmedMsg:
+		// Merge the off-thread glamour renders. A batch from before a resize no
+		// longer matches the cache width and is dropped; pending is cleared either
+		// way so the next refresh can re-dispatch.
+		for m, lines := range msg.rendered {
+			delete(a.logMDPending, m)
+			if a.logMDCache != nil && a.logMDWidth == msg.width {
+				a.logMDCache[m] = lines
+			}
+		}
 
 	case tickMsg:
 		// Re-query the active tab and schedule the next tick.
@@ -250,6 +286,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.LogInternalTaskID = ""
 		}
 		a.model.loading = false
+		return a, a.warmMarkdownCmd(msg.logs)
 
 	case olderTaskLogsMsg:
 		if t := a.model.tasksTab; t != nil && t.View == TaskViewLogs && msg.taskID == t.LogTaskID {
@@ -263,6 +300,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				t.LogOldestID = msg.oldestID
 			}
 			t.LogHasMore = msg.hasMore
+			return a, a.warmMarkdownCmd(msg.logs)
 		}
 
 	case taskHistoryMsg:
@@ -282,6 +320,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.LogDrillKey = msg.drillKey
 		}
 		a.model.loading = false
+		return a, a.warmMarkdownCmd(segmentLogs(msg.segments))
 
 	case agentsDataMsg:
 		if a.model.agentsTab != nil {
@@ -325,6 +364,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		a.model.loading = false
+		return a, a.warmMarkdownCmd(msg.logs)
 
 	case logsDataMsg:
 		if a.model.logsTab != nil {
@@ -332,6 +372,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.model.loading = false
 		a.model.lastRefresh = time.Now()
+		return a, a.warmMarkdownCmd(msg.logs)
 
 	case usageDataMsg:
 		if a.model.usageTab != nil {
@@ -373,9 +414,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Live-tail refresh: swap data only; a stale refresh for a closed
 				// panel or another step is dropped.
 				t.WorkflowLogs = msg.logs
+			} else {
+				a.model.loading = false
+				return a, nil // dropped — don't warm what isn't shown
 			}
 		}
 		a.model.loading = false
+		return a, a.warmMarkdownCmd(msg.logs)
 
 	case workflowMonitorRefreshMsg:
 		if t := a.model.tasksTab; t != nil && msg.instance != nil {
@@ -405,6 +450,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			len(t.InstanceHistory) == 0 && msg.taskID == t.LogTaskID && len(msg.logs) > 0 {
 			t.Logs = append(t.Logs, msg.logs...)
 			t.LogNewestID = msg.newestID
+			return a, a.warmMarkdownCmd(msg.logs)
 		}
 
 	case taskHistoryRefreshMsg:
@@ -416,6 +462,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.detail != nil {
 				t.Detail = msg.detail
 			}
+			return a, a.warmMarkdownCmd(segmentLogs(msg.segments))
 		}
 	}
 
@@ -3853,12 +3900,8 @@ func (a *App) agentTaskLogLines() []string {
 // conversation) are split, and long lines are wrapped to the box width, so the
 // whole log is viewable by scrolling rather than truncated to one line.
 func (a *App) logEntryLines(logs []LogEntry) []string {
-	const prefixWidth = 15                      // "15:04:05" + space + 5-char level + space
-	msgWidth := a.model.width - 2 - prefixWidth // inner minus the prefix column
-	if msgWidth < 20 {
-		msgWidth = 20
-	}
-	indent := strings.Repeat(" ", prefixWidth)
+	msgWidth := a.logMsgWidth()
+	indent := strings.Repeat(" ", logPrefixWidth)
 
 	var out []string
 	for _, entry := range logs {
@@ -3880,33 +3923,133 @@ func (a *App) logEntryLines(logs []LogEntry) []string {
 }
 
 // logMessageLines renders a log message to display lines at the given content
-// width. Messages that look like markdown (agent outputs — headings, lists,
-// bold, code fences) are rendered with glamour and memoized; everything else
-// (operational one-liners) falls back to plain wrapping. Rendered output is
-// clamped so it never overflows the column.
+// width. Operational one-liners wrap directly. Multi-line messages go through
+// the width-scoped cache: glamour-rendered markdown arrives there asynchronously
+// (warmMarkdownCmd) because rendering it inline is what made log views slow to
+// open (#175) — until the warmed lines land, markdown shows plain-wrapped.
+// Multi-line messages glamour will never style (oversized or non-markdown) are
+// plain-wrapped and cached eagerly so periodic refreshes stop re-wrapping them.
 func (a *App) logMessageLines(msg string, width int) []string {
 	if width < 1 {
 		width = 1
 	}
-	if !looksLikeMarkdown(msg) {
+	if !strings.Contains(msg, "\n") {
 		return wrapPlain(msg, width)
 	}
 
-	// Cache is width-scoped; drop it wholesale when the width changes.
-	if a.logMDCache == nil || a.logMDWidth != width {
-		a.logMDCache = make(map[string][]string)
-		a.logMDWidth = width
-	}
+	a.ensureLogCache(width)
 	if lines, ok := a.logMDCache[msg]; ok {
 		return lines
 	}
-
-	lines := wrapPlain(msg, width) // fallback if glamour errors
-	if rendered, err := renderMarkdown(msg, width); err == nil {
-		lines = clampToWidth(strings.Split(strings.TrimRight(rendered, "\n"), "\n"), width)
+	lines := wrapPlain(msg, width)
+	if glamourEligible(msg) {
+		// Don't cache: the warm-up replaces this with the styled render, and the
+		// cache miss is what tells warmMarkdownCmd the message still needs work.
+		return lines
 	}
 	a.logMDCache[msg] = lines
 	return lines
+}
+
+// ensureLogCache resets the width-scoped log line caches when the wrap width
+// changes (terminal resize) or on first use.
+func (a *App) ensureLogCache(width int) {
+	if a.logMDCache == nil || a.logMDWidth != width {
+		a.logMDCache = make(map[string][]string)
+		a.logMDPending = make(map[string]bool)
+		a.logMDWidth = width
+	}
+}
+
+// glamourEligible reports whether a message is worth styling with glamour:
+// markdown-looking and small enough that rendering it is not the bottleneck.
+func glamourEligible(msg string) bool {
+	return len(msg) <= maxGlamourBytes && looksLikeMarkdown(msg)
+}
+
+// logMsgWidth is the content width log messages wrap to (terminal minus the box
+// border and the timestamp/level prefix column). Shared by the render paths and
+// warmMarkdownCmd so warmed cache entries match render-time lookups.
+func (a *App) logMsgWidth() int {
+	w := a.model.width - 2 - logPrefixWidth
+	if w < 20 {
+		w = 20
+	}
+	return w
+}
+
+// warmMarkdownCmd returns a command that glamour-renders the given entries'
+// markdown messages off the UI thread and delivers them as a mdWarmedMsg. It
+// skips messages already cached or already in flight, and returns nil when
+// nothing needs work — so handlers can call it on every data refresh cheaply.
+func (a *App) warmMarkdownCmd(entries []LogEntry) tea.Cmd {
+	width := a.logMsgWidth()
+	a.ensureLogCache(width)
+	var msgs []string
+	for _, e := range entries {
+		m := e.Message
+		if !strings.Contains(m, "\n") || !glamourEligible(m) {
+			continue
+		}
+		if _, ok := a.logMDCache[m]; ok {
+			continue
+		}
+		if a.logMDPending[m] {
+			continue
+		}
+		a.logMDPending[m] = true
+		msgs = append(msgs, m)
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		// One renderer for the whole batch; each message falls back to its plain
+		// wrap if glamour errors, so the merge always has lines to deliver.
+		r, err := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(width))
+		rendered := make(map[string][]string, len(msgs))
+		for _, m := range msgs {
+			lines := wrapPlain(m, width)
+			if err == nil {
+				if out, rerr := r.Render(m); rerr == nil {
+					lines = clampToWidth(strings.Split(strings.TrimRight(out, "\n"), "\n"), width)
+				}
+			}
+			rendered[m] = lines
+		}
+		return mdWarmedMsg{width: width, rendered: rendered}
+	}
+}
+
+// segmentLogs flattens the per-instance history segments into one entry list
+// for the markdown warm-up.
+func segmentLogs(segments []TaskHistorySegmentItem) []LogEntry {
+	var out []LogEntry
+	for _, seg := range segments {
+		out = append(out, seg.Logs...)
+	}
+	return out
+}
+
+// warmOpenLogsCmd re-warms every loaded log entry. Used after a terminal resize,
+// which drops the width-scoped cache: tail refreshes only warm newly-appended
+// lines, so without this the already-loaded history would stay plain forever.
+func (a *App) warmOpenLogsCmd() tea.Cmd {
+	var entries []LogEntry
+	if t := a.model.tasksTab; t != nil {
+		entries = append(entries, t.Logs...)
+		for _, seg := range t.InstanceHistory {
+			entries = append(entries, seg.Logs...)
+		}
+		entries = append(entries, t.WorkflowLogs...)
+	}
+	if ag := a.model.agentsTab; ag != nil {
+		entries = append(entries, ag.TaskLogs...)
+	}
+	if l := a.model.logsTab; l != nil {
+		entries = append(entries, l.Logs...)
+	}
+	return a.warmMarkdownCmd(entries)
 }
 
 // looksLikeMarkdown is a cheap heuristic: only multi-line messages with at least
