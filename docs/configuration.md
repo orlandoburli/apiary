@@ -151,7 +151,7 @@ agents:
 
     # Rate-limit failover chain — see Rate limits & resilience
     fallbacks:
-      - {runner: opencode-go-cli, model: opencode-go/deepseek-v4-pro}
+      - {runner: opencode, model: opencode-go/deepseek-v4-pro}
 
     # Agent-scope environment variables
     env:

@@ -1,7 +1,16 @@
 version: "1"
 
 # ── Runners ────────────────────────────────────────────────────────────────────
-# Define how agents will execute (CLI, API, custom gateway, etc.)
+# Define how agents will execute. The adapter is resolved as "{provider}-{type}"
+# (or just "type" when provider is empty). Registered adapters:
+#
+#   claude-cli    →  type: cli, provider: claude    (the `claude` binary)
+#   opencode-cli  →  type: cli, provider: opencode  (the `opencode` binary)
+#   cursor-cli    →  type: cli, provider: cursor    (the `agent` binary, Cursor CLI)
+#   opencode-api  →  type: opencode-api             (OpenCode HTTP API)
+#
+# Any other combination fails at daemon startup with "runner type not found".
+# See docs/runners.md for the full reference.
 runners:
   # Claude CLI runner (local development, no API keys needed)
   - id: claude-cli
@@ -21,66 +30,36 @@ runners:
         # env:                       # optional; ${VAR} refs are expanded at load
         #   GITNEXUS_TOKEN: ${GITNEXUS_TOKEN}
 
-  # Claude API runner (Anthropic API with full model access) — requires provider
-  - id: claude-api
+  # Cursor agent CLI — requires the `agent` binary from https://cursor.com/install.
+  # The preset runs it headlessly (`-p --output-format stream-json --force`) and
+  # passes the prompt positionally; no config needed.
+  - id: cursor-cli
     type: cli
-    provider: anthropic
-    config:
-      provider: anthropic
-      base_url: https://api.anthropic.com/v1
-      api_key: ${ANTHROPIC_API_KEY}
-      # Optional: model name mappings if needed
-      # models:
-      #   claude-opus-4-8: claude-4-20250514
-      #   claude-sonnet-4-6: claude-3-5-sonnet-20241022
+    provider: cursor
 
-  # ── OpenCode runners ────────────────────────────────────────────────────────
-  # OpenCode has two subscription tiers (Go and Zen), each available in two
-  # execution modes (CLI and API). Choose the combination that fits your setup.
-  #
-  #   CLI mode:   invokes the opencode binary as a subprocess.
-  #               Requires opencode installed on the host.
-  #
-  #   API mode:   calls the opencode HTTP API directly.
-  #               Requires an API key from the respective subscription.
-  #
-  # OpenCode Go — CLI mode (uses the local opencode binary with Go subscription)
-  - id: opencode-go-cli
+  # OpenCode CLI — invokes the local `opencode` binary (`opencode run …` with the
+  # prompt as a positional argument). The binary authenticates as whatever account
+  # is logged in; Apiary never handles credentials for CLI runners.
+  - id: opencode-cli
     type: cli
     provider: opencode
-    config:
-      mode: cli
-      subscription: go
-      binary: opencode
-      agent: backend-dev
-      model_flag: --model
-      prompt_flag: --prompt
-      turns_flag: --max-turns
-      agent_flag: --agent
+    # All `config` keys are optional — the provider preset covers them. Available
+    # keys: command (binary override), args, model_flag, prompt_flag,
+    # prompt_positional, turns_flag. See docs/runners.md#cli-engine-configuration.
+    # config:
+    #   command: /usr/local/bin/opencode
 
-  # OpenCode Go — API mode (calls the Go API directly)
-  - id: opencode-go-api
+  # OpenCode API — calls the OpenCode HTTP API directly (OpenAI-compatible
+  # chat completions). Requires an API key.
+  - id: opencode-api
     type: opencode-api
     config:
-      subscription: go
-      api_key: ${OPENCODE_GO_API_KEY}
+      api_key: ${OPENCODE_API_KEY}
+      # base_url: https://api.opencode.ai/v1   # optional; /chat/completions appended
+      # endpoint: https://...                  # full URL override (wins over base_url)
     models:
       - opencode-go/deepseek-v4-pro
       - opencode-go/minimax-m3
-
-  # OpenCode Zen — CLI mode (uses the local opencode binary with Zen subscription)
-  - id: opencode-zen-cli
-    type: cli
-    provider: opencode
-    config:
-      binary: opencode
-
-  # OpenCode Zen — API mode (calls the Zen API directly)
-  - id: opencode-zen-api
-    type: opencode-api
-    config:
-      subscription: zen
-      api_key: ${OPENCODE_ZEN_API_KEY}
 
 # Default runner used by agents if not overridden
 default_runner: claude-cli
@@ -150,8 +129,8 @@ agents:
     # limit, retry on these runners (in order) until one isn't rate-limited.
     # `runner` must be defined above; `model` is optional (omitted = its default).
     fallbacks:
-      - {runner: opencode-go-cli}
-      - {runner: opencode-zen-cli}
+      - {runner: opencode-cli, model: opencode-go/deepseek-v4-pro}
+      - {runner: cursor-cli}
     # Agent-scope MCP servers are layered over the runner's `mcps:` (override by
     # name, new names appended). Use this to give one agent an extra tool.
     # mcps:
@@ -187,32 +166,18 @@ agents:
     source_email: qa@company.com
 
   # === OpenCode-based agents ===
-  - id: agent-go-cli
-    description: "OpenCode Go — runs tasks via the opencode CLI"
+  - id: agent-opencode-cli
+    description: "OpenCode — runs tasks via the opencode CLI"
     soul_file: .apiary/souls/engineer.md
-    runner: opencode-go-cli
+    runner: opencode-cli
     model: opencode-go/deepseek-v4-flash
     skills: [git-workflow, gitnexus-codebase]
 
-  - id: agent-go-api
-    description: "OpenCode Go — runs tasks via the Go API"
+  - id: agent-opencode-api
+    description: "OpenCode — runs tasks via the OpenCode API"
     soul_file: .apiary/souls/engineer.md
-    runner: opencode-go-api
+    runner: opencode-api
     model: opencode-go/deepseek-v4-pro
-    skills: [git-workflow, gitnexus-codebase]
-
-  - id: agent-zen-cli
-    description: "OpenCode Zen — runs tasks via the opencode CLI"
-    soul_file: .apiary/souls/engineer.md
-    runner: opencode-zen-cli
-    model: opencode/gpt-5.5
-    skills: [git-workflow, gitnexus-codebase]
-
-  - id: agent-zen-api
-    description: "OpenCode Zen — runs tasks via the Zen API"
-    soul_file: .apiary/souls/engineer.md
-    runner: opencode-zen-api
-    model: opencode/gpt-5.4
     skills: [git-workflow, gitnexus-codebase]
 
 # ── Workflows ──────────────────────────────────────────────────────────────────
@@ -414,7 +379,6 @@ settings:
   concurrency: 2
   log_level: info
   state_lock: true
-  result_comment: true
   # Stop re-dispatching a (task, workflow) after this many consecutive failed
   # instances (rate-limited runs fail over and don't count). <=0 disables.
   max_attempts: 3
