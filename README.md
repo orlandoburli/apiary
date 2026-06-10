@@ -97,7 +97,8 @@ See [Rate Limits & Resilience](docs/resilience.md) for details.
 | [Installation](docs/installation.md) | Homebrew, Scoop, Docker, deb/rpm, direct download |
 | [Quickstart](docs/quickstart.md) | From install to your first autonomously handled issue |
 | [Concepts](docs/concepts.md) | Vocabulary, architecture, lifecycle of a task |
-| [Configuration](docs/configuration.md) | Every field of `apiary.yaml` — runners, sources, agents, settings |
+| [Configuration](docs/configuration.md) | Every field of `apiary.yaml` — sources, agents, settings |
+| [Runners](docs/runners.md) | CLI and API execution engines, provider presets, MCP servers |
 | [Workflows](docs/workflows.md) | Triggers, steps, approval gates, CI waits, retry loops |
 | [Tasks & Fan-out](docs/tasks-and-fanout.md) | `APIARY_PUBLISH`, `APIARY_SPAWN`, task-level hooks |
 | [Rate Limits & Resilience](docs/resilience.md) | Failover chains and unattended-dispatch safeguards |
@@ -169,22 +170,17 @@ Apiary supports a `cli` runner adapter that invokes agent CLI tools (such as `op
 runners:
   - id: opencode
     type: cli
-    provider: opencode
-    config:
-      binary: opencode        # CLI binary on your PATH
-      model_flag: "--model"   # flag used to pass the model
+    provider: opencode        # presets: binary, prompt passing, MCP format
 
 agents:
   - id: my-agent
     runner: opencode          # references the runner above
     model: opencode-go/deepseek-v4-pro
-    config:
-      working_dir: /my/repo   # where the agent runs
 ```
 
 **Important:** Apiary never handles, stores, intercepts, or transmits authentication credentials of any kind. CLI tools manage their own authentication independently. The `cli` runner simply invokes the binary — it has no knowledge of how the tool authenticates.
 
-This runner is intended for **personal use on your own machine**, where you have already set up and authenticated the CLI tool yourself. For shared or team deployments, use an API-key-based runner instead (see roadmap).
+This runner is intended for **personal use on your own machine**, where you have already set up and authenticated the CLI tool yourself. For shared or team deployments, use an API-key-based runner instead. See [Runners](docs/runners.md) for all providers and engine options.
 
 ## Dashboard
 

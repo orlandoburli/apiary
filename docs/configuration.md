@@ -34,9 +34,11 @@ version: "1"        # currently the only accepted value
 
 ## `runners`
 
-Runners define **how** agents execute. Each runner pairs an execution `type`
-(`cli` for a subprocess, `api` for a direct HTTP call) with a `provider`
-adapter.
+Runners define **how** agents execute — a CLI subprocess (`claude`,
+`opencode`, the Cursor `agent` CLI) or a direct API call. They have a
+[dedicated page](runners.md) covering each provider, the engine options,
+prompt delivery, MCP wiring, and API runners; this section is the short
+version.
 
 ```yaml
 runners:
@@ -47,34 +49,18 @@ runners:
     config:
       args: ["--output-format", "stream-json", "--verbose"]
 
-  # Anthropic API
-  - id: claude-api
-    type: cli
-    provider: anthropic
-    config:
-      provider: anthropic
-      base_url: https://api.anthropic.com/v1
-      api_key: ${ANTHROPIC_API_KEY}
-
   # OpenCode CLI — requires the `opencode` binary on PATH
-  - id: opencode-go-cli
+  - id: opencode
     type: cli
     provider: opencode
-    config:
-      mode: cli
-      subscription: go
-      binary: opencode
-      agent: backend-dev
 
   # OpenCode API
-  - id: opencode-go-api
+  - id: opencode-api
     type: opencode-api
     config:
-      subscription: go
-      api_key: ${OPENCODE_GO_API_KEY}
+      api_key: ${OPENCODE_API_KEY}
     models:
       - opencode-go/deepseek-v4-pro
-      - opencode-go/minimax-m3
 
 default_runner: claude    # used by agents that don't name a runner
 ```
@@ -82,11 +68,11 @@ default_runner: claude    # used by agents that don't name a runner
 | Field | Description |
 |---|---|
 | `id` | Unique runner identifier, referenced by `agents[].runner` and `agents[].fallbacks` |
-| `type` | `cli` (subprocess) or `api` |
-| `provider` | Adapter: `claude`, `anthropic`, `opencode`, `cursor`, … |
-| `config` | Provider-specific settings (binary, flags, base URL, API key) |
-| `models` | Models this runner supports (informational / for API runners) |
-| `mcps` | MCP servers exposed to every agent on this runner — see below |
+| `type` | `cli` (subprocess) or a self-contained adapter like `opencode-api` |
+| `provider` | Which CLI the `cli` engine drives: `claude`, `opencode`, `cursor` |
+| `config` | Engine options — binary, flags, API key; see [Runners](runners.md#cli-engine-configuration) |
+| `models` | Models this runner supports (informational) |
+| `mcps` | [MCP servers](runners.md#mcp-servers) exposed to every agent on this runner |
 
 !!! tip "Recommended Claude CLI args"
     `args: ["--output-format", "stream-json", "--verbose"]` makes the Claude
@@ -94,53 +80,6 @@ default_runner: claude    # used by agents that don't name a runner
     `[assistant]` / `[tool→ …]` conversation in the
     [task logs](dashboard.md#watching-the-live-conversation-debug-mode),
     plus accurate token and cost figures. Without it you get raw text output.
-
-### CLI provider flags
-
-For generic CLI providers, the flag names used to pass parameters are
-configurable (defaults shown):
-
-| Config field | Default |
-|---|---|
-| `model_flag` | `--model` |
-| `prompt_flag` | `--prompt` |
-| `turns_flag` | `--max-turns` |
-| `agent_flag` | `--agent` |
-
-The OpenCode CLI uses a `run` subcommand with a positional prompt
-(`prompt_positional: true` is its default).
-
-### MCP servers (`mcps`)
-
-Runners (and individual agents) can expose
-[Model Context Protocol](https://modelcontextprotocol.io) servers to the CLI
-agents they launch. Each provider injects them into its own native MCP
-config: `claude` via a temp file + `--mcp-config`, `cursor` by merging
-`~/.cursor/mcp.json`, `opencode` by merging the global `opencode.json`.
-
-```yaml
-runners:
-  - id: claude
-    type: cli
-    provider: claude
-    mcps:
-      - name: gitnexus
-        command: npx
-        args: ["-y", "gitnexus@latest", "mcp"]
-        # env:                          # optional; ${VAR} expanded at load
-        #   GITNEXUS_TOKEN: ${GITNEXUS_TOKEN}
-
-agents:
-  - id: qa
-    runner: claude
-    model: claude-sonnet-4-6
-    # Agent-scope MCPs are layered over the runner's: same name overrides,
-    # new names are appended. Use this to give one agent an extra tool.
-    mcps:
-      - name: playwright
-        command: npx
-        args: ["-y", "@playwright/mcp@latest"]
-```
 
 ## `sources`
 
@@ -231,7 +170,7 @@ agents:
 | `source_token` | no | Source API token for this agent's write operations — see [Agent identity](#agent-identity) |
 | `source_email` / `source_name` | no | Git author identity exported to the runner environment |
 | `fallbacks` | no | Ordered `{runner, model}` list for [rate-limit failover](resilience.md#provider-rate-limits-failover); `model` optional (empty = that runner's default) |
-| `mcps` | no | Agent-scope [MCP servers](#mcp-servers-mcps), layered over the runner's |
+| `mcps` | no | Agent-scope [MCP servers](runners.md#mcp-servers), layered over the runner's |
 | `env` | no | Agent-scope environment variables — see [Environment variables](#environment-variables) |
 
 Which tasks reach an agent is decided by a

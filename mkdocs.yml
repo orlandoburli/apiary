@@ -45,6 +45,7 @@ nav:
   - Guide:
       - Concepts: concepts.md
       - Configuration: configuration.md
+      - Runners: runners.md
       - Workflows: workflows.md
       - Tasks & Fan-out: tasks-and-fanout.md
       - Rate Limits & Resilience: resilience.md
