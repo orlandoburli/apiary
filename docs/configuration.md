@@ -266,9 +266,19 @@ settings:
 
 #### Getting the token
 
-The easiest source is the machine where the Cursor CLI is logged in — the
-CLI keeps a long-lived session token in the OS keychain, and its account ids
-in `~/.cursor/cli-config.json`:
+If the daemon runs on the machine where the Cursor CLI is logged in, the
+bundled script does everything — extracts the CLI's long-lived session token
+from the OS keychain, discovers `team_id`/`user_id` from
+`~/.cursor/cli-config.json`, verifies the credentials against the dashboard
+API, and writes `CURSOR_SESSION_TOKEN` into your `.env` (idempotent — re-run
+it any time the token expires):
+
+```bash
+scripts/cursor-cost-setup.sh /path/to/your/.env
+```
+
+It prints the matching `settings.cursor_cost` block to paste into
+`apiary.yaml`. Manual equivalent, if you prefer:
 
 ```bash
 # macOS — build the cookie value from the CLI's stored session
