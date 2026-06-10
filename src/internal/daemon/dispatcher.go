@@ -188,6 +188,11 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		}); ok {
 			fs.SetFilters(sc.Filters.States, sc.Filters.Labels)
 		}
+		if js, ok := adapter.(interface {
+			SetJQL(jql string)
+		}); ok {
+			js.SetJQL(sc.Filters.JQL)
+		}
 		d.sources[sc.ID] = adapter
 		d.stats[sc.ID] = &sourceStat{}
 	}

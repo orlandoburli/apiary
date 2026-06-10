@@ -115,6 +115,28 @@ sources:
       states: [open]
       labels: [ai-ready]
 
+  - id: my-jira
+    type: jira
+    config:
+      # Jira Cloud site URL (Server/Data Center is not supported).
+      base_url: https://yoursite.atlassian.net
+      # Atlassian account email + API token (Basic auth).
+      # Create a token at https://id.atlassian.com/manage-profile/security/api-tokens
+      email: bot@example.com
+      api_token: ${JIRA_API_TOKEN}
+      # Optional project key to scope polling.
+      project: ERP
+      # Optional status Acknowledge transitions issues to on dispatch.
+      # Without it, the first transition into Jira's "In Progress" category is used.
+      started_state: In Progress
+    poll_interval: 120s
+    filters:
+      # Primary filter: any JQL clause, ANDed into every poll.
+      jql: 'labels = apiary AND statusCategory != Done'
+      # Secondary client-side filters (status / label names).
+      states: [to do, in progress]
+      labels: [apiary]
+
 # ── Agents ─────────────────────────────────────────────────────────────────────
 agents:
   # === Claude-based agents (original design) ===
