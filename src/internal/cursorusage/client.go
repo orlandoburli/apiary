@@ -36,6 +36,13 @@ type Client struct {
 	Token   string
 	BaseURL string
 	HTTP    *http.Client
+	// TeamID scopes the query to a team account. Personal accounts use 0.
+	// Accounts whose usage is billed through a team (the common per-usage
+	// setup) MUST pass their team id or the API returns no events.
+	TeamID int
+	// UserID filters team queries to one member's events, so teammates'
+	// activity does not pollute time-window attribution. Omitted when 0.
+	UserID int
 }
 
 // TokenUsage is the per-event token breakdown. Field names mirror the API's
@@ -65,9 +72,10 @@ type UsageEvent struct {
 	// CursorTokenFee is Cursor's markup in fractional cents.
 	CursorTokenFee float64 `json:"cursorTokenFee"`
 	IsChargeable   bool    `json:"isChargeable"`
-	// IsHeadless is true for headless/background-agent calls (the cursor-agent
-	// CLI). A pointer so that older events that predate the field are
-	// distinguishable from an explicit false (interactive IDE usage).
+	// IsHeadless marks Cursor's hosted background-agent product. Verified live:
+	// cursor-agent CLI runs report false, same as interactive IDE usage, so this
+	// CANNOT distinguish apiary runs from IDE activity and is kept for
+	// observability only.
 	IsHeadless *bool `json:"isHeadless"`
 	// ChargedCents is the amount actually billed in fractional cents
 	// (≈ TokenUsage.TotalCents + CursorTokenFee). Newer schema; may be absent.
@@ -106,6 +114,7 @@ func (e UsageEvent) CostUSD() float64 {
 
 type eventsRequest struct {
 	TeamID    int    `json:"teamId"`
+	UserID    int    `json:"userId,omitempty"`
 	StartDate string `json:"startDate"`
 	EndDate   string `json:"endDate"`
 	Page      int    `json:"page"`
@@ -132,7 +141,8 @@ func (c *Client) FetchEvents(ctx context.Context, start, end time.Time) ([]Usage
 	var all []UsageEvent
 	for page := 1; page <= maxPages; page++ {
 		body, err := json.Marshal(eventsRequest{
-			TeamID:    0,
+			TeamID:    c.TeamID,
+			UserID:    c.UserID,
 			StartDate: strconv.FormatInt(start.UnixMilli(), 10),
 			EndDate:   strconv.FormatInt(end.UnixMilli(), 10),
 			Page:      page,

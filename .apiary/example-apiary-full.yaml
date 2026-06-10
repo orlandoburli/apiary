@@ -475,6 +475,8 @@ settings:
     # session_token: ${CURSOR_SESSION_TOKEN}  # default: CURSOR_SESSION_TOKEN env var
     # interval: 5m                   # sweep cadence
     # max_age: 72h                   # how far back to back-fill
+    # team_id: 0                     # REQUIRED for team-billed accounts (authInfo.teamId in ~/.cursor/cli-config.json)
+    # user_id: 0                     # filter to your own events on team accounts (authInfo.userId)
 
 # ── Task completion hook (internal-task-model) ───────────────────────────────────
 # Fires once per InternalTask, when the LAST of its fanned-out workflows reaches a

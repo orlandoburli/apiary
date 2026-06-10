@@ -512,6 +512,16 @@
               "type": "string",
               "description": "How far back unpriced executions are considered, as a Go duration",
               "default": "72h"
+            },
+            "team_id": {
+              "type": "integer",
+              "description": "Cursor team id when the account bills through a team (the usual per-usage setup) — without it the API returns no events. 0 means a personal account. Find it in ~/.cursor/cli-config.json under authInfo.teamId",
+              "default": 0
+            },
+            "user_id": {
+              "type": "integer",
+              "description": "Filter team queries to this member's events so teammates' activity cannot pollute attribution. Strongly recommended whenever team_id is set (authInfo.userId in the same file)",
+              "default": 0
             }
           }
         }

@@ -245,6 +245,15 @@ type CursorCostSettings struct {
 	// MaxAge is how far back unpriced executions are considered (duration
 	// string). Default "72h".
 	MaxAge string `yaml:"max_age"`
+	// TeamID scopes the dashboard query to a team account. Required when the
+	// Cursor account bills through a team (the usual per-usage setup) — without
+	// it the API silently returns no events. 0 means a personal account. Find it
+	// in ~/.cursor/cli-config.json under authInfo.teamId.
+	TeamID int `yaml:"team_id"`
+	// UserID filters team queries to this member's events so teammates'
+	// activity cannot pollute time-window attribution. Strongly recommended
+	// whenever TeamID is set (authInfo.userId in the same file). 0 omits it.
+	UserID int `yaml:"user_id"`
 }
 
 // IntervalDuration returns the parsed sweep interval (default 5m, floor 1m).

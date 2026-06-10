@@ -157,6 +157,46 @@ func TestBackfillCursorCostsGivesUpAfterMaxAttempts(t *testing.T) {
 	}
 }
 
+// Interactive IDE usage on the same Cursor account is indistinguishable from
+// CLI events (isHeadless is false for both), so when the attributed events
+// carry far more tokens than the run itself reported, the sweep must refuse
+// to record the inflated amount.
+func TestBackfillCursorCostsSkipsSuspectedPollution(t *testing.T) {
+	ctx := context.Background()
+	dbc, err := db.New(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbc.Close()
+
+	// Run reports 1000 tokens; attributed events total 5000 — pollution.
+	id, start := insertCursorExec(t, dbc, ctx, "", "", time.Now().Add(10*time.Minute))
+	fetcher := &fakeFetcher{events: []cursorusage.UsageEvent{{
+		Timestamp:    strconv.FormatInt(start.Add(2*time.Minute).UnixMilli(), 10),
+		Kind:         "USAGE_EVENT_KIND_USAGE_BASED",
+		ChargedCents: 500,
+		TokenUsage:   &cursorusage.TokenUsage{InputTokens: 4000, OutputTokens: 1000},
+	}}}
+	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	if err := d.backfillCursorCosts(ctx, fetcher, make(map[int64]int)); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	rows, err := dbc.ListUnpricedExecutions(ctx, "cursor-cli", time.Now().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	found := false
+	for _, r := range rows {
+		if r.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("execution %d was priced despite token mismatch; want skipped (suspected IDE pollution)", id)
+	}
+}
+
 func TestBackfillCursorCostsOverlapStaysUnpriced(t *testing.T) {
 	ctx := context.Background()
 	dbc, err := db.New(ctx, filepath.Join(t.TempDir(), "test.db"))
