@@ -27,6 +27,7 @@ Most AI coding agents require a human to manually pick a task, paste context, an
 | **Agent** | A named LLM persona: runner + model + soul/skills, with optional fallbacks |
 | **Workflow** | A pipeline of steps, fired by a `trigger` that matches tasks; each step runs an agent |
 | **Task** | A unit of work flowing through the system (an issue or item from a Source) |
+| **Agent memory** | Opt-in persistent memory — task notes + durable global facts agents save via `APIARY_MEMORIZE` and recall on later runs |
 
 ## Quick Example
 
@@ -85,6 +86,7 @@ Apiary runs end-to-end today and ships with the safeguards that make unattended 
 - **Approval rehydration** — runs parked on a manual-approval gate survive a daemon restart.
 - **Scoped env vars** — set environment variables per agent, workflow, or step, merged with precedence.
 - **Schema-validated config** — `apiary.yaml` is validated against a JSON Schema, with live validation in the VS Code extension.
+- **Agent memory** — agents persist lessons (`APIARY_MEMORIZE`) as plain markdown: per-task working notes that survive retries and fan-out, plus a curated store of durable project facts recalled into every prompt.
 
 See [Rate Limits & Resilience](docs/resilience.md) for details.
 
@@ -99,6 +101,7 @@ See [Rate Limits & Resilience](docs/resilience.md) for details.
 | [Runners](docs/runners.md) | CLI and API execution engines, provider presets, MCP servers |
 | [Workflows](docs/workflows.md) | Triggers, steps, approval gates, CI waits, retry loops |
 | [Tasks & Fan-out](docs/tasks-and-fanout.md) | `APIARY_PUBLISH`, `APIARY_SPAWN`, task-level hooks |
+| [Agent Memory](docs/memory.md) | `APIARY_MEMORIZE`, task/global memory tiers, recall, curation |
 | [Rate Limits & Resilience](docs/resilience.md) | Failover chains and unattended-dispatch safeguards |
 | [CLI Reference](docs/cli.md) | Every command and flag |
 | [Dashboard](docs/dashboard.md) | The terminal UI, tab by tab |

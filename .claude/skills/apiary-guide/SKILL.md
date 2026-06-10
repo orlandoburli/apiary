@@ -335,6 +335,8 @@ settings:
   state_lock: true         # Add "in-progress" label on acknowledge
   result_comment: true     # Post agent output as comment
   max_attempts: 3          # Re-dispatch failure cap per (task, workflow); <=0 disables
+  memory:                  # Persistent agent memory — see "Agent Memory" section
+    enabled: false         # opt-in; default false
 ```
 
 ### Rate limits & resilience
@@ -356,6 +358,80 @@ runaway loop:
 - **Non-blocking dispatch.** A busy agent's `max_workers` slot is acquired inside
   the dispatch goroutine, so a saturated agent never stalls polling/dispatch for
   other sources or agents.
+
+## Agent Memory
+
+Persistent, tiered memory so agents stop relearning the same lessons
+(full reference: `docs/memory.md`). Three tiers:
+
+| Tier | Lifetime | Scope |
+|---|---|---|
+| Instance (built-in workflow memory) | One workflow instance | The instance's steps |
+| **Task** | Task terminal + `task_retention` (default 720h) | The task, its retries/fan-out, and spawned descendants (lineage) |
+| **Global** | Forever — human/agent curated | Daemon-wide: every agent and workflow of the project |
+
+Opt-in via `settings.memory.enabled: true`. Storage is plain markdown under
+`<data-dir>/memory/` (beside `apiary.db`): `MEMORY.md` index, `global/<slug>.md`
+one fact per file, `tasks/<task_id>.md` append-only notes. Hand-editable; the
+index self-heals. Gitignored by default.
+
+**Write — `APIARY_MEMORIZE` marker** (sibling of `APIARY_PUBLISH`/`APIARY_SPAWN`;
+single object or JSON array):
+
+```
+APIARY_MEMORIZE_BEGIN
+{"scope": "global", "name": "kebab-slug", "description": "one line for the index",
+ "content": "markdown body"}
+APIARY_MEMORIZE_END
+```
+
+- `scope: task` (default) appends a working note to the current task;
+  `scope: global` upserts a durable fact by `name` (same name = update).
+- `name` + `description` required for global only. Malformed blocks are
+  warnings — a memorize never fails the step.
+
+**Recall.** Each step prompt gets `[Long-term Memory]` (the index, not full
+bodies) and `[Task Memory]` (own + ancestor notes), capped by
+`settings.memory.max_inject_chars` (default 4000). Agents read full entries
+from `$APIARY_MEMORY_DIR/global/<name>.md` (env var set on every step).
+
+**Step controls** (mirror `publish: off`):
+
+```yaml
+steps:
+  - id: analyze
+    agent: analyzer
+    memory:
+      memorize: off        # drop APIARY_MEMORIZE from this step (default: auto)
+      recall: [task]       # inject only these tiers (default: both)
+      # read: false        # still suppresses the entire memory doc, recall included
+```
+
+**Curation:** `apiary memory path | list | show <name> | rm <name> | prune [--dry-run]`.
+Task notes are also pruned automatically by a daemon sweep; global entries never are.
+
+**Soul-file snippet** — teach agents the protocol by adding something like this
+to their soul file:
+
+```markdown
+## Memory
+
+You have persistent memory at $APIARY_MEMORY_DIR. Your prompt includes the
+long-term index and this task's notes — read a full entry from
+$APIARY_MEMORY_DIR/global/<name>.md before re-deriving anything it covers.
+
+When you learn something durable (a project gotcha, a tooling quirk, a
+convention), save it:
+
+APIARY_MEMORIZE_BEGIN
+{"scope": "global", "name": "short-kebab-slug", "description": "one-line summary",
+ "content": "the fact, with enough context to act on it cold"}
+APIARY_MEMORIZE_END
+
+For decisions and findings the NEXT step or a retry of THIS task needs, use
+{"content": "..."} alone (task scope, the default). Update a stale fact by
+re-emitting its name. NEVER memorize secrets, tokens, or credentials.
+```
 
 ## Dashboard
 
@@ -422,6 +498,7 @@ When an agent returns a response containing `APIARY-REVIEW: approve | request-ch
 | **Dispatcher** | Core loop that polls sources, routes Cells, dispatches to agents |
 | **inFlight** | Map of task IDs currently being processed — prevents double-dispatch |
 | **Soul file** | System prompt / persona definition for an agent |
+| **Agent memory** | Persistent markdown store (task notes + global facts) written via `APIARY_MEMORIZE`, recalled into step prompts |
 | **IPC Socket** | Unix socket (`apiary.sock`) for dashboard ↔ dispatcher communication |
 
 ## Agent Identity

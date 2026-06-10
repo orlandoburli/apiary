@@ -76,7 +76,7 @@ New package and config plumbing; nothing wired into execution yet.
 
 - [x] 5.3.1 New docs page `docs/memory.md` (tiers, marker protocol, config, curation) + mkdocs nav entry
 - [x] 5.3.2 Update `docs/workflows.md` memory section to name the instance tier and link out
-- [ ] 5.3.3 Update apiary-guide skill + example soul-file snippet teaching the memorize protocol and "no secrets" rule
+- [x] 5.3.3 Update apiary-guide skill + example soul-file snippet teaching the memorize protocol and "no secrets" rule
 - [x] 5.3.4 Best-effort secret-pattern warning on memorize content (`ghp_`, `xoxb-`, `AKIA`)
 - [x] 5.3.5 Gitignore guidance: add `**/.apiary/memory/` to this repo's `.gitignore` and to whatever `apiary init` emits; document the "commit it deliberately" alternative
 - [ ] 5.3.6 Archive change: move CHANGELOG entry from Ativas to Arquivadas

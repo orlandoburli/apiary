@@ -24,6 +24,7 @@ Task System ──► Apiary ──► Agent ──► LLM Model
 | **Workflow instance** | One execution of a workflow against one task — what `apiary instances` lists |
 | **Step run** | One step of an instance: an agent invocation, an approval gate, a CI wait, a split decision |
 | **Soul file** | A markdown file holding an agent's system prompt / persona |
+| **Agent memory** | Opt-in persistent memory: per-task working notes plus durable daemon-wide facts, written by agents via `APIARY_MEMORIZE` and recalled into step prompts — see [Agent Memory](memory.md) |
 
 ## Architecture
 
@@ -109,6 +110,7 @@ Everything is project-scoped, in a `.apiary/` directory next to your config:
   apiary.db      ← SQLite database (auto-created)
   apiary.sock    ← IPC socket between daemon and dashboard/CLI
   logs/          ← log files
+  memory/        ← agent memory (markdown; only when settings.memory is enabled)
 apiary.yaml      ← your config (default location)
 .env             ← auto-loaded environment variables (don't commit)
 ```
