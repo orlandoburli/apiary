@@ -94,7 +94,7 @@ func TestFormatComment_Success(t *testing.T) {
 	for _, want := range []string{
 		`"type":"doc"`, `"version":1,`,
 		"Apiary run complete", "engineer", "1m30s",
-		`"type":"codeBlock"`,
+		`"type":"paragraph"`, "all done",
 		"https://github.com/o/r/pull/7", `"type":"link"`,
 	} {
 		if !strings.Contains(s, want) {
