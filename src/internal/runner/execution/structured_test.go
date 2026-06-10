@@ -237,6 +237,44 @@ func TestApplyStructured_SpawnInvalidJSON(t *testing.T) {
 	}
 }
 
+// TestApplyStructured_SpawnArray covers a decomposition emitting several children
+// in one APIARY_SPAWN block: a JSON array parses into SpawnRequests (not the
+// single SpawnRequest), preserving each entry's materialize fields.
+func TestApplyStructured_SpawnArray(t *testing.T) {
+	result := model.RunResult{
+		Output: strings.Join([]string{
+			"Decomposed.",
+			"APIARY_SPAWN_BEGIN",
+			`[`,
+			`  {"title":"Backend","body":"spec b","labels":["agent:backend"],"key":"be"},`,
+			`  {"title":"Frontend","body":"spec f","labels":["agent:frontend"],"key":"fe"}`,
+			`]`,
+			"APIARY_SPAWN_END",
+		}, "\n"),
+	}
+	applyStructured(&result)
+
+	if result.SpawnError != nil {
+		t.Fatalf("unexpected spawn error: %v", result.SpawnError)
+	}
+	if result.SpawnRequest != nil {
+		t.Errorf("array form must not populate single SpawnRequest, got %#v", result.SpawnRequest)
+	}
+	if len(result.SpawnRequests) != 2 {
+		t.Fatalf("expected 2 spawn requests, got %d: %#v", len(result.SpawnRequests), result.SpawnRequests)
+	}
+	be := result.SpawnRequests[0]
+	if be.Title != "Backend" || be.Body != "spec b" || be.Key != "be" || be.WorkflowID != "" {
+		t.Errorf("first request parsed incorrectly: %#v", be)
+	}
+	if len(be.Labels) != 1 || be.Labels[0] != "agent:backend" {
+		t.Errorf("first request labels = %v, want [agent:backend]", be.Labels)
+	}
+	if result.SpawnRequests[1].Key != "fe" {
+		t.Errorf("second request key = %q, want fe", result.SpawnRequests[1].Key)
+	}
+}
+
 func TestApplyStructured_MutatesResult(t *testing.T) {
 	result := model.RunResult{
 		Output: "done\nAPIARY_OUTPUT: {\"ok\":true}\nAPIARY_PUBLISH_BEGIN\nposted\nAPIARY_PUBLISH_END",

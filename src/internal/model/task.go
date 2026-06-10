@@ -68,9 +68,17 @@ type SourceBinding struct {
 
 // SpawnRequest describes a new InternalTask requested by a workflow step via the
 // APIARY_SPAWN marker. WorkflowSpawner (internal/workflow) consumes it to create
-// the child task and dispatch the named workflow. The JSON tags map the marker's
-// payload ({"workflow","title","input","key"}) onto this struct; ParentTaskID is
-// never taken from agent output — the engine sets it to the spawning task's id.
+// the child task and, when WorkflowID is set, dispatch the named workflow. The
+// JSON tags map the marker's payload ({"workflow","title","input","key","labels",
+// "body"}) onto this struct; ParentTaskID is never taken from agent output — the
+// engine sets it to the spawning task's id.
+//
+// WorkflowID is optional. When empty the spawn is "materialize-only": it creates
+// the deduped child but runs no workflow, leaving the child to be picked up by the
+// normal poll→route→dispatch loop once it is materialized as a source sub-issue
+// (see the step's materialize: option). This is how a decomposition agent fans a
+// spec out into sub-issues idempotently — re-running the agent resolves to the
+// same children (issue #119) and never creates a duplicate set.
 type SpawnRequest struct {
 	ParentTaskID string         `json:"-"`
 	WorkflowID   string         `json:"workflow"`
@@ -81,4 +89,11 @@ type SpawnRequest struct {
 	// same child. When empty the spawner derives a key from (workflow, title, input)
 	// so identical re-runs still dedup. See WorkflowSpawner.Spawn.
 	Key string `json:"key,omitempty"`
+	// Labels are applied to the source sub-issue when the child is materialized
+	// (e.g. ["agent:backend"]), so the new item routes to the right workflow on the
+	// next poll. Ignored when the spawn is not materialized.
+	Labels []string `json:"labels,omitempty"`
+	// Body is the description written to the source sub-issue when the child is
+	// materialized (the spec / acceptance criteria for the downstream agent).
+	Body string `json:"body,omitempty"`
 }

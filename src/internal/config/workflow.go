@@ -43,6 +43,13 @@ const (
 	SpawnAwait = "await" // block until the spawned task is terminal; child failure fails the step
 )
 
+// Materialize modes for an agent step: whether each APIARY_SPAWN child is
+// published to the source as a sub-issue under the parent's source item.
+const (
+	MaterializeOff      = ""          // default: spawned children stay internal
+	MaterializeSubIssue = "sub_issue" // create one source sub-issue per spawned child
+)
+
 // on_missing_output policy values for an agent step that declares output_schema.
 const (
 	OnMissingOutputWarn   = "warn"
@@ -145,6 +152,15 @@ type StepConfig struct {
 	// handled: auto (default, fire-and-forget) | await (block on the child).
 	// Empty inherits the auto default.
 	Spawn string `yaml:"spawn,omitempty"`
+	// Materialize controls whether each child created from this step's APIARY_SPAWN
+	// is published to the source as a sub-issue under the parent's source item:
+	// "" (default, off) | sub_issue. With sub_issue, the engine creates one source
+	// sub-issue per spawned child exactly once (guarded by the child dedup key and
+	// the source_bindings unique constraint), so re-running a decomposition agent
+	// never produces a duplicate set of sub-issues (issue #119). The created
+	// sub-issue carries the spawn request's labels, so the normal poll→route loop
+	// picks it up and dispatches the matching workflow.
+	Materialize string `yaml:"materialize,omitempty"`
 	// Env is the step-scope environment overlay. It is the highest-precedence
 	// explicit scope: it overrides workflow.env and agent.env for the same key.
 	Env map[string]string `yaml:"env,omitempty"`

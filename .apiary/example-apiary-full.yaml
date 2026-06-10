@@ -373,6 +373,50 @@ workflows:
         agent: investigator
         prompt: "Gather the relevant logs and metrics for the incident described in the task input."
 
+  # ── Decomposition into sub-issues (materialize) ──────────────────────────────
+  # A spec/PO workflow that fans an issue out into several sub-issues — the right
+  # tool when a downstream agent should pick each piece up as its own GitHub issue
+  # (rather than running inline as a spawned child workflow, like collect-logs).
+  #
+  # `materialize: sub_issue` makes each APIARY_SPAWN entry into a real GitHub issue
+  # under the parent, EXACTLY ONCE. Two guards make it idempotent so a re-run never
+  # duplicates the set (issue #119): the spawn `key` (one child per key per parent)
+  # and the source-binding unique constraint (one sub-issue per child). Combined with
+  # `once: true`, even the agent does not re-run after success.
+  #
+  # The spawn entries here are "materialize-only": they carry NO `workflow` field, so
+  # no inline workflow runs. The created sub-issues carry agent:* labels, so the
+  # normal poll→route loop dispatches the right implementer on the next cycle — the
+  # same path a human-filed issue takes.
+  - id: spec-decompose
+    description: "Turn a spec issue into a deduplicated set of implementer sub-issues."
+    trigger:
+      priority: 15
+      once: true
+      match:
+        source: project-erp
+        labels: [agent:po]
+    steps:
+      - id: spec
+        agent: po
+        materialize: sub_issue   # publish each spawned child as a GitHub sub-issue, exactly once
+        prompt: |
+          Decompose this issue into implementer sub-tasks. Emit ONE APIARY_SPAWN
+          block whose body is a JSON array — one object per sub-task, each with a
+          stable `key` (so a re-run dedups), `labels` (the implementer), and a `body`
+          (the spec). Do not include a `workflow` field.
+
+          APIARY_SPAWN_BEGIN
+          [
+            {"title": "Add customer CRUD endpoints", "body": "GIVEN ... THEN ...", "labels": ["agent:backend"], "key": "customer-crud-endpoint"},
+            {"title": "Customer list screen", "body": "GIVEN ... THEN ...", "labels": ["agent:frontend"], "key": "customer-list-screen"}
+          ]
+          APIARY_SPAWN_END
+        # materialize: sub_issue is incompatible with spawn: await (a materialized
+        # child runs no inline workflow to await) — config lint rejects the pair.
+    on_complete:
+      set_state: closed
+
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 settings:
