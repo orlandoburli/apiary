@@ -30,7 +30,7 @@ sources:
 | `base_url` | yes | Jira Cloud site URL (`https://<site>.atlassian.net`) |
 | `email` | yes | Atlassian account email for Basic auth |
 | `api_token` | yes | API token — create one at [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens) |
-| `project` | no | Project key (e.g. `ERP`) to scope polling; recommended |
+| `project` | no | Project key (e.g. `ERP`) or list of keys (`[ERP, OPS]`) to scope polling; recommended |
 | `started_state` | no | Status name Acknowledge transitions issues to on dispatch |
 
 If neither `project` nor `filters.jql` is set, the adapter polls every issue

@@ -39,8 +39,8 @@ type Adapter struct {
 	client  *client
 	baseURL string // site URL, serves both the REST API and /browse links
 
-	project      string // optional project key (e.g. "ERP") to scope polling
-	startedState string // optional status name Acknowledge transitions to
+	projects     []string // optional project key(s) (e.g. "ERP") to scope polling
+	startedState string   // optional status name Acknowledge transitions to
 
 	// Bare JQL datetimes are interpreted in the API user's profile timezone,
 	// so it is resolved once (lazily) from /myself before the first search.
@@ -77,13 +77,41 @@ func (a *Adapter) Connect(_ context.Context, cfg map[string]any) error {
 		return fmt.Errorf("jira: config.api_token is required (create one at https://id.atlassian.com/manage-profile/security/api-tokens)")
 	}
 
-	a.project, _ = cfg["project"].(string)
+	a.projects, err = parseProjects(cfg["project"])
+	if err != nil {
+		return err
+	}
 	a.startedState, _ = cfg["started_state"].(string)
 	a.baseURL = baseURL
 	a.client = newClient(baseURL, email, apiToken)
 
-	aplog.Info("jira: configured  site=%s  project=%q", baseURL, a.project)
+	aplog.Info("jira: configured  site=%s  projects=%q", baseURL, a.projects)
 	return nil
+}
+
+// parseProjects accepts config.project as a single key or a list of keys.
+func parseProjects(v any) ([]string, error) {
+	switch p := v.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		if p = strings.TrimSpace(p); p != "" {
+			return []string{p}, nil
+		}
+		return nil, nil
+	case []any:
+		var keys []string
+		for _, e := range p {
+			s, ok := e.(string)
+			if !ok || strings.TrimSpace(s) == "" {
+				return nil, fmt.Errorf("jira: config.project list must contain only non-empty strings, got %v", e)
+			}
+			keys = append(keys, strings.TrimSpace(s))
+		}
+		return keys, nil
+	default:
+		return nil, fmt.Errorf("jira: config.project must be a project key or a list of keys, got %T", v)
+	}
 }
 
 // SetFilters stores the states/labels filter config (applied client-side).
@@ -126,10 +154,18 @@ func (a *Adapter) userLocation(ctx context.Context) *time.Location {
 // minute granularity and are interpreted in the API user's profile timezone,
 // so `since` is converted to loc and padded back by two minutes; Poll
 // re-applies the exact cut-off client-side (the binder dedups any overlap).
-func buildJQL(project, userJQL string, since time.Time, loc *time.Location) string {
+func buildJQL(projects []string, userJQL string, since time.Time, loc *time.Location) string {
 	var clauses []string
-	if project != "" {
-		clauses = append(clauses, fmt.Sprintf("project = %q", project))
+	switch len(projects) {
+	case 0:
+	case 1:
+		clauses = append(clauses, fmt.Sprintf("project = %q", projects[0]))
+	default:
+		quoted := make([]string, len(projects))
+		for i, p := range projects {
+			quoted[i] = fmt.Sprintf("%q", p)
+		}
+		clauses = append(clauses, fmt.Sprintf("project in (%s)", strings.Join(quoted, ", ")))
 	}
 	if q := strings.TrimSpace(userJQL); q != "" {
 		clauses = append(clauses, "("+q+")")
@@ -145,12 +181,12 @@ func buildJQL(project, userJQL string, since time.Time, loc *time.Location) stri
 }
 
 func (a *Adapter) Poll(ctx context.Context, since time.Time) ([]model.SourceItem, error) {
-	if a.project == "" && a.jql == "" && !a.warnedNoScope {
+	if len(a.projects) == 0 && a.jql == "" && !a.warnedNoScope {
 		aplog.Info("jira: neither config.project nor filters.jql is set — polling every issue visible to the API user")
 		a.warnedNoScope = true
 	}
 
-	jql := buildJQL(a.project, a.jql, since, a.userLocation(ctx))
+	jql := buildJQL(a.projects, a.jql, since, a.userLocation(ctx))
 	issues, err := a.client.searchAll(ctx, jql)
 	if err != nil {
 		return nil, fmt.Errorf("jira: polling issues: %w", err)

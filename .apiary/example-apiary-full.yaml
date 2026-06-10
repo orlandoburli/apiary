@@ -124,8 +124,8 @@ sources:
       # Create a token at https://id.atlassian.com/manage-profile/security/api-tokens
       email: bot@example.com
       api_token: ${JIRA_API_TOKEN}
-      # Optional project key to scope polling.
-      project: ERP
+      # Optional project key (or list of keys) to scope polling.
+      project: ERP            # or: project: [ERP, OPS]
       # Optional status Acknowledge transitions issues to on dispatch.
       # Without it, the first transition into Jira's "In Progress" category is used.
       started_state: In Progress

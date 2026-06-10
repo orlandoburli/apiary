@@ -18,25 +18,30 @@ func TestBuildJQL(t *testing.T) {
 	since := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name            string
-		project, userQL string
-		since           time.Time
-		want            string
+		name     string
+		projects []string
+		userQL   string
+		since    time.Time
+		want     string
 	}{
 		{
 			name: "empty", want: "ORDER BY updated ASC",
 		},
 		{
-			name: "project only", project: "ERP",
+			name: "project only", projects: []string{"ERP"},
 			want: `project = "ERP" ORDER BY updated ASC`,
 		},
 		{
-			name: "project and user jql parenthesized", project: "ERP", userQL: "labels = apiary",
+			name: "multiple projects use IN", projects: []string{"ERP", "OPS"},
+			want: `project in ("ERP", "OPS") ORDER BY updated ASC`,
+		},
+		{
+			name: "project and user jql parenthesized", projects: []string{"ERP"}, userQL: "labels = apiary",
 			want: `project = "ERP" AND (labels = apiary) ORDER BY updated ASC`,
 		},
 		{
 			// 12:00 UTC = 09:00 UTC-3, minus the 2-minute slack = 08:58.
-			name: "since converted to user tz with slack", project: "ERP", since: since,
+			name: "since converted to user tz with slack", projects: []string{"ERP"}, since: since,
 			want: `project = "ERP" AND updated >= "2026/06/10 08:58" ORDER BY updated ASC`,
 		},
 		{
@@ -46,7 +51,7 @@ func TestBuildJQL(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := buildJQL(tt.project, tt.userQL, tt.since, loc); got != tt.want {
+			if got := buildJQL(tt.projects, tt.userQL, tt.since, loc); got != tt.want {
 				t.Errorf("got  %s\nwant %s", got, tt.want)
 			}
 		})
@@ -110,7 +115,7 @@ func TestPoll_PaginatesAndMaps(t *testing.T) {
 	defer srv.Close()
 
 	a := newTestAdapter(srv.URL)
-	a.project = "ERP"
+	a.projects = []string{"ERP"}
 
 	cells, err := a.Poll(context.Background(), time.Time{})
 	if err != nil {
@@ -375,8 +380,40 @@ func TestConnect_Validation(t *testing.T) {
 	if a.baseURL != "https://x.atlassian.net" {
 		t.Errorf("trailing slash not trimmed: %q", a.baseURL)
 	}
-	if a.project != "ERP" || a.startedState != "In Progress" {
+	if len(a.projects) != 1 || a.projects[0] != "ERP" || a.startedState != "In Progress" {
 		t.Errorf("optional fields not stored: %+v", a)
+	}
+}
+
+func TestConnect_ProjectList(t *testing.T) {
+	base := map[string]any{"base_url": "https://x.atlassian.net", "email": "e@x.com", "api_token": "t"}
+
+	a := &Adapter{}
+	cfg := map[string]any{"project": []any{"ERP", "OPS"}}
+	for k, v := range base {
+		cfg[k] = v
+	}
+	if err := a.Connect(context.Background(), cfg); err != nil {
+		t.Fatalf("project list rejected: %v", err)
+	}
+	if len(a.projects) != 2 || a.projects[0] != "ERP" || a.projects[1] != "OPS" {
+		t.Errorf("project list not stored: %v", a.projects)
+	}
+
+	bad := map[string]any{"project": []any{"ERP", 7}}
+	for k, v := range base {
+		bad[k] = v
+	}
+	if err := (&Adapter{}).Connect(context.Background(), bad); err == nil || !strings.Contains(err.Error(), "non-empty strings") {
+		t.Errorf("expected error for non-string project entry, got %v", err)
+	}
+
+	notList := map[string]any{"project": 42}
+	for k, v := range base {
+		notList[k] = v
+	}
+	if err := (&Adapter{}).Connect(context.Background(), notList); err == nil || !strings.Contains(err.Error(), "config.project") {
+		t.Errorf("expected error for non-string project, got %v", err)
 	}
 }
 
