@@ -62,21 +62,20 @@ func TestAttributeOverlapIsAmbiguous(t *testing.T) {
 	}
 }
 
-func TestAttributeSkipsInteractiveEvents(t *testing.T) {
+// cursor-agent CLI events report isHeadless=false just like IDE usage
+// (verified live against a real CLI run), so the flag must NOT exclude
+// events from attribution.
+func TestAttributeKeepsHeadlessFalseEvents(t *testing.T) {
 	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	run := RunWindow{ID: 1, Start: base, End: base.Add(10 * time.Minute)}
 
-	headless, ide := true, false
-	evHeadless := chargedEvent(base.Add(time.Minute), 100)
-	evHeadless.IsHeadless = &headless
-	evIDE := chargedEvent(base.Add(2*time.Minute), 500)
-	evIDE.IsHeadless = &ide
-	evLegacy := chargedEvent(base.Add(3*time.Minute), 50) // no flag: kept
+	notHeadless := false
+	ev := chargedEvent(base.Add(time.Minute), 100)
+	ev.IsHeadless = &notHeadless
 
-	got := Attribute([]UsageEvent{evHeadless, evIDE, evLegacy}, []RunWindow{run}, 0)
-	a := got[1]
-	if a.Events != 2 || a.CostUSD != 1.50 {
-		t.Errorf("attribution = %+v, want IDE event excluded (2 events, $1.50)", a)
+	got := Attribute([]UsageEvent{ev}, []RunWindow{run}, 0)
+	if got[1].Events != 1 || got[1].CostUSD != 1.00 {
+		t.Errorf("attribution = %+v, want isHeadless=false event attributed (CLI runs report false)", got[1])
 	}
 }
 

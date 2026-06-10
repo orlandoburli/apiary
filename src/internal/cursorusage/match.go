@@ -31,17 +31,16 @@ type Attribution struct {
 // Events that match no run are dropped (other activity on the account); events
 // that match more than one run are counted as ambiguous on every candidate and
 // attributed to none — wrongly attributing money is worse than undercounting.
-// Events explicitly marked as interactive IDE usage (isHeadless == false) are
-// ignored; events without the flag (older schema) are kept.
+// isHeadless is NOT consulted: cursor-agent CLI runs report false just like
+// IDE usage (verified live), so the flag cannot separate the two. Interactive
+// usage concurrent with a run on the same account is instead caught by the
+// caller's token-sum sanity check against the run's own counts.
 func Attribute(events []UsageEvent, runs []RunWindow, skew time.Duration) map[int64]*Attribution {
 	out := make(map[int64]*Attribution, len(runs))
 	for _, r := range runs {
 		out[r.ID] = &Attribution{}
 	}
 	for _, ev := range events {
-		if ev.IsHeadless != nil && !*ev.IsHeadless {
-			continue
-		}
 		t := ev.Time()
 		if t.IsZero() {
 			continue

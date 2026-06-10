@@ -258,32 +258,50 @@ settings:
 | Field | Default | Description |
 |---|---|---|
 | `enabled` | `false` | Enable the back-fill sweep (runs at startup, then every `interval`) |
-| `session_token` | — | `WorkosCursorSessionToken` cookie from a logged-in cursor.com browser session; empty falls back to the `CURSOR_SESSION_TOKEN` env var |
+| `session_token` | — | `WorkosCursorSessionToken` cookie value; empty falls back to the `CURSOR_SESSION_TOKEN` env var |
 | `interval` | `5m` | Time between sweeps (minimum `1m`) |
 | `max_age` | `72h` | Unpriced executions older than this are left alone |
+| `team_id` | `0` | **Required for team-billed accounts** (the usual per-usage setup) — without it the API returns no events. `0` = personal account |
+| `user_id` | `0` | On team accounts, filter to your own events so teammates' activity cannot pollute attribution. Strongly recommended with `team_id` |
 
-To get the token: log into [cursor.com/dashboard](https://cursor.com/dashboard),
-open DevTools (F12) → Application → Cookies → `https://cursor.com`, and copy
-the `WorkosCursorSessionToken` value into your `.env`:
+#### Getting the token
+
+The easiest source is the machine where the Cursor CLI is logged in — the
+CLI keeps a long-lived session token in the OS keychain, and its account ids
+in `~/.cursor/cli-config.json`:
 
 ```bash
-CURSOR_SESSION_TOKEN=user_XXXX%3A%3AeyJhbGci...
+# macOS — build the cookie value from the CLI's stored session
+TOKEN=$(security find-generic-password -s cursor-access-token -w)
+AUTH_ID=$(python3 -c "import json;print(json.load(open('$HOME/.cursor/cli-config.json'))['authInfo']['authId'].split('|')[1])")
+echo "CURSOR_SESSION_TOKEN=${AUTH_ID}%3A%3A${TOKEN}" >> .env
+
+# team_id / user_id for apiary.yaml:
+python3 -c "import json;a=json.load(open('$HOME/.cursor/cli-config.json'))['authInfo'];print('team_id:',a.get('teamId',0));print('user_id:',a.get('userId',0))"
 ```
 
-The token is valid for about 60 days; when it expires the sweep logs an auth
-warning and the daemon keeps running (costs simply stop back-filling until
-you refresh it).
+Browser alternative: log into [cursor.com/dashboard](https://cursor.com/dashboard)
+**with the same account the CLI uses**, open DevTools (F12) → Application →
+Cookies → `https://cursor.com`, and copy the `WorkosCursorSessionToken` value.
+(The cookie is HttpOnly — a console `document.cookie` snippet cannot read it.)
+Browser cookies last ~60 days; when one expires the sweep logs an auth warning
+and the daemon keeps running (costs simply stop back-filling until refreshed).
 
 How it works, and the fine print:
 
 - Cursor's usage events carry no session or request id, so each event is
   attributed to the one run whose `[started_at, completed_at]` window (±2min
-  skew) contains its timestamp. Events explicitly marked as interactive IDE
-  usage (`isHeadless: false`) are ignored.
+  skew) contains its timestamp.
 - **Overlapping concurrent cursor runs**: an event that falls inside two run
   windows is attributed to *neither* (wrongly attributing money is worse than
   undercounting). The affected runs keep a lower-bound cost and a warning is
   logged. Runs that never resolve are abandoned after 10 sweeps.
+- **Interactive IDE usage is indistinguishable from CLI runs** (Cursor's
+  `isHeadless` flag is `false` for both — verified live), so if you actively
+  use the Cursor IDE on the same account while a run executes, its events can
+  land inside the run's window. The sweep cross-checks the attributed events'
+  token totals against the run's own counts and refuses to record a cost when
+  they exceed them by more than 50%.
 - The endpoint is **undocumented** and may change without notice — the whole
   feature is best-effort and degrades to "no cost recorded" on any failure.
 - Plan-included requests (`INCLUDED_IN_PRO` etc.) and errored/aborted requests

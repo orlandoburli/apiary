@@ -43,7 +43,7 @@ func (d *Dispatcher) cursorCostLoop(ctx context.Context) {
 		aplog.Warn("cursor_cost enabled but no session token (settings.cursor_cost.session_token or CURSOR_SESSION_TOKEN); back-fill disabled")
 		return
 	}
-	client := &cursorusage.Client{Token: token}
+	client := &cursorusage.Client{Token: token, TeamID: cc.TeamID, UserID: cc.UserID}
 	attempts := make(map[int64]int)
 
 	sweep := func() {
@@ -126,9 +126,19 @@ func (d *Dispatcher) backfillCursorCosts(ctx context.Context, fetcher cursorEven
 		if a.Ambiguous > 0 {
 			aplog.Warn("cursor cost: execution %d has %d ambiguous event(s) from overlapping runs; recorded $%.4f is a lower bound", r.ID, a.Ambiguous, a.CostUSD)
 		}
+		// Cursor's isHeadless flag cannot separate CLI runs from interactive IDE
+		// usage on the same account, so a user working in the Cursor IDE during a
+		// run would inflate the attributed events. The run's own token counts are
+		// the ground truth: when the attributed events' tokens far exceed them,
+		// pollution is more likely than a real match — skip rather than record
+		// money the run did not spend (retries are capped by attempts).
 		matched := a.InputTokens + a.OutputTokens
-		if matched > 0 && r.TotalTokens > 0 && (matched > r.TotalTokens*3 || matched*3 < r.TotalTokens) {
-			aplog.Warn("cursor cost: execution %d attributed events total %d tokens vs run's %d; window match may be off", r.ID, matched, r.TotalTokens)
+		if matched > 0 && r.TotalTokens > 0 && matched > r.TotalTokens+r.TotalTokens/2 {
+			aplog.Warn("cursor cost: execution %d attributed events total %d tokens vs run's %d; suspected interactive usage in the window, cost not recorded", r.ID, matched, r.TotalTokens)
+			continue
+		}
+		if matched > 0 && r.TotalTokens > 0 && matched*3 < r.TotalTokens {
+			aplog.Warn("cursor cost: execution %d attributed events total %d tokens vs run's %d; window match may be incomplete, recording lower bound", r.ID, matched, r.TotalTokens)
 		}
 		if a.CostUSD <= 0 {
 			// All matched events were not charged (errored/included). Leave the row

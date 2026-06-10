@@ -48,7 +48,7 @@ func TestFetchEvents(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := &Client{Token: "user_123%3A%3Ajwt", BaseURL: srv.URL}
+	c := &Client{Token: "user_123%3A%3Ajwt", BaseURL: srv.URL, TeamID: 11303557, UserID: 207112194}
 	events, err := c.FetchEvents(context.Background(), time.UnixMilli(1765357200000), time.UnixMilli(1765364400000))
 	if err != nil {
 		t.Fatalf("FetchEvents: %v", err)
@@ -59,8 +59,8 @@ func TestFetchEvents(t *testing.T) {
 	if gotCookie != "user_123%3A%3Ajwt" {
 		t.Errorf("cookie = %q, want token passed through", gotCookie)
 	}
-	if gotBody["teamId"] != float64(0) || gotBody["pageSize"] != float64(100) {
-		t.Errorf("body = %v, want teamId 0 and pageSize 100", gotBody)
+	if gotBody["teamId"] != float64(11303557) || gotBody["userId"] != float64(207112194) || gotBody["pageSize"] != float64(100) {
+		t.Errorf("body = %v, want configured teamId/userId and pageSize 100", gotBody)
 	}
 	if gotBody["startDate"] != "1765357200000" {
 		t.Errorf("startDate = %v, want stringified epoch ms", gotBody["startDate"])
@@ -111,6 +111,28 @@ func TestFetchEventsPagination(t *testing.T) {
 	}
 	if pages != 2 || len(events) != pageSize+3 {
 		t.Errorf("pages = %d, events = %d; want 2 pages, %d events", pages, len(events), pageSize+3)
+	}
+}
+
+// Personal accounts (TeamID 0) must omit userId so the request matches what
+// the dashboard itself sends.
+func TestFetchEventsPersonalAccountBody(t *testing.T) {
+	var gotRaw map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotRaw)
+		fmt.Fprint(w, `{"usageEventsDisplay":[]}`)
+	}))
+	defer srv.Close()
+
+	c := &Client{Token: "t", BaseURL: srv.URL}
+	if _, err := c.FetchEvents(context.Background(), time.Now().Add(-time.Hour), time.Now()); err != nil {
+		t.Fatalf("FetchEvents: %v", err)
+	}
+	if gotRaw["teamId"] != float64(0) {
+		t.Errorf("teamId = %v, want 0", gotRaw["teamId"])
+	}
+	if _, present := gotRaw["userId"]; present {
+		t.Errorf("userId present in body = %v, want omitted when 0", gotRaw["userId"])
 	}
 }
 
