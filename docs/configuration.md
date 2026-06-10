@@ -266,19 +266,35 @@ settings:
 
 #### Getting the token
 
-If the daemon runs on the machine where the Cursor CLI is logged in, the
-bundled script does everything — extracts the CLI's long-lived session token
-from the OS keychain, discovers `team_id`/`user_id` from
-`~/.cursor/cli-config.json`, verifies the credentials against the dashboard
-API, and writes `CURSOR_SESSION_TOKEN` into your `.env` (idempotent — re-run
-it any time the token expires):
+The bundled script does everything — extracts the CLI's long-lived session
+token (macOS keychain, Linux secret-service, or the CLI's `auth.json`
+fallback), discovers `team_id`/`user_id` from `cli-config.json`, verifies the
+credentials live against the dashboard API, and writes `CURSOR_SESSION_TOKEN`
+into your `.env` (idempotent — re-run it any time the token expires). It
+prints the matching `settings.cursor_cost` block to paste into `apiary.yaml`.
+
+Daemon on the same machine as the Cursor CLI:
 
 ```bash
 scripts/cursor-cost-setup.sh /path/to/your/.env
 ```
 
-It prints the matching `settings.cursor_cost` block to paste into
-`apiary.yaml`. Manual equivalent, if you prefer:
+Daemon on a **different machine** than the Cursor login — export there,
+import here:
+
+```bash
+# on the machine where the Cursor CLI is logged in:
+scripts/cursor-cost-setup.sh --export cursor-creds.env
+scp cursor-creds.env daemon-host:
+
+# on the daemon machine:
+scripts/cursor-cost-setup.sh --import cursor-creds.env /path/to/daemon/.env
+rm cursor-creds.env   # the file holds a live session token — delete after import
+```
+
+(`--import -` reads the payload from stdin, so a one-shot
+`ssh cursor-host 'apiary/scripts/cursor-cost-setup.sh --export' | scripts/cursor-cost-setup.sh --import - .env`
+also works.) Manual equivalent, if you prefer:
 
 ```bash
 # macOS — build the cookie value from the CLI's stored session
