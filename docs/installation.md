@@ -88,7 +88,7 @@ as the original.
 !!! tip "Pin a version"
     Apiary is in public beta — config and adapter APIs may still change
     before `v1.0`. For anything you depend on, pin a release (e.g. the
-    `ghcr.io/orlandoburli/apiary:0.2.0` Docker tag) and read the
+    `ghcr.io/orlandoburli/apiary:0.3.0` Docker tag) and read the
     [release notes](https://github.com/orlandoburli/apiary/releases) before
     upgrading.
 
