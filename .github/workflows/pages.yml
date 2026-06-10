@@ -8,6 +8,8 @@ on:
       - DEVELOPMENT.md
       - docs/**
       - mkdocs.yml
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -44,6 +46,22 @@ jobs:
           sed -i 's|COMMERCIAL.md|https://github.com/orlandoburli/apiary/blob/main/COMMERCIAL.md|g' docs/index.md
           sed -i 's|\([^!]\)(openspec/|\1(https://github.com/orlandoburli/apiary/tree/main/openspec/|g' docs/index.md
           sed -i 's|openspec/specs/plugin-api/spec.md|https://github.com/orlandoburli/apiary/blob/main/openspec/specs/plugin-api/spec.md|g' docs/development.md
+
+      - name: Stamp latest release version into docs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Rewrite any pinned-version example (e.g. ghcr.io/orlandoburli/apiary:0.3.0)
+          # to the latest published release, so the site never shows a stale version.
+          # The markdown keeps a real version so it also reads fine on GitHub.
+          LATEST=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name | sed 's/^v//') || true
+          if [ -n "$LATEST" ]; then
+            echo "latest release: $LATEST"
+            find docs -name '*.md' -exec \
+              sed -i -E "s|(ghcr\.io/orlandoburli/apiary:)[0-9]+\.[0-9]+\.[0-9]+|\1${LATEST}|g" {} +
+          else
+            echo "could not resolve latest release — keeping versions as committed"
+          fi
 
       - name: Setup Python
         uses: actions/setup-python@v6
