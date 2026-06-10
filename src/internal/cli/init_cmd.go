@@ -9,40 +9,63 @@ import (
 
 const starterConfig = `version: "1"
 
-sources:
-  - id: my-source
-    type: plane
+# ── Runners ────────────────────────────────────────────────────────────────────
+# Define how agents execute (CLI, API, custom gateway, etc.)
+runners:
+  # Claude CLI runner (local development, no API keys needed)
+  - id: claude-cli
+    type: cli
+    provider: claude
     config:
-      workspace: my-workspace
-      project: my-project
-      api_key: ${PLANE_API_KEY}
-    poll_interval: 60s
+      args: ["--output-format", "stream-json", "--verbose"]
+
+# Default runner used by agents if not overridden
+default_runner: claude-cli
+
+# ── Sources ────────────────────────────────────────────────────────────────────
+# Where tasks come from (github, plane, ...)
+sources:
+  - id: my-repo
+    type: github
+    config:
+      repo: my-org/my-repo
+      # GitHub personal access token. Required for private repos.
+      api_key: ${GITHUB_TOKEN}
+    poll_interval: 120s
     filters:
+      states: [open]
       labels: [ai-ready]
 
-workers:
-  - id: default-worker
-    description: "Default worker"
-    runner: cli
-    model: openai/gpt-4o
-    config:
-      command: opencode        # CLI binary to invoke (opencode, gemini, etc.)
-      model_flag: "--model"    # flag used to pass the model to the CLI
-      working_dir: .
-      max_turns: 10
+# ── Agents ─────────────────────────────────────────────────────────────────────
+agents:
+  - id: engineer
+    description: "Engineer — implements tasks following project conventions"
+    runner: claude-cli
+    model: claude-sonnet-4-6
+    # soul_file: .apiary/souls/engineer.md   # optional agent persona file
 
-routes:
-  - id: default
-    priority: 99
-    match:
-      source: my-source
-    worker: default-worker
+# ── Workflows ──────────────────────────────────────────────────────────────────
+# Task routing: each workflow has a trigger that matches source items.
+workflows:
+  - id: implement
+    trigger:
+      priority: 20            # lower = evaluated first
+      match:
+        source: my-repo
+        labels: [ai-ready]
+    steps:
+      - id: run
+        agent: engineer
+    on_complete:
+      add_labels: [ai-complete]
 
+# ── Settings ───────────────────────────────────────────────────────────────────
 settings:
   concurrency: 2
   log_level: info
   state_lock: true
-  result_comment: true
+  # Stop re-dispatching a (task, workflow) after this many consecutive failures.
+  max_attempts: 3
 `
 
 func newInitCmd() *cobra.Command {
@@ -56,7 +79,7 @@ func newInitCmd() *cobra.Command {
 			if err := os.WriteFile("apiary.yaml", []byte(starterConfig), 0644); err != nil {
 				return err
 			}
-			fmt.Println("✓ apiary.yaml created — edit it to configure your sources and workers")
+			fmt.Println("✓ apiary.yaml created — edit it to configure your sources and agents")
 			return nil
 		},
 	}
