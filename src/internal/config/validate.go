@@ -3,9 +3,32 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/orlandoburli/apiary/internal/model"
 )
+
+// KnownAdapters reports the registered runner adapter names. The cli package
+// injects it (config cannot import the runner package without inverting the
+// dependency direction). When nil — configs built in code, isolated tests —
+// the adapter check is skipped.
+var KnownAdapters func() []string
+
+// adapterCombos renders registered adapter names as the type/provider
+// combinations users write in apiary.yaml, mirroring the table in
+// docs/runners.md: "claude-cli" → `type: cli, provider: claude`; names
+// without the -cli suffix are self-contained, e.g. `type: opencode-api`.
+func adapterCombos(names []string) string {
+	combos := make([]string, 0, len(names))
+	for _, n := range names {
+		if p, ok := strings.CutSuffix(n, "-cli"); ok && p != "" {
+			combos = append(combos, fmt.Sprintf("`type: cli, provider: %s` (%s)", p, n))
+		} else {
+			combos = append(combos, fmt.Sprintf("`type: %s`", n))
+		}
+	}
+	return strings.Join(combos, ", ")
+}
 
 // validateMCPs checks that each MCP server has a name and command, and that
 // names are unique within the scope. `scope` is a human label for error
@@ -36,6 +59,15 @@ func (c *Config) Validate() []error {
 		errs = append(errs, fmt.Errorf("version is required"))
 	}
 
+	var adapters []string
+	if KnownAdapters != nil {
+		adapters = KnownAdapters()
+	}
+	adapterSet := map[string]bool{}
+	for _, a := range adapters {
+		adapterSet[a] = true
+	}
+
 	runnerIDs := map[string]bool{}
 	for i, r := range c.Runners {
 		if r.ID == "" {
@@ -43,6 +75,13 @@ func (c *Config) Validate() []error {
 		}
 		if r.Type == "" {
 			errs = append(errs, fmt.Errorf("runners[%d] %q: type is required", i, r.ID))
+		} else if KnownAdapters != nil && !adapterSet[r.AdapterName()] {
+			where := fmt.Sprintf("type %q", r.Type)
+			if r.Provider != "" {
+				where = fmt.Sprintf("type %q, provider %q", r.Type, r.Provider)
+			}
+			errs = append(errs, fmt.Errorf("runners[%d] %q: no adapter registered for %s (resolves to %q); valid combinations: %s",
+				i, r.ID, where, r.AdapterName(), adapterCombos(adapters)))
 		}
 		if runnerIDs[r.ID] {
 			errs = append(errs, fmt.Errorf("runners[%d]: duplicate id %q", i, r.ID))

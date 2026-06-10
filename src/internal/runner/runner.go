@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"sort"
 
 	"github.com/orlandoburli/apiary/internal/model"
 )
@@ -37,3 +38,12 @@ func New(id string) (Runner, bool) {
 	return f(), true
 }
 
+// Registered returns the sorted list of registered adapter names.
+func Registered() []string {
+	names := make([]string, 0, len(factories))
+	for id := range factories {
+		names = append(names, id)
+	}
+	sort.Strings(names)
+	return names
+}

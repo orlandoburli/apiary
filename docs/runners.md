@@ -43,7 +43,8 @@ registered adapters are:
 | `cursor-cli` | `type: cli`, `provider: cursor` | the `agent` binary (Cursor CLI) |
 | `opencode-api` | `type: opencode-api` | HTTP calls to the OpenCode API |
 
-Any other combination fails at startup with `runner type not found`.
+Any other combination is rejected by `apiary validate` (and by the daemon's
+config check at startup) with an error listing the valid combinations.
 
 ## CLI runners
 
