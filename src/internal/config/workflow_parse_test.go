@@ -83,6 +83,7 @@ workflows:
         timeout: 48h
     on_complete:
       set_state: in_review
+      remove_labels: [ai-ready]
     on_fail:
       set_state: blocked
       add_labels: [workflow-failed]
@@ -185,6 +186,9 @@ workflows:
 	// on_complete / on_fail hooks
 	if wf.OnComplete == nil || wf.OnComplete.SetState != "in_review" {
 		t.Errorf("on_complete parsed incorrectly: %+v", wf.OnComplete)
+	}
+	if wf.OnComplete == nil || len(wf.OnComplete.RemoveLabels) != 1 || wf.OnComplete.RemoveLabels[0] != "ai-ready" {
+		t.Errorf("on_complete.remove_labels parsed incorrectly: %+v", wf.OnComplete)
 	}
 	if wf.OnFail == nil || wf.OnFail.SetState != "blocked" || len(wf.OnFail.AddLabels) != 1 {
 		t.Errorf("on_fail parsed incorrectly: %+v", wf.OnFail)

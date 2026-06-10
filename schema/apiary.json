@@ -590,6 +590,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "remove_labels": {
+          "type": "array",
+          "description": "Remove these labels from the task, e.g. to clear a label-driven trigger so the item is not matched again. Applied after add_labels",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },

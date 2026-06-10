@@ -148,8 +148,8 @@ type SideEffects interface {
 	StateLock(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding) error
 	// PostComment posts a comment (result_comment) on each bound source item.
 	PostComment(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, comment string) error
-	// ApplyHook applies an on_complete/on_fail hook (set_state, add_labels) to
-	// each bound source item.
+	// ApplyHook applies an on_complete/on_fail hook (set_state, add_labels,
+	// remove_labels) to each bound source item.
 	ApplyHook(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, hook config.OnComplete) error
 	// MaterializeChild creates a source sub-issue for a spawned child task under the
 	// parent's source item and persists the child's source binding, so the child

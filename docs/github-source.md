@@ -44,6 +44,7 @@ sources:
 | **WriteResult** | `POST /repos/{owner}/{repo}/issues/{number}/comments` | When `settings.result_comment: true` |
 | **SetState** | `PATCH /repos/{owner}/{repo}/issues/{number}` (sets `state`) | Via `workflow.on_complete.set_state` |
 | **AddLabels** | `PATCH /repos/{owner}/{repo}/issues/{number}` (replaces labels) | Via `workflow.on_complete.add_labels` |
+| **RemoveLabels** | `DELETE /repos/{owner}/{repo}/issues/{number}/labels/{name}` (one per label) | Via `workflow.on_complete.remove_labels` |
 
 GitHub's `/issues` endpoint also returns pull requests, but the adapter filters
 them out during polling — only plain issues become cells (always
@@ -94,6 +95,7 @@ source-level `api_key`:
 - **WriteResult** — posts comment with run output
 - **SetState** — closes/re-opens issue via `on_complete.set_state`
 - **AddLabels** — adds labels via `on_complete.add_labels`
+- **RemoveLabels** — removes labels via `on_complete.remove_labels`
 
 **Poll** always uses the source-level `api_key` — one account reads all issues.
 
@@ -153,6 +155,7 @@ below live under `trigger.match`.
 |---|---|---|
 | `set_state` | `string` | Transition the task to this state after a successful run |
 | `add_labels` | `[string]` | Add these labels to the task after a successful run |
+| `remove_labels` | `[string]` | Remove these labels after a successful run — e.g. clear the trigger label so the item is not matched again |
 
 ### Example: trigger by label
 

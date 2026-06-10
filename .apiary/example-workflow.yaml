@@ -121,6 +121,8 @@ workflows:
     on_complete:
       set_state: in_review
       add_labels: [reviewed]
+      # Clear the trigger label so the item is not matched again on the next poll.
+      remove_labels: [ai-ready]
     on_fail:
       add_labels: [needs-attention]
 

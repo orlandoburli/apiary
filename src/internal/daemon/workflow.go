@@ -614,6 +614,14 @@ func (s *wfSideEffects) ApplyHook(ctx context.Context, task model.InternalTask, 
 				}
 			}
 		}
+		// Removals run after additions so a label in both lists ends up removed.
+		if len(hook.RemoveLabels) > 0 {
+			if lr, ok := adapter.(source.LabelRemover); ok {
+				if err := lr.RemoveLabels(ctx, item, hook.RemoveLabels); err != nil {
+					aplog.Error("item %s: remove labels %v: %v", item.ID, hook.RemoveLabels, err)
+				}
+			}
+		}
 		if hook.SetState != "" {
 			if ss, ok := adapter.(source.StateSetter); ok {
 				if err := ss.SetState(ctx, item, hook.SetState); err != nil {
