@@ -22,10 +22,14 @@ func (f *fakeFetcher) FetchEvents(ctx context.Context, start, end time.Time) ([]
 	return f.events, nil
 }
 
-// insertCursorExec creates a finished cursor-cli execution. Its window starts
-// at CreateExecution time (now) and ends at end; tests place events relative
-// to start.
+// insertCursorExec creates a finished cursor-cli execution with an 800/200
+// token tuple (1000 total). Its window starts at CreateExecution time (now)
+// and ends at end; tests place events relative to start.
 func insertCursorExec(t *testing.T, dbc *db.Client, ctx context.Context, instance, step string, end time.Time) (int64, time.Time) {
+	return insertCursorExecTokens(t, dbc, ctx, instance, step, end, 800, 200)
+}
+
+func insertCursorExecTokens(t *testing.T, dbc *db.Client, ctx context.Context, instance, step string, end time.Time, in, out int) (int64, time.Time) {
 	t.Helper()
 	exec, err := dbc.CreateExecution(ctx, "42", "engineer", "title", "42", "", "composer-2", "cursor-cli", 1)
 	if err != nil {
@@ -33,7 +37,9 @@ func insertCursorExec(t *testing.T, dbc *db.Client, ctx context.Context, instanc
 	}
 	exec.Status = "success"
 	exec.CompletedAt = &end
-	exec.TotalTokens = 1000
+	exec.InputTokens = in
+	exec.OutputTokens = out
+	exec.TotalTokens = in + out
 	if err := dbc.UpdateExecution(ctx, exec); err != nil {
 		t.Fatalf("finish execution: %v", err)
 	}
@@ -230,5 +236,50 @@ func TestBackfillCursorCostsOverlapStaysUnpriced(t *testing.T) {
 	}
 	if !got[idA] || !got[idB] {
 		t.Errorf("unpriced rows = %v, want both %d and %d still unpriced (ambiguous event)", got, idA, idB)
+	}
+}
+
+// The real-world shape that motivated fingerprint matching: concurrent cursor
+// runs with fully overlapping windows. Their events are inside both windows,
+// but distinct token tuples identify each run's event exactly — both get
+// priced where the window-only matcher attributed neither.
+func TestBackfillCursorCostsFingerprintResolvesOverlap(t *testing.T) {
+	ctx := context.Background()
+	dbc, err := db.New(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbc.Close()
+
+	idA, startA := insertCursorExecTokens(t, dbc, ctx, "", "", time.Now().Add(10*time.Minute), 30641, 12)
+	idB, _ := insertCursorExecTokens(t, dbc, ctx, "", "", time.Now().Add(12*time.Minute), 105608, 153)
+
+	fetcher := &fakeFetcher{events: []cursorusage.UsageEvent{
+		{
+			Timestamp:    strconv.FormatInt(startA.Add(5*time.Minute).UnixMilli(), 10),
+			Kind:         "USAGE_EVENT_KIND_USAGE_BASED",
+			ChargedCents: 100,
+			TokenUsage:   &cursorusage.TokenUsage{InputTokens: 30641, OutputTokens: 12},
+		},
+		{
+			Timestamp:    strconv.FormatInt(startA.Add(6*time.Minute).UnixMilli(), 10),
+			Kind:         "USAGE_EVENT_KIND_USAGE_BASED",
+			ChargedCents: 572,
+			TokenUsage:   &cursorusage.TokenUsage{InputTokens: 105608, OutputTokens: 153},
+		},
+	}}
+	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	if err := d.backfillCursorCosts(ctx, fetcher, make(map[int64]int)); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	rows, err := dbc.ListUnpricedExecutions(ctx, "cursor-cli", time.Now().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, r := range rows {
+		if r.ID == idA || r.ID == idB {
+			t.Errorf("execution %d still unpriced; want fingerprint attribution despite overlap", r.ID)
+		}
 	}
 }

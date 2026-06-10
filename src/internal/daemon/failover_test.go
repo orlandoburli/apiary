@@ -110,7 +110,7 @@ func TestPauseRunner(t *testing.T) {
 	}
 	// nil-map safe + zero reset defaults to ~5m out.
 	d.pauseRunner("claude", time.Time{})
-	if got := d.runnerPausedUntil("claude"); got.Before(time.Now().Add(4*time.Minute)) {
+	if got := d.runnerPausedUntil("claude"); got.Before(time.Now().Add(4 * time.Minute)) {
 		t.Errorf("zero reset should default ~5m out, got %v", got)
 	}
 	// Only extends, never shortens.

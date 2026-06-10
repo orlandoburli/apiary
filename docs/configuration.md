@@ -315,19 +315,20 @@ and the daemon keeps running (costs simply stop back-filling until refreshed).
 
 How it works, and the fine print:
 
-- Cursor's usage events carry no session or request id, so each event is
-  attributed to the one run whose `[started_at, completed_at]` window (±2min
-  skew) contains its timestamp.
-- **Overlapping concurrent cursor runs**: an event that falls inside two run
-  windows is attributed to *neither* (wrongly attributing money is worse than
-  undercounting). The affected runs keep a lower-bound cost and a warning is
-  logged. Runs that never resolve are abandoned after 10 sweeps.
+- One cursor-agent invocation produces exactly **one** usage event whose token
+  counts equal the CLI's reported usage digit for digit (verified live). So
+  attribution is **fingerprint-first**: an event whose token tuple exactly
+  matches a run's recorded usage belongs to that run — concurrent runs with
+  fully overlapping time windows are disambiguated reliably.
+- Runs without a usable fingerprint fall back to time-window matching
+  (`started_at..completed_at` ±2min): an event inside exactly one window is
+  attributed; an event inside several is attributed to *neither* (wrongly
+  attributing money is worse than undercounting), logged as ambiguous. Runs
+  that never resolve are abandoned after 10 sweeps.
 - **Interactive IDE usage is indistinguishable from CLI runs** (Cursor's
-  `isHeadless` flag is `false` for both — verified live), so if you actively
-  use the Cursor IDE on the same account while a run executes, its events can
-  land inside the run's window. The sweep cross-checks the attributed events'
-  token totals against the run's own counts and refuses to record a cost when
-  they exceed them by more than 50%.
+  `isHeadless` flag is `false` for both — verified live). Fingerprint matches
+  are immune to it; window-fallback attributions are cross-checked against the
+  run's own token counts and skipped when they exceed them by more than 50%.
 - The endpoint is **undocumented** and may change without notice — the whole
   feature is best-effort and degrades to "no cost recorded" on any failure.
 - Plan-included requests (`INCLUDED_IN_PRO` etc.) and errored/aborted requests

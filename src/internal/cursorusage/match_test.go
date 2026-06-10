@@ -41,6 +41,60 @@ func TestAttributeSingleRun(t *testing.T) {
 	}
 }
 
+// Two fully overlapping runs with distinct token tuples: the fingerprint pass
+// must attribute both events correctly even though every event lies inside
+// both windows (the case the window-only matcher gave up on).
+func TestAttributeFingerprintDisambiguatesOverlap(t *testing.T) {
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	runs := []RunWindow{
+		{ID: 1, Start: base, End: base.Add(10 * time.Minute),
+			InputTokens: 30641, OutputTokens: 12, CacheWriteTokens: 29135, CacheReadTokens: 1500},
+		{ID: 2, Start: base.Add(time.Minute), End: base.Add(9 * time.Minute),
+			InputTokens: 105455, OutputTokens: 153, CacheWriteTokens: 0, CacheReadTokens: 75488},
+	}
+	ev1 := UsageEvent{
+		Timestamp:    ts(base.Add(5 * time.Minute)),
+		Kind:         "USAGE_EVENT_KIND_USAGE_BASED",
+		ChargedCents: 100,
+		TokenUsage:   &TokenUsage{InputTokens: 6, OutputTokens: 12, CacheWriteTokens: 29135, CacheReadTokens: 1500},
+	}
+	ev2 := UsageEvent{
+		Timestamp:    ts(base.Add(6 * time.Minute)),
+		Kind:         "USAGE_EVENT_KIND_USAGE_BASED",
+		ChargedCents: 572,
+		TokenUsage:   &TokenUsage{InputTokens: 29967, OutputTokens: 153, CacheWriteTokens: 0, CacheReadTokens: 75488},
+	}
+
+	got := Attribute([]UsageEvent{ev1, ev2}, runs, 2*time.Minute)
+	if a := got[1]; !a.Fingerprinted || a.Events != 1 || a.CostUSD != 1.00 || a.Ambiguous != 0 {
+		t.Errorf("run 1 = %+v, want fingerprinted $1.00", a)
+	}
+	if a := got[2]; !a.Fingerprinted || a.Events != 1 || a.CostUSD != 5.72 || a.Ambiguous != 0 {
+		t.Errorf("run 2 = %+v, want fingerprinted $5.72", a)
+	}
+}
+
+// Two OVERLAPPING runs with IDENTICAL token tuples (theoretical): the
+// fingerprint pass must not guess between them, and the window pass then
+// reports the events as ambiguous — nothing is attributed.
+func TestAttributeIdenticalTuplesStayAmbiguous(t *testing.T) {
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	runs := []RunWindow{
+		{ID: 1, Start: base, End: base.Add(10 * time.Minute), InputTokens: 100, OutputTokens: 10},
+		{ID: 2, Start: base.Add(time.Minute), End: base.Add(11 * time.Minute), InputTokens: 100, OutputTokens: 10},
+	}
+	mk := func(at time.Time) UsageEvent {
+		return UsageEvent{Timestamp: ts(at), Kind: "USAGE_EVENT_KIND_USAGE_BASED",
+			ChargedCents: 100, TokenUsage: &TokenUsage{InputTokens: 100, OutputTokens: 10}}
+	}
+	got := Attribute([]UsageEvent{mk(base.Add(2 * time.Minute)), mk(base.Add(3 * time.Minute))}, runs, 0)
+	for id, a := range got {
+		if a.Events != 0 || a.Ambiguous != 2 {
+			t.Errorf("run %d = %+v, want 0 events and 2 ambiguous (no guessing)", id, a)
+		}
+	}
+}
+
 func TestAttributeOverlapIsAmbiguous(t *testing.T) {
 	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	runs := []RunWindow{

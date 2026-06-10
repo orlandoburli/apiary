@@ -9,12 +9,20 @@ import (
 // on a runner that does not report cost (cursor-cli), consumed tokens, and has
 // cost_usd = 0.
 type UnpricedExecution struct {
-	ID                 int64
-	StartedAt          time.Time
-	CompletedAt        time.Time
-	TotalTokens        int
-	WorkflowInstanceID string
-	StepID             string
+	ID          int64
+	StartedAt   time.Time
+	CompletedAt time.Time
+	TotalTokens int
+	// The token tuple as reported by the CLI's final result event. One cursor
+	// invocation produces one dashboard usage event with this exact tuple, so
+	// it fingerprints the run during attribution. InputTokens is the full
+	// billed input (cache folded in), as stored everywhere else.
+	InputTokens         int
+	OutputTokens        int
+	CacheCreationTokens int
+	CacheReadTokens     int
+	WorkflowInstanceID  string
+	StepID              string
 }
 
 // ListUnpricedExecutions returns terminal executions of the given runner with
@@ -23,6 +31,7 @@ type UnpricedExecution struct {
 func (c *Client) ListUnpricedExecutions(ctx context.Context, runner string, since time.Time) ([]UnpricedExecution, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT id, started_at, completed_at, total_tokens,
+		       input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 		       COALESCE(workflow_instance_id, ''), COALESCE(step_id, '')
 		FROM task_executions
 		WHERE runner = ? AND status != 'running' AND cost_usd = 0
@@ -39,7 +48,9 @@ func (c *Client) ListUnpricedExecutions(ctx context.Context, runner string, sinc
 	var out []UnpricedExecution
 	for rows.Next() {
 		var u UnpricedExecution
-		if err := rows.Scan(&u.ID, &u.StartedAt, &u.CompletedAt, &u.TotalTokens, &u.WorkflowInstanceID, &u.StepID); err != nil {
+		if err := rows.Scan(&u.ID, &u.StartedAt, &u.CompletedAt, &u.TotalTokens,
+			&u.InputTokens, &u.OutputTokens, &u.CacheCreationTokens, &u.CacheReadTokens,
+			&u.WorkflowInstanceID, &u.StepID); err != nil {
 			return nil, err
 		}
 		out = append(out, u)

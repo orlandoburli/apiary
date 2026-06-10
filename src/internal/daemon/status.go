@@ -4,20 +4,20 @@ import "time"
 
 // StatusResponse is the JSON payload returned by GET /status on the IPC socket.
 type StatusResponse struct {
-	Version     string             `json:"version"`
-	ConfigFile  string             `json:"config_file"`
-	Uptime      string             `json:"uptime"`
-	Sources     []SourceStatus     `json:"sources"`
-	ActiveRuns  []ActiveRunStatus  `json:"active_runs"`
-	Concurrency ConcurrencyStatus  `json:"concurrency"`
+	Version     string            `json:"version"`
+	ConfigFile  string            `json:"config_file"`
+	Uptime      string            `json:"uptime"`
+	Sources     []SourceStatus    `json:"sources"`
+	ActiveRuns  []ActiveRunStatus `json:"active_runs"`
+	Concurrency ConcurrencyStatus `json:"concurrency"`
 }
 
 type SourceStatus struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	LastPoll   string `json:"last_poll"`   // human-readable "Xs ago"
-	LastCount  int    `json:"last_count"`  // cells found in last poll
-	InFlight   int    `json:"in_flight"`   // cells currently being dispatched from this source
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	LastPoll  string `json:"last_poll"`  // human-readable "Xs ago"
+	LastCount int    `json:"last_count"` // cells found in last poll
+	InFlight  int    `json:"in_flight"`  // cells currently being dispatched from this source
 }
 
 type ActiveRunStatus struct {
