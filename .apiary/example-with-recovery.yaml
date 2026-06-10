@@ -4,8 +4,6 @@ runners:
   - id: claude-cli
     type: cli
     provider: claude
-    config:
-      args: ["--output-format", "stream-json", "--verbose"]
 
 default_runner: claude-cli
 

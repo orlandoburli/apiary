@@ -46,8 +46,6 @@ runners:
   - id: claude
     type: cli
     provider: claude
-    config:
-      args: ["--output-format", "stream-json", "--verbose"]
 
   # OpenCode CLI — requires the `opencode` binary on PATH
   - id: opencode
@@ -74,12 +72,13 @@ default_runner: claude    # used by agents that don't name a runner
 | `models` | Models this runner supports (informational) |
 | `mcps` | [MCP servers](runners.md#mcp-servers) exposed to every agent on this runner |
 
-!!! tip "Recommended Claude CLI args"
-    `args: ["--output-format", "stream-json", "--verbose"]` makes the Claude
-    CLI emit structured events, which Apiary parses into the readable
-    `[assistant]` / `[tool→ …]` conversation in the
+!!! tip "Presets cover the CLI flags"
+    Each provider preset already passes the right flags — the Claude preset
+    runs `claude --output-format stream-json --verbose`, so Apiary parses the
+    structured events into the readable `[assistant]` / `[tool→ …]`
+    conversation in the
     [task logs](dashboard.md#watching-the-live-conversation-debug-mode),
-    plus accurate token and cost figures. Without it you get raw text output.
+    plus accurate token and cost figures. `config` is only for overrides.
 
 ## `sources`
 

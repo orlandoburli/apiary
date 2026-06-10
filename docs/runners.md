@@ -9,8 +9,6 @@ runners:
   - id: claude
     type: cli
     provider: claude
-    config:
-      args: ["--output-format", "stream-json", "--verbose"]
 
 default_runner: claude
 
@@ -64,8 +62,9 @@ the daemon's environment plus the
 
 ### Providers
 
-Each provider preconfigures the engine — binary name, how the prompt and
-model are passed, and the MCP format. You usually only add `args`.
+Each provider preconfigures the engine — binary name, default args, how the
+prompt and model are passed, and the MCP format. `config` is only for
+overrides; a bare `provider:` line is a fully working runner.
 
 #### Claude (`provider: claude`)
 
@@ -76,11 +75,9 @@ runners:
   - id: claude
     type: cli
     provider: claude
-    config:
-      args: ["--output-format", "stream-json", "--verbose"]
 ```
 
-The `args` shown are strongly recommended: with `stream-json`, Apiary parses
+The preset runs `claude --output-format stream-json --verbose`: Apiary parses
 Claude's structured event stream into
 
 - readable `[assistant]` / `[tool→ …]` / `[tool← result]` lines in the
@@ -88,9 +85,6 @@ Claude's structured event stream into
 - exact token counts and `cost_usd` per run (reported, not estimated),
 - `rate_limit_event` detection, which drives
   [failover](resilience.md#provider-rate-limits-failover).
-
-Without them the agent still runs — you just see raw text output and lose
-usage/rate-limit parsing.
 
 #### OpenCode (`provider: opencode`)
 
@@ -125,7 +119,7 @@ All `config` keys, with each provider's preset defaults:
 | Key | Description | claude | opencode | cursor |
 |---|---|---|---|---|
 | `command` | Binary to invoke (override to use a wrapper or absolute path) | `claude` | `opencode` | `agent` |
-| `args` | Extra argv prepended to every run | — | `run` | `-p --output-format stream-json --force` |
+| `args` | Extra argv appended after the preset's args | `--output-format stream-json --verbose` | `run` | `-p --output-format stream-json --force` |
 | `model_flag` | Flag used to pass the step's model | `--model` | `--model` | `--model` |
 | `prompt_flag` | Flag used to pass the prompt | `-p` | *(positional)* | *(positional)* |
 | `prompt_positional` | Pass the prompt as the last positional argument | `false` | `true` | `true` |

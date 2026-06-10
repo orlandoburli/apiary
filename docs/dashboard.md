@@ -170,22 +170,19 @@ dashboard refreshes every couple of seconds). You'll see, in order:
 These are `DEBUG`-level lines (shown in grey). Without `--debug` they are not
 recorded, keeping normal runs lightweight.
 
-To get the rich `[assistant]` / `[tool→ …]` breakdown from the Claude CLI, the
-runner must ask Claude for structured events. In your runner config:
+The rich `[assistant]` / `[tool→ …]` breakdown comes from Claude's structured
+event stream — the claude provider preset already requests it
+(`--output-format stream-json --verbose`), so a plain runner is enough:
 
 ```yaml
 runners:
   - id: claude-cli
     type: cli
-    config:
-      command: claude
-      model_flag: --model
-      prompt_flag: -p
-      args: ["--output-format", "stream-json", "--verbose"]
+    provider: claude
 ```
 
-Apiary parses those events into the readable lines above. Any other CLI (or
-Claude without those args) still streams — you just see its raw output instead.
+Apiary parses those events into the readable lines above. A CLI without
+structured output still streams — you just see its raw output instead.
 
 ### Agents
 

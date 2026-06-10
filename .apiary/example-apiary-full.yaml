@@ -12,12 +12,12 @@ version: "1"
 # Any other combination fails at daemon startup with "runner type not found".
 # See docs/runners.md for the full reference.
 runners:
-  # Claude CLI runner (local development, no API keys needed)
+  # Claude CLI runner (local development, no API keys needed). The preset runs
+  # `claude --output-format stream-json --verbose` so Apiary can parse usage,
+  # results, and rate-limit events; no config needed.
   - id: claude-cli
     type: cli
     provider: claude
-    config:
-      args: ["--output-format", "stream-json", "--verbose"]
     # Model Context Protocol servers exposed to every agent on this runner.
     # Each provider writes them into its own native MCP config: claude uses a
     # temp file + `--mcp-config`, cursor merges ~/.cursor/mcp.json + `--approve-mcps`,
