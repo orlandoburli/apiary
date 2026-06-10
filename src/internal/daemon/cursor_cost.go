@@ -100,7 +100,11 @@ func (d *Dispatcher) backfillCursorCosts(ctx context.Context, fetcher cursorEven
 	first, last := pending[0].StartedAt, pending[0].CompletedAt
 	for _, r := range pending {
 		attempts[r.ID]++
-		windows = append(windows, cursorusage.RunWindow{ID: r.ID, Start: r.StartedAt, End: r.CompletedAt})
+		windows = append(windows, cursorusage.RunWindow{
+			ID: r.ID, Start: r.StartedAt, End: r.CompletedAt,
+			InputTokens: r.InputTokens, OutputTokens: r.OutputTokens,
+			CacheWriteTokens: r.CacheCreationTokens, CacheReadTokens: r.CacheReadTokens,
+		})
 		if r.StartedAt.Before(first) {
 			first = r.StartedAt
 		}
@@ -126,19 +130,21 @@ func (d *Dispatcher) backfillCursorCosts(ctx context.Context, fetcher cursorEven
 		if a.Ambiguous > 0 {
 			aplog.Warn("cursor cost: execution %d has %d ambiguous event(s) from overlapping runs; recorded $%.4f is a lower bound", r.ID, a.Ambiguous, a.CostUSD)
 		}
-		// Cursor's isHeadless flag cannot separate CLI runs from interactive IDE
-		// usage on the same account, so a user working in the Cursor IDE during a
-		// run would inflate the attributed events. The run's own token counts are
-		// the ground truth: when the attributed events' tokens far exceed them,
-		// pollution is more likely than a real match — skip rather than record
-		// money the run did not spend (retries are capped by attempts).
-		matched := a.InputTokens + a.OutputTokens
-		if matched > 0 && r.TotalTokens > 0 && matched > r.TotalTokens+r.TotalTokens/2 {
-			aplog.Warn("cursor cost: execution %d attributed events total %d tokens vs run's %d; suspected interactive usage in the window, cost not recorded", r.ID, matched, r.TotalTokens)
-			continue
-		}
-		if matched > 0 && r.TotalTokens > 0 && matched*3 < r.TotalTokens {
-			aplog.Warn("cursor cost: execution %d attributed events total %d tokens vs run's %d; window match may be incomplete, recording lower bound", r.ID, matched, r.TotalTokens)
+		// A fingerprint match (exact token-tuple equality with the run's own
+		// usage) is self-validating. Window-fallback attributions are weaker:
+		// interactive IDE usage on the same account is indistinguishable from
+		// CLI events, so when the matched events' tokens far exceed the run's
+		// own counts, pollution is more likely than a real match — skip rather
+		// than record money the run did not spend (retries are capped).
+		if !a.Fingerprinted {
+			matched := a.InputTokens + a.OutputTokens
+			if matched > 0 && r.TotalTokens > 0 && matched > r.TotalTokens+r.TotalTokens/2 {
+				aplog.Warn("cursor cost: execution %d attributed events total %d tokens vs run's %d; suspected interactive usage in the window, cost not recorded", r.ID, matched, r.TotalTokens)
+				continue
+			}
+			if matched > 0 && r.TotalTokens > 0 && matched*3 < r.TotalTokens {
+				aplog.Warn("cursor cost: execution %d attributed events total %d tokens vs run's %d; window match may be incomplete, recording lower bound", r.ID, matched, r.TotalTokens)
+			}
 		}
 		if a.CostUSD <= 0 {
 			// All matched events were not charged (errored/included). Leave the row

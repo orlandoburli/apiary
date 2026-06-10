@@ -29,9 +29,11 @@ func newApprovalAdapter() *approvalAdapter {
 	return &approvalAdapter{comments: map[string][]string{}, polls: map[string]int{}}
 }
 
-func (a *approvalAdapter) ID() string                                                  { return "src" }
-func (a *approvalAdapter) Connect(context.Context, map[string]any) error               { return nil }
-func (a *approvalAdapter) Poll(context.Context, time.Time) ([]model.SourceItem, error) { return nil, nil }
+func (a *approvalAdapter) ID() string                                    { return "src" }
+func (a *approvalAdapter) Connect(context.Context, map[string]any) error { return nil }
+func (a *approvalAdapter) Poll(context.Context, time.Time) ([]model.SourceItem, error) {
+	return nil, nil
+}
 func (a *approvalAdapter) Acknowledge(context.Context, model.SourceItem, model.AckAction) error {
 	return nil
 }
