@@ -154,6 +154,25 @@ apiary service stop
 apiary service uninstall
 ```
 
+### `apiary update`
+
+Update apiary to the latest GitHub release in place:
+
+```sh
+apiary update          # download, verify the checksum, and replace the binary
+apiary update --check  # only report whether a newer version exists
+```
+
+Downloads are validated against the release's `checksums.txt` before the swap.
+Installs managed by Homebrew or Scoop are detected and redirected to
+`brew upgrade --cask apiary` / `scoop update apiary` instead of self-updating.
+After an update, restart the daemon (`apiary service stop && apiary service start`)
+to pick up the new version.
+
+Interactive commands also check for a new release at most once every 24 hours
+and print a short notice when one is available. Set `APIARY_NO_UPDATE_CHECK=1`
+to disable the check.
+
 ### `apiary version`
 
 Print the version.
@@ -162,8 +181,9 @@ Print the version.
 
 | Variable | Description |
 |---|---|
-| `GITHUB_TOKEN` | GitHub source polling + write fallback (see [GitHub source](github-source.md)) |
+| `GITHUB_TOKEN` | GitHub source polling + write fallback (see [GitHub source](github-source.md)); also raises the API rate limit for `apiary update` |
 | `PLANE_API_KEY` | Plane source API key (see [Plane source](plane-source.md)) |
+| `APIARY_NO_UPDATE_CHECK` | Disable the daily update-check notice |
 
 Any variable referenced as `${VAR}` in the config must be set in the daemon's
 environment or in the auto-loaded `.env` file.
