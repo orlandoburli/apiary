@@ -76,6 +76,7 @@ type TasksTab struct {
 	Logs            []LogEntry               // legacy flat stream (TaskViewLogs, legacy rows)
 	InstanceHistory []TaskHistorySegmentItem // per-instance history (TaskViewLogs, InternalTask rows)
 	LogScroll       int
+	LogFollow       bool // pin the logs viewport to the tail; cleared by scrolling up
 
 	// Flat-log tail pagination (Logs path only): the view loads the most recent
 	// taskLogTailLimit lines, then fetches older pages on scroll-to-top.
@@ -97,7 +98,9 @@ type TasksTab struct {
 	WorkflowStepIdx     int                     // selected step index in monitor
 	WorkflowLogs        []LogEntry              // logs for the selected step
 	WorkflowLogScroll   int
-	WorkflowShowLogs    bool // true when the log panel is expanded
+	WorkflowLogFollow   bool   // pin the step-log panel to the tail; cleared by scrolling up
+	WorkflowLogStepID   string // step whose logs fill the panel (scopes live-tail refreshes)
+	WorkflowShowLogs    bool   // true when the log panel is expanded
 
 	// Scroll / filter / sort
 	ScrollOffset int    // first visible row index
@@ -284,7 +287,8 @@ type AgentsTab struct {
 	LogsTaskID string
 	LogsTask   *TaskItem // task detail for the logs header
 	TaskLogs   []LogEntry
-	TaskLogIdx int // vertical scroll within TaskLogs (visual lines)
+	TaskLogIdx    int  // vertical scroll within TaskLogs (visual lines)
+	TaskLogFollow bool // pin the task-log viewport to the tail; cleared by scrolling up
 
 	// Related files (soul + skills) for the agent in Detail.
 	Files       []AgentFileItem // populated when View == AgentViewFiles
@@ -347,6 +351,7 @@ type LogsTab struct {
 	SearchText  string
 	SelectedIdx int
 	Scrolled    int  // vertical scroll offset (in display lines)
+	Follow      bool // pin the viewport to the tail; cleared by scrolling up
 	Wrap        bool // break long messages onto multiple lines
 	HScroll     int  // horizontal scroll offset (columns) when not wrapping
 }
@@ -412,6 +417,7 @@ func NewModel() *Model {
 		logsTab: &LogsTab{
 			Logs:        []LogEntry{},
 			FilterLevel: "All",
+			Follow:      true,
 			Wrap:        true,
 		},
 		workflowsTab:   &WorkflowsTab{},
