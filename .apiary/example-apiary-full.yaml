@@ -449,8 +449,8 @@ settings:
   # instances (rate-limited runs fail over and don't count). <=0 disables.
   max_attempts: 3
   # Log rotation: rotate apiary.log past this size (MB), keep this many
-  # rotated backups, and prune backups + per-task logs older than this many
-  # days. Negative values disable the corresponding behaviour.
+  # rotated backups, and prune backups + per-task logs + SQLite log rows
+  # older than this many days. Negative values disable each behaviour.
   log_max_size_mb: 50
   log_max_backups: 5
   log_max_age_days: 30

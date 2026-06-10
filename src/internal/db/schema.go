@@ -201,6 +201,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_logs_timestamp ON task_logs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_service_logs_timestamp ON service_logs(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_state ON workflow_instances(state);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_cell ON workflow_instances(cell_id);

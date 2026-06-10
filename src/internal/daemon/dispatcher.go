@@ -340,6 +340,18 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 	// instance would never be re-checked and its task would be stranded.
 	d.rehydrateParkedWaits(ctx)
 
+	// Prune old service_logs/task_logs rows once at startup and then daily,
+	// mirroring the file-side retention (settings.log_max_age_days). Without
+	// this the log tables dominate apiary.db on long-lived deployments.
+	if d.db != nil && d.cfg.Settings.LogMaxAgeDays > 0 {
+		maxAge := time.Duration(d.cfg.Settings.LogMaxAgeDays) * 24 * time.Hour
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.pruneLogsLoop(ctx, maxAge)
+		}()
+	}
+
 	for _, sc := range d.cfg.Sources {
 		sc := sc
 		adapter, ok := d.sources[sc.ID]
@@ -351,6 +363,31 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 			defer wg.Done()
 			d.pollLoop(ctx, sc, adapter)
 		}()
+	}
+}
+
+// pruneLogsLoop deletes DB log rows older than maxAge, at startup and then
+// once a day. Rows past the window stay readable in the rotated log files.
+func (d *Dispatcher) pruneLogsLoop(ctx context.Context, maxAge time.Duration) {
+	prune := func() {
+		n, err := d.db.PruneLogsBefore(ctx, time.Now().Add(-maxAge))
+		if err != nil {
+			aplog.Warn("prune log rows: %v", err)
+		} else if n > 0 {
+			aplog.Info("pruned %d log row(s) older than %dd", n, int(maxAge.Hours()/24))
+		}
+	}
+	prune()
+
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			prune()
+		}
 	}
 }
 
