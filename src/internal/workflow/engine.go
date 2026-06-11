@@ -200,16 +200,23 @@ type SideEffects interface {
 // It returns a CIStatus or an error if the check fails (transient or permanent).
 type CIStatusChecker func(ctx context.Context, sourceID, sourceItemID string) (source.CIStatus, error)
 
+// DependencyChecker is called by wait_for steps with kind "dependency" to list
+// the task's upstream blockers. linkType is the step's blocker_link_type
+// (empty = the source's default blocking relation). It returns the blockers or
+// an error if the lookup fails (transient or permanent).
+type DependencyChecker func(ctx context.Context, sourceID, sourceItemID, linkType string) ([]source.BlockerRef, error)
+
 type Engine struct {
-	cfg       *config.Config
-	store     Store
-	exec      StepExecutor
-	side      SideEffects
-	mem       MemoryBuilder
-	memStore  MemoryStore
-	spawner   WorkflowSpawner
-	tracker   TaskTracker
-	ciChecker CIStatusChecker
+	cfg        *config.Config
+	store      Store
+	exec       StepExecutor
+	side       SideEffects
+	mem        MemoryBuilder
+	memStore   MemoryStore
+	spawner    WorkflowSpawner
+	tracker    TaskTracker
+	ciChecker  CIStatusChecker
+	depChecker DependencyChecker
 
 	now   func() time.Time
 	newID func(prefix string) string
@@ -252,6 +259,12 @@ func WithTaskTracker(t TaskTracker) Option { return func(e *Engine) { e.tracker 
 // WithCIStatusChecker sets the CI status checker used by wait_for steps.
 func WithCIStatusChecker(checker CIStatusChecker) Option {
 	return func(e *Engine) { e.ciChecker = checker }
+}
+
+// WithDependencyChecker sets the blocker lister used by wait_for steps with
+// kind "dependency".
+func WithDependencyChecker(checker DependencyChecker) Option {
+	return func(e *Engine) { e.depChecker = checker }
 }
 
 // NewEngine builds an Engine. cfg, store, and exec are required.

@@ -15,6 +15,14 @@ import (
 // the adapter check is skipped.
 var KnownAdapters func() []string
 
+// SourceSupportsDependencyWait reports whether a source type's adapter can
+// enumerate a task's upstream blockers (implements source.BlockerLister), which
+// a wait_for step with kind "dependency" requires. The cli package injects it
+// (config cannot import the source package without inverting the dependency
+// direction). When nil — configs built in code, isolated tests — the check is
+// skipped.
+var SourceSupportsDependencyWait func(sourceType string) bool
+
 // adapterCombos renders registered adapter names as the type/provider
 // combinations users write in apiary.yaml, mirroring the table in
 // docs/runners.md: "claude-cli" → `type: cli, provider: claude`; names

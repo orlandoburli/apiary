@@ -28,10 +28,11 @@ func init() {
 // capabilities used by the dispatcher and the workflow engine. CI status and
 // PR listing are PR-centric and have no Jira mapping, so they are omitted.
 var (
-	_ source.StateSetter  = (*Adapter)(nil)
-	_ source.LabelAdder   = (*Adapter)(nil)
-	_ source.LabelRemover = (*Adapter)(nil)
-	_ source.TaskPoller   = (*Adapter)(nil)
+	_ source.StateSetter   = (*Adapter)(nil)
+	_ source.LabelAdder    = (*Adapter)(nil)
+	_ source.LabelRemover  = (*Adapter)(nil)
+	_ source.TaskPoller    = (*Adapter)(nil)
+	_ source.BlockerLister = (*Adapter)(nil)
 )
 
 type Adapter struct {
@@ -301,6 +302,53 @@ func (a *Adapter) PollTask(ctx context.Context, cellID string) (model.SourceItem
 		cell.Comments = comments
 	}
 	return cell, nil
+}
+
+// defaultBlockerLinkType is the stock Jira link type whose inward side reads
+// "is blocked by" — the relation a dependency wait gates on by default.
+const defaultBlockerLinkType = "Blocks"
+
+// ListBlockers enumerates the issues blocking the given one: the inward side
+// of its linkType issue links (default "Blocks", i.e. "is blocked by").
+// State is normalized to "done" when the blocker's status category is Done,
+// otherwise the raw status name. Merged is always false — Jira's core REST API
+// has no PR visibility, so dependency waits on Jira are satisfied via the
+// "done" condition. Implements source.BlockerLister.
+func (a *Adapter) ListBlockers(ctx context.Context, cellID, linkType string) ([]source.BlockerRef, error) {
+	if linkType == "" {
+		linkType = defaultBlockerLinkType
+	}
+
+	path := "/rest/api/3/issue/" + url.PathEscape(cellID)
+	data, err := a.client.get(ctx, path, url.Values{"fields": {"issuelinks"}})
+	if err != nil {
+		return nil, fmt.Errorf("jira: listing blockers of %s: %w", cellID, err)
+	}
+	var item issueLinks
+	if err := json.Unmarshal(data, &item); err != nil {
+		return nil, fmt.Errorf("jira: decoding issue links of %s: %w", cellID, err)
+	}
+
+	var blockers []source.BlockerRef
+	for _, link := range item.Fields.IssueLinks {
+		if link.InwardIssue == nil || !strings.EqualFold(link.Type.Name, linkType) {
+			continue
+		}
+		state := ""
+		if st := link.InwardIssue.Fields.Status; st != nil {
+			state = st.Name
+			if st.StatusCategory.Key == "done" {
+				state = "done"
+			}
+		}
+		blockers = append(blockers, source.BlockerRef{
+			ID:     link.InwardIssue.ID,
+			Number: link.InwardIssue.Key,
+			Title:  link.InwardIssue.Fields.Summary,
+			State:  state,
+		})
+	}
+	return blockers, nil
 }
 
 // fetchComments retrieves every comment on an issue, oldest first, flattening

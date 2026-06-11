@@ -877,8 +877,8 @@
       "properties": {
         "kind": {
           "type": "string",
-          "description": "What to poll. Currently only 'ci' (CI status of the PR linked to the task)",
-          "enum": ["ci"],
+          "description": "What to poll: 'ci' (CI status of the PR linked to the task) or 'dependency' (the task's upstream blockers, e.g. Jira 'is blocked by' links — the step parks until every blocker is merged/Done, then auto-resumes)",
+          "enum": ["ci", "dependency"],
           "default": "ci"
         },
         "check_interval": {
@@ -888,17 +888,34 @@
         },
         "max_duration": {
           "type": "string",
-          "description": "Total timeout for polling (e.g., '2h'). Defaults to 2h",
+          "description": "Total timeout for polling (e.g., '2h'). Defaults to 2h for kind 'ci' and to no deadline for kind 'dependency'",
           "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
         },
         "fail_if_not_passed": {
           "type": "boolean",
-          "description": "Reject the step if CI is not green",
+          "description": "Reject the step if CI is not green (kind 'ci' only)",
           "default": true
         },
         "remove_label": {
           "type": "string",
           "description": "Remove this label from the task before polling begins (resets stale labels from previous runs)"
+        },
+        "satisfied_when": {
+          "type": "array",
+          "description": "Kind 'dependency' only: conditions under which a blocker counts as satisfied — 'merged' (a linked PR merged) and/or 'done' (status is Done-category). A blocker is satisfied when ANY listed condition holds. Defaults to [merged, done]",
+          "items": {
+            "type": "string",
+            "enum": ["merged", "done"]
+          }
+        },
+        "blocker_link_type": {
+          "type": "string",
+          "description": "Kind 'dependency' only: the source-native relation that marks a blocker (e.g. Jira's 'Blocks' link type, read from its inward 'is blocked by' side). Empty uses the source's default blocking relation"
+        },
+        "on_timeout": {
+          "type": "string",
+          "description": "What happens when max_duration elapses: 'fail' fails the step, 'hold' keeps the instance parked for a human. Defaults to fail for kind 'ci' and hold for kind 'dependency'",
+          "enum": ["hold", "fail"]
         }
       }
     },

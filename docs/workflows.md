@@ -286,8 +286,9 @@ with their original timestamps and timeout intact.
 ### `wait_for` steps — waiting on CI
 
 A `wait_for` step parks the workflow until an external condition resolves.
-The supported kind is `ci`: wait for the checks on the pull request linked to
-this task.
+Two kinds are supported: `ci` waits for the checks on the pull request linked
+to this task; `dependency` waits for the task's upstream blockers (see the
+next section).
 
 ```yaml
 - id: implement
@@ -329,6 +330,52 @@ is present, it routes that failure exclusively — typically looping back to
 the implementation step so the agent rebases — with its own `max_retries`
 budget, separate from `on_fail`. Without `on_conflict`, a conflict falls
 through to `on_fail` like any other failure.
+
+### `wait_for` steps — waiting on blockers (`kind: dependency`)
+
+Triggers select a task by its own labels/state, so a task that is *blocked by*
+another (a Jira "is blocked by" link, a GitHub issue dependency) would
+otherwise start in parallel with its blocker. A `wait_for` step with
+`kind: dependency` parks the workflow until every blocker is satisfied, then
+auto-resumes — no labels to re-add, enforced by the engine regardless of agent
+behaviour:
+
+```yaml
+- id: await-blockers
+  type: wait_for
+  wait_for:
+    kind: dependency
+    satisfied_when: [merged, done]  # blocker OK when its PR merged OR status is Done-category
+    blocker_link_type: "Blocks"     # source-native relation; default: the source's blocking link
+    check_interval: 5m
+    max_duration: 168h              # optional; default: no deadline for this kind
+    on_timeout: hold                # hold (default) keeps it parked for a human; fail fails the step
+
+- id: implement
+  agent: engineer
+  prompt: "Blockers are resolved — implement the change."
+```
+
+How it works:
+
+- Placed as the first step, it suspends the instance (parked, restart-safe,
+  exactly like a CI wait) while any blocker is unsatisfied, re-checking every
+  poll cycle, and resumes the pipeline automatically once all are.
+- `satisfied_when` lists the conditions under which a blocker counts as
+  satisfied — `merged` (a pull request linked to the blocker is merged)
+  and/or `done` (the blocker's status is Done-category/closed). ANY listed
+  condition satisfies a blocker. Default: `[merged, done]`.
+- Blockers come from the source adapter: **Jira** reads the inward side of
+  the issue's `Blocks` links (*"is blocked by"*; `blocker_link_type`
+  overrides the link type); **GitHub** reads the issue dependencies API
+  (*"blocked by"*). A source without blocker support is rejected at config
+  validation.
+- Unlike `ci`, the default `max_duration` is *no deadline*, and at a
+  configured deadline the default `on_timeout: hold` keeps the instance
+  parked (a blocker may legitimately take days) — set `on_timeout: fail` to
+  fail the step instead.
+- Every check is recorded in the same poll history as CI waits, so the
+  dashboard shows which blockers are still pending.
 
 ### Sub-workflows
 

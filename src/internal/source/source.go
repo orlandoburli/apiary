@@ -102,6 +102,29 @@ type PullRequestLister interface {
 	ListPullRequests(ctx context.Context, cellID string) ([]PullRequestRef, error)
 }
 
+// BlockerRef is one upstream blocker of a source item — another work item that
+// must land before the blocked one may proceed (e.g. the other side of a Jira
+// "is blocked by" link). State and Merged carry the blocker's resolution
+// signals; the workflow engine decides satisfaction against the wait_for step's
+// satisfied_when conditions.
+type BlockerRef struct {
+	ID     string // source-native id of the blocking item
+	Number string // human-facing reference (e.g. "PSP-49", "#42")
+	Title  string // blocker summary, for poll-history/debug detail
+	State  string // normalized: "done" when resolved/closed, otherwise the source status
+	Merged bool   // true when a pull request linked to the blocker is merged
+}
+
+// BlockerLister is an optional interface a source may implement to enumerate a
+// task's upstream blockers. The workflow engine uses it for wait_for steps with
+// kind "dependency", which park the instance until every blocker is satisfied.
+// linkType selects the source-native blocking relation (e.g. Jira's "Blocks"
+// link type); empty means the source's default. Sources that do not implement
+// it cannot host dependency waits (rejected at config validation).
+type BlockerLister interface {
+	ListBlockers(ctx context.Context, cellID, linkType string) ([]BlockerRef, error)
+}
+
 // SubIssueCreator is an optional interface a source may implement to create a
 // child work item linked to a parent (a sub-issue). The workflow engine uses it
 // to materialize a spawned InternalTask as a source sub-issue under the spawning

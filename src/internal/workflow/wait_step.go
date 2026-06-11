@@ -8,6 +8,7 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/config"
 	aplog "github.com/orlandoburli/apiary/internal/log"
+	"github.com/orlandoburli/apiary/internal/source"
 )
 
 // RunWaitStep performs ONE check of the external system (e.g. CI status) and
@@ -31,8 +32,10 @@ func (e *Engine) RunWaitStep(
 
 	cfg := step.WaitFor
 	switch cfg.Kind {
-	case "", "ci":
+	case "", config.WaitKindCI:
 		return e.checkCIWaitStep(ctx, instID, step, sourceID, sourceItemID, deadline)
+	case config.WaitKindDependency:
+		return e.checkDependencyWaitStep(ctx, instID, step, sourceID, sourceItemID, deadline)
 	default:
 		return StepResult{}, fmt.Errorf("wait_for step %q unsupported kind: %q", step.ID, cfg.Kind)
 	}
@@ -57,8 +60,15 @@ func (e *Engine) checkCIWaitStep(
 
 	cfg := step.WaitFor
 
-	// Timeout: give up waiting once past the deadline.
+	// Timeout: once past the deadline, fail the step — or, with on_timeout: hold,
+	// keep the instance parked for a human instead of giving up.
 	if !deadline.IsZero() && e.now().After(deadline) {
+		if cfg.TimeoutAction() == config.OnTimeoutHold {
+			aplog.Info("wait_for step %q: CI wait exceeded %v — holding (on_timeout: hold)", step.ID, cfg.ParsedMaxDuration())
+			e.recordCIPoll(ctx, instID, step.ID, "timeout", "",
+				fmt.Sprintf("CI did not complete within %v; holding for manual resolution", cfg.ParsedMaxDuration()))
+			return StepResult{Pending: true}, nil
+		}
 		aplog.Info("wait_for step %q: CI wait timed out after %v", step.ID, cfg.ParsedMaxDuration())
 		e.recordCIPoll(ctx, instID, step.ID, "timeout", "",
 			fmt.Sprintf("CI did not complete within %v", cfg.ParsedMaxDuration()))
@@ -137,6 +147,130 @@ func (e *Engine) checkCIWaitStep(
 		aplog.Debug("wait_for step %q: CI status %q not yet conclusive", step.ID, status.Status)
 		return StepResult{Pending: true}, nil
 	}
+}
+
+// checkDependencyWaitStep performs a single blocker check for a wait_for step
+// with kind "dependency". Transient lookup errors and any still-unsatisfied
+// blocker both yield Pending (the instance stays parked and is re-checked next
+// poll cycle); all blockers satisfied — merged and/or Done, per satisfied_when —
+// is terminal success, auto-resuming the workflow. Past the deadline the step
+// honours on_timeout: hold keeps parking for a human (the default for this
+// kind), fail fails the step. Every check is recorded like a CI poll, so the
+// wait's history is auditable from the dashboard.
+func (e *Engine) checkDependencyWaitStep(
+	ctx context.Context,
+	instID string,
+	step config.StepConfig,
+	sourceID, sourceItemID string,
+	deadline time.Time,
+) (StepResult, error) {
+	if e.depChecker == nil {
+		return StepResult{
+			Success: false,
+			Err:     fmt.Errorf("dependency (blocker) polling not configured"),
+		}, nil
+	}
+
+	cfg := step.WaitFor
+
+	// Timeout: hold keeps the instance parked for a human; fail gives up.
+	if !deadline.IsZero() && e.now().After(deadline) {
+		if cfg.TimeoutAction() == config.OnTimeoutFail {
+			aplog.Info("wait_for step %q: dependency wait timed out after %v", step.ID, cfg.ParsedMaxDuration())
+			e.recordCIPoll(ctx, instID, step.ID, "timeout", "",
+				fmt.Sprintf("blockers not satisfied within %v", cfg.ParsedMaxDuration()))
+			return StepResult{
+				Success: false,
+				StructuredOutput: map[string]any{
+					"dependency_status": "timeout",
+					"reason":            fmt.Sprintf("blockers not satisfied within %v", cfg.ParsedMaxDuration()),
+				},
+			}, nil
+		}
+		aplog.Info("wait_for step %q: dependency wait exceeded %v — holding (on_timeout: hold)", step.ID, cfg.ParsedMaxDuration())
+		e.recordCIPoll(ctx, instID, step.ID, "timeout", "",
+			fmt.Sprintf("blockers not satisfied within %v; holding for manual resolution", cfg.ParsedMaxDuration()))
+		return StepResult{Pending: true}, nil
+	}
+
+	blockers, err := e.depChecker(ctx, sourceID, sourceItemID, cfg.BlockerLinkType)
+	if err != nil {
+		// WARN, not DEBUG: a persistent error (missing scope, wrong link type)
+		// would otherwise masquerade as an endless wait with no visible cause.
+		// Retried next cycle so it self-heals once the underlying problem is fixed.
+		aplog.Warn("wait_for step %q: blocker check failed (will retry next cycle): %v", step.ID, err)
+		e.recordCIPoll(ctx, instID, step.ID, "error", "", err.Error())
+		return StepResult{Pending: true}, nil
+	}
+
+	conditions := cfg.EffectiveSatisfiedWhen()
+	unsatisfied := make([]source.BlockerRef, 0, len(blockers))
+	for _, b := range blockers {
+		if !blockerSatisfied(b, conditions) {
+			unsatisfied = append(unsatisfied, b)
+		}
+	}
+
+	if len(unsatisfied) > 0 {
+		aplog.Debug("wait_for step %q: %d of %d blocker(s) still unsatisfied", step.ID, len(unsatisfied), len(blockers))
+		e.recordCIPoll(ctx, instID, step.ID, "pending", "", encodeBlockers(unsatisfied))
+		return StepResult{Pending: true}, nil
+	}
+
+	e.recordCIPoll(ctx, instID, step.ID, "passed", "", encodeBlockers(blockers))
+	return StepResult{
+		Success: true,
+		StructuredOutput: map[string]any{
+			"dependency_status": "satisfied",
+			"blockers":          blockersToMap(blockers),
+		},
+	}, nil
+}
+
+// blockerSatisfied reports whether one blocker meets ANY of the satisfied_when
+// conditions: "merged" — a PR linked to the blocker is merged; "done" — the
+// blocker's status is Done-category (resolved/closed).
+func blockerSatisfied(b source.BlockerRef, conditions []string) bool {
+	for _, cond := range conditions {
+		switch cond {
+		case config.BlockerSatisfiedMerged:
+			if b.Merged {
+				return true
+			}
+		case config.BlockerSatisfiedDone:
+			if b.State == "done" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// blockersToMap renders blockers as reference→state for structured step output.
+// A merged blocker reports "merged" so the output shows which condition held.
+func blockersToMap(blockers []source.BlockerRef) map[string]string {
+	m := make(map[string]string, len(blockers))
+	for _, b := range blockers {
+		state := b.State
+		if b.Merged {
+			state = "merged"
+		}
+		m[b.Number] = state
+	}
+	return m
+}
+
+// encodeBlockers renders blockers as compact JSON for the recorded poll's
+// detail column. Returns "" when there are none.
+func encodeBlockers(blockers []source.BlockerRef) string {
+	if len(blockers) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(blockersToMap(blockers))
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 func checksToMap(checks []struct {
