@@ -39,6 +39,34 @@ type statusCategory struct {
 	Key string `json:"key"` // "new", "indeterminate", "done"
 }
 
+// issueLinks is the slice of GET /issue/{id}?fields=issuelinks we care about:
+// the issue's links, each carrying the link type and the OTHER side's issue —
+// inwardIssue when the other issue points at this one (for a "Blocks" link,
+// the inward side is "is blocked by", i.e. a blocker of this issue).
+type issueLinks struct {
+	Fields struct {
+		IssueLinks []issueLink `json:"issuelinks"`
+	} `json:"fields"`
+}
+
+type issueLink struct {
+	Type        issueLinkType `json:"type"`
+	InwardIssue *linkedIssue  `json:"inwardIssue"`
+}
+
+type issueLinkType struct {
+	Name string `json:"name"` // e.g. "Blocks"
+}
+
+type linkedIssue struct {
+	ID     string `json:"id"`
+	Key    string `json:"key"`
+	Fields struct {
+		Summary string        `json:"summary"`
+		Status  *statusEntity `json:"status"`
+	} `json:"fields"`
+}
+
 // transitionsResponse is the envelope of GET /issue/{id}/transitions.
 type transitionsResponse struct {
 	Transitions []transition `json:"transitions"`

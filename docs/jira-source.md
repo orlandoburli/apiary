@@ -71,6 +71,12 @@ visible to the API user and logs a warning.
 - **No CI polling.** `wait_for` steps with `kind: ci` need a source that can
   see pull requests; Jira issues have no PR mapping, so host CI waits on a
   GitHub source instead.
+- **Dependency waits work.** `wait_for` steps with
+  [`kind: dependency`](workflows.md#wait_for-steps-waiting-on-blockers-kind-dependency)
+  read the inward side of the issue's `Blocks` links (*"is blocked by"*;
+  `blocker_link_type` overrides the link type). A blocker counts as satisfied
+  via its Done-category status — the `merged` condition never matches on Jira
+  (no PR visibility), so keep `done` in `satisfied_when`.
 
 ## State names in hooks
 

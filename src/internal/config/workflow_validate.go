@@ -141,7 +141,7 @@ func (c *Config) validateStep(
 	case StepTypeWorkflow:
 		errs = append(errs, validateWorkflowStep(sctx, s, wf, wfByID)...)
 	case StepTypeWaitFor:
-		errs = append(errs, validateWaitForStep(sctx, s)...)
+		errs = append(errs, c.validateWaitForStep(sctx, s)...)
 	default:
 		errs = append(errs, fmt.Errorf("%s: unknown step type %q", sctx, s.Type))
 	}
@@ -374,7 +374,7 @@ func validateWorkflowStep(sctx string, s StepConfig, parent WorkflowConfig, wfBy
 }
 
 // validateWaitForStep validates a type: wait_for step.
-func validateWaitForStep(sctx string, s StepConfig) []error {
+func (c *Config) validateWaitForStep(sctx string, s StepConfig) []error {
 	var errs []error
 
 	if s.Agent != "" {
@@ -389,10 +389,48 @@ func validateWaitForStep(sctx string, s StepConfig) []error {
 	cfg := s.WaitFor
 
 	// Validate kind
-	if cfg.Kind == "" {
+	switch cfg.Kind {
+	case "", WaitKindCI:
 		// Default is "ci", which is valid
-	} else if cfg.Kind != "ci" {
-		errs = append(errs, fmt.Errorf("%s: wait_for step kind %q not supported (currently only 'ci')", sctx, cfg.Kind))
+	case WaitKindDependency:
+		// A dependency wait needs a source whose adapter can enumerate a task's
+		// blockers. The capability check is injected by cli (config cannot import
+		// the source package); nil — configs built in code, isolated tests —
+		// skips it, mirroring KnownAdapters.
+		if SourceSupportsDependencyWait != nil && len(c.Sources) > 0 {
+			supported := false
+			for _, src := range c.Sources {
+				if SourceSupportsDependencyWait(src.Type) {
+					supported = true
+					break
+				}
+			}
+			if !supported {
+				errs = append(errs, fmt.Errorf("%s: wait_for kind \"dependency\" requires a source whose adapter can list a task's blockers, but no configured source supports it", sctx))
+			}
+		}
+	default:
+		errs = append(errs, fmt.Errorf("%s: wait_for step kind %q not supported (valid: ci, dependency)", sctx, cfg.Kind))
+	}
+
+	// dependency-only fields are rejected on other kinds.
+	if cfg.Kind != WaitKindDependency {
+		if len(cfg.SatisfiedWhen) > 0 {
+			errs = append(errs, fmt.Errorf("%s: wait_for satisfied_when is only valid with kind \"dependency\"", sctx))
+		}
+		if cfg.BlockerLinkType != "" {
+			errs = append(errs, fmt.Errorf("%s: wait_for blocker_link_type is only valid with kind \"dependency\"", sctx))
+		}
+	}
+	for _, cond := range cfg.SatisfiedWhen {
+		if cond != BlockerSatisfiedMerged && cond != BlockerSatisfiedDone {
+			errs = append(errs, fmt.Errorf("%s: wait_for satisfied_when value %q not supported (valid: merged, done)", sctx, cond))
+		}
+	}
+
+	// Validate on_timeout
+	if cfg.OnTimeout != "" && cfg.OnTimeout != OnTimeoutHold && cfg.OnTimeout != OnTimeoutFail {
+		errs = append(errs, fmt.Errorf("%s: invalid wait_for on_timeout %q (valid: hold, fail)", sctx, cfg.OnTimeout))
 	}
 
 	// Validate check_interval

@@ -42,6 +42,18 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 			}
 			return poller.PollCIStatus(ctx, sourceItemID)
 		}))
+		// Wire up blocker listing for wait_for steps with kind: dependency.
+		opts = append(opts, workflow.WithDependencyChecker(func(ctx context.Context, sourceID, sourceItemID, linkType string) ([]source.BlockerRef, error) {
+			adapter, ok := d.sources[sourceID]
+			if !ok {
+				return nil, fmt.Errorf("source %q not found", sourceID)
+			}
+			lister, ok := adapter.(source.BlockerLister)
+			if !ok {
+				return nil, fmt.Errorf("source %q does not support blocker listing (wait_for kind: dependency)", sourceID)
+			}
+			return lister.ListBlockers(ctx, sourceItemID, linkType)
+		}))
 		d.engine = workflow.NewEngine(d.cfg, d.db, &wfStepExecutor{d: d}, opts...)
 	})
 	return d.engine

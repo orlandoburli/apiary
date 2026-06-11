@@ -342,21 +342,68 @@ func (t ApprovalTrigger) IsEmpty() bool {
 	return t.CommentContains == "" && t.LabelAdded == "" && t.StateChanged == ""
 }
 
+// wait_for kinds: what external condition a wait_for step polls.
+const (
+	// WaitKindCI waits for the CI status of the PR linked to the task.
+	WaitKindCI = "ci"
+	// WaitKindDependency waits until every upstream blocker of the task (e.g. a
+	// Jira "is blocked by" link) is satisfied — merged and/or Done per
+	// satisfied_when — then auto-resumes the workflow.
+	WaitKindDependency = "dependency"
+)
+
+// on_timeout actions for a wait_for step whose max_duration elapses.
+const (
+	// OnTimeoutFail fails the step at the deadline (the CI default).
+	OnTimeoutFail = "fail"
+	// OnTimeoutHold keeps the instance parked past the deadline, leaving it for a
+	// human to resolve (the dependency default).
+	OnTimeoutHold = "hold"
+)
+
+// blocker satisfaction conditions accepted in satisfied_when.
+const (
+	// BlockerSatisfiedMerged accepts a blocker whose linked PR is merged.
+	BlockerSatisfiedMerged = "merged"
+	// BlockerSatisfiedDone accepts a blocker whose status is Done-category
+	// (resolved/closed).
+	BlockerSatisfiedDone = "done"
+)
+
 // WaitForConfig configures a wait_for step that suspends the workflow until an
 // external condition (e.g. CI status) resolves, re-checking each poll cycle until
 // the condition is met or a timeout occurs.
 type WaitForConfig struct {
-	// Kind specifies what to poll: "ci" for GitHub/GitLab CI status.
+	// Kind specifies what to poll: "ci" (default) for the CI status of the task's
+	// PR, or "dependency" for the task's upstream blockers (auto-resumes once
+	// every blocker is merged/Done).
 	Kind string `yaml:"kind,omitempty"`
 	// CheckInterval is how often to query the status (e.g., "30s"). Defaults to 1m.
 	CheckInterval string `yaml:"check_interval,omitempty"`
-	// MaxDuration is the total timeout for polling (e.g., "2h"). Defaults to 2h.
+	// MaxDuration is the total timeout for polling (e.g., "2h"). Defaults to 2h
+	// for kind: ci and to no deadline for kind: dependency (a blocker may take
+	// days to land).
 	MaxDuration string `yaml:"max_duration,omitempty"`
 	// FailIfNotPassed, when true, rejects the step if CI is not green. Defaults to true.
 	FailIfNotPassed *bool `yaml:"fail_if_not_passed,omitempty"`
 	// RemoveLabel, when set, removes this label from the task before polling begins.
 	// Used to reset stale labels from previous runs.
 	RemoveLabel string `yaml:"remove_label,omitempty"`
+
+	// ── kind: dependency only ─────────────────────────────────────
+	// SatisfiedWhen lists the conditions under which a blocker counts as
+	// satisfied: "merged" (a linked PR merged) and/or "done" (status is
+	// Done-category). A blocker is satisfied when ANY listed condition holds.
+	// Defaults to [merged, done].
+	SatisfiedWhen []string `yaml:"satisfied_when,omitempty"`
+	// BlockerLinkType is the source-native relation that marks a blocker (e.g.
+	// Jira's "Blocks" link type, read from its inward "is blocked by" side).
+	// Empty uses the source's default blocking relation.
+	BlockerLinkType string `yaml:"blocker_link_type,omitempty"`
+	// OnTimeout selects what happens when max_duration elapses: "fail" fails the
+	// step, "hold" keeps the instance parked for a human. Defaults to fail for
+	// kind: ci and hold for kind: dependency.
+	OnTimeout string `yaml:"on_timeout,omitempty"`
 }
 
 // ParsedCheckInterval returns the check interval duration, defaulting to 1 minute.
@@ -371,14 +418,21 @@ func (p *WaitForConfig) ParsedCheckInterval() time.Duration {
 	return d
 }
 
-// ParsedMaxDuration returns the maximum polling duration, defaulting to 2 hours.
+// ParsedMaxDuration returns the maximum polling duration. Unset/invalid values
+// default to 2 hours for kind: ci and to 0 (no deadline) for kind: dependency —
+// a blocker may legitimately take days, and the dependency default on_timeout
+// is hold anyway.
 func (p *WaitForConfig) ParsedMaxDuration() time.Duration {
+	fallback := 2 * time.Hour
+	if p != nil && p.Kind == WaitKindDependency {
+		fallback = 0
+	}
 	if p == nil || p.MaxDuration == "" {
-		return 2 * time.Hour
+		return fallback
 	}
 	d, _ := time.ParseDuration(p.MaxDuration)
 	if d <= 0 {
-		return 2 * time.Hour
+		return fallback
 	}
 	return d
 }
@@ -389,6 +443,27 @@ func (p *WaitForConfig) ShouldFailIfNotPassed() bool {
 		return true
 	}
 	return *p.FailIfNotPassed
+}
+
+// EffectiveSatisfiedWhen returns the blocker satisfaction conditions, defaulting
+// to [merged, done] — a blocker counts as satisfied when any condition holds.
+func (p *WaitForConfig) EffectiveSatisfiedWhen() []string {
+	if p == nil || len(p.SatisfiedWhen) == 0 {
+		return []string{BlockerSatisfiedMerged, BlockerSatisfiedDone}
+	}
+	return p.SatisfiedWhen
+}
+
+// TimeoutAction returns what happens when max_duration elapses, defaulting to
+// fail for kind: ci and hold for kind: dependency.
+func (p *WaitForConfig) TimeoutAction() string {
+	if p != nil && p.OnTimeout != "" {
+		return p.OnTimeout
+	}
+	if p != nil && p.Kind == WaitKindDependency {
+		return OnTimeoutHold
+	}
+	return OnTimeoutFail
 }
 
 // OutputSchema is the supported JSON Schema subset for structured step output.

@@ -27,6 +27,7 @@ var (
 	_ source.TaskPoller      = (*Adapter)(nil)
 	_ source.CIStatusPoller  = (*Adapter)(nil)
 	_ source.SubIssueCreator = (*Adapter)(nil)
+	_ source.BlockerLister   = (*Adapter)(nil)
 )
 
 type Adapter struct {
@@ -532,6 +533,75 @@ func (a *Adapter) ListPullRequests(ctx context.Context, cellID string) ([]source
 		})
 	}
 	return prs, nil
+}
+
+// ListBlockers enumerates the issues blocking the given one via GitHub's issue
+// dependencies API (GET .../issues/{n}/dependencies/blocked_by). linkType is
+// ignored — GitHub has a single "blocked by" relation. State is normalized to
+// "done" when the blocker is closed, otherwise its raw state. For an open
+// blocker, Merged reports whether any pull request cross-referenced from it is
+// merged (best-effort: a PR lookup failure leaves Merged false rather than
+// failing the whole check). Implements source.BlockerLister.
+func (a *Adapter) ListBlockers(ctx context.Context, cellID, _ string) ([]source.BlockerRef, error) {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%s/dependencies/blocked_by", a.owner, a.repo, cellID)
+	body, err := a.client.get(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("github: listing blockers of issue %s: %w", cellID, err)
+	}
+
+	var blocking []issue
+	if err := json.Unmarshal(body, &blocking); err != nil {
+		return nil, fmt.Errorf("github: decoding blockers of issue %s: %w", cellID, err)
+	}
+
+	blockers := make([]source.BlockerRef, 0, len(blocking))
+	for _, b := range blocking {
+		state := b.State
+		if state == "closed" {
+			state = "done"
+		}
+		ref := source.BlockerRef{
+			ID:     fmt.Sprintf("%d", b.Number),
+			Number: fmt.Sprintf("#%d", b.Number),
+			Title:  b.Title,
+			State:  state,
+		}
+		if state != "done" {
+			ref.Merged = a.blockerHasMergedPR(ctx, b.Number)
+		}
+		blockers = append(blockers, ref)
+	}
+	return blockers, nil
+}
+
+// blockerHasMergedPR reports whether any pull request cross-referenced from the
+// blocker issue is merged. Best-effort: any lookup failure returns false (the
+// dependency wait just keeps polling), so a transient API error cannot fail the
+// workflow step.
+func (a *Adapter) blockerHasMergedPR(ctx context.Context, issueNumber int) bool {
+	prs, err := a.ListPullRequests(ctx, fmt.Sprintf("%d", issueNumber))
+	if err != nil {
+		aplog.Debug("github: listing PRs of blocker #%d: %v", issueNumber, err)
+		return false
+	}
+	for _, ref := range prs {
+		prPath := fmt.Sprintf("/repos/%s/%s/pulls/%d", a.owner, a.repo, ref.Number)
+		body, err := a.client.get(ctx, prPath)
+		if err != nil {
+			aplog.Debug("github: fetching PR #%d of blocker #%d: %v", ref.Number, issueNumber, err)
+			continue
+		}
+		var pr struct {
+			Merged bool `json:"merged"`
+		}
+		if err := json.Unmarshal(body, &pr); err != nil {
+			continue
+		}
+		if pr.Merged {
+			return true
+		}
+	}
+	return false
 }
 
 // isAuthError reports whether a client error is a GitHub authorization failure
