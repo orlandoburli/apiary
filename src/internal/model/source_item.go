@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // SourceItem is a normalized, source-system-agnostic view of a single item
 // returned by a source adapter's Poll. It lives only within the binding layer:
@@ -26,6 +29,18 @@ type SourceItem struct {
 	// approval steps), not by Poll. It holds comments relevant to evaluating an
 	// approval condition.
 	Comments []Comment
+}
+
+// LogLabel returns the identifier used to tag this item's log lines: the
+// source-native id plus the human-facing reference when that adds information
+// the id alone doesn't carry (e.g. Jira's "CDT-123" next to its numeric id).
+// For sources where the reference is just the id itself (GitHub's "#42"), the
+// id alone is returned.
+func (s SourceItem) LogLabel() string {
+	if s.Number == "" || strings.TrimPrefix(s.Number, "#") == s.ID {
+		return s.ID
+	}
+	return s.ID + " " + s.Number
 }
 
 // Comment is a single comment on a source task, used to evaluate approval-step
