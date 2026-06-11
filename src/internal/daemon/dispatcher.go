@@ -1157,7 +1157,7 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 	for _, cell := range cells {
 		cell := cell
 		if _, loaded := d.inFlight.LoadOrStore(cell.ID, struct{}{}); loaded {
-			aplog.Debug("cell %s: already in-flight, skipping", cell.ID)
+			aplog.Debug("cell %s: already in-flight, skipping", cell.LogLabel())
 			continue
 		}
 		task, persisted := d.bindItem(ctx, cell)
@@ -1172,7 +1172,7 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 			matches = d.dropCappedMatches(ctx, task, matches)
 		}
 		if len(matches) == 0 {
-			aplog.Debug("cell %s (%q): no matching route, skipping", cell.ID, cell.Title)
+			aplog.Debug("cell %s (%q): no matching route, skipping", cell.LogLabel(), cell.Title)
 			d.inFlight.Delete(cell.ID)
 			continue
 		}
@@ -1243,7 +1243,7 @@ func (d *Dispatcher) fanOut(ctx context.Context, cell model.SourceItem, adapter 
 			defer d.activeRuns.Delete(runID)
 
 			aplog.Info("dispatching cell %s (%q) → workflow %s [agent %s]",
-				cell.ID, cell.Title, match.Route.ID, match.Route.Agent)
+				cell.LogLabel(), cell.Title, match.Route.ID, match.Route.Agent)
 
 			result := d.dispatch(ctx, cell, adapter, task, match)
 			if !result.Success && onFail != nil {
@@ -1296,10 +1296,10 @@ func (d *Dispatcher) bindItem(ctx context.Context, cell model.SourceItem) (task 
 	}
 	task, err := d.binder.Bind(ctx, cell)
 	if err != nil {
-		aplog.Error("bind source item %s (%q): %v", cell.ID, cell.Title, err)
+		aplog.Error("bind source item %s (%q): %v", cell.LogLabel(), cell.Title, err)
 		return transientTask(cell), false
 	}
-	aplog.Debug("bound source item %s → task %s [%s]", cell.ID, task.ID, task.State)
+	aplog.Debug("bound source item %s → task %s [%s]", cell.LogLabel(), task.ID, task.State)
 	return task, true
 }
 

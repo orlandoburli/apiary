@@ -205,17 +205,17 @@ func (t dbTaskTracker) SetTaskState(ctx context.Context, taskID string, state mo
 // instances and step runs).
 func (d *Dispatcher) dispatchWorkflow(ctx context.Context, cell model.SourceItem, task model.InternalTask, match router.Match) model.RunResult {
 	if d.db == nil {
-		aplog.Error("cell %s: workflow dispatch requires a run-history database", cell.ID)
+		aplog.Error("cell %s: workflow dispatch requires a run-history database", cell.LogLabel())
 		return model.RunResult{Success: false}
 	}
 
 	wf := d.resolveWorkflow(match)
 	instID, success, err := d.workflowEngine().RunInstance(ctx, wf, task)
 	if err != nil {
-		aplog.Error("cell %s: workflow run failed: %v", cell.ID, err)
+		aplog.Error("cell %s: workflow run failed: %v", cell.LogLabel(), err)
 		return model.RunResult{Success: false, WorkerID: match.Route.Agent}
 	}
-	aplog.Info("cell %s: workflow instance %s started (success=%v; may be awaiting approval)", cell.ID, instID, success)
+	aplog.Info("cell %s: workflow instance %s started (success=%v; may be awaiting approval)", cell.LogLabel(), instID, success)
 	return model.RunResult{Success: success, WorkerID: match.Route.Agent}
 }
 
@@ -388,6 +388,10 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 
 	if x.d.logger != nil {
 		cellID := req.Cell.ID
+		// DB logs stay keyed by the cell id; the console/file mirror carries the
+		// human-facing reference too (e.g. Jira's "CDT-123") so a task is
+		// recognizable in the stream.
+		label := req.Cell.LogLabel()
 		rr.LogSink = func(e model.LogEntry) {
 			switch e.Level {
 			case "error":
@@ -397,7 +401,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 			default:
 				x.d.logger.TaskDebug(ctx, cellID, e.Message)
 			}
-			aplog.Info("[%s] %s", cellID, e.Message)
+			aplog.Info("[%s] %s", label, e.Message)
 		}
 	}
 
@@ -422,7 +426,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 	for i, c := range candidates {
 		last := i == len(candidates)-1
 		if !last && x.d.runnerPausedUntil(c.runnerType).After(time.Now()) {
-			aplog.Info("[%s] runner %q paused by rate limit, skipping to fallback", req.Cell.ID, c.runnerType)
+			aplog.Info("[%s] runner %q paused by rate limit, skipping to fallback", req.Cell.LogLabel(), c.runnerType)
 			continue
 		}
 
@@ -465,7 +469,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		if out.RateLimited {
 			x.d.pauseRunner(c.runnerType, out.RateLimitResetsAt)
 			if !last {
-				aplog.Info("[%s] runner %q rate-limited, failing over to next runner", req.Cell.ID, c.runnerType)
+				aplog.Info("[%s] runner %q rate-limited, failing over to next runner", req.Cell.LogLabel(), c.runnerType)
 				continue
 			}
 		}
@@ -533,7 +537,7 @@ func (x *wfStepExecutor) beginExecution(ctx context.Context, req workflow.StepRe
 	exec, err := x.d.db.CreateExecution(ctx, req.Cell.ID, req.Step.Agent, req.Cell.Title,
 		req.Cell.Number, req.Cell.URL, model, runnerType, attempt)
 	if err != nil {
-		aplog.Error("cell %s: create execution record: %v", req.Cell.ID, err)
+		aplog.Error("cell %s: create execution record: %v", req.Cell.LogLabel(), err)
 		return nil
 	}
 	if req.InstanceID != "" {
