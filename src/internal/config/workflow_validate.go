@@ -149,6 +149,10 @@ func (c *Config) validateStep(
 		errs = append(errs, fmt.Errorf("%s: unknown step type %q", sctx, s.Type))
 	}
 
+	// Expression syntax applies to any step type (condition/fail_when survive
+	// lowering on every step), so lint here rather than in a per-type validator.
+	errs = append(errs, lintStepExprs(sctx, s)...)
+
 	// on_conflict applies to any step type, so validate it here rather than in a
 	// per-type validator. It is only meaningful on a wait_for step (the sole
 	// producer of a conflict) and otherwise mirrors on_fail (goto + max_retries).
@@ -250,6 +254,40 @@ func (c *Config) validateAgentStep(sctx string, s StepConfig, agentIDs, stepIDs 
 		}
 	}
 
+	return errs
+}
+
+// lintStepExprs statically parses every condition expression a step can carry
+// (lowered condition:/fail_when:, split branch if:, foreach inner step) so a
+// malformed expression — e.g. C-style `&&` instead of `and` — fails validate
+// instead of surfacing as a silent skip at runtime (#180). LintExpr is
+// injected by the cli package; when nil the check is skipped.
+func lintStepExprs(sctx string, s StepConfig) []error {
+	if LintExpr == nil {
+		return nil
+	}
+	var errs []error
+	if s.Condition != "" {
+		if err := LintExpr(s.Condition); err != nil {
+			errs = append(errs, fmt.Errorf("%s: condition (if:) %q: %w", sctx, s.Condition, err))
+		}
+	}
+	if s.FailWhen != "" {
+		if err := LintExpr(s.FailWhen); err != nil {
+			errs = append(errs, fmt.Errorf("%s: fail_when (reject_when:) %q: %w", sctx, s.FailWhen, err))
+		}
+	}
+	for j, b := range s.Branches {
+		if b.If == "" {
+			continue
+		}
+		if err := LintExpr(b.If); err != nil {
+			errs = append(errs, fmt.Errorf("%s: branches[%d] if %q: %w", sctx, j, b.If, err))
+		}
+	}
+	if s.Step != nil {
+		errs = append(errs, lintStepExprs(sctx+" (inner step)", *s.Step)...)
+	}
 	return errs
 }
 
@@ -363,15 +401,19 @@ func (c *Config) validateParallelStep(
 		errs = append(errs, fmt.Errorf("%s: parallel step requires at least one child step", sctx))
 	}
 
-	// Join policy: all (default) | any | ${{ expr }}. Expression syntax is
-	// checked at runtime (the parser lives in the workflow package); here we
-	// require the ${{ }} wrapper so a typo like "anyy" is caught at load time.
+	// Join policy: all (default) | any | ${{ expr }}. The ${{ }} wrapper is
+	// required so a typo like "anyy" is caught at load time; the expression
+	// body is parsed via LintExpr (injected by the cli package, skipped when nil).
 	switch s.Join {
 	case "", JoinAll, JoinAny:
 	default:
 		j := strings.TrimSpace(s.Join)
 		if !strings.HasPrefix(j, "${{") || !strings.HasSuffix(j, "}}") {
 			errs = append(errs, fmt.Errorf("%s: invalid join %q (want all, any, or a ${{ expr }} expression)", sctx, s.Join))
+		} else if LintExpr != nil {
+			if err := LintExpr(j); err != nil {
+				errs = append(errs, fmt.Errorf("%s: join %q: %w", sctx, s.Join, err))
+			}
 		}
 	}
 

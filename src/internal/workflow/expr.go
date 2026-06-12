@@ -52,6 +52,15 @@ func (e *Expr) Eval(ctx EvalContext) (bool, error) {
 	return e.root.eval(ctx)
 }
 
+// LintExpr statically parses a condition expression, accepting the optional
+// ${{ }} wrapper kept by the v2 lowering pass. It is injected into
+// config.LintExpr by the cli package so `apiary validate` rejects malformed
+// expressions pre-flight instead of discovering them at runtime (#180).
+func LintExpr(src string) error {
+	_, err := ParseExpr(stripExprDelimiters(src))
+	return err
+}
+
 // String returns the original source.
 func (e *Expr) String() string { return e.src }
 
@@ -105,8 +114,12 @@ func lex(s string) ([]token, error) {
 				toks = append(toks, token{tNeq, "!="})
 				i += 2
 			} else {
-				return nil, fmt.Errorf("unexpected '!' (did you mean '!='?) at position %d", i)
+				return nil, fmt.Errorf("unsupported operator '!' at position %d — use 'not' (or '!=' for inequality)", i)
 			}
+		case c == '&':
+			return nil, fmt.Errorf("unsupported operator '&&' at position %d — use 'and' (C-style operators are not supported)", i)
+		case c == '|':
+			return nil, fmt.Errorf("unsupported operator '||' at position %d — use 'or' (C-style operators are not supported)", i)
 		case c == '"' || c == '\'':
 			quote := c
 			j := i + 1
@@ -127,6 +140,8 @@ func lex(s string) ([]token, error) {
 			}
 			toks = append(toks, token{tNumber, s[i:j]})
 			i = j
+		case c == '-':
+			return nil, fmt.Errorf("unexpected '-' at position %d — identifiers cannot contain '-' (hyphenated step ids cannot be referenced in expressions)", i)
 		case isIdentStart(c):
 			j := i + 1
 			for j < len(s) && isIdentChar(s[j]) {

@@ -330,29 +330,28 @@ func TestApplyJoinPolicy_ExprOverChildOutcomes(t *testing.T) {
 		{"${{ steps.lint.state == 'passed' and steps.tests.state == 'passed' }}", false},
 	}
 	for _, tc := range cases {
-		if got := applyJoinPolicy(tc.join, results, model.SourceItem{}, nil); got != tc.want {
+		got, err := applyJoinPolicy(tc.join, results, model.SourceItem{}, nil)
+		if err != nil {
+			t.Errorf("applyJoinPolicy(%q): unexpected error: %v", tc.join, err)
+			continue
+		}
+		if got != tc.want {
 			t.Errorf("applyJoinPolicy(%q) = %v, want %v", tc.join, got, tc.want)
 		}
 	}
 }
 
-// TestApplyJoinPolicy_BadExprFallsBackToAll verifies the fail-safe: a join
-// expression that does not parse degrades to "all" semantics.
-func TestApplyJoinPolicy_BadExprFallsBackToAll(t *testing.T) {
+// TestApplyJoinPolicy_BadExprErrors verifies that a join expression that does
+// not parse returns an error (the caller fails the parallel step) instead of
+// silently falling back to "all" semantics (#180).
+func TestApplyJoinPolicy_BadExprErrors(t *testing.T) {
 	allPass := []parallelChildResult{
 		{step: config.StepConfig{ID: "a"}, res: StepResult{Success: true}},
 	}
-	oneFail := []parallelChildResult{
-		{step: config.StepConfig{ID: "a"}, res: StepResult{Success: true}},
-		{step: config.StepConfig{ID: "b"}, res: StepResult{Success: false}},
-	}
 
 	const bad = "${{ steps.a.state === }}"
-	if !applyJoinPolicy(bad, allPass, model.SourceItem{}, nil) {
-		t.Error("bad expression with all children passed: want true (all semantics)")
-	}
-	if applyJoinPolicy(bad, oneFail, model.SourceItem{}, nil) {
-		t.Error("bad expression with a failed child: want false (all semantics)")
+	if _, err := applyJoinPolicy(bad, allPass, model.SourceItem{}, nil); err == nil {
+		t.Error("bad expression: want a parse error, got nil")
 	}
 }
 
