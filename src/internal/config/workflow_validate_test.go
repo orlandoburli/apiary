@@ -674,6 +674,50 @@ func TestWorkflow_ResumeAutoAllIdempotent(t *testing.T) {
 	assertNoError(t, cfg)
 }
 
+// parallelWorkflow returns a v2-authored workflow with one parallel group;
+// Validate() lowers it to a StepTypeParallel node before structural checks.
+func parallelWorkflow(join string) config.WorkflowConfig {
+	return config.WorkflowConfig{
+		ID: "wf",
+		Steps: []config.StepConfig{
+			{ID: "par", Join: join, ParallelSteps: []config.StepConfig{
+				{ID: "lint", Agent: "architect"},
+				{ID: "tests", Agent: "backend-dev"},
+			}},
+		},
+	}
+}
+
+func TestWorkflow_ParallelStepValidates(t *testing.T) {
+	for _, join := range []string{"", "all", "any", "${{ steps.lint.state == 'passed' }}"} {
+		cfg := baseWorkflowConfig()
+		cfg.Workflows = []config.WorkflowConfig{parallelWorkflow(join)}
+		assertNoError(t, cfg)
+	}
+}
+
+func TestWorkflow_ParallelJoinInvalidValue(t *testing.T) {
+	cfg := baseWorkflowConfig()
+	cfg.Workflows = []config.WorkflowConfig{parallelWorkflow("anyy")}
+	assertError(t, cfg, "invalid join")
+}
+
+func TestWorkflow_ParallelChildAgentUndefined(t *testing.T) {
+	cfg := baseWorkflowConfig()
+	wf := parallelWorkflow("all")
+	wf.Steps[0].ParallelSteps[0].Agent = "ghost"
+	cfg.Workflows = []config.WorkflowConfig{wf}
+	assertError(t, cfg, `agent "ghost" not defined`)
+}
+
+func TestWorkflow_ParallelDuplicateChildID(t *testing.T) {
+	cfg := baseWorkflowConfig()
+	wf := parallelWorkflow("all")
+	wf.Steps[0].ParallelSteps[1].ID = "lint"
+	cfg.Workflows = []config.WorkflowConfig{wf}
+	assertError(t, cfg, "duplicate child step id")
+}
+
 func TestWorkflow_UnknownStepType(t *testing.T) {
 	cfg := baseWorkflowConfig()
 	cfg.Workflows = []config.WorkflowConfig{

@@ -3,6 +3,8 @@ package workflow
 import (
 	"context"
 
+	aplog "github.com/orlandoburli/apiary/internal/log"
+
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/model"
 )
@@ -50,11 +52,7 @@ func (e *Engine) runParallelStep(
 	}
 
 	// Apply join policy.
-	join := step.Join
-	if join == "" {
-		join = "all"
-	}
-	passed := applyJoinPolicy(join, results)
+	passed := applyJoinPolicy(step.Join, results, cell, memSnap)
 
 	// Collect memory contributions from passed children in declaration order.
 	var contribs []MemoryStep
@@ -76,25 +74,50 @@ func (e *Engine) runParallelStep(
 }
 
 // applyJoinPolicy evaluates the join policy over the child results.
-// "all" requires all children to pass; "any" requires at least one to pass.
-// An expression join (${{ … }}) is not yet supported and defaults to "all".
-func applyJoinPolicy(join string, results []parallelChildResult) bool {
+// "all" (the default) requires all children to pass; "any" requires at least
+// one to pass. Any other value is a condition expression (optionally
+// ${{ }}-wrapped) evaluated with the standard expression language: the
+// children's outcomes are exposed as steps.<child-id>.* alongside the usual
+// cell.* and memory.* accessors. An expression that fails to parse or
+// evaluate logs the error and falls back to "all" semantics (fail-safe).
+func applyJoinPolicy(join string, results []parallelChildResult, cell model.SourceItem, memSnap []MemoryStep) bool {
 	switch join {
-	case "any":
+	case config.JoinAny:
 		for _, cr := range results {
 			if cr.res.Success {
 				return true
 			}
 		}
 		return false
-	default: // "all" or expression (expression support deferred)
-		for _, cr := range results {
-			if !cr.res.Success {
-				return false
-			}
+	case "", config.JoinAll:
+		return allChildrenPassed(results)
+	default:
+		expr, err := ParseExpr(stripExprDelimiters(join))
+		if err != nil {
+			aplog.Error("workflow: parallel join: bad expression %q: %v (falling back to all)", join, err)
+			return allChildrenPassed(results)
 		}
-		return true
+		steps := make(map[string]StepState, len(results))
+		for _, cr := range results {
+			steps[cr.step.ID] = StepState{State: passFail(cr.res.Success), Output: cr.res.Output}
+		}
+		ok, err := expr.Eval(EvalContext{Cell: cell, Memory: memoryValuesFrom(memSnap), Steps: steps})
+		if err != nil {
+			aplog.Error("workflow: parallel join: eval %q: %v (falling back to all)", join, err)
+			return allChildrenPassed(results)
+		}
+		return ok
 	}
+}
+
+// allChildrenPassed implements the "all" join: every child must pass.
+func allChildrenPassed(results []parallelChildResult) bool {
+	for _, cr := range results {
+		if !cr.res.Success {
+			return false
+		}
+	}
+	return true
 }
 
 // Silence unused-import warning when model is only used for the function signature.

@@ -15,6 +15,14 @@ const (
 	StepTypeParallel = "parallel"
 )
 
+// Join policy values for a parallel step. Any other non-empty value is a
+// condition expression (optionally ${{ }}-wrapped) evaluated over the
+// children's outcomes — see workflow.applyJoinPolicy.
+const (
+	JoinAll = "all" // default: every child must pass
+	JoinAny = "any" // at least one child must pass
+)
+
 // Resume policy values for a workflow.
 const (
 	ResumeAllowed   = "allowed"

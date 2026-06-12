@@ -245,6 +245,117 @@ func TestParallelStep_AnyJoinPassesIfOneChildPasses(t *testing.T) {
 	}
 }
 
+// TestParallelStep_ExprJoinPasses verifies that an expression join evaluates
+// over the children's outcomes via steps.<child-id>.*: the expression only
+// requires lint, so the tests child's failure does not fail the group.
+func TestParallelStep_ExprJoinPasses(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Settings.Concurrency = 4
+	store := newFakeStore()
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"tests": {Success: false},
+	}}
+	eng := testEngine(cfg, store, exec, nil)
+
+	wf := config.WorkflowConfig{ID: "parallel-expr-wf", Steps: []config.StepConfig{
+		{
+			ID:   "par",
+			Type: config.StepTypeParallel,
+			Join: "${{ steps.lint.state == 'passed' }}",
+			SubSteps: []config.StepConfig{
+				{ID: "lint", Agent: "architect"},
+				{ID: "tests", Agent: "architect"},
+			},
+		},
+		{ID: "after", Agent: "architect", DependsOn: []string{"par"}},
+	}}
+
+	_, success, err := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
+	if err != nil {
+		t.Fatalf("RunInstance: %v", err)
+	}
+	if !success {
+		t.Fatal("expected success (expression only requires lint, which passed)")
+	}
+	if !contains(executedIDs(exec.seen), "after") {
+		t.Errorf("expected after to run, got %v", executedIDs(exec.seen))
+	}
+}
+
+// TestParallelStep_ExprJoinFails verifies that an expression join fails the
+// group when it evaluates to false.
+func TestParallelStep_ExprJoinFails(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Settings.Concurrency = 4
+	store := newFakeStore()
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"tests": {Success: false},
+	}}
+	eng := testEngine(cfg, store, exec, nil)
+
+	wf := config.WorkflowConfig{ID: "parallel-expr-fail-wf", Steps: []config.StepConfig{
+		{
+			ID:   "par",
+			Type: config.StepTypeParallel,
+			Join: "${{ steps.lint.state == 'passed' and steps.tests.state == 'passed' }}",
+			SubSteps: []config.StepConfig{
+				{ID: "lint", Agent: "architect"},
+				{ID: "tests", Agent: "architect"},
+			},
+		},
+	}}
+
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
+	if success {
+		t.Fatal("expected failure (expression requires both children, child-b failed)")
+	}
+}
+
+// TestApplyJoinPolicy_ExprOverChildOutcomes exercises applyJoinPolicy directly:
+// expressions see each child's state and output.
+func TestApplyJoinPolicy_ExprOverChildOutcomes(t *testing.T) {
+	results := []parallelChildResult{
+		{step: config.StepConfig{ID: "lint"}, res: StepResult{Success: true, Output: "ok"}},
+		{step: config.StepConfig{ID: "tests"}, res: StepResult{Success: false, Output: "2 failed"}},
+	}
+
+	cases := []struct {
+		join string
+		want bool
+	}{
+		{"${{ steps.lint.state == 'passed' }}", true},
+		{"steps.lint.state == 'passed'", true}, // bare expression, no ${{ }} wrapper
+		{"${{ steps.tests.state == 'passed' }}", false},
+		{"${{ steps.tests.output contains 'failed' }}", true},
+		{"${{ steps.lint.state == 'passed' and steps.tests.state == 'passed' }}", false},
+	}
+	for _, tc := range cases {
+		if got := applyJoinPolicy(tc.join, results, model.SourceItem{}, nil); got != tc.want {
+			t.Errorf("applyJoinPolicy(%q) = %v, want %v", tc.join, got, tc.want)
+		}
+	}
+}
+
+// TestApplyJoinPolicy_BadExprFallsBackToAll verifies the fail-safe: a join
+// expression that does not parse degrades to "all" semantics.
+func TestApplyJoinPolicy_BadExprFallsBackToAll(t *testing.T) {
+	allPass := []parallelChildResult{
+		{step: config.StepConfig{ID: "a"}, res: StepResult{Success: true}},
+	}
+	oneFail := []parallelChildResult{
+		{step: config.StepConfig{ID: "a"}, res: StepResult{Success: true}},
+		{step: config.StepConfig{ID: "b"}, res: StepResult{Success: false}},
+	}
+
+	const bad = "${{ steps.a.state === }}"
+	if !applyJoinPolicy(bad, allPass, model.SourceItem{}, nil) {
+		t.Error("bad expression with all children passed: want true (all semantics)")
+	}
+	if applyJoinPolicy(bad, oneFail, model.SourceItem{}, nil) {
+		t.Error("bad expression with a failed child: want false (all semantics)")
+	}
+}
+
 // TestConcurrentScheduler_MemoryOrderDeterministic verifies that concurrent
 // steps' memory contributions are ordered by declaration, not completion order.
 func TestConcurrentScheduler_MemoryOrderDeterministic(t *testing.T) {
