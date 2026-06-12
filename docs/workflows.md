@@ -263,6 +263,91 @@ its own retry budget.
     `for_each`, nested `steps:`) or the low-level primitives (`type: split`,
     `goto`) within one workflow — not both.
 
+### Expression syntax
+
+`if:`, `reject_when:`, split branch `if:`, expression-valued `join:`, and
+the lowered `condition:` / `fail_when:` fields all share one expression
+language. The `${{ … }}` wrapper is optional and purely cosmetic — `if:
+${{ memory.x == "done" }}` and `if: 'memory.x == "done"'` parse identically
+(only `join:` requires the wrapper, to distinguish an expression from
+`all`/`any`).
+
+An expression is one or more **comparisons** combined with logical
+operators:
+
+```text
+cell.priority == "urgent" and (cell.labels contains "bug" or not memory.triaged == "yes")
+```
+
+#### Comparisons
+
+Each comparison is `<accessor> <operator> <literal>` — the accessor must be
+on the left, the literal on the right.
+
+| Operator | Works on | Meaning |
+|----------|----------|---------|
+| `==`, `!=` | strings, numbers | Equality. Numeric when both sides are numbers (e.g. `steps.test.exit_code == 0`), string comparison otherwise. |
+| `contains` | lists, strings | On a list (`cell.labels`): exact element membership. On a string: substring match. |
+| `matches` | strings | Regular-expression match ([Go RE2 syntax](https://pkg.go.dev/regexp/syntax)). Not supported on lists. |
+
+Literals are quoted strings (`"…"` or `'…'`, no escape sequences) or bare
+numbers (integers, decimals, negatives).
+
+#### Logical operators
+
+`and`, `or`, and `not` — lowercase keywords, with parentheses for grouping.
+Precedence is `not` > `and` > `or`, and `and`/`or` short-circuit.
+
+!!! warning "No C-style operators"
+    `&&`, `||`, and `!` are **not** part of the language — use `and`, `or`,
+    `not`. (`!=` is the one exception: it is the inequality operator.)
+
+#### Accessors
+
+| Accessor | Type | Value |
+|----------|------|-------|
+| `cell.title` | string | task title |
+| `cell.type` | string | task type |
+| `cell.priority` | string | task priority |
+| `cell.state` | string | task state |
+| `cell.source` | string | source id the task came from |
+| `cell.labels` | list | task labels (use `contains`) |
+| `memory.<key>` | string | workflow-memory value written by an earlier step |
+| `steps.<id>.state` | string | `passed` or `failed` |
+| `steps.<id>.output` | string | the step's output text |
+| `steps.<id>.exit_code` | number | the step's exit code |
+
+A `memory.<key>` that was never written — and a `steps.<id>` that has not
+run — resolves to the empty string, so `memory.flag == ""` is the idiom for
+"not set". Lists only support `contains`; `==` or `matches` on `cell.labels`
+is an error.
+
+#### Examples
+
+```yaml
+# label routing
+if: ${{ cell.labels contains "hotfix" }}
+
+# combine task fields
+if: ${{ cell.priority == "urgent" and cell.type != "epic" }}
+
+# branch on a previous step's outcome
+if: ${{ steps.tests.state == "failed" or steps.tests.exit_code != 0 }}
+
+# regex over memory
+reject_when: ${{ memory.verdict matches "reject|veto" }}
+
+# negation + grouping
+if: ${{ not (memory.track == "docs" or memory.track == "chore") }}
+```
+
+!!! note "Evaluation errors fail safe"
+    Expressions are evaluated when the step is reached, not at config load.
+    A malformed expression (e.g. using `&&`) logs an error and evaluates as
+    **false**: an `if:` guard skips its step, a `reject_when:` does not
+    reject, a split branch does not match, and a `join:` expression falls
+    back to `all` semantics. Check the daemon log if a branch never fires.
+
 ### Approval steps
 
 An approval step parks the workflow until a human acts on the source item:
