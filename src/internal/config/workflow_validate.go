@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -142,6 +143,8 @@ func (c *Config) validateStep(
 		errs = append(errs, validateWorkflowStep(sctx, s, wf, wfByID)...)
 	case StepTypeWaitFor:
 		errs = append(errs, c.validateWaitForStep(sctx, s)...)
+	case StepTypeParallel:
+		errs = append(errs, c.validateParallelStep(sctx, s, wf, agentIDs, wfByID)...)
 	default:
 		errs = append(errs, fmt.Errorf("%s: unknown step type %q", sctx, s.Type))
 	}
@@ -337,6 +340,56 @@ func (c *Config) validateForeachStep(sctx string, s StepConfig, wf WorkflowConfi
 	}
 	if inner.OutputSchema != nil {
 		errs = append(errs, validateOutputSchema(sctx+" (inner step)", inner.OutputSchema)...)
+	}
+
+	return errs
+}
+
+// validateParallelStep validates a type: parallel step (emitted by the v2
+// lowering pass for parallel: groups).
+func (c *Config) validateParallelStep(
+	sctx string,
+	s StepConfig,
+	wf WorkflowConfig,
+	agentIDs map[string]bool,
+	wfByID map[string]WorkflowConfig,
+) []error {
+	var errs []error
+
+	if s.Agent != "" {
+		errs = append(errs, fmt.Errorf("%s: parallel step must not have an agent field", sctx))
+	}
+	if len(s.SubSteps) == 0 {
+		errs = append(errs, fmt.Errorf("%s: parallel step requires at least one child step", sctx))
+	}
+
+	// Join policy: all (default) | any | ${{ expr }}. Expression syntax is
+	// checked at runtime (the parser lives in the workflow package); here we
+	// require the ${{ }} wrapper so a typo like "anyy" is caught at load time.
+	switch s.Join {
+	case "", JoinAll, JoinAny:
+	default:
+		j := strings.TrimSpace(s.Join)
+		if !strings.HasPrefix(j, "${{") || !strings.HasSuffix(j, "}}") {
+			errs = append(errs, fmt.Errorf("%s: invalid join %q (want all, any, or a ${{ expr }} expression)", sctx, s.Join))
+		}
+	}
+
+	// Children: unique ids, then per-type structural validation scoped to the
+	// sibling id set.
+	childIDs := map[string]bool{}
+	for j, child := range s.SubSteps {
+		if child.ID == "" {
+			errs = append(errs, fmt.Errorf("%s: children[%d]: id is required", sctx, j))
+			continue
+		}
+		if childIDs[child.ID] {
+			errs = append(errs, fmt.Errorf("%s: duplicate child step id %q", sctx, child.ID))
+		}
+		childIDs[child.ID] = true
+	}
+	for j, child := range s.SubSteps {
+		errs = append(errs, c.validateStep(sctx, j, child, wf, agentIDs, childIDs, wfByID)...)
 	}
 
 	return errs

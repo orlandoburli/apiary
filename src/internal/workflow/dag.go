@@ -717,8 +717,14 @@ func (r *dagRun) contribSnapshot() map[string]MemoryStep {
 // memoryValues returns the flattened Step Data map for expression evaluation
 // (memory.<key>), honoring last-write-wins in passed order.
 func (r *dagRun) memoryValues() map[string]string {
+	return memoryValuesFrom(r.memSteps())
+}
+
+// memoryValuesFrom flattens ordered memory contributions into the Step Data
+// map used by expression evaluation (memory.<key>), last-write-wins.
+func memoryValuesFrom(steps []MemoryStep) map[string]string {
 	vals := map[string]string{}
-	for _, ms := range r.memSteps() {
+	for _, ms := range steps {
 		for _, field := range ms.WriteFields {
 			if v, ok := ms.Structured[field]; ok {
 				vals[field] = renderValue(v)

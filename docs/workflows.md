@@ -211,7 +211,18 @@ engine restarts from `restart_from`, up to `max` times. The reviewer's
   join: all        # all (default) | any | ${{ expr }}
 ```
 
-Children run concurrently; `join` decides the group's outcome.
+Children run concurrently; `join` decides the group's outcome:
+
+- **`all`** (default) — every child must pass.
+- **`any`** — at least one child must pass.
+- **`${{ expr }}`** — a condition expression evaluated over the children's
+  outcomes, exposed as `steps.<child-id>.state` (`passed`/`failed`) and
+  `steps.<child-id>.output`, alongside the usual `cell.*` and `memory.*`
+  accessors. Example: `${{ steps.lint.state == 'passed' and steps.tests.output
+  contains 'ok' }}`. A malformed expression logs an error and falls back to
+  `all` semantics. Note: expression accessors cannot reference child ids
+  containing hyphens — use `snake_case` ids for children you test in a join
+  expression.
 
 #### `for_each:` — iteration
 
