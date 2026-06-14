@@ -15,6 +15,14 @@ import (
 // the adapter check is skipped.
 var KnownAdapters func() []string
 
+// LintExpr statically parses a workflow condition expression (lowered
+// condition:/fail_when:, split branch if:, parallel ${{ }} join) and returns
+// a syntax error, accepting an optional ${{ }} wrapper. The cli package
+// injects it (config cannot import the workflow package's parser without
+// inverting the dependency direction). When nil — configs built in code,
+// isolated tests — expression lint is skipped.
+var LintExpr func(expr string) error
+
 // SourceSupportsDependencyWait reports whether a source type's adapter can
 // enumerate a task's upstream blockers (implements source.BlockerLister), which
 // a wait_for step with kind "dependency" requires. The cli package injects it

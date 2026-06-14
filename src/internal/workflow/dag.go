@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -151,9 +152,23 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 			step := r.byID[id]
 
 			// Per-step condition: evaluate on scheduler goroutine (reads dagRun).
+			// An expression that cannot be parsed or evaluated fails the step
+			// (routed through resultCh so on_fail applies) — silently treating it
+			// as false would skip the branch with no error signal (#180).
 			if step.Condition != "" {
 				evalCtx := EvalContext{Cell: r.cell, Memory: r.memoryValues(), Steps: r.stepStates}
-				if e.conditionFalse(step.Condition, evalCtx) {
+				condOK, condErr := e.evalExpr(step.Condition, evalCtx)
+				if condErr != nil {
+					aplog.Error("workflow %s: step %q condition eval error %q: %v (failing step)", r.wf.ID, id, step.Condition, condErr)
+					r.state[id] = stRunning
+					inFlight++
+					resultCh <- workerResult{stepID: id, step: step, res: StepResult{
+						Success: false,
+						Output:  fmt.Sprintf("condition eval error %q: %v", step.Condition, condErr),
+					}}
+					continue
+				}
+				if !condOK {
 					r.markCondSkipped(id)
 					aplog.Debug("workflow %s: step %q skipped (condition false)", r.wf.ID, id)
 					continue
@@ -161,8 +176,18 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 			}
 
 			// Split: synchronous, no I/O — apply inline on scheduler goroutine.
+			// A branch expression that cannot be evaluated fails the split step
+			// (routed through resultCh so on_fail applies) — see #180.
 			if step.StepType() == config.StepTypeSplit {
-				e.runSplitStep(r, step)
+				if err := e.runSplitStep(r, step); err != nil {
+					aplog.Error("workflow %s: split %q condition eval error: %v (failing step)", r.wf.ID, id, err)
+					r.state[id] = stRunning
+					inFlight++
+					resultCh <- workerResult{stepID: id, step: step, res: StepResult{
+						Success: false,
+						Output:  fmt.Sprintf("split condition eval error: %v", err),
+					}}
+				}
 				continue
 			}
 
@@ -303,13 +328,22 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 		}
 
 		// fail_when — evaluate on the scheduler goroutine after the agent runs.
+		// An expression that cannot be parsed or evaluated fails the step —
+		// silently treating it as "not rejected" would pass a result the gate
+		// was supposed to inspect (#180).
 		if res.Success && step.FailWhen != "" {
 			transientMem := r.memoryValues()
 			for field, val := range res.StructuredOutput {
 				transientMem[field] = renderValue(val)
 			}
 			evalCtx := EvalContext{Cell: r.cell, Memory: transientMem, Steps: r.stepStates}
-			if e.conditionTrue(step.FailWhen, evalCtx) {
+			rejected, fwErr := e.evalExpr(step.FailWhen, evalCtx)
+			switch {
+			case fwErr != nil:
+				res.Success = false
+				res.Output = fmt.Sprintf("fail_when eval error %q: %v", step.FailWhen, fwErr)
+				aplog.Error("workflow %s: step %q fail_when eval error %q: %v (failing step)", r.wf.ID, step.ID, step.FailWhen, fwErr)
+			case rejected:
 				res.Success = false
 				aplog.Info("workflow %s: step %q rejected (fail_when matched)", r.wf.ID, step.ID)
 			}
@@ -603,8 +637,10 @@ func (r *dagRun) markCondSkipped(id string) {
 }
 
 // runSplitStep evaluates a split's branches and activates the chosen target(s),
-// skipping the rest.
-func (e *Engine) runSplitStep(r *dagRun, step config.StepConfig) bool {
+// skipping the rest. A branch expression that cannot be parsed or evaluated
+// returns an error before any state is mutated — the caller fails the split
+// step rather than silently routing as if the branch didn't match (#180).
+func (e *Engine) runSplitStep(r *dagRun, step config.StepConfig) error {
 	ctx := EvalContext{Cell: r.cell, Memory: r.memoryValues(), Steps: r.stepStates}
 
 	chosen := map[string]bool{}
@@ -613,13 +649,11 @@ func (e *Engine) runSplitStep(r *dagRun, step config.StepConfig) bool {
 		if !match {
 			expr, err := ParseExpr(b.If)
 			if err != nil {
-				aplog.Error("workflow %s: split %q: bad condition %q: %v", r.wf.ID, step.ID, b.If, err)
-				continue
+				return fmt.Errorf("branch %q: %w", b.If, err)
 			}
 			ok, err := expr.Eval(ctx)
 			if err != nil {
-				aplog.Error("workflow %s: split %q: eval %q: %v", r.wf.ID, step.ID, b.If, err)
-				continue
+				return fmt.Errorf("branch %q: %w", b.If, err)
 			}
 			match = ok
 		}
@@ -648,7 +682,7 @@ func (e *Engine) runSplitStep(r *dagRun, step config.StepConfig) bool {
 			r.markSkipped(b.Goto)
 		}
 	}
-	return false
+	return nil
 }
 
 // resetLoop resets the goto target and all its transitive dependents back to
@@ -739,28 +773,6 @@ func passFail(success bool) string {
 		return stPassed
 	}
 	return stFailed
-}
-
-// conditionFalse reports whether expr evaluates to false (or fails to parse/eval).
-// Used for per-step condition checks: false → skip the step.
-func (e *Engine) conditionFalse(expr string, ctx EvalContext) bool {
-	result, err := e.evalExpr(expr, ctx)
-	if err != nil {
-		aplog.Error("workflow: condition eval error %q: %v (treating as false → skip)", expr, err)
-		return true
-	}
-	return !result
-}
-
-// conditionTrue reports whether expr evaluates to true.
-// Used for fail_when: true → logical rejection.
-func (e *Engine) conditionTrue(expr string, ctx EvalContext) bool {
-	result, err := e.evalExpr(expr, ctx)
-	if err != nil {
-		aplog.Error("workflow: fail_when eval error %q: %v (treating as false → not rejected)", expr, err)
-		return false
-	}
-	return result
 }
 
 // evalExpr parses and evaluates a condition expression. Strips optional ${{ }}

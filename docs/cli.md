@@ -48,7 +48,8 @@ apiary status [--watch]    # --watch refreshes every 2 seconds
 ### `apiary validate`
 
 Validate `apiary.yaml` — schema, reference integrity (agents → runners,
-steps → agents, goto targets), and workflow graph rules.
+steps → agents, goto targets), workflow graph rules, and condition expression
+syntax (`if:`, `reject_when:`, split branches, `${{ }}` joins).
 
 ```sh
 apiary validate [--connectivity]    # --connectivity also tests each source

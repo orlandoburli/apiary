@@ -219,10 +219,10 @@ Children run concurrently; `join` decides the group's outcome:
   outcomes, exposed as `steps.<child-id>.state` (`passed`/`failed`) and
   `steps.<child-id>.output`, alongside the usual `cell.*` and `memory.*`
   accessors. Example: `${{ steps.lint.state == 'passed' and steps.tests.output
-  contains 'ok' }}`. A malformed expression logs an error and falls back to
-  `all` semantics. Note: expression accessors cannot reference child ids
-  containing hyphens — use `snake_case` ids for children you test in a join
-  expression.
+  contains 'ok' }}`. A malformed expression fails `apiary validate`; an
+  expression that cannot be evaluated at runtime fails the parallel step.
+  Note: expression accessors cannot reference child ids containing hyphens —
+  use `snake_case` ids for children you test in a join expression.
 
 #### `for_each:` — iteration
 
@@ -341,12 +341,14 @@ reject_when: ${{ memory.verdict matches "reject|veto" }}
 if: ${{ not (memory.track == "docs" or memory.track == "chore") }}
 ```
 
-!!! note "Evaluation errors fail safe"
-    Expressions are evaluated when the step is reached, not at config load.
-    A malformed expression (e.g. using `&&`) logs an error and evaluates as
-    **false**: an `if:` guard skips its step, a `reject_when:` does not
-    reject, a split branch does not match, and a `join:` expression falls
-    back to `all` semantics. Check the daemon log if a branch never fires.
+!!! note "Malformed expressions fail loudly"
+    Every expression is statically parsed by `apiary validate` (and at daemon
+    config load): a syntax slip like `&&` instead of `and` is rejected
+    pre-flight with a pointer to the supported operator. If an expression
+    still cannot be evaluated at runtime (e.g. an invalid regex operand or an
+    unknown accessor field), the step **fails** — triggering its `on_fail`
+    handling — rather than being silently treated as false. A branch can
+    therefore never be dropped without an error signal.
 
 ### Approval steps
 
