@@ -51,6 +51,7 @@ nav:
       - Agent Memory: memory.md
       - Rate Limits & Resilience: resilience.md
   - Sources:
+      - Supported Integrations: supported-integrations.md
       - GitHub: github-source.md
       - Jira: jira-source.md
       - Plane: plane-source.md

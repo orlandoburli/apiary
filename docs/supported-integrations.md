@@ -1,0 +1,182 @@
+# Supported Integrations
+
+Apiary works with multiple source systems (where work comes from) and runner providers (how agents execute).
+
+## Source Adapters
+
+Sources poll for tasks and write results back. Apiary reads issue status, comments, and metadata, then updates labels, states, and posts comments after agents complete work.
+
+### GitHub Issues
+
+**Status:** ✅ Stable | **Auth:** Personal access token
+
+Polls open issues from a GitHub repository. Apiary reads pull request status for CI waits, cross-references issues and PRs via the issue timeline, and writes back via commits and pull requests.
+
+- **Requirements:** Repository access via GitHub personal access token
+- **Blocking relationships:** Uses GitHub's `blocked_by` issue link type
+- **Comment rendering:** Markdown comments with embedded logs and cost summaries
+- **Setup:** See [GitHub Source configuration](github-source.md)
+
+### Plane
+
+**Status:** ✅ Stable | **Auth:** API key
+
+Polls issues from a Plane project. Supports custom states, labels, and relationships.
+
+- **Requirements:** Plane workspace with project access via API key
+- **Blocking relationships:** Uses Plane's native blocking link type
+- **Comment rendering:** Markdown comments
+- **Setup:** See [Plane Source configuration](plane-source.md)
+
+### Jira Cloud
+
+**Status:** ✅ Stable | **Auth:** API token
+
+Polls Jira Cloud via JQL search. Supports status transitions, blocking relationships, and labels.
+
+!!! note
+    Jira Server and Data Center are not supported — only Jira Cloud.
+
+- **Requirements:** Jira Cloud site with user access via API token
+- **Blocking relationships:** Uses Jira's `Blocks` link type (reads the inward "is blocked by" side)
+- **Comment rendering:** ADF (Atlassian Document Format) for rich formatting
+- **Setup:** See [Jira Source configuration](jira-source.md)
+
+### Linear
+
+**Status:** 🔄 Planned | **Auth:** API token
+
+Support for Linear is in development.
+
+---
+
+## Runners
+
+Runners define **how** agents execute: either as a CLI subprocess on your machine or via a direct API call.
+
+### CLI Runners
+
+CLI runners invoke the agent tool as a subprocess. The tool runs on your machine with full access to your credentials, so Apiary never handles auth secrets — they stay with the tool.
+
+#### Claude CLI
+
+**Status:** ✅ Stable | **Provider:** `claude`
+
+Runs the `claude` binary as a subprocess for each step.
+
+- **Requirements:** `claude` CLI installed and authenticated
+- **Structured parsing:** Apiary parses Claude's event stream into readable `[assistant]` / `[tool→ …]` logs
+- **Exact costs:** Token counts and costs come from Claude's structured response, not estimates
+- **Setup:** `type: cli`, `provider: claude` in `runners`
+- **Docs:** [Runners configuration](runners.md#claude-provider-claude)
+
+#### OpenCode CLI
+
+**Status:** ✅ Stable | **Provider:** `opencode`
+
+Runs the `opencode` binary as a subprocess.
+
+- **Requirements:** `opencode` CLI installed and authenticated
+- **Setup:** `type: cli`, `provider: opencode` in `runners`
+- **Docs:** [Runners configuration](runners.md#opencode-provider-opencode)
+
+#### Cursor CLI
+
+**Status:** ✅ Stable | **Provider:** `cursor`
+
+Runs the Cursor `agent` binary as a subprocess.
+
+- **Requirements:** `agent` binary on PATH (installed with Cursor)
+- **Setup:** `type: cli`, `provider: cursor` in `runners`
+- **Docs:** [Runners configuration](runners.md#cursor-provider-cursor)
+
+### API Runners
+
+API runners call a provider's API directly, without requiring the tool to be installed locally.
+
+#### OpenCode API
+
+**Status:** ✅ Stable | **Type:** `opencode-api`
+
+Calls the OpenCode Cloud API directly.
+
+- **Requirements:** OpenCode API key
+- **Setup:** `type: opencode-api` in `runners` with `config.api_key`
+- **Supported models:** `opencode-go/deepseek-v4-pro` and others
+- **Docs:** [Runners configuration](runners.md#opencode-api)
+
+### Anthropic API
+
+**Status:** 🔄 Planned
+
+Direct API runner for Claude models via the Anthropic API is in development.
+
+---
+
+## Feature support matrix
+
+| Feature | GitHub | Plane | Jira | OpenCode API | Claude CLI | OpenCode CLI | Cursor CLI |
+|---------|--------|-------|------|---|---|---|---|
+| Polling | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
+| State transitions | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
+| Blocking relationships | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
+| Comment rendering | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
+| CI waits | ✅ | — | — | — | N/A | N/A | N/A |
+| Structured logs | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| Exact cost tracking | — | — | — | ✅ | ✅ | — | — |
+
+---
+
+## Using multiple adapters
+
+You can configure multiple sources and runners in the same `apiary.yaml`:
+
+```yaml
+sources:
+  - id: github-issues
+    type: github
+    config:
+      repo: my-org/my-repo
+      api_key: ${GITHUB_TOKEN}
+
+  - id: jira-backlog
+    type: jira
+    config:
+      base_url: https://company.atlassian.net
+      email: bot@company.com
+      api_token: ${JIRA_API_TOKEN}
+
+runners:
+  - id: claude
+    type: cli
+    provider: claude
+
+  - id: opencode
+    type: opencode-api
+    config:
+      api_key: ${OPENCODE_API_KEY}
+
+agents:
+  - id: engineer
+    runner: claude
+    model: claude-sonnet-4-6
+
+  - id: fallback
+    runner: opencode
+    model: opencode-go/deepseek-v4-pro
+```
+
+Workflows can route to different agents, which run on different runners. Tasks from any source can be dispatched to any agent.
+
+---
+
+## Planned integrations
+
+| System | Type | Status |
+|--------|------|--------|
+| Linear | Source | 🔄 In development |
+| Anthropic API | Runner | 🔄 In development |
+| Mistral | Runner | 📝 Planned |
+| Ollama | Runner | 📝 Planned |
+
+Have a request? [Open an issue](https://github.com/orlandoburli/apiary/issues).
