@@ -2,7 +2,9 @@
 
 ## Ativas
 
-_Nenhuma change ativa no momento._
+### git-forge-sources
+
+- **git-forge-sources** — Suporte a forges git além do GitHub. Fase 1 (este PR): novo source adapter `codeberg` para Codeberg e qualquer instância Forgejo/Gitea (via `base_url`): poll de issues, acknowledge, write-back, estados, labels (resolvidos/criados por id), approval polling, CI waits via commit statuses (sem check-runs), detecção de conflito via flag `mergeable`, e blockers via dependências nativas. Sem sub-issues (Forgejo não tem API). Enum do schema + config de exemplo + `docs/codeberg-source.md`. Fases seguintes (planejadas): GitLab (issues/MRs/pipelines), generalização das credenciais por-forge do agente, e E2E live.
 
 ## Arquivadas
 

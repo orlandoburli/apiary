@@ -94,6 +94,21 @@ sources:
       states: [open]
       labels: [ai-ready]
 
+  - id: my-codeberg
+    type: codeberg
+    config:
+      repo: my-org/my-repo
+      # Codeberg / Forgejo / Gitea access token (Authorization: token <TOKEN>).
+      # Create one at https://codeberg.org/user/settings/applications
+      # Scopes: read:repository + write:issue (write:repository for CI/PR reads).
+      api_key: ${CODEBERG_TOKEN}
+      # Any self-hosted Forgejo/Gitea works by overriding the API base:
+      # base_url: https://git.example.org/api/v1
+    poll_interval: 120s
+    filters:
+      states: [open]
+      labels: [ai-ready]
+
   - id: my-jira
     type: jira
     config:

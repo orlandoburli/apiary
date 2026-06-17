@@ -117,7 +117,7 @@
     },
     "sources": {
       "type": "array",
-      "description": "Task sources (github, plane)",
+      "description": "Task sources (github, codeberg, gitlab, jira, plane)",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -130,11 +130,11 @@
           "type": {
             "type": "string",
             "description": "Source adapter type",
-            "enum": ["github", "plane"]
+            "enum": ["github", "codeberg", "jira", "plane"]
           },
           "config": {
             "type": "object",
-            "description": "Adapter-specific configuration. github: repo, api_key, base_url. plane: workspace, project, api_key, base_url",
+            "description": "Adapter-specific configuration. github: repo, api_key, base_url. codeberg: repo, api_key, base_url (any Forgejo/Gitea host). jira: base_url, email, api_token, project. plane: workspace, project, api_key, base_url",
             "additionalProperties": true
           },
           "poll_interval": {

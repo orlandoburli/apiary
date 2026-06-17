@@ -17,6 +17,22 @@ Polls open issues from a GitHub repository. Apiary reads pull request status for
 - **Comment rendering:** Markdown comments with embedded logs and cost summaries
 - **Setup:** See [GitHub Source configuration](github-source.md)
 
+### Codeberg / Forgejo / Gitea
+
+**Status:** ✅ Stable | **Auth:** Access token
+
+Polls open issues from a [Codeberg](https://codeberg.org) repository or any
+self-hosted Forgejo/Gitea instance (set `config.base_url`). Reads PR status for
+CI waits via commit statuses (Forgejo Actions or external CI), detects merge
+conflicts via the PR's `mergeable` flag, and uses native issue dependencies for
+blocking relationships.
+
+- **Requirements:** Repository access via a Codeberg/Forgejo access token
+- **Blocking relationships:** Uses Forgejo's native issue dependencies
+- **Comment rendering:** Markdown comments with embedded logs and cost summaries
+- **Limitations:** No sub-issue API (cannot `materialize: sub_issue`)
+- **Setup:** See [Codeberg Source configuration](codeberg-source.md)
+
 ### Plane
 
 **Status:** ✅ Stable | **Auth:** API key
@@ -41,6 +57,12 @@ Polls Jira Cloud via JQL search. Supports status transitions, blocking relations
 - **Blocking relationships:** Uses Jira's `Blocks` link type (reads the inward "is blocked by" side)
 - **Comment rendering:** ADF (Atlassian Document Format) for rich formatting
 - **Setup:** See [Jira Source configuration](jira-source.md)
+
+### GitLab
+
+**Status:** 🔄 Planned | **Auth:** Access token
+
+Support for GitLab issues, merge requests, and pipeline CI waits is in development.
 
 ### Linear
 
@@ -115,15 +137,16 @@ Direct API runner for Claude models via the Anthropic API is in development.
 
 ## Feature support matrix
 
-| Feature | GitHub | Plane | Jira | OpenCode API | Claude CLI | OpenCode CLI | Cursor CLI |
-|---------|--------|-------|------|---|---|---|---|
-| Polling | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
-| State transitions | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
-| Blocking relationships | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
-| Comment rendering | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
-| CI waits | ✅ | — | — | — | N/A | N/A | N/A |
-| Structured logs | — | — | — | ✅ | ✅ | ✅ | ✅ |
-| Exact cost tracking | — | — | — | ✅ | ✅ | — | — |
+| Feature | GitHub | Codeberg | Plane | Jira | OpenCode API | Claude CLI | OpenCode CLI | Cursor CLI |
+|---------|--------|----------|-------|------|---|---|---|---|
+| Polling | ✅ | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
+| State transitions | ✅ | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
+| Blocking relationships | ✅ | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
+| Comment rendering | ✅ | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
+| CI waits | ✅ | ✅ | — | — | — | N/A | N/A | N/A |
+| Sub-issues | ✅ | — | — | — | — | N/A | N/A | N/A |
+| Structured logs | — | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| Exact cost tracking | — | — | — | — | ✅ | ✅ | — | — |
 
 ---
 
@@ -174,6 +197,7 @@ Workflows can route to different agents, which run on different runners. Tasks f
 
 | System | Type | Status |
 |--------|------|--------|
+| GitLab | Source | 🔄 In development |
 | Linear | Source | 🔄 In development |
 | Anthropic API | Runner | 🔄 In development |
 | Mistral | Runner | 📝 Planned |

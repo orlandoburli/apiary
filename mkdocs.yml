@@ -52,6 +52,7 @@ nav:
       - Rate Limits & Resilience: resilience.md
   - Sources:
       - GitHub: github-source.md
+      - Codeberg: codeberg-source.md
       - Jira: jira-source.md
       - Plane: plane-source.md
   - Reference:
