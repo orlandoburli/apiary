@@ -281,6 +281,12 @@ var migrations = []string{
 	// child per (parent, dedup_key); NULL/empty keys (source-bound tasks) are exempt.
 	`ALTER TABLE internal_tasks ADD COLUMN dedup_key TEXT`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_internal_tasks_dedup ON internal_tasks(parent_task_id, dedup_key) WHERE dedup_key IS NOT NULL AND dedup_key != ''`,
+	// Dispatch generations: reopening a settled task (re-dispatch/escalation)
+	// starts a new round, and task settlement aggregates failures only within
+	// the current round. Without this, one failed instance kept the task failed
+	// forever, even after a later round completed successfully.
+	`ALTER TABLE internal_tasks ADD COLUMN generation INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE workflow_instances ADD COLUMN task_generation INTEGER NOT NULL DEFAULT 0`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).
@@ -299,7 +305,36 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	if err := normalizeLegacyTimestamps(ctx, db); err != nil {
 		return fmt.Errorf("normalize legacy timestamps: %w", err)
 	}
+	if err := repairSupersededFailedTasks(ctx, db); err != nil {
+		return fmt.Errorf("repair superseded failed tasks: %w", err)
+	}
 	return nil
+}
+
+// repairSupersededFailedTasks corrects tasks stranded in 'failed' by builds
+// that aggregated failed instances across the task's whole history: a failed
+// instance kept failing the task even after a later re-dispatch or escalation
+// completed successfully. A task qualifies when it is settled (no outstanding
+// workflows) and its newest terminal top-level instance is done — the last
+// round of work actually succeeded. Sub-workflow child instances are excluded
+// because they are inserted before their parent settles, so by-rowid ordering
+// would misread a done child under a failed parent. Idempotent: flipped rows
+// stop matching.
+func repairSupersededFailedTasks(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE internal_tasks
+		SET state = 'done', updated_at = ?
+		WHERE state = 'failed'
+		  AND COALESCE(outstanding_workflows, 0) = 0
+		  AND (
+		    SELECT wi.state FROM workflow_instances wi
+		    WHERE wi.task_id = internal_tasks.id
+		      AND (wi.parent_instance_id IS NULL OR wi.parent_instance_id = '')
+		      AND wi.state IN ('done','failed')
+		    ORDER BY wi.rowid DESC LIMIT 1
+		  ) = 'done'
+	`, time.Now())
+	return err
 }
 
 // legacyTimestampColumns lists every TIMESTAMP column written from a time.Time.
