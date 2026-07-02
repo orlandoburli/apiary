@@ -91,7 +91,10 @@ type StepRun struct {
 }
 
 // CreateWorkflowInstance inserts a new workflow instance. The caller supplies
-// the ID (the engine generates it) so persistence stays deterministic.
+// the ID (the engine generates it) so persistence stays deterministic. The row
+// is stamped with the owning task's current dispatch generation (0 for
+// transient/unknown task ids), which scopes failure aggregation to the round
+// the instance was dispatched in.
 func (c *Client) CreateWorkflowInstance(ctx context.Context, inst *WorkflowInstance) error {
 	now := time.Now()
 	if inst.CreatedAt.IsZero() {
@@ -100,10 +103,12 @@ func (c *Client) CreateWorkflowInstance(ctx context.Context, inst *WorkflowInsta
 	inst.UpdatedAt = now
 	_, err := c.db.ExecContext(ctx, `
 		INSERT INTO workflow_instances
-		  (id, workflow_id, task_id, cell_id, source_id, state, parent_instance_id, resumed_from, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		  (id, workflow_id, task_id, cell_id, source_id, state, parent_instance_id, resumed_from,
+		   task_generation, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+		        COALESCE((SELECT generation FROM internal_tasks WHERE id = ?), 0), ?, ?)
 	`, inst.ID, inst.WorkflowID, nullStr(inst.TaskID), inst.CellID, nullStr(inst.SourceID), inst.State,
-		nullStr(inst.ParentInstanceID), nullStr(inst.ResumedFrom), inst.CreatedAt, inst.UpdatedAt)
+		nullStr(inst.ParentInstanceID), nullStr(inst.ResumedFrom), inst.TaskID, inst.CreatedAt, inst.UpdatedAt)
 	return err
 }
 
@@ -129,14 +134,21 @@ func (c *Client) GetWorkflowInstance(ctx context.Context, id string) (*WorkflowI
 	return inst, err
 }
 
-// HasFailedInstance reports whether any workflow instance bound to the given task
-// is in the failed state. The engine calls it when a task's last outstanding
-// workflow settles, to choose between the tasks: on_complete and on_fail hooks.
+// HasFailedInstance reports whether any workflow instance from the task's
+// current dispatch generation is in the failed state. The engine calls it when
+// a task's last outstanding workflow settles, to choose between the tasks:
+// on_complete and on_fail hooks. Scoping to the current generation keeps
+// any-fail semantics within a round (a failed sibling in a parallel fan-out
+// still fails the task) while letting a later successful re-dispatch or
+// escalation settle the task as done instead of being poisoned by earlier
+// rounds' failures.
 func (c *Client) HasFailedInstance(ctx context.Context, taskID string) (bool, error) {
 	var n int
 	err := c.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM workflow_instances WHERE task_id = ? AND state = ?
-	`, taskID, InstanceStateFailed).Scan(&n)
+		SELECT COUNT(*) FROM workflow_instances
+		WHERE task_id = ? AND state = ?
+		  AND task_generation = COALESCE((SELECT generation FROM internal_tasks WHERE id = ?), 0)
+	`, taskID, InstanceStateFailed, taskID).Scan(&n)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

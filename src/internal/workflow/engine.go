@@ -405,8 +405,11 @@ func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool
 // tasks: on_complete/on_fail hook to every source binding. It is a no-op when no
 // TaskTracker is wired (the pre-Phase-8 default) or for a binding-less transient
 // task with no id. The aggregate outcome is failed if THIS instance failed or any
-// sibling instance of the task did (HasFailedInstance also covers this instance,
-// whose terminal state was just persisted above).
+// sibling instance from the task's current dispatch generation did
+// (HasFailedInstance also covers this instance, whose terminal state was just
+// persisted above). Failures from earlier generations don't count: a re-dispatch
+// or escalation reopens the task under a new generation, so its success settles
+// the task as done even though older failed instances remain in the DB.
 func (e *Engine) completeTask(ctx context.Context, r *dagRun, failed bool) {
 	if e.tracker == nil || r.task.ID == "" {
 		return

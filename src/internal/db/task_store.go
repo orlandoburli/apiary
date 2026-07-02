@@ -168,14 +168,20 @@ func (s *InternalTaskStore) UpdateTaskMetadata(ctx context.Context, id, title, d
 // instance is still running/waiting in the detail view. completeTask sets the real
 // terminal state again once the new stage settles. The literals mirror
 // model.TaskState ('done'/'failed'/'running').
+//
+// Reopening also bumps the task's generation: instances dispatched from here on
+// belong to a new round, so HasFailedInstance stops counting earlier rounds'
+// failures and a successful re-dispatch/escalation can settle the task as done.
+// Both CASEs read the pre-update state, so the bump and the flip agree.
 func (s *InternalTaskStore) IncrementOutstanding(ctx context.Context, id string, delta int) (int, error) {
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE internal_tasks
 		SET outstanding_workflows = outstanding_workflows + ?,
+		    generation = CASE WHEN ? > 0 AND state IN ('done','failed') THEN generation + 1 ELSE generation END,
 		    state = CASE WHEN ? > 0 AND state IN ('done','failed') THEN 'running' ELSE state END,
 		    updated_at = ?
 		WHERE id = ?
-	`, delta, delta, time.Now(), id); err != nil {
+	`, delta, delta, delta, time.Now(), id); err != nil {
 		return 0, err
 	}
 	return s.outstanding(ctx, id)
