@@ -334,3 +334,49 @@ func TestPoll_SkipsPullRequests(t *testing.T) {
 		t.Errorf("Type = %q, want %q", items[0].Type, "issue")
 	}
 }
+
+// TestAddLabels_AppendsWithoutReplacing verifies that AddLabels uses the
+// additive POST /issues/{n}/labels endpoint sending ONLY the new labels —
+// never a PATCH replaying the cell's (possibly stale) label snapshot, which
+// would revert labels an agent swapped while the run was executing.
+func TestAddLabels_AppendsWithoutReplacing(t *testing.T) {
+	var issuePatched bool
+	var postedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/o/r/labels":
+			// ensureLabel: label already exists.
+			http.Error(w, `{"message":"already_exists"}`, http.StatusUnprocessableEntity)
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/o/r/issues/42/labels":
+			b, _ := io.ReadAll(r.Body)
+			postedBody = string(b)
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodPatch:
+			issuePatched = true
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	a := &Adapter{id: "gh", owner: "o", repo: "r", client: newClient(srv.URL, "")}
+	// Stale snapshot: the agent already swapped workflow:spec → workflow:implementation
+	// on the live issue; the snapshot must not leak into the request.
+	cell := model.SourceItem{ID: "42", Labels: []string{"workflow:spec"}}
+	if err := a.AddLabels(context.Background(), cell, []string{"po:done"}); err != nil {
+		t.Fatalf("AddLabels: %v", err)
+	}
+	if issuePatched {
+		t.Error("AddLabels must not PATCH the issue (label replace) — additive POST only")
+	}
+	if postedBody == "" {
+		t.Fatal("expected POST to /issues/42/labels")
+	}
+	if !strings.Contains(postedBody, "po:done") {
+		t.Errorf("posted body missing new label: %s", postedBody)
+	}
+	if strings.Contains(postedBody, "workflow:spec") {
+		t.Errorf("posted body must not replay the snapshot labels: %s", postedBody)
+	}
+}
