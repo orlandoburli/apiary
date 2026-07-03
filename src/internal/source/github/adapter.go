@@ -266,30 +266,28 @@ func (a *Adapter) SetState(ctx context.Context, cell model.SourceItem, stateName
 	return nil
 }
 
+// AddLabels appends the named labels to an issue via the additive
+// POST /issues/{n}/labels endpoint, leaving every other label untouched.
+// It must NOT send the full label set (PATCH with labels replaces it): the
+// dispatched cell's label snapshot goes stale while a run executes, and an
+// agent may legitimately swap labels mid-run — replaying the snapshot here
+// would silently revert that. Implements source.LabelAdder.
 func (a *Adapter) AddLabels(ctx context.Context, cell model.SourceItem, names []string) error {
 	if len(names) == 0 {
 		return nil
 	}
 
-	idSet := make(map[string]struct{})
-	for _, n := range cell.Labels {
-		idSet[strings.ToLower(n)] = struct{}{}
-	}
+	labelList := make([]string, 0, len(names))
 	for _, n := range names {
 		if err := a.ensureLabel(ctx, n); err != nil {
 			return err
 		}
-		idSet[strings.ToLower(n)] = struct{}{}
-	}
-
-	labelList := make([]string, 0, len(idSet))
-	for n := range idSet {
 		labelList = append(labelList, n)
 	}
 
 	issueNo := cell.ID
-	path := fmt.Sprintf("/repos/%s/%s/issues/%s", a.owner, a.repo, issueNo)
-	_, err := a.client.patch(ctx, path, issueRequest{Labels: labelList})
+	path := fmt.Sprintf("/repos/%s/%s/issues/%s/labels", a.owner, a.repo, issueNo)
+	_, err := a.client.post(ctx, path, labelListRequest{Labels: labelList})
 	if err != nil {
 		return fmt.Errorf("github: adding labels %v to %s: %w", names, cell.ID, err)
 	}
