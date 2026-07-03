@@ -308,6 +308,11 @@ func (a *Adapter) SetState(ctx context.Context, cell model.SourceItem, stateName
 // work item's existing labels (Plane's PATCH replaces the set, so we must send
 // the full list) and auto-creates any label that doesn't yet exist in the
 // project. Names are matched case-insensitively.
+//
+// The existing labels are re-fetched from the API immediately before the
+// PATCH — never taken from cell.Labels, which is a snapshot from dispatch
+// time. An agent may have swapped labels while the run was executing, and
+// replaying the snapshot would silently revert those changes.
 func (a *Adapter) AddLabels(ctx context.Context, cell model.SourceItem, names []string) error {
 	if len(names) == 0 {
 		return nil
@@ -316,12 +321,19 @@ func (a *Adapter) AddLabels(ctx context.Context, cell model.SourceItem, names []
 		return err
 	}
 
-	idSet := make(map[string]struct{})
-	// Preserve the labels the item already has (cell.Labels are lowercased names).
-	for _, n := range cell.Labels {
-		if id, ok := a.labelNameToID[strings.ToLower(n)]; ok {
-			idSet[id] = struct{}{}
-		}
+	itemPath := a.workItemsBase() + "/" + cell.ID + "/"
+	data, err := a.client.get(ctx, itemPath, nil)
+	if err != nil {
+		return fmt.Errorf("plane: fetching current labels of %s: %w", cell.ID, err)
+	}
+	var current workItem
+	if err := json.Unmarshal(data, &current); err != nil {
+		return fmt.Errorf("plane: decoding work item %s: %w", cell.ID, err)
+	}
+
+	idSet := make(map[string]struct{}, len(current.Labels)+len(names))
+	for _, id := range current.Labels {
+		idSet[id] = struct{}{}
 	}
 	// Add the requested labels, creating any that are missing.
 	for _, n := range names {
