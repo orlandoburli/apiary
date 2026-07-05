@@ -477,6 +477,15 @@ settings:
     # max_age: 72h                   # how far back to back-fill
     # team_id: 0                     # REQUIRED for team-billed accounts (authInfo.teamId in ~/.cursor/cli-config.json)
     # user_id: 0                     # filter to your own events on team accounts (authInfo.userId)
+  # Git hook enforcement (opt-in): at startup the daemon points core.hooksPath
+  # of every repo matched by `repos` at `dir`, so e.g. a pre-push hook running
+  # the project's local lint/tests physically blocks agents from pushing
+  # untested code — soul-file rules alone are advisory. Scripts in `dir` are
+  # made executable automatically; non-git matches are skipped.
+  # git_hooks:
+  #   dir: .apiary/hooks
+  #   repos:
+  #     - ../myproject--*            # the agents' per-role checkouts
 
 # ── Task completion hook (internal-task-model) ───────────────────────────────────
 # Fires once per InternalTask, when the LAST of its fanned-out workflows reaches a
