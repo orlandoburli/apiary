@@ -345,30 +345,61 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 			return source.CIStatus{Status: "pending"}, nil
 		}
 
-		// Find the cross-reference event pointing to a PR
-		var prNumber int
-		for _, event := range timeline {
+		// Collect every cross-referenced PR, most recent first. Any PR that merely
+		// MENTIONS the issue shows up here (including closed PRs from sibling
+		// issues), so we can't just take the first hit: an issue's real PR must be
+		// picked among the candidates, preferring OPEN PRs and, among those, the
+		// most recently referenced one. Only when no candidate is open do we fall
+		// back to the most recent one regardless of state (e.g. polling right
+		// after a merge).
+		var candidates []int
+		seen := map[int]bool{}
+		for i := len(timeline) - 1; i >= 0; i-- {
+			event := timeline[i]
 			if event.Event == "cross-referenced" && event.Source.Type == "issue" && event.Source.Issue.PullRequest.URL != "" {
-				prNumber = event.Source.Issue.Number
-				break
+				if n := event.Source.Issue.Number; !seen[n] {
+					seen[n] = true
+					candidates = append(candidates, n)
+				}
 			}
 		}
 
-		if prNumber == 0 {
+		if len(candidates) == 0 {
 			return source.CIStatus{Status: "pending"}, nil // No PR found yet; still pending
 		}
 
-		// Fetch the PR details. A failure here is NOT "pending": we found a real PR
-		// but can't read it. Surface it as an error so the caller logs it instead of
-		// masking a permanent problem (e.g. a token lacking Pull requests: Read,
-		// which returns 403) as an endless wait.
-		prPath = fmt.Sprintf("/repos/%s/%s/pulls/%d", a.owner, a.repo, prNumber)
-		prBody, err = a.client.get(ctx, prPath)
-		if err != nil {
-			if isAuthError(err) {
-				return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: cannot read PR #%d for issue %s — the configured token likely lacks 'Pull requests: Read' (and 'Contents: Read'): %w", prNumber, cellID, err)
+		// Fetch candidate PRs until an open one is found. A fetch failure is NOT
+		// "pending": we found a real PR but can't read it. Surface it as an error
+		// so the caller logs it instead of masking a permanent problem (e.g. a
+		// token lacking Pull requests: Read, which returns 403) as an endless wait.
+		var fallbackBody []byte
+		prBody = nil
+		for _, prNumber := range candidates {
+			prPath = fmt.Sprintf("/repos/%s/%s/pulls/%d", a.owner, a.repo, prNumber)
+			body, err := a.client.get(ctx, prPath)
+			if err != nil {
+				if isAuthError(err) {
+					return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: cannot read PR #%d for issue %s — the configured token likely lacks 'Pull requests: Read' (and 'Contents: Read'): %w", prNumber, cellID, err)
+				}
+				return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: fetching PR #%d for issue %s: %w", prNumber, cellID, err)
 			}
-			return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: fetching PR #%d for issue %s: %w", prNumber, cellID, err)
+			var candidate pullRequest
+			if err := json.Unmarshal(body, &candidate); err != nil {
+				continue
+			}
+			if candidate.State == "open" {
+				prBody = body
+				break
+			}
+			if fallbackBody == nil {
+				fallbackBody = body
+			}
+		}
+		if prBody == nil {
+			prBody = fallbackBody
+		}
+		if prBody == nil {
+			return source.CIStatus{Status: "pending"}, nil
 		}
 	}
 

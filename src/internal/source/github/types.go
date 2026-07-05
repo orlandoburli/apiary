@@ -73,6 +73,7 @@ type labelCreateRequest struct {
 // mergeable_state == "dirty".
 type pullRequest struct {
 	Number         int    `json:"number"`
+	State          string `json:"state"`
 	HTMLURL        string `json:"html_url"`
 	Mergeable      *bool  `json:"mergeable"`
 	MergeableState string `json:"mergeable_state"`

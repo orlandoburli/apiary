@@ -176,6 +176,50 @@ func TestPollCIStatus_NoSignalsYet(t *testing.T) {
 	}
 }
 
+// The regression behind the 2026-07-05 needs-human cascade: the issue timeline
+// cross-references BOTH a stale CLOSED PR with conflicts (from a sibling issue
+// that merely mentioned this one) and the issue's real OPEN PR. The poller must
+// pick the open PR — not short-circuit on the closed dirty one.
+func TestPollCIStatus_PrefersOpenPROverStaleClosedOne(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pulls/1958"):
+			http.NotFound(w, r)
+		case strings.HasSuffix(r.URL.Path, "/issues/1958/timeline"):
+			// Chronological order: the real PR (1961) referenced first, then the
+			// stale closed one (1960) referenced later (= most recent).
+			_, _ = w.Write([]byte(`[
+				{"event":"cross-referenced","source":{"type":"issue",
+					"issue":{"number":1961,"pull_request":{"url":"https://api/pulls/1961"}}}},
+				{"event":"cross-referenced","source":{"type":"issue",
+					"issue":{"number":1960,"pull_request":{"url":"https://api/pulls/1960"}}}}]`))
+		case strings.HasSuffix(r.URL.Path, "/pulls/1960"):
+			_, _ = w.Write([]byte(`{"number":1960,"state":"closed","html_url":"https://gh/pr/1960","head":{"sha":"stale"},"mergeable":false,"mergeable_state":"dirty"}`))
+		case strings.HasSuffix(r.URL.Path, "/pulls/1961"):
+			_, _ = w.Write([]byte(`{"number":1961,"state":"open","html_url":"https://gh/pr/1961","head":{"sha":"abc"},"mergeable":true,"mergeable_state":"clean"}`))
+		case strings.HasSuffix(r.URL.Path, "/commits/abc/status"):
+			_, _ = w.Write([]byte(`{"state":"pending","total_count":0,"statuses":[]}`))
+		case strings.HasSuffix(r.URL.Path, "/commits/abc/check-runs"):
+			_, _ = w.Write([]byte(`{"check_runs":[{"name":"CI","status":"completed","conclusion":"success"}]}`))
+		case strings.Contains(r.URL.Path, "/commits/stale/"):
+			t.Errorf("CI polled on the stale closed PR's head %q — the open PR should have been picked", r.URL.Path)
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	a := &Adapter{id: "gh", owner: "o", repo: "r", client: newClient(srv.URL, "")}
+
+	got, err := a.PollCIStatus(context.Background(), "1958")
+	if err != nil {
+		t.Fatalf("PollCIStatus: %v", err)
+	}
+	if got.Status != "passed" {
+		t.Errorf("status = %q, want passed (from the OPEN PR #1961, not conflict from closed #1960)", got.Status)
+	}
+}
+
 // Legacy commit statuses (non-Actions CI) still work and are aggregated with checks.
 func TestPollCIStatus_LegacyStatusesGreen(t *testing.T) {
 	a := ciServer(t,
