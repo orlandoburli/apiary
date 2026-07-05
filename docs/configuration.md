@@ -238,6 +238,35 @@ pages — the file stops growing but does not shrink; to compact a database
 that grew before retention existed, stop the daemon and run
 `sqlite3 .apiary/apiary.db 'VACUUM;'` once.
 
+### Git hook enforcement (`git_hooks`)
+
+Prompt-level rules like "always run the tests before pushing" are advisory —
+under a long run an agent will eventually skip them, and the cost shows up
+later as CI-failure retry loops. `git_hooks` makes the rule mechanical: at
+startup the daemon points `core.hooksPath` of every repo matched by `repos`
+at the shared `dir`, so a `pre-push` script there (running the project's
+local lint/tests, or refusing pushes from a branch behind `main`) physically
+rejects the push with a non-zero exit, whatever the agent decided.
+
+```yaml
+settings:
+  git_hooks:
+    dir: .apiary/hooks        # holds pre-push, pre-commit, ... scripts
+    repos:
+      - ../myproject--*       # the agents' per-role checkouts (glob)
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `dir` | — | Directory with the hook scripts; absolute, `~`-prefixed, or relative to the daemon working directory. Scripts are made executable automatically |
+| `repos` | — | Glob patterns of git checkouts to enforce on. Matches without a `.git` are skipped silently; both fields are required together |
+
+Enforcement is re-applied on every daemon start, so newly-cloned checkouts
+matching the glob pick the hooks up on the next restart. Hooks live in one
+shared directory — editing a script updates every repo at once. Note that
+`core.hooksPath` replaces the per-repo `.git/hooks` directory entirely for
+the configured repos.
+
 ### Cursor cost back-fill (`cursor_cost`)
 
 The Cursor agent CLI streams token counts but **no dollar cost** — unlike the

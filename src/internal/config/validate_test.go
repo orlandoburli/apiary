@@ -181,3 +181,42 @@ func containsStr(s, sub string) bool {
 			return false
 		}())
 }
+
+func TestValidate_GitHooksPairing(t *testing.T) {
+	base := func() *config.Config {
+		return &config.Config{
+			Version: "1",
+			Sources: []config.SourceConfig{{ID: "src-1", Type: "plane"}},
+			Agents:  []config.AgentConfig{{ID: "a-1", Model: "claude-sonnet-4-6"}},
+			Workflows: []config.WorkflowConfig{{
+				ID:      "wf-1",
+				Trigger: &config.TriggerConfig{Priority: 1, Match: config.RouteMatch{Source: "src-1"}},
+				Steps:   []config.StepConfig{{ID: "run", Agent: "a-1"}},
+			}},
+		}
+	}
+
+	cfg := base()
+	cfg.Settings.GitHooks = config.GitHooksSettings{Dir: ".apiary/hooks", Repos: []string{"../proj--*"}}
+	if errs := cfg.Validate(); len(errs) != 0 {
+		t.Errorf("valid git_hooks rejected: %v", errs)
+	}
+
+	cfg = base()
+	cfg.Settings.GitHooks = config.GitHooksSettings{Repos: []string{"../proj--*"}}
+	if errs := cfg.Validate(); len(errs) != 1 {
+		t.Errorf("repos without dir: expected 1 error, got: %v", errs)
+	}
+
+	cfg = base()
+	cfg.Settings.GitHooks = config.GitHooksSettings{Dir: ".apiary/hooks"}
+	if errs := cfg.Validate(); len(errs) != 1 {
+		t.Errorf("dir without repos: expected 1 error, got: %v", errs)
+	}
+
+	cfg = base()
+	cfg.Settings.GitHooks = config.GitHooksSettings{Dir: ".apiary/hooks", Repos: []string{"  "}}
+	if errs := cfg.Validate(); len(errs) != 1 {
+		t.Errorf("blank repo pattern: expected 1 error, got: %v", errs)
+	}
+}

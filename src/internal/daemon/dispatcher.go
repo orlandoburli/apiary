@@ -319,6 +319,11 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 // Start launches one poll goroutine per source.
 // Cancel ctx to initiate a graceful shutdown; then call wg.Wait().
 func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
+	// Enforce the shared git hooks directory on the agents' repo checkouts
+	// (settings.git_hooks) before the first dispatch, so pre-push hooks gate
+	// agent pushes from the very first run.
+	installGitHooks(d.cfg.Settings.GitHooks)
+
 	// A fresh process owns no in-flight runs: clear any executions left in the
 	// 'running' state by a previously-killed dispatcher so the dashboard's
 	// agent status reflects real, live claude processes rather than orphans.

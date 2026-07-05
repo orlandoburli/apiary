@@ -185,6 +185,22 @@ func (c *Config) Validate() []error {
 		errs = append(errs, fmt.Errorf("settings.memory.max_entry_bytes must be >= 0"))
 	}
 
+	// settings.git_hooks: dir and repos only make sense together — one without
+	// the other is a config mistake, not a partial setup.
+	if g := c.Settings.GitHooks; g.Dir != "" || len(g.Repos) > 0 {
+		if g.Dir == "" {
+			errs = append(errs, fmt.Errorf("settings.git_hooks: dir is required when repos is set"))
+		}
+		if len(g.Repos) == 0 {
+			errs = append(errs, fmt.Errorf("settings.git_hooks: repos is required when dir is set"))
+		}
+		for i, r := range g.Repos {
+			if strings.TrimSpace(r) == "" {
+				errs = append(errs, fmt.Errorf("settings.git_hooks.repos[%d]: pattern must not be empty", i))
+			}
+		}
+	}
+
 	// Validate v2-specific authoring rules before lowering (while v2 fields are
 	// still present on the raw StepConfig nodes).
 	errs = append(errs, c.validateV2Workflows()...)

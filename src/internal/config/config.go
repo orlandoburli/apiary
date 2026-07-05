@@ -224,6 +224,28 @@ type Settings struct {
 	Memory        MemorySettings     `yaml:"memory"`
 	Telemetry     Telemetry          `yaml:"telemetry"`
 	CursorCost    CursorCostSettings `yaml:"cursor_cost"`
+	GitHooks      GitHooksSettings   `yaml:"git_hooks"`
+}
+
+// GitHooksSettings makes the daemon enforce a shared git hooks directory on
+// the agents' local repo checkouts. At startup the daemon points
+// core.hooksPath of every repo matched by Repos at Dir, so hooks placed there
+// (e.g. a pre-push script that runs the project's lint/tests) physically gate
+// what agents can push — prompt-level rules alone are advisory and get
+// skipped under pressure. Hook scripts are made executable automatically.
+type GitHooksSettings struct {
+	// Dir is the directory holding the hook scripts (pre-push, pre-commit, …),
+	// absolute, ~-prefixed, or relative to the daemon working directory.
+	Dir string `yaml:"dir"`
+	// Repos are glob patterns (absolute, ~-prefixed, or relative to the daemon
+	// working directory) of git checkouts to enforce the hooks on, e.g.
+	// "../project-erp--*". Non-git matches are skipped silently.
+	Repos []string `yaml:"repos"`
+}
+
+// Enabled reports whether git hook enforcement is configured.
+func (g GitHooksSettings) Enabled() bool {
+	return g.Dir != "" && len(g.Repos) > 0
 }
 
 // CursorCostSettings configures the cursor-cli cost back-fill. The Cursor

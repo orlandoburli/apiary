@@ -524,6 +524,24 @@
               "default": 0
             }
           }
+        },
+        "git_hooks": {
+          "type": "object",
+          "description": "Enforce a shared git hooks directory on the agents' repo checkouts. At startup the daemon sets core.hooksPath of every repo matched by 'repos' to 'dir' (and marks the scripts executable), so hooks like a pre-push running local lint/tests mechanically gate agent pushes — prompt rules alone are advisory. Both keys are required together",
+          "additionalProperties": false,
+          "required": ["dir", "repos"],
+          "properties": {
+            "dir": {
+              "type": "string",
+              "description": "Directory holding the hook scripts (pre-push, pre-commit, ...); absolute, ~-prefixed, or relative to the daemon working directory"
+            },
+            "repos": {
+              "type": "array",
+              "description": "Glob patterns of git checkouts to enforce the hooks on (e.g. \"../myproject--*\"). Matches that are not git repos are skipped",
+              "items": { "type": "string" },
+              "minItems": 1
+            }
+          }
         }
       }
     },
