@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
@@ -383,5 +384,44 @@ func TestApplyStructured_MemorizeInvalidJSON(t *testing.T) {
 	// The block is stripped even when malformed, so it never leaks downstream.
 	if strings.Contains(result.Output, "APIARY_MEMORIZE") || strings.Contains(result.Output, "not json") {
 		t.Fatalf("block not stripped: %q", result.Output)
+	}
+}
+
+func TestOutputSchemaInstruction(t *testing.T) {
+	schema := &config.OutputSchema{Type: "object",
+		Properties: map[string]config.SchemaField{
+			"action": {Type: "string", Enum: []string{"pr_opened", "already_done"}},
+			"reason": {Type: "string"},
+		},
+		Required: []string{"action"}}
+
+	got := OutputSchemaInstruction(schema)
+	for _, want := range []string{
+		"APIARY_OUTPUT:",
+		`"action": "pr_opened|already_done"`,
+		"- action (string, one of: pr_opened | already_done, required)",
+		"- reason (string)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("instruction missing %q:\n%s", want, got)
+		}
+	}
+	// Required fields come before optional ones in the example line.
+	if strings.Index(got, `"action"`) > strings.Index(got, `"reason"`) {
+		t.Errorf("required field should precede optional in example:\n%s", got)
+	}
+	if OutputSchemaInstruction(nil) != "" {
+		t.Error("nil schema must render no instruction")
+	}
+}
+
+func TestBuildPrompt_IncludesOutputInstruction(t *testing.T) {
+	req := model.RunRequest{
+		Cell:              model.SourceItem{Title: "issue"},
+		OutputInstruction: "\n---\nAPIARY_OUTPUT: {\"action\": \"...\"}\n",
+	}
+	got := buildPrompt(req)
+	if !strings.Contains(got, `APIARY_OUTPUT: {"action": "..."}`) {
+		t.Errorf("prompt missing output instruction:\n%s", got)
 	}
 }

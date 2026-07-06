@@ -326,6 +326,13 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 			res.Success = false
 			aplog.Info("workflow %s: step %q failed: on_missing_output=fail and no structured output", r.wf.ID, step.ID)
 		}
+		// Default warn policy: the step still passes, but say so loudly — every
+		// condition keyed on the missing fields will now evaluate against "".
+		if res.Success && step.OutputSchema != nil &&
+			step.OnMissingOutput != config.OnMissingOutputIgnore &&
+			len(res.StructuredOutput) == 0 {
+			aplog.Error("workflow %s: step %q declared output_schema but emitted no APIARY_OUTPUT — conditions reading its fields will see empty values", r.wf.ID, step.ID)
+		}
 
 		// fail_when — evaluate on the scheduler goroutine after the agent runs.
 		// An expression that cannot be parsed or evaluated fails the step —

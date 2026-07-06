@@ -163,3 +163,63 @@ func TestResume_ReevaluatesSplit(t *testing.T) {
 		t.Errorf("plan should be cached, not re-run: %v", ids)
 	}
 }
+
+// alreadyDoneWF mirrors the shape of project-erp's implementation workflow
+// (issue #2967 loop): implement writes `action` to memory; check-ci is gated on
+// action != already_done and close-noop on action == already_done.
+func alreadyDoneWF() config.WorkflowConfig {
+	actionSchema := &config.OutputSchema{Type: "object",
+		Properties: map[string]config.SchemaField{
+			"action": {Type: "string", Enum: []string{"pr_opened", "already_done"}}},
+		Required: []string{"action"}}
+	return config.WorkflowConfig{ID: "implementation", Steps: []config.StepConfig{
+		{ID: "implement", Agent: "engineer",
+			OutputSchema: actionSchema,
+			Memory:       &config.MemoryConfig{Write: []string{"action"}}},
+		{ID: "checkci", Agent: "engineer", DependsOn: []string{"implement"},
+			Condition: `memory.action != "already_done"`},
+		{ID: "closenoop", Agent: "engineer", DependsOn: []string{"implement"},
+			Condition: `memory.action == "already_done"`},
+	}}
+}
+
+// A step re-run by a restart_from/goto loop persists a second passed run. On
+// resume/rehydrate the LATEST passed run's structured output must win —
+// restoring the first run's memory made `if` conditions read the stale value,
+// so an implement re-run that emitted already_done was invisible and the
+// workflow looped instead of taking the noop exit (project-erp #2967).
+func TestRestoreCachedSteps_LastPassedRunWins(t *testing.T) {
+	cfg := baseCfg()
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	eng := testEngine(cfg, store, exec, &fakeSide{})
+
+	instID := "wf_resume_lastwins"
+	prior := []db.StepRun{
+		{ID: "sr-impl-1", WorkflowInstanceID: instID, StepID: "implement",
+			State: db.StepStatePassed, StructuredOutput: `{"action":"pr_opened"}`},
+		{ID: "sr-ci-1", WorkflowInstanceID: instID, StepID: "checkci",
+			State: db.StepStateFailed},
+		{ID: "sr-impl-2", WorkflowInstanceID: instID, StepID: "implement",
+			State: db.StepStatePassed, StructuredOutput: `{"action":"already_done"}`},
+	}
+
+	success, err := eng.ResumeInstance(context.Background(), instID, alreadyDoneWF(), model.InternalTask{ID: "c1"}, prior)
+	if err != nil {
+		t.Fatalf("ResumeInstance: %v", err)
+	}
+	if !success {
+		t.Fatal("expected resume to succeed")
+	}
+
+	ids := executedIDs(exec.seen)
+	if contains(ids, "implement") {
+		t.Errorf("implement is cached and must not re-run: %v", ids)
+	}
+	if contains(ids, "checkci") {
+		t.Errorf("checkci must be condition-skipped — latest implement run said already_done: %v", ids)
+	}
+	if !contains(ids, "closenoop") {
+		t.Errorf("closenoop must run so the noop exit closes the task: %v", ids)
+	}
+}

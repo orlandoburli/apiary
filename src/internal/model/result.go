@@ -17,6 +17,11 @@ type RunRequest struct {
 	// details and SystemAppend. In workflow mode it carries the formatted
 	// workflow memory document. Empty for plain routes.
 	SystemPrepend string
+	// OutputInstruction, when set, is the pre-rendered prompt block that teaches
+	// the agent to emit its step's structured output via the APIARY_OUTPUT:
+	// sentinel (derived from the step's output_schema). Appended verbatim to the
+	// composed prompt. Empty for steps without a schema and for plain routes.
+	OutputInstruction string
 	// SummaryPrompt, when set, instructs the agent to emit a short handoff
 	// summary delimited by APIARY_SUMMARY_START/END markers, extracted into
 	// RunResult.Summary. Empty for plain routes.

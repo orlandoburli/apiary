@@ -81,13 +81,18 @@ func (e *Engine) restoreCachedSteps(r *dagRun, priorSteps []db.StepRun) []db.Ste
 
 		r.state[step.ID] = stPassed
 		r.stepStates[step.ID] = StepState{State: stPassed, Output: sr.Output}
+		// Last passed run wins: an on_fail.goto / restart_from loop re-runs a step,
+		// and downstream conditions must see the newest attempt's output. Keeping
+		// the first run's memory here made a restored `if` read stale fields (e.g.
+		// an implement re-run that emitted already_done was invisible after a
+		// rehydrate, so the noop exit never fired and the issue looped).
+		r.contrib[step.ID] = MemoryStep{
+			StepID:      step.ID,
+			WriteFields: step.MemoryWriteFields(),
+			Structured:  structured,
+			Summary:     sr.Summary,
+		}
 		if !seen[step.ID] {
-			r.contrib[step.ID] = MemoryStep{
-				StepID:      step.ID,
-				WriteFields: step.MemoryWriteFields(),
-				Structured:  structured,
-				Summary:     sr.Summary,
-			}
 			r.passedOrder = append(r.passedOrder, step.ID)
 			seen[step.ID] = true
 		}

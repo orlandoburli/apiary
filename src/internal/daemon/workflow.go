@@ -11,6 +11,7 @@ import (
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/router"
+	"github.com/orlandoburli/apiary/internal/runner/execution"
 	"github.com/orlandoburli/apiary/internal/source"
 	"github.com/orlandoburli/apiary/internal/workflow"
 )
@@ -378,6 +379,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		MaxTurns:           req.Agent.MaxTurns,
 		SystemPrepend:      req.MemoryDoc,
 		SystemAppend:       composeSystemAppend(req.Prompt, readSoulFile(req.Agent, req.Cell.ID)),
+		OutputInstruction:  execution.OutputSchemaInstruction(req.Step.OutputSchema),
 		SummaryPrompt:      req.Step.SummaryPrompt,
 		StepID:             req.Step.ID,
 		WorkflowInstanceID: req.InstanceID,
