@@ -2,11 +2,13 @@
 
 ## Ativas
 
-### credit-aware-fallback
-
-Credit-aware runner fallback: out-of-credits detection beyond rate-limit-only, per-agent/workflow/global fallback config, selection strategies (ordered/least_cost/fastest), proactive budget tracking with monthly caps, and failure-kind-specific cooldowns.
+_Nenhuma change ativa no momento._
 
 ## Arquivadas
+
+### 2026-07-07
+
+- **credit-aware-fallback** — Credit-aware runner fallback: out-of-credits detection beyond rate-limit-only with `FailureDetector` interface, failure-kind-specific cooldowns (5m rate-limit / 24h credit / 0 abort), `settings.default_fallbacks` global fallback chain, per-agent `fallback_strategy` (ordered/random/least_cost/fastest), named runner profiles via `profiles.<name>` activated with `--profile=<name>`, `credit_exhausted` and `failure_kind` columns on `task_executions`, config validation for all new fields, and full documentation updates.
 
 ### 2026-06-10
 
