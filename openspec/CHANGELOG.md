@@ -2,7 +2,9 @@
 
 ## Ativas
 
-_Nenhuma change ativa no momento._
+### credit-aware-fallback
+
+Credit-aware runner fallback: out-of-credits detection beyond rate-limit-only, per-agent/workflow/global fallback config, selection strategies (ordered/least_cost/fastest), proactive budget tracking with monthly caps, and failure-kind-specific cooldowns.
 
 ## Arquivadas
 
