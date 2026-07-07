@@ -218,4 +218,4 @@ the diagram shows. The extension source lives under
 
 ## License
 
-Licensed under the [BSD 3-Clause License](LICENSE).
+Licensed under the [BSD 3-Clause License](https://orlandoburli.com.br/apiary/license).

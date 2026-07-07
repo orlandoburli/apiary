@@ -47,8 +47,7 @@ jobs:
           sed -i 's|COMMERCIAL.md|https://github.com/orlandoburli/apiary/blob/main/COMMERCIAL.md|g' docs/index.md
           sed -i 's|\([^!]\)(openspec/|\1(https://github.com/orlandoburli/apiary/tree/main/openspec/|g' docs/index.md
           sed -i 's|openspec/specs/plugin-api/spec.md|https://github.com/orlandoburli/apiary/blob/main/openspec/specs/plugin-api/spec.md|g' docs/development.md
-          # LICENSE link: point to the rendered /license page
-          sed -i 's|](LICENSE)|](/license)|g' docs/index.md
+          # LICENSE link: already uses the full site URL
 
       - name: Stamp latest release version into docs
         env:
