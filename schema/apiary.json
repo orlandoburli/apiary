@@ -14,7 +14,7 @@
     },
     "runners": {
       "type": "array",
-      "description": "Runner definitions for agent execution. The adapter is resolved as '{provider}-{type}' (or just 'type' when provider is empty); registered adapters: claude-cli, opencode-cli, cursor-cli, opencode-api",
+      "description": "Runner definitions for agent execution. The adapter is resolved as '{provider}-{type}' (or just 'type' when provider is empty); registered adapters: claude-cli, opencode-cli, codex-cli, cursor-cli, opencode-api",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -27,12 +27,12 @@
           "type": {
             "type": "string",
             "description": "Execution engine: 'cli' (subprocess, combined with provider) or a self-contained adapter name like 'opencode-api'",
-            "enum": ["cli", "claude-cli", "opencode-cli", "cursor-cli", "opencode-api"]
+            "enum": ["cli", "claude-cli", "opencode-cli", "codex-cli", "cursor-cli", "opencode-api"]
           },
           "provider": {
             "type": "string",
             "description": "Which CLI the 'cli' engine drives. The adapter is resolved as '{provider}-{type}'; any unregistered combination fails at daemon startup with 'runner type not found'",
-            "enum": ["claude", "opencode", "cursor"]
+            "enum": ["claude", "opencode", "codex", "cursor"]
           },
           "config": {
             "type": "object",
@@ -41,11 +41,11 @@
             "properties": {
               "command": {
                 "type": "string",
-                "description": "Binary to invoke (override to use a wrapper or absolute path). Preset: claude / opencode / agent"
+                "description": "Binary to invoke (override to use a wrapper or absolute path). Preset: claude / opencode / codex / agent"
               },
               "args": {
                 "type": "array",
-                "description": "Extra argv appended after the preset's args on every run. Presets: claude '--output-format stream-json --verbose', opencode 'run', cursor '-p --output-format stream-json --force'",
+                "description": "Extra argv appended after the preset's args on every run. Presets: claude '--output-format stream-json --verbose', opencode 'run', codex 'exec --sandbox workspace-write', cursor '-p --output-format stream-json --force'",
                 "items": {
                   "type": "string"
                 }
@@ -60,7 +60,7 @@
               },
               "prompt_positional": {
                 "type": "boolean",
-                "description": "Pass the prompt as the last positional argument (preset: true for opencode and cursor)"
+                "description": "Pass the prompt as the last positional argument (preset: true for opencode, codex, and cursor)"
               },
               "turns_flag": {
                 "type": "string",
@@ -188,7 +188,7 @@
           },
           "model": {
             "type": "string",
-            "description": "Model name passed to the runner (e.g., 'claude-opus-4-8', 'claude-sonnet-4-6')"
+            "description": "Model name passed to the runner (e.g., 'claude-opus-4-8', 'claude-sonnet-4-6', 'gpt-5.5')"
           },
           "soul_file": {
             "type": "string",

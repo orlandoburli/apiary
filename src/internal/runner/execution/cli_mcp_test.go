@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/orlandoburli/apiary/internal/model"
@@ -136,6 +137,51 @@ func TestSetupMCP_OpencodeMergesLocalFormat(t *testing.T) {
 	}
 	if gn.Env["GITNEXUS_REPO"] != "project-erp" {
 		t.Errorf("environment not mapped: %+v", gn.Env)
+	}
+}
+
+func TestSetupMCP_CodexMergesManagedConfigBlock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	path := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	seed := "model = \"gpt-5.5\"\n\n# apiary:codex-mcp:start\n[mcp_servers.old]\ncommand = \"old\"\n# apiary:codex-mcp:end\n\nsandbox_mode = \"workspace-write\"\n"
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &CliRunner{mcpFormat: "codex", mcps: []model.MCPServer{gitnexusMCP}}
+	args, err := r.setupMCP()
+	if err != nil {
+		t.Fatalf("setupMCP: %v", err)
+	}
+	if len(args) != 0 {
+		t.Fatalf("codex auto-discovers config; expected no run args, got %v", args)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`model = "gpt-5.5"`,
+		`sandbox_mode = "workspace-write"`,
+		`[mcp_servers.gitnexus]`,
+		`command = "npx"`,
+		`args = ["-y", "gitnexus@latest", "mcp"]`,
+		`[mcp_servers.gitnexus.env]`,
+		`GITNEXUS_REPO = "project-erp"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("codex config missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "[mcp_servers.old]") {
+		t.Errorf("old managed MCP block was not replaced:\n%s", text)
 	}
 }
 

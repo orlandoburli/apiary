@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/orlandoburli/apiary/internal/model"
 )
@@ -21,6 +22,8 @@ import (
 //     format), activated with `--approve-mcps`.
 //   - opencode → merged into the global `~/.config/opencode/opencode.json` under
 //     the `mcp` key (local format); opencode auto-discovers it, so no run args.
+//   - codex    → merged into the user's global `~/.codex/config.toml`
+//     `[mcp_servers.*]` tables; codex auto-discovers it, so no run args.
 //
 // Called once from Configure (load time, sequential across agents) so the
 // global-config merges are race-free. Returns nil args when there are no servers
@@ -36,6 +39,8 @@ func (r *CliRunner) setupMCP() ([]string, error) {
 		return r.setupCursorMCP()
 	case "opencode":
 		return r.setupOpencodeMCP()
+	case "codex":
+		return r.setupCodexMCP()
 	default:
 		return nil, nil
 	}
@@ -114,6 +119,38 @@ func (r *CliRunner) setupOpencodeMCP() ([]string, error) {
 	return nil, nil
 }
 
+// setupCodexMCP merges the servers into ~/.codex/config.toml. Codex reads
+// [mcp_servers.<name>] tables from that file for CLI and IDE runs.
+func (r *CliRunner) setupCodexMCP() ([]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("home dir: %w", err)
+	}
+	path := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, fmt.Errorf("create codex config dir: %w", err)
+	}
+
+	existing := ""
+	if data, err := os.ReadFile(path); err == nil {
+		existing = string(data)
+	}
+	updated := stripCodexManagedMCPBlock(existing)
+	block := codexManagedMCPBlock(r.mcps)
+	if strings.TrimSpace(updated) != "" {
+		updated = strings.TrimRight(updated, "\n") + "\n\n" + block
+	} else {
+		updated = block
+	}
+	if updated != "" && !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
+	}
+	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
+		return nil, fmt.Errorf("write codex config: %w", err)
+	}
+	return nil, nil
+}
+
 // mcpServersObject builds the `mcpServers` map shared by the claude and cursor
 // formats: {name: {command, args?, env?}}.
 func mcpServersObject(mcps []model.MCPServer) map[string]any {
@@ -155,4 +192,71 @@ func mergeMCPServersFile(path string, mcps []model.MCPServer) error {
 		return err
 	}
 	return os.WriteFile(path, raw, 0644)
+}
+
+const (
+	codexManagedMCPStart = "# apiary:codex-mcp:start"
+	codexManagedMCPEnd   = "# apiary:codex-mcp:end"
+)
+
+func stripCodexManagedMCPBlock(s string) string {
+	start := strings.Index(s, codexManagedMCPStart)
+	if start < 0 {
+		return s
+	}
+	end := strings.Index(s[start:], codexManagedMCPEnd)
+	if end < 0 {
+		return s
+	}
+	end += start + len(codexManagedMCPEnd)
+	return strings.TrimRight(s[:start], "\n") + "\n" + strings.TrimLeft(s[end:], "\n")
+}
+
+func codexManagedMCPBlock(mcps []model.MCPServer) string {
+	var b strings.Builder
+	b.WriteString(codexManagedMCPStart)
+	b.WriteString("\n")
+	for i, m := range mcps {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "[mcp_servers.%s]\n", tomlBareKey(m.Name))
+		fmt.Fprintf(&b, "command = %q\n", m.Command)
+		if len(m.Args) > 0 {
+			b.WriteString("args = [")
+			for j, a := range m.Args {
+				if j > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%q", a)
+			}
+			b.WriteString("]\n")
+		}
+		if len(m.Env) > 0 {
+			fmt.Fprintf(&b, "[mcp_servers.%s.env]\n", tomlBareKey(m.Name))
+			for k, v := range m.Env {
+				fmt.Fprintf(&b, "%s = %q\n", tomlBareKey(k), v)
+			}
+		}
+	}
+	b.WriteString(codexManagedMCPEnd)
+	b.WriteString("\n")
+	return b.String()
+}
+
+func tomlBareKey(s string) string {
+	if s != "" {
+		ok := true
+		for _, r := range s {
+			if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return s
+		}
+	}
+	raw, _ := json.Marshal(s)
+	return string(raw)
 }

@@ -25,7 +25,7 @@ so per-agent MCP servers and identity don't leak between them.
 |---|---|
 | `id` | Unique identifier, referenced by `agents[].runner` and `agents[].fallbacks` |
 | `type` | Execution engine: `cli` (subprocess) — or a self-contained adapter name like `opencode-api` |
-| `provider` | Which CLI the `cli` engine drives: `claude`, `opencode`, `cursor` |
+| `provider` | Which CLI the `cli` engine drives: `claude`, `opencode`, `codex`, `cursor` |
 | `config` | Engine options — see [CLI engine configuration](#cli-engine-configuration) |
 | `models` | Models this runner supports (informational) |
 | `mcps` | MCP servers exposed to every agent on this runner — see [MCP servers](#mcp-servers) |
@@ -38,6 +38,7 @@ registered adapters are:
 |---|---|---|
 | `claude-cli` | `type: cli`, `provider: claude` | the `claude` binary |
 | `opencode-cli` | `type: cli`, `provider: opencode` | the `opencode` binary |
+| `codex-cli` | `type: cli`, `provider: codex` | the `codex` binary |
 | `cursor-cli` | `type: cli`, `provider: cursor` | the `agent` binary (Cursor CLI) |
 | `opencode-api` | `type: opencode-api` | HTTP calls to the OpenCode API |
 
@@ -98,6 +99,23 @@ runners:
     provider: opencode
 ```
 
+#### Codex (`provider: codex`)
+
+Requires the OpenAI Codex CLI (`codex` binary) on `PATH`. The preset invokes
+`codex exec --sandbox workspace-write …` with the prompt as a positional
+argument.
+
+```yaml
+runners:
+  - id: codex
+    type: cli
+    provider: codex
+```
+
+Codex discovers repository skills from `.agents/skills`. If you already keep
+skills under `.claude/skills`, create `.agents/skills` as a symlink to reuse the
+same `SKILL.md` files without copying them.
+
 #### Cursor (`provider: cursor`)
 
 Requires the Cursor CLI (`agent` binary, from
@@ -122,14 +140,14 @@ runners:
 
 All `config` keys, with each provider's preset defaults:
 
-| Key | Description | claude | opencode | cursor |
-|---|---|---|---|---|
-| `command` | Binary to invoke (override to use a wrapper or absolute path) | `claude` | `opencode` | `agent` |
-| `args` | Extra argv appended after the preset's args | `--output-format stream-json --verbose` | `run` | `-p --output-format stream-json --force` |
-| `model_flag` | Flag used to pass the step's model | `--model` | `--model` | `--model` |
-| `prompt_flag` | Flag used to pass the prompt | `-p` | *(positional)* | *(positional)* |
-| `prompt_positional` | Pass the prompt as the last positional argument | `false` | `true` | `true` |
-| `turns_flag` | Flag used to pass a max-turns limit | — | — | — |
+| Key | Description | claude | opencode | codex | cursor |
+|---|---|---|---|---|---|
+| `command` | Binary to invoke (override to use a wrapper or absolute path) | `claude` | `opencode` | `codex` | `agent` |
+| `args` | Extra argv appended after the preset's args | `--output-format stream-json --verbose` | `run` | `exec --sandbox workspace-write` | `-p --output-format stream-json --force` |
+| `model_flag` | Flag used to pass the step's model | `--model` | `--model` | `--model` | `--model` |
+| `prompt_flag` | Flag used to pass the prompt | `-p` | *(positional)* | *(positional)* | *(positional)* |
+| `prompt_positional` | Pass the prompt as the last positional argument | `false` | `true` | `true` | `true` |
+| `turns_flag` | Flag used to pass a max-turns limit | — | — | — | — |
 
 Prompt delivery: via `prompt_flag` when set, as the last positional argument
 when `prompt_positional: true`, otherwise on **stdin**.
@@ -204,6 +222,7 @@ provider receives the merged list in its own native format:
 | claude | temp `.mcp.json` passed with `--mcp-config <path>` (trusted, no approval prompt, no workdir mutation) |
 | cursor | merged into `~/.cursor/mcp.json`, activated with `--approve-mcps` |
 | opencode | merged into the global `opencode.json` `mcp` block |
+| codex | merged into `~/.codex/config.toml` under Apiary-managed `[mcp_servers.*]` tables |
 
 The MCP configs are materialized once at daemon startup, not per run.
 
