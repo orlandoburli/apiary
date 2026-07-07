@@ -61,7 +61,7 @@ nav:
       - VS Code Extension: vscode-extension.md
       - Data Model: data-model.md
   - Development: development.md
-  - License: LICENSE
+  - License: license.md
 
 extra:
   generator: false
