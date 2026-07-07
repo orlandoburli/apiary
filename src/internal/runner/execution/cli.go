@@ -551,6 +551,9 @@ func buildPrompt(req model.RunRequest) string {
 		b.WriteString(req.SystemAppend)
 		b.WriteString("\n")
 	}
+	if req.OutputInstruction != "" {
+		b.WriteString(req.OutputInstruction)
+	}
 	if req.SummaryPrompt != "" {
 		b.WriteString(summaryInstruction(req.SummaryPrompt))
 	}

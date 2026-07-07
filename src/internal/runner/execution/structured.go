@@ -3,8 +3,10 @@ package execution
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
@@ -230,6 +232,78 @@ func applyStructured(result *model.RunResult) {
 				result.SpawnRequest = &req
 			}
 		}
+	}
+}
+
+// OutputSchemaInstruction renders the prompt block that teaches an agent how to
+// satisfy a step's output_schema: one bare APIARY_OUTPUT: line with the declared
+// fields. Without it only agents whose soul file happens to document the sentinel
+// ever emit structured output — every other agent answers in prose, the step
+// passes with no structured output (on_missing_output=warn default), and every
+// workflow condition keyed on those fields silently misroutes. Returns "" for a
+// nil schema (plain steps and legacy routes).
+func OutputSchemaInstruction(schema *config.OutputSchema) string {
+	if schema == nil || len(schema.Properties) == 0 {
+		return ""
+	}
+	required := map[string]bool{}
+	for _, f := range schema.Required {
+		required[f] = true
+	}
+	names := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		names = append(names, name)
+	}
+	// Required fields first, then alphabetical — deterministic output.
+	sort.Slice(names, func(i, j int) bool {
+		if required[names[i]] != required[names[j]] {
+			return required[names[i]]
+		}
+		return names[i] < names[j]
+	})
+
+	var example []string
+	var fields []string
+	for _, name := range names {
+		f := schema.Properties[name]
+		example = append(example, fmt.Sprintf("%q: %s", name, exampleValue(f)))
+		desc := f.Type
+		if len(f.Enum) > 0 {
+			desc = fmt.Sprintf("%s, one of: %s", f.Type, strings.Join(f.Enum, " | "))
+		}
+		if required[name] {
+			desc += ", required"
+		}
+		fields = append(fields, fmt.Sprintf("- %s (%s)", name, desc))
+	}
+
+	var b strings.Builder
+	b.WriteString("\n---\n")
+	b.WriteString("When you finish, report your structured result by writing EXACTLY one line, bare at the start of a line (no code fence, no backticks, no bold):\n")
+	fmt.Fprintf(&b, "%s {%s}\n", apiaryOutputPrefix, strings.Join(example, ", "))
+	b.WriteString("Fields:\n")
+	b.WriteString(strings.Join(fields, "\n"))
+	b.WriteString("\n")
+	return b.String()
+}
+
+// exampleValue renders a JSON placeholder for one schema field, used in the
+// APIARY_OUTPUT example line.
+func exampleValue(f config.SchemaField) string {
+	if len(f.Enum) > 0 {
+		return fmt.Sprintf("%q", strings.Join(f.Enum, "|"))
+	}
+	switch f.Type {
+	case "integer", "number":
+		return "0"
+	case "boolean":
+		return "true"
+	case "array":
+		return "[...]"
+	case "object":
+		return "{...}"
+	default:
+		return `"..."`
 	}
 }
 
