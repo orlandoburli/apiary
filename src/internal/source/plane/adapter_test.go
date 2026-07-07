@@ -1,7 +1,11 @@
 package plane
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -163,6 +167,62 @@ func TestToCell_UnknownLabelSkipped(t *testing.T) {
 	if len(cell.Labels) != 1 || cell.Labels[0] != "known" {
 		t.Errorf("expected only known label, got %v", cell.Labels)
 	}
+}
+
+// ── AddLabels ─────────────────────────────────────────────────────────────────
+
+// TestAddLabels_MergesLiveLabelsNotSnapshot verifies that AddLabels re-fetches
+// the work item's CURRENT labels before the merge + PATCH, instead of replaying
+// cell.Labels (the dispatch-time snapshot) — which would revert labels an agent
+// swapped while the run was executing.
+func TestAddLabels_MergesLiveLabelsNotSnapshot(t *testing.T) {
+	var patchedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspaces/ws/projects/proj/work-items/item-1/":
+			// Live state: the agent already swapped l-spec → l-impl.
+			_, _ = w.Write([]byte(`{"id":"item-1","labels":["l-impl"]}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/workspaces/ws/projects/proj/work-items/item-1/":
+			b, _ := io.ReadAll(r.Body)
+			patchedBody = string(b)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	a := &Adapter{
+		id:         "plane",
+		workspace:  "ws",
+		project:    "proj",
+		client:     newClient(srv.URL, ""),
+		issuesPath: "work-items",
+		labelIDToName: map[string]string{
+			"l-spec": "workflow:spec",
+			"l-impl": "workflow:implementation",
+			"l-done": "po:done",
+		},
+		labelNameToID: map[string]string{
+			"workflow:spec":           "l-spec",
+			"workflow:implementation": "l-impl",
+			"po:done":                 "l-done",
+		},
+	}
+	a.metaOnce.Do(func() {}) // metadata already primed above
+
+	// Stale snapshot from dispatch time: still carries workflow:spec.
+	cell := model.SourceItem{ID: "item-1", Labels: []string{"workflow:spec"}}
+	if err := a.AddLabels(context.Background(), cell, []string{"po:done"}); err != nil {
+		t.Fatalf("AddLabels: %v", err)
+	}
+
+	if patchedBody == "" {
+		t.Fatal("expected PATCH to the work item")
+	}
+	mustContain(t, patchedBody, "l-impl")    // live label preserved
+	mustContain(t, patchedBody, "l-done")    // new label added
+	mustNotContain(t, patchedBody, "l-spec") // snapshot must not be replayed
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
