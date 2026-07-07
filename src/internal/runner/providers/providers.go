@@ -41,6 +41,16 @@ func init() {
 		"mcp_format":        "opencode",
 	}))
 
+	// Codex CLI — requires the `codex` binary from OpenAI's Codex CLI.
+	// Runs non-interactively with workspace-write sandboxing so implementation
+	// agents can edit the checked-out task workspace.
+	runner.Register("codex-cli", cliFactory("codex", map[string]any{
+		"args":              []any{"exec", "--sandbox", "workspace-write"},
+		"prompt_flag":       "",
+		"prompt_positional": true,
+		"mcp_format":        "codex",
+	}))
+
 	// Cursor agent CLI — requires the `agent` binary from https://cursor.com/install.
 	// Runs headlessly with stream-json output; --force auto-approves file changes.
 	runner.Register("cursor-cli", cliFactory("agent", map[string]any{

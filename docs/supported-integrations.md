@@ -80,6 +80,17 @@ Runs the `opencode` binary as a subprocess.
 - **Setup:** `type: cli`, `provider: opencode` in `runners`
 - **Docs:** [Runners configuration](runners.md#opencode-provider-opencode)
 
+#### Codex CLI
+
+**Status:** ✅ Stable | **Provider:** `codex`
+
+Runs the OpenAI `codex` binary as a subprocess using `codex exec`.
+
+- **Requirements:** `codex` CLI installed and authenticated
+- **Skills:** Codex reads checked-in skills from `.agents/skills`
+- **Setup:** `type: cli`, `provider: codex` in `runners`
+- **Docs:** [Runners configuration](runners.md#codex-provider-codex)
+
 #### Cursor CLI
 
 **Status:** ✅ Stable | **Provider:** `cursor`
@@ -115,15 +126,15 @@ Direct API runner for Claude models via the Anthropic API is in development.
 
 ## Feature support matrix
 
-| Feature | GitHub | Plane | Jira | OpenCode API | Claude CLI | OpenCode CLI | Cursor CLI |
-|---------|--------|-------|------|---|---|---|---|
-| Polling | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
-| State transitions | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
-| Blocking relationships | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
-| Comment rendering | ✅ | ✅ | ✅ | — | N/A | N/A | N/A |
-| CI waits | ✅ | — | — | — | N/A | N/A | N/A |
-| Structured logs | — | — | — | ✅ | ✅ | ✅ | ✅ |
-| Exact cost tracking | — | — | — | ✅ | ✅ | — | — |
+| Feature | GitHub | Plane | Jira | OpenCode API | Claude CLI | OpenCode CLI | Codex CLI | Cursor CLI |
+|---------|--------|-------|------|---|---|---|---|---|
+| Polling | ✅ | ✅ | ✅ | — | N/A | N/A | N/A | N/A |
+| State transitions | ✅ | ✅ | ✅ | — | N/A | N/A | N/A | N/A |
+| Blocking relationships | ✅ | ✅ | ✅ | — | N/A | N/A | N/A | N/A |
+| Comment rendering | ✅ | ✅ | ✅ | — | N/A | N/A | N/A | N/A |
+| CI waits | ✅ | — | — | — | N/A | N/A | N/A | N/A |
+| Structured logs | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Exact cost tracking | — | — | — | ✅ | ✅ | — | — | — |
 
 ---
 

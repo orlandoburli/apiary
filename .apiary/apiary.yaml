@@ -18,6 +18,19 @@ runners:
         command: npx
         args: ["-y", "gitnexus@latest", "mcp"]
 
+  - id: codex
+    type: cli
+    provider: codex
+    models:
+      - gpt-5.5
+    # Uses the same checked-in skills through .agents/skills -> ../.claude/skills.
+    # GitNexus is exposed to Codex through ~/.codex/config.toml when this runner
+    # is configured by Apiary.
+    mcps:
+      - name: gitnexus
+        command: npx
+        args: ["-y", "gitnexus@latest", "mcp"]
+
 default_runner: claude
 
 # ── Sources ────────────────────────────────────────────────────────────────────

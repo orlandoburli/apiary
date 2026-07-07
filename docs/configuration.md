@@ -35,7 +35,7 @@ version: "1"        # currently the only accepted value
 ## `runners`
 
 Runners define **how** agents execute — a CLI subprocess (`claude`,
-`opencode`, the Cursor `agent` CLI) or a direct API call. They have a
+`opencode`, `codex`, the Cursor `agent` CLI) or a direct API call. They have a
 [dedicated page](runners.md) covering each provider, the engine options,
 prompt delivery, MCP wiring, and API runners; this section is the short
 version.
@@ -52,6 +52,11 @@ runners:
     type: cli
     provider: opencode
 
+  # Codex CLI — requires the `codex` binary on PATH
+  - id: codex
+    type: cli
+    provider: codex
+
   # OpenCode API
   - id: opencode-api
     type: opencode-api
@@ -67,7 +72,7 @@ default_runner: claude    # used by agents that don't name a runner
 |---|---|
 | `id` | Unique runner identifier, referenced by `agents[].runner` and `agents[].fallbacks` |
 | `type` | `cli` (subprocess) or a self-contained adapter like `opencode-api` |
-| `provider` | Which CLI the `cli` engine drives: `claude`, `opencode`, `cursor` |
+| `provider` | Which CLI the `cli` engine drives: `claude`, `opencode`, `codex`, `cursor` |
 | `config` | Engine options — binary, flags, API key; see [Runners](runners.md#cli-engine-configuration) |
 | `models` | Models this runner supports (informational) |
 | `mcps` | [MCP servers](runners.md#mcp-servers) exposed to every agent on this runner |
@@ -79,6 +84,8 @@ default_runner: claude    # used by agents that don't name a runner
     conversation in the
     [task logs](dashboard.md#watching-the-live-conversation-debug-mode),
     plus accurate token and cost figures. `config` is only for overrides.
+    Codex runs as `codex exec --sandbox workspace-write` and reads repo skills
+    from `.agents/skills`.
 
 ## `sources`
 

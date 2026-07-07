@@ -6,6 +6,7 @@ version: "1"
 #
 #   claude-cli    →  type: cli, provider: claude    (the `claude` binary)
 #   opencode-cli  →  type: cli, provider: opencode  (the `opencode` binary)
+#   codex-cli     →  type: cli, provider: codex     (the `codex` binary)
 #   cursor-cli    →  type: cli, provider: cursor    (the `agent` binary, Cursor CLI)
 #   opencode-api  →  type: opencode-api             (OpenCode HTTP API)
 #
@@ -21,8 +22,9 @@ runners:
     # Model Context Protocol servers exposed to every agent on this runner.
     # Each provider writes them into its own native MCP config: claude uses a
     # temp file + `--mcp-config`, cursor merges ~/.cursor/mcp.json + `--approve-mcps`,
-    # opencode merges the global opencode.json `mcp` block. Agent-level `mcps:`
-    # (see agents below) override these by name.
+    # opencode merges the global opencode.json `mcp` block, and codex merges
+    # ~/.codex/config.toml [mcp_servers.*] tables. Agent-level `mcps:` (see agents
+    # below) override these by name.
     mcps:
       - name: gitnexus
         command: npx
@@ -48,6 +50,13 @@ runners:
     # prompt_positional, turns_flag. See docs/runners.md#cli-engine-configuration.
     # config:
     #   command: /usr/local/bin/opencode
+
+  # Codex CLI — invokes the local `codex` binary as `codex exec --sandbox
+  # workspace-write …` with the prompt as a positional argument. Codex discovers
+  # repo skills from `.agents/skills`.
+  - id: codex-cli
+    type: cli
+    provider: codex
 
   # OpenCode API — calls the OpenCode HTTP API directly (OpenAI-compatible
   # chat completions). Requires an API key.

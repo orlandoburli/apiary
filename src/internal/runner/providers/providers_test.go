@@ -83,3 +83,10 @@ func TestOpencodeCliPresetKeepsRunSubcommand(t *testing.T) {
 		t.Errorf("opencode-cli preset must start argv with `run`: %q", out)
 	}
 }
+
+func TestCodexCliPresetUsesExecWithWorkspaceWrite(t *testing.T) {
+	out := echoRun(t, "codex-cli", nil)
+	if !strings.HasPrefix(out, "exec --sandbox workspace-write ") {
+		t.Errorf("codex-cli preset must start argv with `exec --sandbox workspace-write`: %q", out)
+	}
+}
