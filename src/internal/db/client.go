@@ -180,6 +180,11 @@ type Execution struct {
 	// and replay. Empty when the runner does not report a prompt.
 	InputPrompt string
 	OutputText  string
+	// CreditExhausted and FailureKind are set by the credit-aware fallback
+	// system when a runner fails due to credit exhaustion or other non-rate-limit
+	// failures. Persisted for diagnostic and budget-tracking use.
+	CreditExhausted bool
+	FailureKind     string
 }
 
 func (c *Client) CreateExecution(ctx context.Context, taskID, agentID, title, number, taskURL, model, runner string, attempt int) (*Execution, error) {
@@ -219,12 +224,14 @@ func (c *Client) UpdateExecution(ctx context.Context, exec *Execution) error {
 		SET status = ?, completed_at = ?, duration_ms = ?, error_message = ?, can_retry = ?, next_retry_at = ?,
 		    input_tokens = ?, output_tokens = ?, total_tokens = ?, cache_creation_tokens = ?, cache_read_tokens = ?,
 		    num_turns = ?, num_tool_calls = ?, cost_usd = ?,
-		    input_prompt = ?, output_text = ?
+		    input_prompt = ?, output_text = ?,
+		    credit_exhausted = ?, failure_kind = ?
 		WHERE id = ?
 	`, exec.Status, exec.CompletedAt, exec.DurationMs, exec.ErrorMsg, exec.CanRetry, exec.NextRetryAt,
 		exec.InputTokens, exec.OutputTokens, exec.TotalTokens, exec.CacheCreationTokens, exec.CacheReadTokens,
 		exec.NumTurns, exec.NumToolCalls, exec.CostUSD,
 		nullStr(exec.InputPrompt), nullStr(exec.OutputText),
+		boolToInt(exec.CreditExhausted), nullStr(exec.FailureKind),
 		exec.ID)
 	return err
 }

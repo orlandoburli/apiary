@@ -21,11 +21,12 @@ import (
 
 func newRunCmd() *cobra.Command {
 	var (
-		dryRun bool
-		once   bool
-		debug  bool
-		src    string
-		worker string
+		dryRun  bool
+		once    bool
+		debug   bool
+		src     string
+		worker  string
+		profile string
 	)
 
 	cmd := &cobra.Command{
@@ -100,7 +101,7 @@ func newRunCmd() *cobra.Command {
 			})
 			defer aplog.SetSink(nil)
 
-			disp, err := daemon.New(ctx, cfg, configFile, dbClient, logger)
+			disp, err := daemon.New(ctx, cfg, configFile, dbClient, logger, profile)
 			if err != nil {
 				return fmt.Errorf("initialising dispatcher: %w", err)
 			}
@@ -151,6 +152,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&debug, "debug", false, "verbose DEBUG logging: per-task prompt, live agent conversation, and routing decisions (view in the dashboard)")
 	cmd.Flags().StringVar(&src, "source", "", "restrict to a single source id")
 	cmd.Flags().StringVar(&worker, "worker", "", "restrict to a single worker id")
+	cmd.Flags().StringVar(&profile, "profile", "", "activate a named runner profile from config profiles.<name>")
 
 	return cmd
 }

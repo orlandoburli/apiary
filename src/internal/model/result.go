@@ -61,6 +61,31 @@ type Usage struct {
 	CostUSD             float64
 }
 
+// FailureKind classifies why a runner invocation failed to produce useful work.
+type FailureKind int
+
+const (
+	FailureNone          FailureKind = iota // no failure; output is usable
+	FailureRateLimited                      // provider rate limit (e.g. 5h session)
+	FailureCreditExhausted                  // out of credits / over quota
+	FailureAborted                          // runner exited early with no useful output (heuristic)
+)
+
+func (k FailureKind) String() string {
+	switch k {
+	case FailureNone:
+		return "none"
+	case FailureRateLimited:
+		return "rate_limited"
+	case FailureCreditExhausted:
+		return "credit_exhausted"
+	case FailureAborted:
+		return "aborted"
+	default:
+		return "unknown"
+	}
+}
+
 type RunResult struct {
 	WorkerID string
 	Success  bool
@@ -121,6 +146,16 @@ type RunResult struct {
 	// RateLimitResetsAt is when the provider's limit resets, when the provider
 	// reported it (zero otherwise). Only meaningful when RateLimited is true.
 	RateLimitResetsAt time.Time
+
+	// CreditExhausted is true when the runner's credits/budget are exhausted
+	// (e.g. Codex CLI out of credits). The runner ran but consumed credits with
+	// no useful output, or was rejected due to zero balance. Triggers fallback
+	// with a longer cooldown than RateLimited.
+	CreditExhausted bool
+	// FailureKind is the canonical classification set by a FailureDetector after
+	// Run() completes. RateLimited and CreditExhausted are convenience booleans
+	// derived from it. Not serialized; used by the dispatcher's fallback logic.
+	FailureKind FailureKind
 }
 
 type LogEntry struct {

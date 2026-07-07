@@ -21,10 +21,20 @@ type Config struct {
 	Agents        []AgentConfig    `yaml:"agents"`
 	Workers       []WorkerConfig   `yaml:"workers"`
 	Workflows     []WorkflowConfig `yaml:"workflows"`
+	Profiles      map[string]map[string]ProfileConfig `yaml:"profiles,omitempty"` // NEW: named runner profiles
 	Settings      Settings         `yaml:"settings"`
 	Tasks         *TasksConfig     `yaml:"tasks"`
 
 	rawContent string // original YAML text before env expansion; used by Save()
+}
+
+// ProfileConfig is an overlay that overrides runner, model, fallbacks, and
+// fallback_strategy for a single agent when a profile is active.
+type ProfileConfig struct {
+	Runner           string          `yaml:"runner,omitempty"`
+	Model            string          `yaml:"model,omitempty"`
+	Fallbacks        []FallbackConfig `yaml:"fallbacks,omitempty"`
+	FallbackStrategy string          `yaml:"fallback_strategy,omitempty"`
 }
 
 type SourceConfig struct {
@@ -90,11 +100,18 @@ type AgentConfig struct {
 	// (below workflow.env and step.env), layered on top of the identity overlay.
 	Env map[string]string `yaml:"env,omitempty"`
 	// Fallbacks is an ordered chain of alternative runner/model pairs to try when
-	// the primary runner is rejected by a provider rate limit (e.g. Claude's
-	// 5-hour session limit). The dispatcher pauses the rejected runner type until
-	// it resets and retries the step on the next non-paused fallback. Empty means
-	// no failover (the step fails / waits for the limit to reset).
+	// the primary runner is rejected by a provider rate limit or credit exhaustion
+	// (e.g. Claude's 5-hour session limit, Codex out of credits). The dispatcher
+	// pauses the rejected runner type until it resets and retries the step on the
+	// next non-paused fallback. Empty means no failover (the step fails / waits
+	// for the limit to reset).
 	Fallbacks []FallbackConfig `yaml:"fallbacks,omitempty"`
+	// FallbackStrategy selects the ordering policy for the candidate chain.
+	// "ordered" (default) tries primary then fallbacks in config order.
+	// "random" shuffles candidates.
+	// "least_cost" sorts by historical average cost (ascending).
+	// "fastest" sorts by historical average duration (ascending).
+	FallbackStrategy string `yaml:"fallback_strategy,omitempty"`
 	// MCPs are Model Context Protocol servers scoped to this agent. They are
 	// layered on top of the runner's MCPs (RunnerConfig.MCPs), overriding any
 	// runner-scope server with the same name.
@@ -225,6 +242,12 @@ type Settings struct {
 	Telemetry     Telemetry          `yaml:"telemetry"`
 	CursorCost    CursorCostSettings `yaml:"cursor_cost"`
 	GitHooks      GitHooksSettings   `yaml:"git_hooks"`
+	// DefaultFallbacks is a fallback chain applied to every agent that does not
+	// define its own fallbacks[]. Entries must reference defined runner IDs.
+	DefaultFallbacks []FallbackConfig `yaml:"default_fallbacks,omitempty"`
+	// CreditExhaustedCooldown is how long a runner type is paused after a
+	// credit-exhausted failure. Default "24h".
+	CreditExhaustedCooldown string `yaml:"credit_exhausted_cooldown,omitempty"`
 }
 
 // GitHooksSettings makes the daemon enforce a shared git hooks directory on
@@ -326,6 +349,19 @@ func (m MemorySettings) TaskRetentionDuration() time.Duration {
 	d, err := time.ParseDuration(m.TaskRetention)
 	if err != nil {
 		return 720 * time.Hour
+	}
+	return d
+}
+
+// CreditExhaustedCooldownDuration returns the parsed credit-exhausted cooldown
+// duration (default 24h), floored at 1m.
+func (s *Settings) CreditExhaustedCooldownDuration() time.Duration {
+	d, err := time.ParseDuration(s.CreditExhaustedCooldown)
+	if err != nil || d <= 0 {
+		return 24 * time.Hour
+	}
+	if d < time.Minute {
+		return time.Minute
 	}
 	return d
 }
