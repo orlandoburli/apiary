@@ -85,7 +85,7 @@ Claude's structured event stream into
   [task logs](dashboard.md#watching-the-live-conversation-debug-mode),
 - exact token counts and `cost_usd` per run (reported, not estimated),
 - `rate_limit_event` detection, which drives
-  [failover](resilience.md#provider-rate-limits-failover).
+  [failover](resilience.md#runner-failures--failover).
 
 #### OpenCode (`provider: opencode`)
 
@@ -245,7 +245,7 @@ Every entry must reference a defined runner; `model` is optional (empty uses
 that runner's default). Fallback adapters are instantiated and configured at
 startup — including their MCP setup — so failover never pays an
 initialization cost on the hot path. The full behavior is described in
-[Rate Limits & Resilience](resilience.md#provider-rate-limits-failover).
+[Rate Limits & Resilience](resilience.md#runner-failures--failover).
 
 ## Adding a provider
 
