@@ -31,6 +31,7 @@ jobs:
         run: |
           cp README.md docs/index.md
           cp DEVELOPMENT.md docs/development.md
+          cp LICENSE docs/LICENSE  # served as /LICENSE
           # Fix relative paths from root-level docs
           # Strip the docs/ prefix from all markdown links so they resolve on the site
           sed -i 's|](docs/|](|g' docs/index.md
@@ -46,6 +47,8 @@ jobs:
           sed -i 's|COMMERCIAL.md|https://github.com/orlandoburli/apiary/blob/main/COMMERCIAL.md|g' docs/index.md
           sed -i 's|\([^!]\)(openspec/|\1(https://github.com/orlandoburli/apiary/tree/main/openspec/|g' docs/index.md
           sed -i 's|openspec/specs/plugin-api/spec.md|https://github.com/orlandoburli/apiary/blob/main/openspec/specs/plugin-api/spec.md|g' docs/development.md
+          # LICENSE link: README uses (LICENSE) which should resolve to /LICENSE on the site
+          sed -i 's|](LICENSE)|](/LICENSE)|g' docs/index.md
 
       - name: Stamp latest release version into docs
         env:
