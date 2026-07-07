@@ -287,6 +287,12 @@ var migrations = []string{
 	// forever, even after a later round completed successfully.
 	`ALTER TABLE internal_tasks ADD COLUMN generation INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE workflow_instances ADD COLUMN task_generation INTEGER NOT NULL DEFAULT 0`,
+	// Credit-aware fallback: failure classification columns on execution rows.
+	// credit_exhausted is a convenience boolean; failure_kind is the canonical
+	// value set by the FailureDetector: "none", "rate_limited", "credit_exhausted",
+	// "aborted".
+	`ALTER TABLE task_executions ADD COLUMN credit_exhausted INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN failure_kind TEXT`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).

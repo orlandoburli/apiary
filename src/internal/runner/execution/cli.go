@@ -261,6 +261,29 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 			result.Error = runErr
 		}
 	}
+	// Classify failure via the generic (or registered) failure detector.
+	// This sets FailureKind, CreditExhausted, etc. based on exit code, output
+	// content, and known error patterns — beyond the narrow rate_limit_event.
+	detector := FailureDetectorFor(r.ID())
+	if kind, resetsAt := detector.Detect(req, &result); kind != model.FailureNone {
+		result.FailureKind = kind
+		switch kind {
+		case model.FailureRateLimited:
+			result.RateLimited = true
+			if !resetsAt.IsZero() {
+				result.RateLimitResetsAt = resetsAt
+			}
+		case model.FailureCreditExhausted:
+			result.CreditExhausted = true
+			result.Success = false
+			if !resetsAt.IsZero() && result.RateLimitResetsAt.IsZero() {
+				result.RateLimitResetsAt = resetsAt
+			}
+		case model.FailureAborted:
+			result.Success = false
+		}
+	}
+
 	// Extract APIARY_OUTPUT / APIARY_SUMMARY sentinels into structured fields.
 	applyStructured(&result)
 	return result, nil

@@ -117,12 +117,33 @@ func (d *Dispatcher) runnerPausedUntil(runnerType string) time.Time {
 	return d.rateLimitPaused[runnerType]
 }
 
-// pauseRunner records that a runner type was rate-limited until `until`. A zero
-// `until` (provider did not report a reset) defaults to 5 minutes out. Only
+// pauseRunner records that a runner type was paused (rate-limited, credit-
+// exhausted, or aborted) until `until`. A zero `until` defaults based on the
+// failure kind: rate-limit → 5m, credit-exhausted → 24h, aborted → 0. Only
 // extends an existing pause, never shortens it.
 func (d *Dispatcher) pauseRunner(runnerType string, until time.Time) {
+	_ = d.pauseRunnerWithKind(runnerType, until, model.FailureNone)
+}
+
+// pauseRunnerWithKind records a pause with failure-kind-aware default duration.
+// Returns the effective pause until time.
+func (d *Dispatcher) pauseRunnerWithKind(runnerType string, until time.Time, kind model.FailureKind) time.Time {
 	if until.IsZero() {
-		until = time.Now().Add(5 * time.Minute)
+		switch kind {
+		case model.FailureCreditExhausted:
+			cooldown := 24 * time.Hour
+			if d.cfg != nil {
+				cooldown = d.cfg.Settings.CreditExhaustedCooldownDuration()
+			}
+			until = time.Now().Add(cooldown)
+		case model.FailureAborted:
+			until = time.Time{} // no pause for transient aborts
+		default:
+			until = time.Now().Add(5 * time.Minute)
+		}
+	}
+	if until.IsZero() {
+		return until
 	}
 	d.rateLimitMu.Lock()
 	defer d.rateLimitMu.Unlock()
@@ -132,11 +153,14 @@ func (d *Dispatcher) pauseRunner(runnerType string, until time.Time) {
 	if cur, ok := d.rateLimitPaused[runnerType]; !ok || until.After(cur) {
 		d.rateLimitPaused[runnerType] = until
 	}
+	return until
 }
 
 // New builds and connects a Dispatcher from the given config.
 // Pass nil for db and logger to skip state persistence and logging to SQLite.
-func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *db.Client, logger *logging.Logger) (*Dispatcher, error) {
+// profileName selects a named runner profile (from cfg.Profiles) that overrides
+// per-agent runner/model/fallbacks settings. An empty string means base config.
+func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *db.Client, logger *logging.Logger, profileName ...string) (*Dispatcher, error) {
 	r, err := router.New(cfg)
 	if err != nil {
 		return nil, err
@@ -227,6 +251,41 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		runnerMap[rc.ID] = &cfg.Runners[i]
 	}
 
+	// Apply the active profile overlay (if any) before building runners.
+	// Profiles override per-agent runner/model/fallbacks/fallback_strategy from
+	// the named entry in cfg.Profiles, selected via --profile=<name>.
+	var activeProfile string
+	if len(profileName) > 0 {
+		activeProfile = profileName[0]
+	}
+	if activeProfile != "" {
+		profile, ok := cfg.Profiles[activeProfile]
+		if !ok {
+			aplog.Warn("profile %q not found — continuing with base config", activeProfile)
+		} else {
+			for i := range cfg.Agents {
+				ac := &cfg.Agents[i]
+				overrides, ok := profile[ac.ID]
+				if !ok {
+					continue
+				}
+				if overrides.Runner != "" {
+					ac.Runner = overrides.Runner
+				}
+				if overrides.Model != "" {
+					ac.Model = overrides.Model
+				}
+				if overrides.Fallbacks != nil {
+					ac.Fallbacks = overrides.Fallbacks
+				}
+				if overrides.FallbackStrategy != "" {
+					ac.FallbackStrategy = overrides.FallbackStrategy
+				}
+			}
+			aplog.Info("active profile: %s (%d agent overrides)", activeProfile, len(profile))
+		}
+	}
+
 	// Instantiate runners from agents
 	for _, ac := range cfg.Agents {
 		if ac.Model == "" {
@@ -274,7 +333,12 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 
 		// Pre-build the rate-limit failover chain so dispatch can swap runners
 		// without re-instantiating adapters on the hot path.
-		for _, fb := range ac.Fallbacks {
+		// Agents without explicit fallbacks inherit settings.default_fallbacks.
+		fallbacks := ac.Fallbacks
+		if len(fallbacks) == 0 {
+			fallbacks = cfg.Settings.DefaultFallbacks
+		}
+		for _, fb := range fallbacks {
 			frc, ok := runnerMap[fb.Runner]
 			if !ok {
 				return nil, fmt.Errorf("agent %q: fallback runner %q not found", ac.ID, fb.Runner)
@@ -298,6 +362,9 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 				model:      fb.Model,
 			})
 			aplog.Info("agent %s: fallback #%d runner=%s type=%s model=%s", ac.ID, len(d.agentFallbacks[ac.ID]), fb.Runner, fAdapterName, fb.Model)
+		}
+		if len(fallbacks) > 0 && len(ac.Fallbacks) == 0 {
+			aplog.Info("agent %s: using default_fallbacks (%d entries)", ac.ID, len(fallbacks))
 		}
 	}
 

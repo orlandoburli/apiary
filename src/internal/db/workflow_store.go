@@ -572,6 +572,13 @@ func scanInstances(rows *sql.Rows) ([]WorkflowInstance, error) {
 
 // nullStr converts an empty string to a SQL NULL so optional columns stay null
 // rather than storing empty strings.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func nullStr(s string) any {
 	if s == "" {
 		return nil

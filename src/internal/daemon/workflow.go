@@ -465,15 +465,32 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 			summedUsage.CostUSD += out.Usage.CostUSD
 		}
 
-		// On a provider rate-limit rejection, pause this runner type until it
-		// resets and fail over to the next candidate. Not a genuine failure — the
-		// run did no work — so we do not return it while a fallback remains.
-		if out.RateLimited {
-			x.d.pauseRunner(c.runnerType, out.RateLimitResetsAt)
-			if !last {
-				aplog.Info("[%s] runner %q rate-limited, failing over to next runner", req.Cell.LogLabel(), c.runnerType)
-				continue
+		// Classify the failure and either fail over or stop. A run that was
+		// rate-limited, credit-exhausted, or aborted did no useful work — pause
+		// the runner type with the appropriate cooldown and try the next fallback
+		// candidate if one remains.
+		failureKind := out.FailureKind
+		if failureKind == model.FailureNone {
+			// Backward compatibility: some runners set RateLimited without FailureKind.
+			if out.RateLimited {
+				failureKind = model.FailureRateLimited
 			}
+		}
+
+		if failureKind != model.FailureNone && !last {
+			x.d.pauseRunnerWithKind(c.runnerType, out.RateLimitResetsAt, failureKind)
+
+			label := "failed"
+			switch failureKind {
+			case model.FailureRateLimited:
+				label = "rate-limited"
+			case model.FailureCreditExhausted:
+				label = "credit-exhausted"
+			case model.FailureAborted:
+				label = "aborted"
+			}
+			aplog.Info("[%s] runner %q %s, failing over to next runner", req.Cell.LogLabel(), c.runnerType, label)
+			continue
 		}
 		break
 	}
@@ -576,6 +593,14 @@ func (x *wfStepExecutor) finishExecution(ctx context.Context, exec *db.Execution
 	}
 	exec.InputPrompt = res.InputPrompt
 	exec.OutputText = res.Output
+	exec.CreditExhausted = res.CreditExhausted
+	if !res.CreditExhausted && res.RateLimited {
+		exec.FailureKind = "rate_limited"
+	} else if res.CreditExhausted {
+		exec.FailureKind = "credit_exhausted"
+	} else if res.FailureKind != model.FailureNone && res.FailureKind != model.FailureRateLimited {
+		exec.FailureKind = res.FailureKind.String()
+	}
 	if err := x.d.db.UpdateExecution(ctx, exec); err != nil {
 		aplog.Error("cell %s: update execution record: %v", exec.TaskID, err)
 	}

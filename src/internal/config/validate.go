@@ -31,6 +31,9 @@ var LintExpr func(expr string) error
 // skipped.
 var SourceSupportsDependencyWait func(sourceType string) bool
 
+// validFallbackStrategies are the accepted values for fallback_strategy fields.
+var validFallbackStrategies = map[string]bool{"ordered": true, "random": true, "least_cost": true, "fastest": true}
+
 // adapterCombos renders registered adapter names as the type/provider
 // combinations users write in apiary.yaml, mirroring the table in
 // docs/runners.md: "claude-cli" → `type: cli, provider: claude`; names
@@ -141,6 +144,9 @@ func (c *Config) Validate() []error {
 		if a.Runner != "" && !runnerIDs[a.Runner] {
 			errs = append(errs, fmt.Errorf("agents[%d] %q: runner %q not defined", i, a.ID, a.Runner))
 		}
+		if a.FallbackStrategy != "" && !validFallbackStrategies[a.FallbackStrategy] {
+			errs = append(errs, fmt.Errorf("agents[%d] %q: fallback_strategy %q: must be one of ordered, random, least_cost, fastest", i, a.ID, a.FallbackStrategy))
+		}
 		for j, fb := range a.Fallbacks {
 			if fb.Runner == "" {
 				errs = append(errs, fmt.Errorf("agents[%d] %q: fallbacks[%d]: runner is required", i, a.ID, j))
@@ -172,6 +178,22 @@ func (c *Config) Validate() []error {
 		workerIDs[w.ID] = true
 	}
 
+	// settings.default_fallbacks: validate runner references.
+	for j, fb := range c.Settings.DefaultFallbacks {
+		if fb.Runner == "" {
+			errs = append(errs, fmt.Errorf("settings.default_fallbacks[%d]: runner is required", j))
+		} else if !runnerIDs[fb.Runner] {
+			errs = append(errs, fmt.Errorf("settings.default_fallbacks[%d]: runner %q not defined", j, fb.Runner))
+		}
+	}
+
+	// settings.credit_exhausted_cooldown: must be a valid duration if set.
+	if c.Settings.CreditExhaustedCooldown != "" {
+		if _, err := time.ParseDuration(c.Settings.CreditExhaustedCooldown); err != nil {
+			errs = append(errs, fmt.Errorf("settings.credit_exhausted_cooldown %q: invalid duration: %w", c.Settings.CreditExhaustedCooldown, err))
+		}
+	}
+
 	// settings.memory value checks (the block itself is optional).
 	if m := c.Settings.Memory; m.TaskRetention != "" {
 		if _, err := time.ParseDuration(m.TaskRetention); err != nil {
@@ -197,6 +219,28 @@ func (c *Config) Validate() []error {
 		for i, r := range g.Repos {
 			if strings.TrimSpace(r) == "" {
 				errs = append(errs, fmt.Errorf("settings.git_hooks.repos[%d]: pattern must not be empty", i))
+			}
+		}
+	}
+
+	// Validate profiles: referenced agent IDs and runner IDs must exist.
+	for profileName, profileEntries := range c.Profiles {
+		for agentID, overrides := range profileEntries {
+			if _, ok := agentIDs[agentID]; !ok {
+				errs = append(errs, fmt.Errorf("profiles.%s: agent %q not found in agents list", profileName, agentID))
+			}
+			if overrides.Runner != "" && !runnerIDs[overrides.Runner] {
+				errs = append(errs, fmt.Errorf("profiles.%s.%s: runner %q not defined", profileName, agentID, overrides.Runner))
+			}
+			if overrides.FallbackStrategy != "" && !validFallbackStrategies[overrides.FallbackStrategy] {
+				errs = append(errs, fmt.Errorf("profiles.%s.%s: fallback_strategy %q: must be one of ordered, random, least_cost, fastest", profileName, agentID, overrides.FallbackStrategy))
+			}
+			for j, fb := range overrides.Fallbacks {
+				if fb.Runner == "" {
+					errs = append(errs, fmt.Errorf("profiles.%s.%s: fallbacks[%d]: runner is required", profileName, agentID, j))
+				} else if !runnerIDs[fb.Runner] {
+					errs = append(errs, fmt.Errorf("profiles.%s.%s: fallbacks[%d]: runner %q not defined", profileName, agentID, j, fb.Runner))
+				}
 			}
 		}
 	}
