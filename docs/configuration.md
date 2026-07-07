@@ -176,7 +176,8 @@ agents:
 | `max_turns` | no | Max agent turns per step run (default 0 = unlimited). CLI runners pass it as the provider's turns flag (e.g. claude's `--max-turns`); 0 omits the flag |
 | `source_token` | no | Source API token for this agent's write operations — see [Agent identity](#agent-identity) |
 | `source_email` / `source_name` | no | Git author identity exported to the runner environment |
-| `fallbacks` | no | Ordered `{runner, model}` list for [rate-limit failover](resilience.md#provider-rate-limits-failover); `model` optional (empty = that runner's default) |
+| `fallbacks` | no | Ordered `{runner, model}` list for [runner failover](resilience.md#runner-failures--failover); `model` optional (empty = that runner's default) |
+| `fallback_strategy` | no | Ordering policy for the failover chain: `ordered` (default), `random`, `least_cost`, `fastest` |
 | `mcps` | no | Agent-scope [MCP servers](runners.md#mcp-servers), layered over the runner's |
 | `env` | no | Agent-scope environment variables — see [Environment variables](#environment-variables) |
 
@@ -199,6 +200,56 @@ Each agent can act as its own account rather than a shared bot:
 This makes multi-agent traces readable: the reviewer's comments come from the
 reviewer bot, the engineer's commits from the engineer bot.
 
+## `profiles`
+
+Named profiles let you switch runner assignments across the entire fleet at
+startup without editing individual agent configs. Each profile maps agent IDs
+to overrides for `runner`, `model`, `fallbacks`, and `fallback_strategy`.
+
+```yaml
+profiles:
+  opencode:
+    engineer:  {runner: opencode-go, model: opencode-go/deepseek-v4-flash}
+    backend:   {runner: opencode-go, model: opencode-go/deepseek-v4-flash}
+    frontend:  {runner: opencode-go, model: opencode-go/deepseek-v4-flash}
+    reviewer:  {runner: opencode-go, model: opencode-go/deepseek-v4-flash}
+    qa:        {runner: opencode-go, model: opencode-go/deepseek-v4-pro}
+
+  hybrid:
+    engineer:  {runner: codex, fallbacks: [{runner: opencode-go, model: opencode-go/deepseek-v4-flash}]}
+    reviewer:  {runner: opencode-go, model: opencode-go/deepseek-v4-flash}
+```
+
+Activate at startup:
+
+```sh
+apiary run --profile=opencode
+```
+
+Only the agents listed in the profile are overridden — unknown agents are
+skipped with a warning. If the named profile does not exist, the daemon logs
+a warning and continues with the base config.
+
+| Field | Description |
+|---|---|
+| `runner` | Override the agent's runner (must exist in `runners[]`) |
+| `model` | Override the agent's model |
+| `fallbacks` | Replace the agent's fallback chain entirely |
+| `fallback_strategy` | Override the agent's fallback strategy |
+
+Profile overrides are applied **after** the base config is loaded and **before**
+runner instantiation, so the dispatcher builds runners from the overridden
+values. Rate-limit and budget pause states are shared across all profiles.
+
+### Use cases
+
+| Scenario | Profile |
+|---|---|
+| Primary provider (Codex) out of credits | `--profile=opencode` — move all agents to opencode-go |
+| Budget-conscious maintenance | `--profile=cheap` — smaller/cheaper models for non-critical agents |
+| Deep reasoning batch | `--profile=deep` — up-model to reasoning models for complex tasks |
+| Emergency provider failover | `--profile=fallback` — instantly divert all agents to a secondary provider |
+
 ## `settings`
 
 ```yaml
@@ -215,13 +266,15 @@ settings:
 ```
 
 | Field | Default | Description |
-|---|---|---|
+|---|---|---|---|
 | `concurrency` | 2 | Global worker-pool size. **Informational** — real dispatch concurrency is the sum of per-agent `max_workers` |
 | `log_level` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `state_lock` | `false` | Add an `in-progress` label on the source item when work starts |
 | `result_comment` | `false` | Post the agent's final output back as a comment |
 | `task_timeout` | `30m` | Default per-run timeout (e.g. `2h`) |
 | `max_attempts` | 3 | Stop re-dispatching a `(task, workflow)` after this many **consecutive failed** instances; `<=0` disables — see [resilience](resilience.md#re-dispatch-failure-cap) |
+| `default_fallbacks` | — | Global [fallback chain](resilience.md#fallback-chains) inherited by any agent without explicit `fallbacks[]` |
+| `credit_exhausted_cooldown` | `24h` | How long a runner type is paused after a credit-exhausted failure — see [resilience](resilience.md#runner-failures--failover) |
 | `log_max_size_mb` | 50 | Rotate `apiary.log` past this size (MB); negative disables rotation |
 | `log_max_backups` | 5 | Rotated files kept as `apiary.log.1` … `.N`, oldest dropped; negative keeps none |
 | `log_max_age_days` | 30 | Prune rotated backups, per-task logs (`logs/tasks/*.log`) **and** SQLite log rows (`service_logs`/`task_logs`) older than this; negative disables |

@@ -5,39 +5,123 @@ built around a single dispatch path plus a small set of safeguards that keep
 a saturated provider, a failing task, or a daemon restart from turning into a
 runaway loop or a stuck queue.
 
-## Provider rate limits → failover
+## Runner failures → failover
 
-When a runner is rejected by a provider usage limit — e.g. the Claude CLI
-emits a `rate_limit_event` with `status: rejected` ("you've hit your session
-limit") — Apiary does **not** treat the empty run as a success. Instead it:
+When a runner's invocation cannot produce useful work — whether the provider
+rejected it (rate limit), the account ran out of credits, or the process
+exited with an error — Apiary does **not** treat the empty run as a success.
+Instead it:
 
-1. **Pauses that runner type** until the limit resets. Because every Claude
-   agent shares one account, pausing is keyed by runner type — all Claude
-   agents back off together rather than each burning a task to rediscover the
-   same limit.
+1. **Pauses that runner type** with a failure-kind-specific cooldown. Because
+   every agent sharing the same runner type (e.g. all Claude agents) shares one
+   account, pausing is keyed by runner type — all agents back off together.
 2. **Fails over** to the agent's next `fallbacks` entry whose runner isn't
    paused, retrying the same step on that runner/model. While the primary is
    paused, new steps go *straight* to the fallback — no wasted, pre-failed
    call.
 
+### Failure detection
+
+Apiary classifies failures into three kinds, each with its own cooldown:
+
+| Kind | Detection | Default cooldown |
+|---|---|---|
+| **Rate-limited** | `rate_limit_event` JSON with `status: "rejected"` (Claude), HTTP 429, `"rate limit"` / `"too many requests"` in error output | Provider-reported reset, or 5 minutes |
+| **Credit-exhausted** | `"out of credits"`, `"insufficient credits"`, `"billing limit"`, `"payment required"` in stderr/stdout | 24 hours (configurable via `settings.credit_exhausted_cooldown`) |
+| **Aborted** | Non-zero exit with empty or error-only output (no substantive work done) | 0 — retry fallback immediately |
+
+The generic failure detector scans both stdout and stderr for known credit and
+rate-limit patterns. Provider-specific detectors can be registered per runner
+type for more precise classification.
+
+```yaml
+settings:
+  # Override the default 24h cooldown for credit-exhausted failures
+  credit_exhausted_cooldown: "48h"
+```
+
+### Fallback chains
+
+Each agent can declare an ordered list of alternative runner/model pairs:
+
 ```yaml
 agents:
   - id: engineer
-    runner: claude
-    model: claude-sonnet-4-6
+    runner: codex
+    model: gpt-5.5
     fallbacks:
-      - {runner: opencode, model: opencode-go/deepseek-v4-pro}
+      - {runner: opencode-go, model: opencode-go/deepseek-v4-flash}
       - {runner: cursor, model: composer-2.5-fast}
 ```
 
-Each attempt is recorded as its own execution, so the dashboard shows the
-failover trail (primary rate-limited → fallback ran), with per-attempt
-tokens and cost. `fallbacks` load at startup — changing the chain requires a
-restart.
+Agents without explicit `fallbacks` inherit the global chain from
+`settings.default_fallbacks`:
+
+```yaml
+settings:
+  default_fallbacks:
+    - {runner: opencode-go, model: opencode-go/deepseek-v4-pro}
+```
+
+### Fallback strategies
+
+The order in which candidates are tried can be controlled via
+`fallback_strategy`:
+
+| Strategy | Behavior |
+|---|---|
+| `ordered` (default) | Primary first, then fallbacks in config order |
+| `random` | Shuffle candidates before each dispatch |
+| `least_cost` | Sort by historical average cost per run (ascending) |
+| `fastest` | Sort by historical average duration per run (ascending) |
+
+```yaml
+agents:
+  - id: reviewer
+    fallback_strategy: fastest
+```
+
+Strategies can also be overridden per workflow:
+
+```yaml
+workflows:
+  - id: code-review
+    fallback_strategy: fastest
+```
+
+### Runner profiles
+
+Named profiles let you switch the entire fleet's runner assignment at startup
+without editing individual agent configs — useful for emergency failover when
+a provider runs out of credits:
+
+```yaml
+profiles:
+  opencode:
+    engineer:  {runner: opencode-go, model: opencode-go/deepseek-v4-flash}
+    backend:   {runner: opencode-go, model: opencode-go/deepseek-v4-flash}
+    frontend:  {runner: opencode-go, model: opencode-go/deepseek-v4-flash}
+    reviewer:  {runner: opencode-go, model: opencode-go/deepseek-v4-flash}
+    qa:        {runner: opencode-go, model: opencode-go/deepseek-v4-pro}
+```
+
+Activate at startup:
+
+```sh
+apiary run --profile=opencode
+```
+
+See [Configuration - profiles](configuration.md#profiles) for the full reference.
+
+### Execution recording
+
+Each attempt is recorded as its own execution row, so the dashboard shows the
+failover trail (primary credit-exhausted → fallback ran), with per-attempt
+tokens, cost, and failure classification (`failure_kind`, `credit_exhausted`).
 
 !!! note
-    A rate-limited attempt is **not** a failure: it doesn't count against
-    `max_attempts`, and the task is never burned on it.
+    A failed-over attempt is **not** counted as a task failure: it doesn't
+    count against `max_attempts`, and the task is never burned on it.
 
 ## Re-dispatch failure cap
 

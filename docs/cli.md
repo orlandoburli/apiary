@@ -20,7 +20,7 @@ Start the daemon: poll sources, route tasks, dispatch agents. Runs until
 interrupted.
 
 ```sh
-apiary run [--debug] [--once] [--dry-run] [--source id] [--worker id]
+apiary run [--debug] [--once] [--dry-run] [--source id] [--worker id] [--profile name]
 ```
 
 | Flag | Description |
@@ -30,6 +30,7 @@ apiary run [--debug] [--once] [--dry-run] [--source id] [--worker id]
 | `--dry-run` | Connect to sources and match tasks, but never invoke a runner |
 | `--source` | Restrict to a single source id |
 | `--worker` | Restrict to a single worker id |
+| `--profile` | Activate a named [runner profile](configuration.md#profiles) from `profiles.<name>` |
 
 ### `apiary dashboard`
 
