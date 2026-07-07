@@ -218,7 +218,4 @@ the diagram shows. The extension source lives under
 
 ## License
 
-Apiary is dual-licensed:
-
-- **Open source** — [AGPLv3](LICENSE) for open-source and internal use.
-- **Commercial** — a commercial license is available for proprietary products and SaaS deployments. See [COMMERCIAL.md](COMMERCIAL.md).
+Licensed under the [BSD 3-Clause License](LICENSE).

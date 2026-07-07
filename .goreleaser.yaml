@@ -48,7 +48,7 @@ nfpms:
     homepage: "https://github.com/orlandoburli/apiary"
     maintainer: Orlando Burli <orlando.developermaster@gmail.com>
     description: Task-driven agent orchestration harness (GitHub Issues, Plane, and other sources).
-    license: AGPL-3.0
+    license: BSD-3-Clause
     formats: [deb, rpm]
     bindir: /usr/bin
 
@@ -68,7 +68,7 @@ dockers:
       - "--label=org.opencontainers.image.version={{ .Version }}"
       - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
       - "--label=org.opencontainers.image.source=https://github.com/orlandoburli/apiary"
-      - "--label=org.opencontainers.image.licenses=AGPL-3.0"
+      - "--label=org.opencontainers.image.licenses=BSD-3-Clause"
   - id: arm64
     goos: linux
     goarch: arm64
@@ -82,7 +82,7 @@ dockers:
       - "--label=org.opencontainers.image.version={{ .Version }}"
       - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
       - "--label=org.opencontainers.image.source=https://github.com/orlandoburli/apiary"
-      - "--label=org.opencontainers.image.licenses=AGPL-3.0"
+      - "--label=org.opencontainers.image.licenses=BSD-3-Clause"
 
 docker_manifests:
   - name_template: "ghcr.io/orlandoburli/apiary:{{ .Version }}"
@@ -158,7 +158,7 @@ scoops:
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/orlandoburli/apiary"
     description: "Task-driven agent orchestration harness (GitHub Issues, Plane, and other sources)."
-    license: "AGPL-3.0"
+    license: "BSD-3-Clause"
     commit_author:
       name: goreleaser-bot
       email: goreleaser-bot@users.noreply.github.com

@@ -4,7 +4,7 @@
   "description": "Live visual preview of apiary.yaml workflow files",
   "version": "0.1.3",
   "publisher": "orlandoburli",
-  "license": "AGPL-3.0",
+  "license": "BSD-3-Clause",
   "icon": "icon.png",
   "homepage": "https://orlandoburli.com.br/apiary/",
   "repository": {
