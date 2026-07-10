@@ -3967,11 +3967,18 @@ func glamourEligible(msg string) bool {
 	return len(msg) <= maxGlamourBytes && looksLikeMarkdown(msg)
 }
 
-// logMsgWidth is the content width log messages wrap to (terminal minus the box
-// border and the timestamp/level prefix column). Shared by the render paths and
-// warmMarkdownCmd so warmed cache entries match render-time lookups.
+// logMsgWidth is the content width log messages wrap to (the active log view's
+// width minus the timestamp/level prefix column). Full-screen log views use the
+// terminal width minus the box border; the workflow monitor's STEP LOGS panel
+// uses the right-panel width so lines wrap inside the panel instead of being
+// clipped by fitLine. Shared by the render paths and warmMarkdownCmd so warmed
+// cache entries match render-time lookups.
 func (a *App) logMsgWidth() int {
 	w := a.model.width - 2 - logPrefixWidth
+	if t := a.model.tasksTab; t != nil && t.View == TaskViewWorkflow && t.WorkflowShowLogs {
+		_, rightW := a.wfMonitorPanelWidths()
+		w = rightW - logPrefixWidth
+	}
 	if w < 20 {
 		w = 20
 	}
@@ -5021,6 +5028,20 @@ func truncate(s string, max int) string {
 	return string([]rune(s)[:max-1]) + "…"
 }
 
+// wfMonitorPanelWidths returns the step-list (left) and detail/log (right)
+// panel widths of the workflow monitor. Shared with logMsgWidth so the STEP
+// LOGS panel wraps log lines to the panel it renders in instead of the full
+// terminal width (which fitLine would then clip on the right).
+func (a *App) wfMonitorPanelWidths() (leftW, rightW int) {
+	totalW := a.model.width - 2
+	leftW = totalW * 2 / 5
+	rightW = totalW - leftW - 1
+	if leftW < 20 {
+		leftW = 20
+	}
+	return leftW, rightW
+}
+
 // renderWorkflowMonitor renders the live workflow instance monitor.
 // Layout: left panel (step list) | right panel (step detail or logs).
 func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
@@ -5029,12 +5050,7 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 		return a.box("WORKFLOW MONITOR", StyleMuted.Render("No workflow instance")+"\n", height)
 	}
 
-	totalW := a.model.width - 2
-	leftW := totalW * 2 / 5
-	rightW := totalW - leftW - 1
-	if leftW < 20 {
-		leftW = 20
-	}
+	leftW, rightW := a.wfMonitorPanelWidths()
 
 	label := "WORKFLOW  " + StyleValueStrong.Render(inst.Workflow) + "  " + wfInstanceBadge(inst.State)
 	// When the task fanned out to several workflows, show this one's chronological
