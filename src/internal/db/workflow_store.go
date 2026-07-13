@@ -413,6 +413,75 @@ func (c *Client) ReconcileOrphanStepRuns(ctx context.Context) (int64, error) {
 	return res.RowsAffected()
 }
 
+// ReconcileOrphanTaskCounters repairs the outstanding_workflows accounting after
+// a daemon restart. The counter is incremented at dispatch and decremented only
+// by Engine.completeTask when an instance settles inside a live process — an
+// instance flipped to 'interrupted' by ReconcileOrphanWorkflowInstances never
+// decrements it, so every mid-flight restart leaks +1 and the task can no longer
+// reach zero: it stays 'running' forever even after a later instance completes
+// (issue #198).
+//
+// Two self-healing passes, in order, both scoped to non-terminal tasks:
+//
+//  1. Recount: set outstanding_workflows to the number of live instances
+//     (pending/running/approval_waiting/waiting). Parked instances count — they
+//     are rehydrated and will still complete-and-decrement; interrupted/done/
+//     failed do not. Recounting (rather than decrementing the rows just
+//     interrupted) also repairs counters already leaked by earlier restarts.
+//  2. Settle: a 'running' task whose recounted counter is zero and whose current
+//     generation has at least one terminal instance gets the lifecycle
+//     transition completeTask would have applied — 'failed' if any instance of
+//     the current generation failed (mirroring HasFailedInstance), else 'done'.
+//     A task whose current-generation instances were all interrupted is left
+//     'running': the next poll re-dispatches it and the now-correct counter
+//     settles it on completion.
+//
+// Must run after ReconcileOrphanWorkflowInstances (so orphans are already
+// interrupted) and before the rehydration passes.
+func (c *Client) ReconcileOrphanTaskCounters(ctx context.Context) (recounted, settled int64, err error) {
+	now := time.Now()
+	liveStates := `('` + InstanceStatePending + `','` + InstanceStateRunning + `','` +
+		InstanceStateApprovalWaiting + `','` + InstanceStateWaiting + `')`
+
+	res, err := c.db.ExecContext(ctx, `
+		UPDATE internal_tasks
+		SET outstanding_workflows = (
+		      SELECT COUNT(*) FROM workflow_instances wi
+		       WHERE wi.task_id = internal_tasks.id AND wi.state IN `+liveStates+`),
+		    updated_at = ?
+		WHERE state IN ('registered', 'running', 'approval_waiting')
+		  AND COALESCE(outstanding_workflows, 0) <> (
+		      SELECT COUNT(*) FROM workflow_instances wi
+		       WHERE wi.task_id = internal_tasks.id AND wi.state IN `+liveStates+`)
+	`, now)
+	if err != nil {
+		return 0, 0, err
+	}
+	recounted, _ = res.RowsAffected()
+
+	res, err = c.db.ExecContext(ctx, `
+		UPDATE internal_tasks
+		SET state = CASE WHEN EXISTS (
+		      SELECT 1 FROM workflow_instances wi
+		       WHERE wi.task_id = internal_tasks.id AND wi.state = ?
+		         AND wi.task_generation = internal_tasks.generation)
+		    THEN 'failed' ELSE 'done' END,
+		    updated_at = ?
+		WHERE state = 'running'
+		  AND COALESCE(outstanding_workflows, 0) = 0
+		  AND EXISTS (
+		      SELECT 1 FROM workflow_instances wi
+		       WHERE wi.task_id = internal_tasks.id
+		         AND wi.state IN (?, ?)
+		         AND wi.task_generation = internal_tasks.generation)
+	`, InstanceStateFailed, now, InstanceStateDone, InstanceStateFailed)
+	if err != nil {
+		return recounted, 0, err
+	}
+	settled, _ = res.RowsAffected()
+	return recounted, settled, nil
+}
+
 // StepRunHasUsage reports whether a step run carries its own token/cost rollup
 // (populated since step_runs gained the usage columns). Rows written earlier
 // leave these at zero, in which case callers fall back to GetStepUsage.

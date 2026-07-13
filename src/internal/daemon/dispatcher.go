@@ -423,6 +423,19 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		} else if n > 0 {
 			aplog.Info("reconciled %d orphaned step run(s) from a previous run", n)
 		}
+
+		// Repair each non-terminal task's outstanding-workflow counter and settle
+		// tasks stranded 'running' with no live instance. The instances just
+		// interrupted above never decremented their task's counter, so without
+		// this every mid-flight restart leaks +1 and the task can never reach
+		// zero — it stays 'running' forever even after a later re-dispatch
+		// completes (issue #198). Must run after the two reconciles above and
+		// before the rehydration passes below.
+		if recounted, settled, err := d.db.ReconcileOrphanTaskCounters(ctx); err != nil {
+			aplog.Warn("reconcile orphan task counters: %v", err)
+		} else if recounted > 0 || settled > 0 {
+			aplog.Info("reconciled outstanding counter on %d task(s), settled %d stranded task(s)", recounted, settled)
+		}
 	}
 
 	// Reconstruct workflow instances parked at an approval step into the engine's

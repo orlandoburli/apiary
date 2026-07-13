@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/orlandoburli/apiary/internal/model"
 )
 
 func newTestClient(t *testing.T) *Client {
@@ -482,5 +484,102 @@ func TestReconcileOrphanStepRuns(t *testing.T) {
 	// render a duration instead of an open-ended in-progress step.
 	if got["sr_run"].FinishedAt == nil {
 		t.Error("sr_run: expected finished_at to be stamped on reconcile")
+	}
+}
+
+func TestReconcileOrphanTaskCounters(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+	ts := c.InternalTasks()
+
+	mkTask := func(id string, state model.TaskState, outstanding int) {
+		t.Helper()
+		if err := ts.CreateTask(ctx, &model.InternalTask{ID: id, Title: id}); err != nil {
+			t.Fatalf("create task %s: %v", id, err)
+		}
+		if outstanding > 0 {
+			if _, err := ts.IncrementOutstanding(ctx, id, outstanding); err != nil {
+				t.Fatalf("increment %s: %v", id, err)
+			}
+		}
+		if err := ts.UpdateTaskState(ctx, id, state); err != nil {
+			t.Fatalf("set state %s: %v", id, err)
+		}
+	}
+	taskState := func(id string) (string, int) {
+		t.Helper()
+		var st string
+		var n int
+		err := c.db.QueryRowContext(ctx,
+			`SELECT state, COALESCE(outstanding_workflows,0) FROM internal_tasks WHERE id = ?`, id).Scan(&st, &n)
+		if err != nil {
+			t.Fatalf("read task %s: %v", id, err)
+		}
+		return st, n
+	}
+
+	// T1 — the issue #198 leak: an interrupted instance never decremented, a
+	// later instance completed. Counter stuck at 1, task stuck 'running'.
+	mkTask("T1", model.TaskStateRunning, 2)
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t1-a", WorkflowID: "w", CellID: "1", TaskID: "T1", State: InstanceStateInterrupted})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t1-b", WorkflowID: "w", CellID: "1", TaskID: "T1", State: InstanceStateDone})
+	if _, err := ts.DecrementOutstanding(ctx, "T1"); err != nil { // completeTask of t1-b
+		t.Fatalf("decrement T1: %v", err)
+	}
+
+	// T2 — same leak but the completed instance of the current generation failed.
+	mkTask("T2", model.TaskStateRunning, 2)
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t2-a", WorkflowID: "w", CellID: "2", TaskID: "T2", State: InstanceStateInterrupted})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t2-b", WorkflowID: "w", CellID: "2", TaskID: "T2", State: InstanceStateFailed})
+	if _, err := ts.DecrementOutstanding(ctx, "T2"); err != nil {
+		t.Fatalf("decrement T2: %v", err)
+	}
+
+	// T3 — parked at approval: live instance, counter correct. Must be untouched.
+	mkTask("T3", model.TaskStateRunning, 1)
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t3-a", WorkflowID: "w", CellID: "3", TaskID: "T3", State: InstanceStateApprovalWaiting})
+
+	// T4 — every current-generation instance interrupted: counter must drop to
+	// zero but the task stays 'running' for the next poll to re-dispatch.
+	mkTask("T4", model.TaskStateRunning, 1)
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t4-a", WorkflowID: "w", CellID: "4", TaskID: "T4", State: InstanceStateInterrupted})
+
+	// T5 — terminal task: out of scope, never touched even with a bogus counter.
+	mkTask("T5", model.TaskStateDone, 3)
+
+	recounted, settled, err := c.ReconcileOrphanTaskCounters(ctx)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if recounted != 3 { // T1, T2, T4 (T3 already correct, T5 terminal)
+		t.Errorf("expected 3 recounted, got %d", recounted)
+	}
+	if settled != 2 { // T1 → done, T2 → failed
+		t.Errorf("expected 2 settled, got %d", settled)
+	}
+
+	if st, n := taskState("T1"); st != string(model.TaskStateDone) || n != 0 {
+		t.Errorf("T1: expected done/0, got %s/%d", st, n)
+	}
+	if st, n := taskState("T2"); st != string(model.TaskStateFailed) || n != 0 {
+		t.Errorf("T2: expected failed/0, got %s/%d", st, n)
+	}
+	if st, n := taskState("T3"); st != string(model.TaskStateRunning) || n != 1 {
+		t.Errorf("T3: expected running/1, got %s/%d", st, n)
+	}
+	if st, n := taskState("T4"); st != string(model.TaskStateRunning) || n != 0 {
+		t.Errorf("T4: expected running/0, got %s/%d", st, n)
+	}
+	if st, n := taskState("T5"); st != string(model.TaskStateDone) || n != 3 {
+		t.Errorf("T5: expected done/3 untouched, got %s/%d", st, n)
+	}
+
+	// Idempotent: a second pass finds nothing to repair.
+	recounted, settled, err = c.ReconcileOrphanTaskCounters(ctx)
+	if err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if recounted != 0 || settled != 0 {
+		t.Errorf("expected idempotent no-op, got recounted=%d settled=%d", recounted, settled)
 	}
 }
