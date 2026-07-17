@@ -267,6 +267,36 @@ func TestWorkflow_OnFailGotoNotAncestor(t *testing.T) {
 	assertError(t, cfg, "must target an ancestor")
 }
 
+// Regression: a v2 workflow mixes plain sequential steps (chained only via the
+// lowering pass's implicit SeqDependsOn, never DependsOn) with one step that
+// carries an explicit DependsOn (as `lowerParallelStep` sets for its own
+// predecessor edge). Before the fix, validateStepGraph's ancestor check only
+// read DependsOn to build the deps graph, so the presence of ANY explicit
+// DependsOn anywhere in the workflow flipped off the `len(deps)==0` sequential
+// fallback for the WHOLE workflow — leaving SeqDependsOn-only steps invisible
+// to isAncestor and falsely rejecting their legitimate on_fail.goto backedges.
+func TestWorkflow_OnFailGotoAncestor_MixedSeqAndExplicitDeps(t *testing.T) {
+	cfg := baseWorkflowConfig()
+	cfg.Workflows = []config.WorkflowConfig{
+		{ID: "wf", Steps: []config.StepConfig{
+			{ID: "implement", Agent: "architect"},
+			// Plain sequential step: only SeqDependsOn (set by v2 lowering),
+			// no DependsOn — legitimately targets "implement", an ancestor.
+			{ID: "check-ci", Type: config.StepTypeWaitFor, SeqDependsOn: []string{"implement"},
+				WaitFor:    &config.WaitForConfig{Kind: "ci"},
+				OnConflict: &config.StepOutcome{Goto: "implement", MaxRetries: 1}},
+			// Parallel-lowered step: explicit DependsOn on its own predecessor,
+			// as lowerParallelStep produces.
+			{ID: "gate", Type: config.StepTypeParallel, DependsOn: []string{"check-ci"},
+				SubSteps: []config.StepConfig{
+					{ID: "review", Agent: "architect"},
+				},
+				OnFail: &config.StepOutcome{Goto: "implement", MaxRetries: 1}},
+		}},
+	}
+	assertNoError(t, cfg)
+}
+
 func TestWorkflow_OnConflictGotoUnknownStep(t *testing.T) {
 	cfg := baseWorkflowConfig()
 	cfg.Workflows = []config.WorkflowConfig{
