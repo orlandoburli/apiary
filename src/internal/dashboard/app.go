@@ -22,7 +22,6 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
-	"github.com/orlandoburli/apiary/internal/logging"
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
@@ -447,6 +446,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.DetailInstance = msg.instance
 		}
 
+	case taskTranscriptMsg:
+		a.applyTranscriptMsg(msg)
+
 	case tailTaskLogsMsg:
 		// Append newly-arrived flat-log lines. While LogFollow is on, render keeps
 		// the viewport pinned to the tail; otherwise the appended lines sit below
@@ -490,16 +492,13 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	// Open the focused task's latest markdown transcript (assistant messages,
-	// thinking, tool calls) with the OS default handler. Only consumes the key
-	// when a task is focused — other views (e.g. the agent file viewer's
-	// raw/rendered toggle) keep their own "t" bindings.
-	if key == "t" {
-		if id, ok := a.focusedTaskID(); ok {
-			if path := logging.LatestTranscript(a.logDir, id); path != "" {
-				return a, openURLCmd(path)
-			}
-			return a, nil
+	// Show the focused task's markdown transcript (assistant messages,
+	// thinking, tool calls) rendered inside the dashboard. Only consumes the
+	// key when a task is focused and a transcript exists — other views (e.g.
+	// the agent file viewer's raw/rendered toggle) keep their own "t" bindings.
+	if key == "t" && a.model.tasksTab != nil && a.model.tasksTab.View != TaskViewTranscript {
+		if handled, cmd := a.openTranscriptView(); handled {
+			return a, cmd
 		}
 	}
 
@@ -879,7 +878,12 @@ func (a *App) handleAgentSubViewKey(key string) (tea.Model, tea.Cmd) {
 		lines := a.agentFileLines()
 		switch key {
 		case "esc", "backspace", "h", "left":
-			ag.View = AgentViewFiles
+			if ag.FileReturn != AgentViewList {
+				ag.View = ag.FileReturn
+			} else {
+				ag.View = AgentViewFiles
+			}
+			ag.FileReturn = AgentViewList
 			ag.FileContent = ""
 			ag.FileErr = ""
 			ag.FileScroll = 0
@@ -1092,6 +1096,11 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 	// Workflow monitor has its own key map.
 	if t.View == TaskViewWorkflow {
 		return a.handleWorkflowMonitorKey(key)
+	}
+
+	// Transcript viewer has its own key map.
+	if t.View == TaskViewTranscript {
+		return a.handleTranscriptKey(key)
 	}
 
 	switch key {
@@ -1981,6 +1990,12 @@ func (a *App) fetchActiveTab() tea.Cmd {
 						}
 					}
 					return tea.Batch(cmds...)
+				}
+				return nil
+			case TaskViewTranscript:
+				// Live-tail the open transcript file (throttled like the logs view).
+				if t.TranscriptPath != "" && a.model.tickCount%2 == 0 {
+					return a.loadTranscriptCmd(t.TranscriptPath)
 				}
 				return nil
 			case TaskViewDetail:
@@ -3082,6 +3097,8 @@ func (a *App) renderTasksTab(height int) string {
 		return a.renderTaskLogs(t, height)
 	case TaskViewWorkflow:
 		return a.renderWorkflowMonitor(t, height)
+	case TaskViewTranscript:
+		return a.renderTaskTranscript(t, height)
 	default:
 		return a.renderTaskList(t, height)
 	}
@@ -4809,11 +4826,17 @@ func (a *App) footerKeys() []fkey {
 				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"l", "logs"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"C", "clear"}, {"r", "reload"}, {"q", "quit"}}
 			case TaskViewLogs:
 				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"C", "clear"}, {"q", "quit"}}
+			case TaskViewTranscript:
+				label := "raw"
+				if t.TranscriptRaw {
+					label = "rendered"
+				}
+				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"end", "follow"}, {"t", label}, {"r", "reload"}, {"q", "quit"}}
 			case TaskViewWorkflow:
 				if t.WorkflowShowLogs {
 					return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"q", "quit"}}
 				}
-				keys := []fkey{{"↑/↓", "step"}, {"enter/l", "logs"}}
+				keys := []fkey{{"↑/↓", "step"}, {"enter/l", "logs"}, {"t", "transcript"}}
 				if len(t.WorkflowInstances) > 1 {
 					keys = append(keys, fkey{"[ ]", "workflow"})
 				}
