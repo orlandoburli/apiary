@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,6 +64,41 @@ func TestTranscriptStaleReloadIgnored(t *testing.T) {
 	a.applyTranscriptMsg(taskTranscriptMsg{path: "/stale.md", content: "old"})
 	if tt.TranscriptContent != "" {
 		t.Fatal("stale reload for another path must be ignored")
+	}
+}
+
+// Regression: follow mode must anchor the viewport to the LAST PAGE of the
+// transcript. Pinning to the last line index rendered one line followed by an
+// empty screen (and every live reload snapped back to it), which made the
+// view look completely broken on real transcripts.
+func TestTranscriptFollowShowsTail(t *testing.T) {
+	a := newTestApp(120, 40)
+	a.model.activeTab = 1
+	tt := a.model.tasksTab
+	tt.View = TaskViewTranscript
+	tt.TranscriptPath = "/x.md"
+	tt.TranscriptFollow = true
+
+	var content strings.Builder
+	for i := 1; i <= 200; i++ {
+		fmt.Fprintf(&content, "line %d\n\n", i)
+	}
+	content.WriteString("FINAL LINE\n")
+	a.applyTranscriptMsg(taskTranscriptMsg{path: "/x.md", content: content.String()})
+
+	out := stripANSI(a.renderTaskTranscript(tt, 38))
+	if !strings.Contains(out, "FINAL LINE") {
+		t.Fatalf("follow mode must show the tail of the transcript:\n%s", out)
+	}
+	// The visible window must be full of content, not one line + blanks.
+	nonEmpty := 0
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Trim(l, "│ ┌┐└┘─") != "" {
+			nonEmpty++
+		}
+	}
+	if nonEmpty < 10 {
+		t.Fatalf("follow window nearly empty (%d content lines):\n%s", nonEmpty, out)
 	}
 }
 
