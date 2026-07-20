@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // writeTranscriptFixture creates logDir/transcripts/<task>/<name>.md and
@@ -99,6 +101,45 @@ func TestTranscriptFollowShowsTail(t *testing.T) {
 	}
 	if nonEmpty < 10 {
 		t.Fatalf("follow window nearly empty (%d content lines):\n%s", nonEmpty, out)
+	}
+}
+
+// Regression: tab-indented code in tool calls (Go code is tab-indented)
+// overflowed the box — lipgloss counts a tab as one cell but the terminal
+// expands it to the next tab stop, so every tabbed line pushed past the right
+// border and shattered the layout. Tabs must be expanded before rendering.
+func TestTranscriptTabsDoNotBreakBox(t *testing.T) {
+	a := newTestApp(100, 30)
+	a.model.activeTab = 1
+	tt := a.model.tasksTab
+	tt.View = TaskViewTranscript
+	tt.TranscriptPath = "/x.md"
+	code := "### 🔧 Tool: `Bash`\n\n```go\nfunc create() {\n\t_, err := pool.Exec(ctx,\n\t\t`INSERT INTO tenants (id, nome, slug)`)\n\tif err != nil {\n\t\tt.Fatalf(\"schema: %v\", err)\n\t}\n}\n```\n"
+	a.applyTranscriptMsg(taskTranscriptMsg{path: "/x.md", content: code})
+
+	for _, raw := range []bool{false, true} {
+		tt.TranscriptRaw = raw
+		tt.invalidateTranscriptLines()
+		for i, l := range a.taskTranscriptLines() {
+			if strings.Contains(l, "\t") {
+				t.Fatalf("raw=%v line %d still contains a tab: %q", raw, i, l)
+			}
+			if w := lipgloss.Width(l); w > 98 {
+				t.Fatalf("raw=%v line %d width %d exceeds box inner width: %q", raw, i, w, l)
+			}
+		}
+	}
+}
+
+func TestTranscriptLoadingSpinner(t *testing.T) {
+	a := newTestApp(100, 30)
+	a.model.activeTab = 1
+	tt := a.model.tasksTab
+	tt.View = TaskViewTranscript
+	tt.TranscriptPath = "/x.md"
+	out := stripANSI(a.renderTaskTranscript(tt, 20))
+	if !strings.Contains(out, "loading transcript") {
+		t.Fatalf("empty view must show the loading spinner:\n%s", out)
 	}
 }
 

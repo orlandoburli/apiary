@@ -4421,16 +4421,17 @@ func (a *App) agentFileLines() []string {
 		return ag.fileLines
 	}
 
+	content := sanitizeForTUI(ag.FileContent)
 	var lines []string
 	if !ag.FileRaw && isMarkdownFile(ag.FilePath) {
-		if rendered, err := renderMarkdown(ag.FileContent, inner); err == nil {
+		if rendered, err := renderMarkdown(content, inner); err == nil {
 			// glamour emits its own wrapping + a trailing blank line; trim it and
 			// hard-wrap any over-long line so the box border stays aligned.
 			lines = clampToWidth(strings.Split(strings.TrimRight(rendered, "\n"), "\n"), inner)
 		}
 	}
 	if lines == nil {
-		lines = wrapPlain(ag.FileContent, inner)
+		lines = wrapPlain(content, inner)
 	}
 
 	ag.fileLines = lines
