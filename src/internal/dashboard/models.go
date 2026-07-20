@@ -61,7 +61,8 @@ const (
 	TaskViewList TaskView = iota
 	TaskViewDetail
 	TaskViewLogs
-	TaskViewWorkflow // live workflow instance monitor
+	TaskViewWorkflow   // live workflow instance monitor
+	TaskViewTranscript // rendered markdown transcript of an agent session
 )
 
 // TasksTab shows task history with detail and log sub-views.
@@ -101,6 +102,22 @@ type TasksTab struct {
 	WorkflowLogFollow   bool   // pin the step-log panel to the tail; cleared by scrolling up
 	WorkflowLogStepID   string // step whose logs fill the panel (scopes live-tail refreshes)
 	WorkflowShowLogs    bool   // true when the log panel is expanded
+
+	// Transcript sub-view (View == TaskViewTranscript): a markdown transcript
+	// file rendered in-app with glamour, live-tailed while the run continues.
+	TranscriptPath    string
+	TranscriptContent string
+	TranscriptErr     string
+	TranscriptScroll  int      // vertical scroll (visual lines)
+	TranscriptRaw     bool     // show raw markdown instead of rendered (toggle)
+	TranscriptFollow  bool     // pin viewport to the tail; cleared by scrolling up
+	TranscriptReturn  TaskView // view to restore on esc
+	// transcriptLines memoizes the display lines (glamour is too slow for the
+	// render path); valid for the recorded width/raw-mode/content generation.
+	transcriptLines      []string
+	transcriptLinesValid bool
+	transcriptLinesWidth int
+	transcriptLinesRaw   bool
 
 	// Scroll / filter / sort
 	ScrollOffset int    // first visible row index
@@ -299,6 +316,7 @@ type AgentsTab struct {
 	FileErr     string          // read error message, if any
 	FileScroll  int             // vertical scroll within the open file (visual lines)
 	FileRaw     bool            // show raw text instead of rendered markdown (toggle)
+	FileReturn  AgentView       // view esc restores (files list, or activity for transcripts)
 
 	// Memoized display lines for the open file, so glamour rendering happens once
 	// per (width, mode) rather than on every keystroke. Invalidated by comparing
