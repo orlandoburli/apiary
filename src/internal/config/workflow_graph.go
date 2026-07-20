@@ -14,7 +14,17 @@ func validateStepGraph(ctx string, wf WorkflowConfig, stepIDs map[string]bool) [
 	deps := map[string][]string{} // step -> its direct dependencies
 
 	for _, s := range wf.Steps {
-		for _, d := range s.DependsOn {
+		// DependsOn (v1/lowered explicit edges) and SeqDependsOn (v2 implicit
+		// sequential chaining, set by the v2 lowering pass) are both real
+		// dependency edges at runtime — the DAG engine treats them identically
+		// (see workflow/dag.go). They must be merged here too: a v2 workflow
+		// that mixes plain sequential steps with a `parallel:`/`for_each:` step
+		// only gets explicit DependsOn on the parallel/foreach step itself,
+		// leaving every other step's real dependency invisible to this
+		// function if only DependsOn is read — which broke the `len(deps)==0`
+		// sequential-order fallback below for the whole workflow as soon as
+		// any single step had an explicit DependsOn.
+		for _, d := range append(append([]string{}, s.DependsOn...), s.SeqDependsOn...) {
 			if !stepIDs[d] {
 				errs = append(errs, fmt.Errorf("%s: step %q depends_on unknown step %q", ctx, s.ID, d))
 				continue

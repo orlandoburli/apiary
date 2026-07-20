@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -247,6 +248,8 @@ func (l *Logger) pruneOldLogs() {
 
 	backups, _ := filepath.Glob(filepath.Join(l.logDir, "apiary.log.*"))
 	taskLogs, _ := filepath.Glob(filepath.Join(l.logDir, "tasks", "*.log"))
+	transcripts, _ := filepath.Glob(filepath.Join(l.logDir, "transcripts", "*", "*.md"))
+	taskLogs = append(taskLogs, transcripts...)
 	for _, path := range append(backups, taskLogs...) {
 		if fi, err := os.Stat(path); err == nil && fi.ModTime().Before(cutoff) {
 			os.Remove(path)
@@ -267,4 +270,45 @@ func (l *Logger) CreateTaskLogger(taskID string) (io.WriteCloser, error) {
 
 	taskLogFile := filepath.Join(taskLogDir, taskID+".log")
 	return os.OpenFile(taskLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+}
+
+// CreateTranscript opens (append) the markdown transcript file for one step
+// run: <logDir>/transcripts/<taskID>/<name>.md. Returns the open file and its
+// path. Callers own closing the file.
+func (l *Logger) CreateTranscript(taskID, name string) (*os.File, string, error) {
+	if l.logDir == "" {
+		return nil, "", fmt.Errorf("no log directory configured")
+	}
+	dir := filepath.Join(l.logDir, "transcripts", SanitizePathComponent(taskID))
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, "", fmt.Errorf("create transcript dir: %w", err)
+	}
+	path := filepath.Join(dir, SanitizePathComponent(name)+".md")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, "", err
+	}
+	return f, path, nil
+}
+
+// SanitizePathComponent keeps ids safe to use as file/dir names (cell ids can
+// carry slashes, e.g. "owner/repo#42"). Exported so readers of the transcript
+// tree (dashboard, CLI) resolve the same directory the writer created.
+func SanitizePathComponent(s string) string {
+	repl := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "#", "_", " ", "_")
+	return repl.Replace(s)
+}
+
+// LatestTranscript returns the most recently modified transcript file for a
+// task, or "" when none exist.
+func LatestTranscript(logDir, taskID string) string {
+	files, _ := filepath.Glob(filepath.Join(logDir, "transcripts", SanitizePathComponent(taskID), "*.md"))
+	var best string
+	var bestMod time.Time
+	for _, f := range files {
+		if fi, err := os.Stat(f); err == nil && (best == "" || fi.ModTime().After(bestMod)) {
+			best, bestMod = f, fi.ModTime()
+		}
+	}
+	return best
 }
