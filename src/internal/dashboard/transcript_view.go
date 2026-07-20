@@ -122,9 +122,8 @@ func (a *App) applyTranscriptMsg(msg taskTranscriptMsg) {
 	t.TranscriptErr = ""
 	t.TranscriptContent = msg.content
 	t.invalidateTranscriptLines()
-	if t.TranscriptFollow {
-		t.TranscriptScroll = lastIndex(len(a.taskTranscriptLines()))
-	}
+	// Follow mode is tail-anchored at render time (pinToTail), so no scroll
+	// bookkeeping is needed here.
 }
 
 // handleTranscriptKey is the key map while the transcript view is open.
@@ -162,8 +161,7 @@ func (a *App) handleTranscriptKey(key string) (tea.Model, tea.Cmd) {
 		t.TranscriptFollow = false
 		t.TranscriptScroll = 0
 	case "end", "G":
-		t.TranscriptFollow = true
-		t.TranscriptScroll = lastIndex(len(lines))
+		t.TranscriptFollow = true // render pins to the tail
 	}
 	return a, nil
 }
@@ -228,7 +226,13 @@ func (a *App) renderTaskTranscript(t *TasksTab, height int) string {
 	if rows < 1 {
 		rows = 1
 	}
+	// Follow mode anchors the viewport to the tail: show the last full page,
+	// not a window starting at the last line.
 	start := clampScroll(t.TranscriptScroll, len(lines))
+	if t.TranscriptFollow {
+		start = pinToTail(len(lines), rows)
+		t.TranscriptScroll = start
+	}
 	end := start + rows
 	if end > len(lines) {
 		end = len(lines)
