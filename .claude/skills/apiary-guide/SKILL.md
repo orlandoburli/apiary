@@ -358,6 +358,22 @@ runaway loop:
 - **Non-blocking dispatch.** A busy agent's `max_workers` slot is acquired inside
   the dispatch goroutine, so a saturated agent never stalls polling/dispatch for
   other sources or agents.
+- **Escalation notifications (`notifications:`).** When any hook (workflow
+  `on_fail`/`on_complete`, task-level `tasks:` hooks, failure-cap park) adds a
+  label listed in `on_labels` (e.g. `needs-attention`), every configured channel
+  fires — so a parked flow pings a human instead of freezing silently. Only
+  `type: command` (arbitrary shell hook: ntfy, Slack webhook, osascript).
+  Placeholders `{{task_id}} {{cell_id}} {{number}} {{title}} {{url}} {{label}}
+  {{summary}}` are shell-quoted; raw values exported as `APIARY_*` env vars.
+  Channels run async (60s timeout) and never block the hook.
+
+  ```yaml
+  notifications:
+    on_labels: [needs-attention]
+    channels:
+      - type: command
+        run: curl -s -d "{{number}} escalated ({{label}}): {{summary}}" ntfy.sh/my-alerts
+  ```
 
 ## Agent Memory
 
