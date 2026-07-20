@@ -453,6 +453,23 @@ tasks:
     add_labels: [ai-failed]
 ```
 
+## `notifications`
+
+Escalation hooks that ping a human whenever a workflow hook (per-workflow
+`on_fail`/`on_complete`, the task-level `tasks:` hooks, or the failure-cap
+park) adds one of the watched labels to a source item — so a task parked
+with `needs-attention` doesn't wait silently for someone to look. See
+[Rate limits & resilience](resilience.md#escalation-notifications) for
+placeholders, environment variables, and behavior.
+
+```yaml
+notifications:
+  on_labels: [needs-attention]
+  channels:
+    - type: command
+      run: curl -s -d "{{number}} escalated ({{label}}): {{summary}}" ntfy.sh/my-alerts
+```
+
 ## Environment variables
 
 Agent subprocesses inherit the daemon's environment plus an overlay you
