@@ -166,6 +166,23 @@ func (a *App) handleTranscriptKey(key string) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// sanitizeForTUI makes arbitrary file content safe for box rendering: tabs
+// are expanded (lipgloss counts a tab as one cell but terminals expand it to
+// the next tab stop, overflowing the box border — agent transcripts are full
+// of tab-indented Go code), carriage returns are dropped, and remaining C0
+// control characters (except newline) are stripped so embedded escapes can
+// never corrupt the terminal.
+func sanitizeForTUI(s string) string {
+	s = strings.ReplaceAll(s, "\t", "    ")
+	s = strings.ReplaceAll(s, "\r", "")
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r >= 0x20 {
+			return r
+		}
+		return -1
+	}, s)
+}
+
 // invalidateTranscriptLines drops the memoized display lines so the next
 // taskTranscriptLines call re-renders (after a toggle, resize, or reload).
 func (t *TasksTab) invalidateTranscriptLines() {
@@ -189,14 +206,15 @@ func (a *App) taskTranscriptLines() []string {
 		return t.transcriptLines
 	}
 
+	content := sanitizeForTUI(t.TranscriptContent)
 	var lines []string
 	if !t.TranscriptRaw {
-		if rendered, err := renderMarkdown(t.TranscriptContent, inner); err == nil {
+		if rendered, err := renderMarkdown(content, inner); err == nil {
 			lines = clampToWidth(strings.Split(strings.TrimRight(rendered, "\n"), "\n"), inner)
 		}
 	}
 	if lines == nil {
-		lines = wrapPlain(t.TranscriptContent, inner)
+		lines = wrapPlain(content, inner)
 	}
 
 	t.transcriptLines = lines
@@ -219,8 +237,9 @@ func (a *App) renderTaskTranscript(t *TasksTab, height int) string {
 		return a.box(title, body, height)
 	}
 	lines := a.taskTranscriptLines()
-	if len(lines) == 0 {
-		return a.box(title, StyleMuted.Render("(waiting for transcript…)")+"\n", height)
+	if len(lines) == 0 || strings.TrimSpace(t.TranscriptContent) == "" {
+		frame := spinnerFrames[a.model.spinnerFrame%len(spinnerFrames)]
+		return a.box(title, StyleMuted.Render(frame+" loading transcript…")+"\n", height)
 	}
 	rows := height - 2
 	if rows < 1 {
