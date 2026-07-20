@@ -104,26 +104,81 @@ func (a *App) loadTranscriptCmd(path string) tea.Cmd {
 	}
 }
 
-// applyTranscriptMsg folds a (re)read into the open transcript view. Follow
-// mode pins the viewport to the tail so a running session reads like a live
-// feed.
-func (a *App) applyTranscriptMsg(msg taskTranscriptMsg) {
+// transcriptWarmedMsg delivers glamour-rendered display lines computed off
+// the UI thread. glamour is too slow for the render path — rendering a large
+// transcript synchronously froze the UI for exactly the time the loading
+// spinner should have been animating.
+type transcriptWarmedMsg struct {
+	path  string
+	width int
+	raw   bool
+	lines []string
+}
+
+// applyTranscriptMsg folds a (re)read into the open transcript view and
+// kicks off the off-thread render. The previously warmed lines stay on
+// screen until the new render lands, so live reloads never flicker back to
+// the spinner. Follow mode is tail-anchored at render time (pinToTail).
+func (a *App) applyTranscriptMsg(msg taskTranscriptMsg) tea.Cmd {
+	t := a.model.tasksTab
+	if t == nil || t.View != TaskViewTranscript || t.TranscriptPath != msg.path {
+		return nil
+	}
+	if msg.err != "" {
+		t.TranscriptErr = msg.err
+		return nil
+	}
+	if msg.content == t.TranscriptContent {
+		return nil
+	}
+	t.TranscriptErr = ""
+	t.TranscriptContent = msg.content
+	return a.warmTranscriptCmd()
+}
+
+// warmTranscriptCmd renders the current transcript content into display
+// lines in a background goroutine, for the current width and raw mode.
+func (a *App) warmTranscriptCmd() tea.Cmd {
+	t := a.model.tasksTab
+	if t == nil || t.TranscriptPath == "" {
+		return nil
+	}
+	path, content, raw := t.TranscriptPath, t.TranscriptContent, t.TranscriptRaw
+	inner := a.transcriptInnerWidth()
+	return func() tea.Msg {
+		return transcriptWarmedMsg{
+			path:  path,
+			width: inner,
+			raw:   raw,
+			lines: computeTranscriptLines(content, inner, raw),
+		}
+	}
+}
+
+// applyTranscriptWarmed merges an off-thread render into the memo. A warm
+// from before a resize, a raw toggle, or a navigation away no longer
+// matches and is dropped.
+func (a *App) applyTranscriptWarmed(msg transcriptWarmedMsg) {
 	t := a.model.tasksTab
 	if t == nil || t.View != TaskViewTranscript || t.TranscriptPath != msg.path {
 		return
 	}
-	if msg.err != "" {
-		t.TranscriptErr = msg.err
+	if msg.width != a.transcriptInnerWidth() || msg.raw != t.TranscriptRaw {
 		return
 	}
-	if msg.content == t.TranscriptContent {
-		return
+	t.transcriptLines = msg.lines
+	t.transcriptLinesWidth = msg.width
+	t.transcriptLinesRaw = msg.raw
+	t.transcriptLinesValid = true
+}
+
+// transcriptInnerWidth is the content width transcript lines are wrapped to.
+func (a *App) transcriptInnerWidth() int {
+	inner := a.model.width - 2
+	if inner < 1 {
+		inner = 1
 	}
-	t.TranscriptErr = ""
-	t.TranscriptContent = msg.content
-	t.invalidateTranscriptLines()
-	// Follow mode is tail-anchored at render time (pinToTail), so no scroll
-	// bookkeeping is needed here.
+	return inner
 }
 
 // handleTranscriptKey is the key map while the transcript view is open.
@@ -141,6 +196,7 @@ func (a *App) handleTranscriptKey(key string) (tea.Model, tea.Cmd) {
 		t.TranscriptScroll = 0
 		t.TranscriptFollow = false
 		t.invalidateTranscriptLines()
+		return a, a.warmTranscriptCmd()
 	case "r":
 		return a, a.loadTranscriptCmd(t.TranscriptPath)
 	case "up", "k":
@@ -190,38 +246,32 @@ func (t *TasksTab) invalidateTranscriptLines() {
 	t.transcriptLinesValid = false
 }
 
-// taskTranscriptLines returns the transcript's display lines wrapped to the
-// box inner width: glamour-rendered markdown unless raw mode is on, memoized
-// per (width, raw mode) like the agent file viewer.
+// taskTranscriptLines returns the warmed display lines, or nil while the
+// off-thread render for the current width/raw mode is still in flight (the
+// view shows the loading spinner). It never renders synchronously — glamour
+// on a large transcript would freeze the UI.
 func (a *App) taskTranscriptLines() []string {
 	t := a.model.tasksTab
 	if t == nil {
 		return nil
 	}
-	inner := a.model.width - 2
-	if inner < 1 {
-		inner = 1
-	}
-	if t.transcriptLinesValid && t.transcriptLinesWidth == inner && t.transcriptLinesRaw == t.TranscriptRaw {
+	if t.transcriptLinesValid && t.transcriptLinesWidth == a.transcriptInnerWidth() && t.transcriptLinesRaw == t.TranscriptRaw {
 		return t.transcriptLines
 	}
+	return nil
+}
 
-	content := sanitizeForTUI(t.TranscriptContent)
-	var lines []string
-	if !t.TranscriptRaw {
+// computeTranscriptLines renders transcript content into display lines
+// wrapped to inner width: glamour-rendered markdown unless raw is set. Pure
+// function, safe to call off the UI thread.
+func computeTranscriptLines(content string, inner int, raw bool) []string {
+	content = sanitizeForTUI(content)
+	if !raw {
 		if rendered, err := renderMarkdown(content, inner); err == nil {
-			lines = clampToWidth(strings.Split(strings.TrimRight(rendered, "\n"), "\n"), inner)
+			return clampToWidth(strings.Split(strings.TrimRight(rendered, "\n"), "\n"), inner)
 		}
 	}
-	if lines == nil {
-		lines = wrapPlain(content, inner)
-	}
-
-	t.transcriptLines = lines
-	t.transcriptLinesWidth = inner
-	t.transcriptLinesRaw = t.TranscriptRaw
-	t.transcriptLinesValid = true
-	return lines
+	return wrapPlain(content, inner)
 }
 
 func (a *App) renderTaskTranscript(t *TasksTab, height int) string {
@@ -237,7 +287,7 @@ func (a *App) renderTaskTranscript(t *TasksTab, height int) string {
 		return a.box(title, body, height)
 	}
 	lines := a.taskTranscriptLines()
-	if len(lines) == 0 || strings.TrimSpace(t.TranscriptContent) == "" {
+	if lines == nil || strings.TrimSpace(t.TranscriptContent) == "" {
 		frame := spinnerFrames[a.model.spinnerFrame%len(spinnerFrames)]
 		return a.box(title, StyleMuted.Render(frame+" loading transcript…")+"\n", height)
 	}

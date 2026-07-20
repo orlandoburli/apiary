@@ -208,8 +208,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.model.width = msg.Width
 		a.model.height = msg.Height
 		// The resize drops the width-scoped markdown cache; re-warm whatever log
-		// entries are currently loaded so styled output comes back.
-		return a, a.warmOpenLogsCmd()
+		// entries are currently loaded so styled output comes back. An open
+		// transcript view re-renders at the new width the same way.
+		return a, tea.Batch(a.warmOpenLogsCmd(), a.warmTranscriptCmd())
 
 	case mdWarmedMsg:
 		// Merge the off-thread glamour renders. A batch from before a resize no
@@ -447,7 +448,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case taskTranscriptMsg:
-		a.applyTranscriptMsg(msg)
+		if cmd := a.applyTranscriptMsg(msg); cmd != nil {
+			return a, cmd
+		}
+
+	case transcriptWarmedMsg:
+		a.applyTranscriptWarmed(msg)
 
 	case tailTaskLogsMsg:
 		// Append newly-arrived flat-log lines. While LogFollow is on, render keeps
