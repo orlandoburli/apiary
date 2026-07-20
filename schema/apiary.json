@@ -557,6 +557,41 @@
           "$ref": "#/definitions/OnComplete"
         }
       }
+    },
+    "notifications": {
+      "type": "object",
+      "description": "Escalation notifications: whenever a hook (workflow on_fail/on_complete, task-level hooks, or the failure-cap park) adds one of on_labels to a source item, every channel fires — so a flow parked with needs-attention pings a human instead of freezing silently",
+      "additionalProperties": false,
+      "required": ["on_labels", "channels"],
+      "properties": {
+        "on_labels": {
+          "type": "array",
+          "description": "Escalation labels to watch (e.g. needs-attention)",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "channels": {
+          "type": "array",
+          "description": "Notification hooks fired in order for each matched label",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "run"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "Channel kind; only \"command\" is supported (an arbitrary shell hook: ntfy, Slack webhook via curl, osascript, ...)",
+                "enum": ["command"]
+              },
+              "run": {
+                "type": "string",
+                "description": "Shell command to run. {{task_id}}, {{cell_id}}, {{number}}, {{title}}, {{url}}, {{label}}, {{summary}} placeholders are substituted shell-quoted; the same values are exported as APIARY_* environment variables"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "definitions": {

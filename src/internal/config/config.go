@@ -24,6 +24,7 @@ type Config struct {
 	Profiles      map[string]map[string]ProfileConfig `yaml:"profiles,omitempty"` // NEW: named runner profiles
 	Settings      Settings         `yaml:"settings"`
 	Tasks         *TasksConfig     `yaml:"tasks"`
+	Notifications *NotificationsConfig `yaml:"notifications"`
 
 	rawContent string // original YAML text before env expansion; used by Save()
 }
@@ -206,6 +207,30 @@ type OnComplete struct {
 	// AssignLabelPrefix is the label prefix used for AssignFromOutput. Defaults
 	// to "agent:" so the assigned label matches the agent:* route convention.
 	AssignLabelPrefix string `yaml:"assign_label_prefix"`
+}
+
+// NotificationsConfig is the top-level `notifications:` block: it makes
+// escalation visible to a human. Whenever a hook (a workflow's on_fail /
+// on_complete, the task-level hooks, or the failure-cap park) adds one of
+// OnLabels to a source item, every channel fires — so a flow parked with
+// needs-attention pings an operator instead of freezing silently (#201).
+type NotificationsConfig struct {
+	// OnLabels are the escalation labels to watch (e.g. needs-attention).
+	OnLabels []string `yaml:"on_labels"`
+	// Channels are the notification hooks to fire, in order.
+	Channels []NotificationChannel `yaml:"channels"`
+}
+
+// NotificationChannel is one notification hook. Only type "command" exists: an
+// arbitrary shell command (ntfy, Slack webhook via curl, osascript, …) so the
+// engine takes on no provider integrations. The command string may use
+// {{task_id}}, {{cell_id}}, {{number}}, {{title}}, {{url}}, {{label}}, and
+// {{summary}} placeholders (values are shell-quoted on substitution); the same
+// values are also exported as APIARY_TASK_ID, APIARY_CELL_ID, APIARY_NUMBER,
+// APIARY_TITLE, APIARY_URL, APIARY_LABEL, and APIARY_SUMMARY.
+type NotificationChannel struct {
+	Type string `yaml:"type"`
+	Run  string `yaml:"run"`
 }
 
 // TasksConfig is the top-level `tasks:` block. Its hooks fire once per

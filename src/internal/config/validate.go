@@ -260,5 +260,35 @@ func (c *Config) Validate() []error {
 	// config was built in code rather than loaded from a file).
 	errs = append(errs, c.lint()...)
 
+	errs = append(errs, c.validateNotifications()...)
+
+	return errs
+}
+
+// validateNotifications checks the top-level notifications block: watching
+// labels without a channel (or vice versa) is a configuration mistake that
+// would silently never notify.
+func (c *Config) validateNotifications() []error {
+	n := c.Notifications
+	if n == nil {
+		return nil
+	}
+	var errs []error
+	if len(n.OnLabels) == 0 {
+		errs = append(errs, fmt.Errorf("notifications: on_labels is required (which labels should trigger a notification)"))
+	}
+	if len(n.Channels) == 0 {
+		errs = append(errs, fmt.Errorf("notifications: at least one channel is required"))
+	}
+	for i, ch := range n.Channels {
+		switch ch.Type {
+		case "command":
+			if strings.TrimSpace(ch.Run) == "" {
+				errs = append(errs, fmt.Errorf("notifications.channels[%d]: run is required for type \"command\"", i))
+			}
+		default:
+			errs = append(errs, fmt.Errorf("notifications.channels[%d]: unknown type %q (only \"command\" is supported)", i, ch.Type))
+		}
+	}
 	return errs
 }
