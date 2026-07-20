@@ -713,6 +713,35 @@ func (s *wfSideEffects) ApplyHook(ctx context.Context, task model.InternalTask, 
 			}
 		}
 	}
+
+	// Escalation notifications (#201): when a hook adds a watched label (e.g.
+	// needs-attention), ping the configured channels — otherwise the escalation
+	// is silent and the parked flow waits for someone to happen to look. Every
+	// escalation path funnels through this hook applier (engine on_fail /
+	// on_complete, task-level hooks, and the failure-cap park), so this is the
+	// single choke point. Fired once per label per hook, not per binding.
+	var notifCfg *config.NotificationsConfig
+	if s.d.cfg != nil {
+		notifCfg = s.d.cfg.Notifications
+	}
+	if matched := matchedEscalationLabels(notifCfg, hook.AddLabels); len(matched) > 0 {
+		ev := escalationEvent{
+			TaskID:  task.ID,
+			CellID:  task.ID,
+			Title:   task.Title,
+			Summary: s.d.escalationSummary(ctx, task),
+		}
+		if len(bindings) > 0 {
+			b := bindings[0]
+			ev.CellID = b.SourceItemID
+			ev.Number = b.SourceItemNumber
+			ev.URL = b.SourceItemURL
+		}
+		for _, label := range matched {
+			ev.Label = label
+			s.d.notifyEscalation(ev)
+		}
+	}
 	return nil
 }
 

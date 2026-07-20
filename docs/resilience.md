@@ -141,6 +141,39 @@ settings:
   max_attempts: 3
 ```
 
+## Escalation notifications
+
+Escalating to a human is only useful if the human finds out. Without
+configuration, a workflow that parks a task with `needs-attention` leaves the
+label sitting on the issue until someone happens to look — a failed staging
+deploy can freeze the pipeline silently.
+
+The top-level `notifications:` block fires whenever a hook (a workflow's
+`on_fail`/`on_complete`, the task-level `tasks:` hooks, or the failure-cap
+park above) adds one of the watched labels to a source item:
+
+```yaml
+notifications:
+  on_labels: [needs-attention]
+  channels:
+    - type: command
+      run: curl -s -d "{{number}} escalated ({{label}}): {{summary}}" ntfy.sh/my-alerts
+```
+
+Only `type: command` exists — an arbitrary shell hook (ntfy, a Slack webhook
+via `curl`, `osascript`, e-mail, …), so Apiary carries no provider
+integrations. Channels run asynchronously with a 60-second timeout and never
+block or fail the hook that triggered them.
+
+The command may use `{{task_id}}`, `{{cell_id}}`, `{{number}}`, `{{title}}`,
+`{{url}}`, `{{label}}`, and `{{summary}}` placeholders — values are
+shell-quoted on substitution, so titles with quotes cannot break or inject
+into the command line. The same values are exported to the hook as
+`APIARY_TASK_ID`, `APIARY_CELL_ID`, `APIARY_NUMBER`, `APIARY_TITLE`,
+`APIARY_URL`, `APIARY_LABEL`, and `APIARY_SUMMARY`. `{{summary}}` is the
+latest step summary of the task's newest workflow instance (falling back to
+the last failed step's error, then the task title).
+
 ## Non-blocking dispatch
 
 Each agent's `max_workers` slot is acquired inside the dispatch goroutine,

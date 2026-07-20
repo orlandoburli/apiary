@@ -507,3 +507,19 @@ tasks:
   on_fail:
     set_state: blocked
     add_labels: [ai-failed]
+
+# ── Escalation notifications (#201) ──────────────────────────────────────────────
+# Whenever a hook (a workflow's on_fail/on_complete, the task-level hooks above,
+# or the failure-cap park) adds one of `on_labels` to a source item, every channel
+# fires — so a flow parked with needs-attention pings a human instead of freezing
+# silently. Only `type: command` exists: an arbitrary shell hook (ntfy, Slack
+# webhook via curl, osascript, ...) so apiary carries no provider integrations.
+# Placeholders {{task_id}} {{cell_id}} {{number}} {{title}} {{url}} {{label}}
+# {{summary}} are substituted shell-quoted; the same values are exported as
+# APIARY_TASK_ID, APIARY_CELL_ID, APIARY_NUMBER, APIARY_TITLE, APIARY_URL,
+# APIARY_LABEL, APIARY_SUMMARY.
+# notifications:
+#   on_labels: [needs-attention]
+#   channels:
+#     - type: command
+#       run: curl -s -d "{{number}} escalated ({{label}}): {{summary}}" ntfy.sh/my-apiary-alerts
