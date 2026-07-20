@@ -10,6 +10,21 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// deliverTranscript runs the async load+warm pipeline synchronously: applies
+// the read message, then executes and applies the warm command it returns.
+func deliverTranscript(t *testing.T, a *App, msg taskTranscriptMsg) {
+	t.Helper()
+	cmd := a.applyTranscriptMsg(msg)
+	if cmd == nil {
+		return
+	}
+	warmed, ok := cmd().(transcriptWarmedMsg)
+	if !ok {
+		t.Fatalf("expected transcriptWarmedMsg from warm command")
+	}
+	a.applyTranscriptWarmed(warmed)
+}
+
 // writeTranscriptFixture creates logDir/transcripts/<task>/<name>.md and
 // returns its path.
 func writeTranscriptFixture(t *testing.T, logDir, task, name, content string) string {
@@ -47,7 +62,7 @@ func TestOpenTranscriptViewFromTaskList(t *testing.T) {
 	}
 	// Deliver the async load and check rendering.
 	msg := cmd().(taskTranscriptMsg)
-	a.applyTranscriptMsg(msg)
+	deliverTranscript(t, a, msg)
 	out := stripANSI(a.renderTaskTranscript(tt, 20))
 	if !strings.Contains(out, "transcript body") {
 		t.Fatalf("rendered view missing content:\n%s", out)
@@ -86,7 +101,7 @@ func TestTranscriptFollowShowsTail(t *testing.T) {
 		fmt.Fprintf(&content, "line %d\n\n", i)
 	}
 	content.WriteString("FINAL LINE\n")
-	a.applyTranscriptMsg(taskTranscriptMsg{path: "/x.md", content: content.String()})
+	deliverTranscript(t, a, taskTranscriptMsg{path: "/x.md", content: content.String()})
 
 	out := stripANSI(a.renderTaskTranscript(tt, 38))
 	if !strings.Contains(out, "FINAL LINE") {
@@ -115,11 +130,14 @@ func TestTranscriptTabsDoNotBreakBox(t *testing.T) {
 	tt.View = TaskViewTranscript
 	tt.TranscriptPath = "/x.md"
 	code := "### 🔧 Tool: `Bash`\n\n```go\nfunc create() {\n\t_, err := pool.Exec(ctx,\n\t\t`INSERT INTO tenants (id, nome, slug)`)\n\tif err != nil {\n\t\tt.Fatalf(\"schema: %v\", err)\n\t}\n}\n```\n"
-	a.applyTranscriptMsg(taskTranscriptMsg{path: "/x.md", content: code})
+	deliverTranscript(t, a, taskTranscriptMsg{path: "/x.md", content: code})
 
 	for _, raw := range []bool{false, true} {
 		tt.TranscriptRaw = raw
 		tt.invalidateTranscriptLines()
+		if warmed, ok := a.warmTranscriptCmd()().(transcriptWarmedMsg); ok {
+			a.applyTranscriptWarmed(warmed)
+		}
 		for i, l := range a.taskTranscriptLines() {
 			if strings.Contains(l, "\t") {
 				t.Fatalf("raw=%v line %d still contains a tab: %q", raw, i, l)
