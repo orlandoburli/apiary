@@ -22,6 +22,7 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
+	"github.com/orlandoburli/apiary/internal/logging"
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
@@ -57,6 +58,9 @@ type App struct {
 	dbConn     *db.Client
 	socketPath string
 	cfg        *config.Config
+	// logDir is the daemon's log directory, used to locate per-task markdown
+	// transcripts (logDir/transcripts/<task>/...).
+	logDir string
 
 	// logMDCache memoizes the display lines of multi-line log messages, keyed by
 	// the message text: glamour-rendered markdown delivered by the async warm-up
@@ -71,12 +75,13 @@ type App struct {
 	logMDWidth   int
 }
 
-func New(dbConn *db.Client, socketPath string, cfg *config.Config) *App {
+func New(dbConn *db.Client, socketPath string, cfg *config.Config, logDir string) *App {
 	return &App{
 		model:      NewModel(),
 		dbConn:     dbConn,
 		socketPath: socketPath,
 		cfg:        cfg,
+		logDir:     logDir,
 	}
 }
 
@@ -483,6 +488,19 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, openURLCmd(u)
 		}
 		return a, nil
+	}
+
+	// Open the focused task's latest markdown transcript (assistant messages,
+	// thinking, tool calls) with the OS default handler. Only consumes the key
+	// when a task is focused — other views (e.g. the agent file viewer's
+	// raw/rendered toggle) keep their own "t" bindings.
+	if key == "t" {
+		if id, ok := a.focusedTaskID(); ok {
+			if path := logging.LatestTranscript(a.logDir, id); path != "" {
+				return a, openURLCmd(path)
+			}
+			return a, nil
+		}
 	}
 
 	// Open the focused task's most recent pull request in the browser.
@@ -4788,9 +4806,9 @@ func (a *App) footerKeys() []fkey {
 		if t := a.model.tasksTab; t != nil {
 			switch t.View {
 			case TaskViewDetail:
-				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"l", "logs"}, {"o", "open"}, {"p", "open PR"}, {"R", "restart"}, {"C", "clear"}, {"r", "reload"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"l", "logs"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"C", "clear"}, {"r", "reload"}, {"q", "quit"}}
 			case TaskViewLogs:
-				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"o", "open"}, {"p", "open PR"}, {"C", "clear"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"d", "details"}, {"↑/↓", "scroll"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"C", "clear"}, {"q", "quit"}}
 			case TaskViewWorkflow:
 				if t.WorkflowShowLogs {
 					return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"q", "quit"}}
@@ -4802,7 +4820,7 @@ func (a *App) footerKeys() []fkey {
 				return append(keys, fkey{"r", "refresh"}, fkey{"X", "stop"}, fkey{"R", "restart"}, fkey{"esc", "back"}, fkey{"q", "quit"})
 			}
 		}
-		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"R", "restart"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
+		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
 	case "Workflows":
 		if wt := a.model.workflowsTab; wt != nil && wt.Focus == WorkflowsViewSteps {
 			return []fkey{{"↑/↓", "step"}, {"esc/←", "back"}, {"tab", "next tab"}, {"q", "quit"}}
@@ -4814,9 +4832,9 @@ func (a *App) footerKeys() []fkey {
 			case AgentViewDetail:
 				return []fkey{{"esc", "back"}, {"f", "files"}, {"l", "activity"}, {"m", "model"}, {"r", "runner"}, {"w", "workers"}, {"q", "quit"}}
 			case AgentViewActivity:
-				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "logs"}, {"o", "open"}, {"p", "open PR"}, {"pgup/dn", "page"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "logs"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"pgup/dn", "page"}, {"q", "quit"}}
 			case AgentViewTaskLogs:
-				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"o", "open"}, {"p", "open PR"}, {"home/end", "ends"}, {"r", "reload"}, {"q", "quit"}}
+				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"home/end", "ends"}, {"r", "reload"}, {"q", "quit"}}
 			case AgentViewFiles:
 				return []fkey{{"esc", "back"}, {"↑/↓", "select"}, {"enter/l", "view"}, {"q", "quit"}}
 			case AgentViewFileContent:

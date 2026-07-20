@@ -186,6 +186,9 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 			mu.Lock()
 			outBuf.WriteString(line + "\n")
 			mu.Unlock()
+			if req.TranscriptSink != nil {
+				req.TranscriptSink(line)
+			}
 			if res, ok := finalResultText(line); ok {
 				mu.Lock()
 				finalResult = res

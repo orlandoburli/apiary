@@ -36,6 +36,12 @@ type RunRequest struct {
 	// Must be safe to call from multiple goroutines.
 	LogSink func(LogEntry) `json:"-"`
 
+	// TranscriptSink, when set, receives each raw provider stdout line
+	// (stream-json events) in real time. The daemon uses it to render a
+	// markdown transcript of the session. Must be safe to call from multiple
+	// goroutines.
+	TranscriptSink func(rawLine string) `json:"-"`
+
 	// SetPID is called after the child process starts with its OS PID.
 	SetPID func(pid int) `json:"-"`
 

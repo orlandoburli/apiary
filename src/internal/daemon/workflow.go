@@ -407,6 +407,27 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		}
 	}
 
+	// Markdown transcript: render the provider's stream-json events (assistant
+	// messages, thinking, tool calls/results) into a per-step markdown file
+	// under <logDir>/transcripts/<cellID>/. Best-effort — a transcript failure
+	// never blocks the run.
+	if x.d.logger != nil {
+		name := fmt.Sprintf("%s-%s", req.InstanceID, req.Step.ID)
+		if f, path, err := x.d.logger.CreateTranscript(req.Cell.ID, name); err == nil {
+			defer f.Close()
+			tr := execution.NewTranscript(f, execution.TranscriptMeta{
+				Title:    fmt.Sprintf("%s — %s", req.Cell.LogLabel(), req.Cell.Title),
+				Agent:    req.Step.Agent,
+				Model:    req.Model,
+				Step:     req.Step.ID,
+				Instance: req.InstanceID,
+				Started:  time.Now(),
+			})
+			rr.TranscriptSink = tr.Feed
+			aplog.Debug("[%s] transcript: %s", req.Cell.LogLabel(), path)
+		}
+	}
+
 	// Run chain: the agent's primary runner first, then its rate-limit failover
 	// chain. A candidate whose runner type is currently paused by a provider rate
 	// limit is skipped (unless it is the last resort). Each attempt is its own

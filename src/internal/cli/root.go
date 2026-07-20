@@ -59,6 +59,7 @@ func init() {
 		newDeleteCmd(),
 		newUpdateCmd(),
 		newMemoryCmd(),
+		newTranscriptCmd(),
 	)
 }
 
