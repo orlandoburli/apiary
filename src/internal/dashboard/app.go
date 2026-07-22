@@ -1126,6 +1126,14 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 			a.model.loading = true
 			return a, tea.Batch(a.fetchTaskDetail(row.TaskID, row.InternalTaskID), a.refreshTaskPullsCmd(row.InternalTaskID))
 		}
+	case "y", "n":
+		if t.View == TaskViewDetail && t.DetailInstance != nil && t.DetailInstance.Approval != nil {
+			decision := "approve"
+			if key == "n" {
+				decision = "reject"
+			}
+			return a, a.approvalResponseCmd(t.DetailInstance.Approval.ID, decision)
+		}
 	case "l", "enter":
 		if row, ok := a.selectedTask(); ok {
 			a.model.loading = true
@@ -1311,6 +1319,15 @@ func (a *App) handleWorkflowMonitorKey(key string) (tea.Model, tea.Cmd) {
 		// Restart the whole workflow (force-restart the cell).
 		a.model.confirmAction = "restart"
 		a.model.confirmTaskID = inst.CellID
+
+	case "y", "n":
+		if inst.Approval != nil {
+			decision := "approve"
+			if key == "n" {
+				decision = "reject"
+			}
+			return a, a.approvalResponseCmd(inst.Approval.ID, decision)
+		}
 	}
 	return a, nil
 }
@@ -1632,6 +1649,27 @@ func (a *App) stopInstanceCmd(instanceID string) tea.Cmd {
 	}
 }
 
+func (a *App) approvalResponseCmd(requestID, decision string) tea.Cmd {
+	return func() tea.Msg {
+		actor := os.Getenv("USER")
+		if actor == "" {
+			actor = "dashboard-user"
+		}
+		body, _ := json.Marshal(map[string]any{"decision": decision, "actor": actor, "idempotency_key": fmt.Sprintf("dashboard:%s:%s:%s", requestID, actor, decision)})
+		transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", a.socketPath)
+		}}
+		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+		req, _ := http.NewRequest(http.MethodPost, "http://apiary/approvals/"+requestID+"/respond", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		return nil
+	}
+}
+
 // openWorkflowMonitorOrLogs opens the workflow monitor if the task has a
 // workflow instance, or the logs view otherwise.
 func (a *App) openWorkflowMonitorOrLogs(taskID string) tea.Cmd {
@@ -1669,6 +1707,7 @@ func buildWorkflowInstanceItem(ctx context.Context, dbConn *db.Client, inst *db.
 	}
 	if inst.State == "approval_waiting" {
 		item.Message = "Awaiting human approval — reply on the task to resume or abort."
+		item.Approval, _ = dbConn.GetApprovalByInstance(ctx, inst.ID)
 	}
 	steps, err := dbConn.ListStepRuns(ctx, inst.ID)
 	if err == nil {
@@ -3564,6 +3603,14 @@ func renderWorkflowSteps(inst *WorkflowInstanceItem) string {
 
 	if inst.State == db.InstanceStateApprovalWaiting && inst.Message != "" {
 		b.WriteString("  " + StyleWarning.Render("⏸ "+inst.Message) + "\n")
+		if inst.Approval != nil {
+			b.WriteString("  " + StyleMuted.Render("Approvers: "+strings.Join(inst.Approval.Approvers, ", ")) + "\n")
+			if len(inst.Approval.Fields) == 0 {
+				b.WriteString("  " + StyleAccent.Render("Press y to approve or n to reject") + "\n")
+			} else {
+				b.WriteString("  " + StyleMuted.Render("Structured fields required; submit through the signed webhook channel.") + "\n")
+			}
+		}
 	}
 
 	if len(inst.Steps) > 0 {

@@ -958,6 +958,8 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 	})
 	mux.HandleFunc("/events", d.handleExecutionEvents)
 	mux.HandleFunc("/events/stream", d.handleExecutionEventStream)
+	mux.HandleFunc("/approvals", d.handleApprovals)
+	mux.HandleFunc("/approvals/", d.handleApprovalResponse)
 	mux.HandleFunc("/restart/", func(w http.ResponseWriter, r *http.Request) {
 		cellID := strings.TrimPrefix(r.URL.Path, "/restart/")
 		if cellID == "" {

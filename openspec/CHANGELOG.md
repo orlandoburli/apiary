@@ -6,6 +6,7 @@
 
 ### 2026-07-22
 
+- **multi-channel-human-approvals** — First-class human-in-the-loop approval requests with structured fields, authorized quorum/delegation, dashboard and signed webhook responses, idempotent resolution, escalation, sensitive-action policies, and rejection feedback. GitHub issue #212.
 - **structured-execution-events** — Versioned, redacted execution events with persisted queries, live SSE subscriptions, route/fallback reasons, retention, CLI history, and a dashboard task timeline. GitHub issue #211.
 - **reusable-typed-subworkflows** — Reusable local workflow files with typed inputs and outputs, cycle-safe resolution, linked nested execution history, and explicit failure/cancellation semantics. GitHub issue #210.
 - **immutable-execution-replay** — Immutable workflow replay with descendant attempt lineage, selectable resume points, secret-safe workflow-definition snapshots, and CLI comparison of attempts. GitHub issue #209.

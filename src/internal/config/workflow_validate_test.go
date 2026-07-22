@@ -439,6 +439,23 @@ func TestWorkflow_ApprovalMissingResumeOn(t *testing.T) {
 	assertError(t, cfg, "requires resume_on")
 }
 
+func TestWorkflow_SensitiveActionRequiresApprovalPolicy(t *testing.T) {
+	cfg := baseWorkflowConfig()
+	cfg.Settings.Approvals.RequireFor = []string{"deploy"}
+	cfg.Workflows = []config.WorkflowConfig{{ID: "release", Steps: []config.StepConfig{{ID: "deploy", Agent: "backend-dev", ActionClass: "deploy"}}}}
+	assertError(t, cfg, "requires a preceding approval step")
+	cfg.Workflows[0].Steps = []config.StepConfig{{ID: "gate", Type: config.StepTypeApproval, Message: "Deploy?", Approvers: []string{"alice"}}, {ID: "deploy", Agent: "backend-dev", ActionClass: "deploy"}}
+	assertNoError(t, cfg)
+}
+
+func TestWorkflow_ApprovalQuorumAndDelegatesValidate(t *testing.T) {
+	cfg := baseWorkflowConfig()
+	cfg.Workflows = []config.WorkflowConfig{{ID: "release", Steps: []config.StepConfig{{ID: "gate", Type: config.StepTypeApproval, Message: "Deploy?", Approvers: []string{"alice", "carol"}, RequiredApprovals: 2, Delegates: map[string][]string{"alice": {"bob"}}, ApprovalFields: []config.ApprovalField{{Name: "ticket", Type: "string", Required: true}}}}}}
+	assertNoError(t, cfg)
+	cfg.Workflows[0].Steps[0].RequiredApprovals = 3
+	assertError(t, cfg, "cannot exceed")
+}
+
 func TestWorkflow_ApprovalInvalidTimeout(t *testing.T) {
 	cfg := baseWorkflowConfig()
 	cfg.Workflows = []config.WorkflowConfig{

@@ -265,6 +265,7 @@ type Settings struct {
 	LogMaxAgeDays int                `yaml:"log_max_age_days"` // prune backups and task logs older than this; default 30
 	Memory        MemorySettings     `yaml:"memory"`
 	Events        EventSettings      `yaml:"events"`
+	Approvals     ApprovalSettings   `yaml:"approvals"`
 	Telemetry     Telemetry          `yaml:"telemetry"`
 	CursorCost    CursorCostSettings `yaml:"cursor_cost"`
 	GitHooks      GitHooksSettings   `yaml:"git_hooks"`
@@ -274,6 +275,12 @@ type Settings struct {
 	// CreditExhaustedCooldown is how long a runner type is paused after a
 	// credit-exhausted failure. Default "24h".
 	CreditExhaustedCooldown string `yaml:"credit_exhausted_cooldown,omitempty"`
+}
+
+// ApprovalSettings controls provider-neutral approval response endpoints.
+type ApprovalSettings struct {
+	WebhookSecret string   `yaml:"webhook_secret,omitempty"`
+	RequireFor    []string `yaml:"require_for,omitempty"`
 }
 
 // EventSettings controls persisted structured execution events. Events are

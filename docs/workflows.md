@@ -382,6 +382,10 @@ the step if nobody responds in time.
 Parked approvals are durable: they are **rehydrated after a daemon restart**
 with their original timestamps and timeout intact.
 
+For authorized approvers, quorum, delegation, structured fields, dashboard and
+signed webhook responses, reminders/escalation, and sensitive-action policies,
+see [Human-in-the-loop approvals](human-approvals.md).
+
 ### `wait_for` steps — waiting on CI
 
 A `wait_for` step parks the workflow until an external condition resolves.

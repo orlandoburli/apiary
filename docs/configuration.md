@@ -472,6 +472,21 @@ notifications:
 
 ## Execution event retention and redaction
 
+## Human approval policy
+
+```yaml
+settings:
+  approvals:
+    webhook_secret: ${APIARY_APPROVAL_SECRET}
+    require_for: [push, deploy, destructive, external_publication]
+```
+
+`webhook_secret` authenticates provider-neutral approval responses.
+`require_for` rejects workflows whose matching `action_class` step is not guarded
+by an approval step. See [Human-in-the-loop approvals](human-approvals.md).
+
+## Execution event retention and redaction
+
 Structured task timelines are persisted automatically when SQLite is enabled.
 Configure their retention and additional sensitive metadata keys under
 `settings.events`:

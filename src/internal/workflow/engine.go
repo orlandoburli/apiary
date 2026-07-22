@@ -50,6 +50,15 @@ type executionEventRecorder interface {
 	RecordExecutionEvent(context.Context, *db.ExecutionEvent) error
 }
 
+type approvalRequestStore interface {
+	CreateApprovalRequest(context.Context, *db.ApprovalRequest) error
+	GetApprovalByInstance(context.Context, string) (*db.ApprovalRequest, error)
+	MarkApprovalTimedOut(context.Context, string) (bool, error)
+	MarkApprovalReminded(context.Context, string) (bool, error)
+	EscalateApproval(context.Context, string) (bool, error)
+	ResolveApprovalRequest(context.Context, string, db.ApprovalResponse) (*db.ApprovalRequest, bool, error)
+}
+
 func (e *Engine) recordExecutionEvent(ctx context.Context, r *dagRun, eventType string, metadata map[string]any) {
 	recorder, ok := e.store.(executionEventRecorder)
 	if !ok || r == nil {
@@ -211,6 +220,20 @@ type SideEffects interface {
 	MaterializeChild(ctx context.Context, parent model.InternalTask, parentBindings []model.SourceBinding, child model.InternalTask) error
 }
 
+// ApprovalProvider delivers a provider-neutral approval request to an external
+// transport. Slack, Teams, email, and custom webhooks can implement this without
+// coupling transport behavior to the workflow scheduler.
+type ApprovalProvider interface {
+	RequestApproval(context.Context, *db.ApprovalRequest) error
+}
+
+// ApprovalLifecycleProvider optionally delivers reminders and escalations.
+type ApprovalLifecycleProvider interface {
+	ApprovalProvider
+	RemindApproval(context.Context, *db.ApprovalRequest) error
+	EscalateApproval(context.Context, *db.ApprovalRequest, []string) error
+}
+
 // Engine orchestrates a workflow instance: it persists the instance and its step
 // runs, threads workflow memory between steps, and applies side effects. In
 // Phase 2 it executes agent steps sequentially in declaration order (single-step
@@ -226,16 +249,17 @@ type CIStatusChecker func(ctx context.Context, sourceID, sourceItemID string) (s
 type DependencyChecker func(ctx context.Context, sourceID, sourceItemID, linkType string) ([]source.BlockerRef, error)
 
 type Engine struct {
-	cfg        *config.Config
-	store      Store
-	exec       StepExecutor
-	side       SideEffects
-	mem        MemoryBuilder
-	memStore   MemoryStore
-	spawner    WorkflowSpawner
-	tracker    TaskTracker
-	ciChecker  CIStatusChecker
-	depChecker DependencyChecker
+	cfg               *config.Config
+	store             Store
+	exec              StepExecutor
+	side              SideEffects
+	mem               MemoryBuilder
+	memStore          MemoryStore
+	spawner           WorkflowSpawner
+	tracker           TaskTracker
+	ciChecker         CIStatusChecker
+	depChecker        DependencyChecker
+	approvalProviders []ApprovalProvider
 
 	now   func() time.Time
 	newID func(prefix string) string
@@ -284,6 +308,15 @@ func WithCIStatusChecker(checker CIStatusChecker) Option {
 // kind "dependency".
 func WithDependencyChecker(checker DependencyChecker) Option {
 	return func(e *Engine) { e.depChecker = checker }
+}
+
+// WithApprovalProvider registers an external approval request transport.
+func WithApprovalProvider(provider ApprovalProvider) Option {
+	return func(e *Engine) {
+		if provider != nil {
+			e.approvalProviders = append(e.approvalProviders, provider)
+		}
+	}
 }
 
 // NewEngine builds an Engine. cfg, store, and exec are required.
