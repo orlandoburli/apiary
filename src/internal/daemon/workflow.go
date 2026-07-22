@@ -278,7 +278,17 @@ func (d *Dispatcher) checkApprovals(ctx context.Context) {
 			defer d.approvalAdvancing.Delete(p.InstanceID)
 
 			// Cheap re-evaluation, ungated. Still waiting → leave it parked.
-			decision := d.engine.RecheckApproval(ctx, p.InstanceID, poll)
+			var stored *db.ApprovalRequest
+			decision := workflow.ApprovalWait
+			if req, _ := d.db.GetApprovalByInstance(ctx, p.InstanceID); req != nil && (req.Status == db.ApprovalApproved || req.Status == db.ApprovalRejected) {
+				stored = req
+				decision = workflow.ApprovalResume
+				if req.Status == db.ApprovalRejected {
+					decision = workflow.ApprovalAbort
+				}
+			} else {
+				decision = d.engine.RecheckApproval(ctx, p.InstanceID, poll)
+			}
 			if decision == workflow.ApprovalWait {
 				return
 			}
@@ -294,7 +304,11 @@ func (d *Dispatcher) checkApprovals(ctx context.Context) {
 				}
 				defer func() { <-agentCh }()
 			}
-			_, _ = d.engine.ResolveApproval(ctx, p.InstanceID, decision)
+			if stored != nil {
+				_, _ = d.engine.ResolveApprovalResponse(ctx, p.InstanceID, db.ApprovalResponse{Decision: stored.Status, Actor: stored.RespondedBy, Channel: stored.ResponseChannel, IdempotencyKey: stored.IdempotencyKey, Feedback: stored.Feedback, Values: stored.Values})
+			} else {
+				_, _ = d.engine.ResolveApproval(ctx, p.InstanceID, decision)
+			}
 		}()
 	}
 }

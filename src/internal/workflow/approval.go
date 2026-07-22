@@ -30,6 +30,11 @@ const (
 // waiting, given the live task. resume_on takes precedence over abort_on when
 // both would match (an explicit approval wins).
 func EvaluateApproval(step config.StepConfig, cell model.SourceItem) ApprovalDecision {
+	// Explicit approvers require an authenticated dashboard/webhook response;
+	// legacy source comments have no author identity and cannot satisfy policy.
+	if len(step.Approvers) > 0 {
+		return ApprovalWait
+	}
 	if step.ResumeOn != nil && matchApprovalTrigger(*step.ResumeOn, cell) {
 		return ApprovalResume
 	}
@@ -117,6 +122,39 @@ func (e *Engine) ParkedApprovals() []ParkedApproval {
 // terminal or suspended state. Returns whether the instance then completed
 // successfully. It errors if the instance is not currently awaiting approval.
 func (e *Engine) ResolveApproval(ctx context.Context, instanceID string, decision ApprovalDecision) (bool, error) {
+	name := "approve"
+	if decision == ApprovalAbort {
+		name = "reject"
+	}
+	response := db.ApprovalResponse{Decision: name, Actor: "source-trigger", Channel: "source", IdempotencyKey: "source:" + instanceID + ":" + name}
+	if store, ok := e.store.(approvalRequestStore); ok {
+		if req, _ := store.GetApprovalByInstance(ctx, instanceID); req != nil {
+			stored, won, err := store.ResolveApprovalRequest(ctx, req.ID, response)
+			if err != nil {
+				return false, err
+			}
+			if !won && stored != nil {
+				if stored.Status == db.ApprovalPending || stored.Status == db.ApprovalEscalated {
+					return false, nil
+				}
+				response.Decision = "reject"
+				if stored.Status == db.ApprovalApproved {
+					response.Decision = "approve"
+				}
+				response.Actor, response.Channel, response.Feedback, response.Values = stored.RespondedBy, stored.ResponseChannel, stored.Feedback, stored.Values
+			}
+		}
+	}
+	return e.ResolveApprovalResponse(ctx, instanceID, response)
+}
+
+// ResolveApprovalResponse applies a persisted multi-channel response and exposes
+// its feedback and values to subsequent steps as approval.<field> memory values.
+func (e *Engine) ResolveApprovalResponse(ctx context.Context, instanceID string, response db.ApprovalResponse) (bool, error) {
+	decision := ApprovalResume
+	if strings.EqualFold(response.Decision, "reject") || strings.EqualFold(response.Decision, "rejected") {
+		decision = ApprovalAbort
+	}
 	e.mu.Lock()
 	r, ok := e.parked[instanceID]
 	if ok {
@@ -131,7 +169,16 @@ func (e *Engine) ResolveApproval(ctx context.Context, instanceID string, decisio
 	if decision == ApprovalAbort {
 		eventType, decisionName = "approval.rejected", "abort"
 	}
-	e.recordExecutionEvent(ctx, r, eventType, map[string]any{"decision": decisionName})
+	metadata := map[string]any{"decision": decisionName, "actor": response.Actor, "channel": response.Channel, "feedback": response.Feedback, "values": response.Values}
+	e.recordExecutionEvent(ctx, r, eventType, metadata)
+	stepID := r.waitingStep
+	structured := map[string]any{"approval_decision": decisionName, "approval_feedback": response.Feedback}
+	write := []string{"approval_decision", "approval_feedback"}
+	for key, value := range response.Values {
+		structured[key] = value
+		write = append(write, key)
+	}
+	r.contrib[stepID] = MemoryStep{StepID: stepID, WriteFields: write, Structured: structured, Summary: response.Feedback}
 
 	r.resolveApproval(decision)
 	_ = e.store.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateRunning)
@@ -171,8 +218,50 @@ func (e *Engine) RecheckApproval(ctx context.Context, instanceID string, poll fu
 	if step.StepType() != config.StepTypeApproval {
 		return ApprovalWait
 	}
+	if raw := step.RemindAfter; raw != "" {
+		if after, err := time.ParseDuration(raw); err == nil && e.now().Sub(parkedAt) >= after {
+			if store, ok := e.store.(approvalRequestStore); ok {
+				if req, _ := store.GetApprovalByInstance(ctx, instanceID); req != nil {
+					won, _ := store.MarkApprovalReminded(ctx, req.ID)
+					if won {
+						e.recordExecutionEvent(ctx, r, "approval.reminder", map[string]any{"request_id": req.ID, "approvers": step.Approvers})
+						for _, provider := range e.approvalProviders {
+							if lifecycle, ok := provider.(ApprovalLifecycleProvider); ok {
+								_ = lifecycle.RemindApproval(ctx, req)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if raw := step.EscalateAfter; raw != "" {
+		if after, err := time.ParseDuration(raw); err == nil && e.now().Sub(parkedAt) >= after {
+			if store, ok := e.store.(approvalRequestStore); ok {
+				if req, _ := store.GetApprovalByInstance(ctx, instanceID); req != nil {
+					won, _ := store.EscalateApproval(ctx, req.ID)
+					if won {
+						e.recordExecutionEvent(ctx, r, "approval.escalated", map[string]any{"request_id": req.ID, "escalate_to": step.EscalateTo})
+						for _, provider := range e.approvalProviders {
+							if lifecycle, ok := provider.(ApprovalLifecycleProvider); ok {
+								_ = lifecycle.EscalateApproval(ctx, req, step.EscalateTo)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 	if to := step.ParsedTimeout(); to > 0 && e.now().Sub(parkedAt) >= to {
 		aplog.Info("workflow: approval on instance %s timed out after %s — aborting", instanceID, to)
+		if store, ok := e.store.(approvalRequestStore); ok {
+			if req, _ := store.GetApprovalByInstance(ctx, instanceID); req != nil {
+				won, _ := store.MarkApprovalTimedOut(ctx, req.ID)
+				if won {
+					e.recordExecutionEvent(ctx, r, "approval.timed_out", map[string]any{"request_id": req.ID, "timeout": to.String()})
+				}
+			}
+		}
 		return ApprovalAbort
 	}
 	for _, b := range bindings {
@@ -207,6 +296,7 @@ func (e *Engine) CheckParkedApprovals(ctx context.Context, poll func(sourceID, s
 	for _, p := range e.ParkedApprovals() {
 		if to := p.Step.ParsedTimeout(); to > 0 && e.now().Sub(p.ParkedAt) >= to {
 			aplog.Info("workflow: approval on instance %s timed out after %s — aborting", p.InstanceID, to)
+			_ = e.RecheckApproval(ctx, p.InstanceID, poll) // persists timeout + audit event
 			_, _ = e.ResolveApproval(ctx, p.InstanceID, ApprovalAbort)
 			continue
 		}

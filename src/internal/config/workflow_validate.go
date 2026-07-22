@@ -104,6 +104,34 @@ func (c *Config) validateWorkflow(
 	for i, s := range wf.Steps {
 		errs = append(errs, c.validateStep(ctx, i, s, wf, agentIDs, stepIDs, wfByID)...)
 	}
+	requiredClasses := map[string]bool{}
+	for _, class := range c.Settings.Approvals.RequireFor {
+		requiredClasses[class] = true
+	}
+	for i, step := range wf.Steps {
+		if step.ActionClass == "" {
+			continue
+		}
+		switch step.ActionClass {
+		case "push", "deploy", "destructive", "external_publication":
+		default:
+			errs = append(errs, fmt.Errorf("%s: step %q has invalid action_class %q", ctx, step.ID, step.ActionClass))
+		}
+		if !requiredClasses[step.ActionClass] {
+			continue
+		}
+		guarded := i > 0 && wf.Steps[i-1].StepType() == StepTypeApproval && len(wf.Steps[i-1].Approvers) > 0
+		for _, dep := range append(append([]string{}, step.DependsOn...), step.SeqDependsOn...) {
+			for _, candidate := range wf.Steps {
+				if candidate.ID == dep && candidate.StepType() == StepTypeApproval && len(candidate.Approvers) > 0 {
+					guarded = true
+				}
+			}
+		}
+		if !guarded {
+			errs = append(errs, fmt.Errorf("%s: step %q action_class %q requires a preceding approval step", ctx, step.ID, step.ActionClass))
+		}
+	}
 
 	// Graph: depends_on references + cycle detection + back-edge ancestry.
 	errs = append(errs, validateStepGraph(ctx, wf, stepIDs)...)
@@ -335,8 +363,56 @@ func validateApprovalStep(sctx string, s StepConfig) []error {
 	if s.Message == "" {
 		errs = append(errs, fmt.Errorf("%s: approval step requires a message", sctx))
 	}
-	if s.ResumeOn == nil || s.ResumeOn.IsEmpty() {
-		errs = append(errs, fmt.Errorf("%s: approval step requires resume_on with at least one condition", sctx))
+	if (s.ResumeOn == nil || s.ResumeOn.IsEmpty()) && len(s.Approvers) == 0 {
+		errs = append(errs, fmt.Errorf("%s: approval step requires resume_on or at least one approver", sctx))
+	}
+	for name, raw := range map[string]string{"remind_after": s.RemindAfter, "escalate_after": s.EscalateAfter} {
+		if raw != "" {
+			if d, err := time.ParseDuration(raw); err != nil || d <= 0 {
+				errs = append(errs, fmt.Errorf("%s: invalid %s %q", sctx, name, raw))
+			}
+		}
+	}
+	seen := map[string]bool{}
+	if s.RequiredApprovals < 0 || (s.RequiredApprovals > 0 && s.RequiredApprovals > len(s.Approvers)) {
+		errs = append(errs, fmt.Errorf("%s: required_approvals cannot exceed the number of approvers", sctx))
+	}
+	approverSet := map[string]bool{}
+	delegateOwner := map[string]string{}
+	for _, approver := range s.Approvers {
+		approverSet[approver] = true
+	}
+	for approver, delegates := range s.Delegates {
+		if !approverSet[approver] {
+			errs = append(errs, fmt.Errorf("%s: delegate owner %q is not an approver", sctx, approver))
+		}
+		if len(delegates) == 0 {
+			errs = append(errs, fmt.Errorf("%s: delegate owner %q has no delegates", sctx, approver))
+		}
+		for _, delegate := range delegates {
+			if owner, exists := delegateOwner[delegate]; exists && owner != approver {
+				errs = append(errs, fmt.Errorf("%s: delegate %q is assigned to multiple approvers", sctx, delegate))
+			}
+			delegateOwner[delegate] = approver
+		}
+	}
+	for _, field := range s.ApprovalFields {
+		if field.Name == "" {
+			errs = append(errs, fmt.Errorf("%s: approval field name is required", sctx))
+			continue
+		}
+		if seen[field.Name] {
+			errs = append(errs, fmt.Errorf("%s: duplicate approval field %q", sctx, field.Name))
+		}
+		seen[field.Name] = true
+		switch field.Type {
+		case "", "string", "text", "boolean", "number", "choice":
+		default:
+			errs = append(errs, fmt.Errorf("%s: approval field %q has invalid type %q", sctx, field.Name, field.Type))
+		}
+		if field.Type == "choice" && len(field.Options) == 0 {
+			errs = append(errs, fmt.Errorf("%s: choice field %q requires options", sctx, field.Name))
+		}
 	}
 	if s.Timeout != "" {
 		if _, err := time.ParseDuration(s.Timeout); err != nil {

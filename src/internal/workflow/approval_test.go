@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +11,13 @@ import (
 	"github.com/orlandoburli/apiary/internal/db"
 	"github.com/orlandoburli/apiary/internal/model"
 )
+
+type recordingApprovalProvider struct{ requests []*db.ApprovalRequest }
+
+func (p *recordingApprovalProvider) RequestApproval(_ context.Context, req *db.ApprovalRequest) error {
+	p.requests = append(p.requests, req)
+	return nil
+}
 
 func TestEvaluateApproval_Conditions(t *testing.T) {
 	step := config.StepConfig{
@@ -81,6 +90,99 @@ func TestApproval_SuspendsAtApprovalStep(t *testing.T) {
 	}
 }
 
+func TestApprovalProviderReceivesTransportNeutralRequest(t *testing.T) {
+	provider := &recordingApprovalProvider{}
+	cfg := baseCfg()
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	eng := NewEngine(cfg, store, exec, WithSideEffects(&fakeSide{}), WithApprovalProvider(provider), WithIDGen(func(prefix string) string { return prefix + "-1" }))
+	wf := approvalWorkflow()
+	wf.Steps[1].Approvers = []string{"alice"}
+	wf.Steps[1].RequiredApprovals = 1
+	wf.Steps[1].ApprovalFields = []config.ApprovalField{{Name: "ticket", Required: true}}
+	instID, _, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "task"})
+	if len(provider.requests) != 1 {
+		t.Fatalf("requests=%d", len(provider.requests))
+	}
+	req := provider.requests[0]
+	if req.WorkflowInstanceID != instID || req.ID != instID+":gate" || req.Approvers[0] != "alice" {
+		t.Fatalf("request=%+v", req)
+	}
+}
+
+func TestApprovalAuditEventsPersistForRequestAndGrant(t *testing.T) {
+	ctx := context.Background()
+	dbc, err := db.New(ctx, filepath.Join(t.TempDir(), "approval-events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbc.Close()
+	exec := &fakeExecutor{}
+	eng := NewEngine(baseCfg(), dbc, exec, WithSideEffects(&fakeSide{}), WithIDGen(func(prefix string) string { return prefix + "-audit" }))
+	wf := approvalWorkflow()
+	wf.Steps[1].Approvers = []string{"alice"}
+	wf.Steps[1].ResumeOn = nil
+	instID, _, _ := eng.RunInstance(ctx, wf, model.InternalTask{ID: "task-audit"})
+	req, err := dbc.GetApprovalByInstance(ctx, instID)
+	if err != nil || req == nil {
+		t.Fatalf("request=%+v err=%v", req, err)
+	}
+	response := db.ApprovalResponse{Decision: "approve", Actor: "alice", Channel: "webhook", IdempotencyKey: "audit-delivery"}
+	if _, won, err := dbc.ResolveApprovalRequest(ctx, req.ID, response); err != nil || !won {
+		t.Fatalf("persist response: won=%v err=%v", won, err)
+	}
+	if _, err := eng.ResolveApprovalResponse(ctx, instID, response); err != nil {
+		t.Fatal(err)
+	}
+	events, err := dbc.ListExecutionEvents(ctx, db.ExecutionEventFilter{TaskID: "task-audit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, event := range events {
+		seen[event.Type] = true
+	}
+	if !seen["approval.requested"] || !seen["approval.granted"] {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
+func TestApprovalTimeoutPersistsAndCannotResume(t *testing.T) {
+	ctx := context.Background()
+	dbc, err := db.New(ctx, filepath.Join(t.TempDir(), "approval-timeout.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbc.Close()
+	clock := time.Unix(1000, 0)
+	eng := NewEngine(baseCfg(), dbc, &fakeExecutor{}, WithSideEffects(&fakeSide{}), WithClock(func() time.Time { return clock }), WithIDGen(func(prefix string) string { return prefix + "-timeout" }))
+	wf := approvalWorkflow()
+	wf.Steps[1].Approvers = []string{"alice"}
+	wf.Steps[1].ResumeOn = nil
+	wf.Steps[1].Timeout = "1h"
+	instID, _, _ := eng.RunInstance(ctx, wf, model.InternalTask{ID: "task-timeout"})
+	clock = clock.Add(2 * time.Hour)
+	decision := eng.RecheckApproval(ctx, instID, func(string, string) (model.SourceItem, error) { return model.SourceItem{}, nil })
+	if decision != ApprovalAbort {
+		t.Fatalf("decision=%v", decision)
+	}
+	if success, err := eng.ResolveApproval(ctx, instID, decision); err != nil || success {
+		t.Fatalf("resolve success=%v err=%v", success, err)
+	}
+	inst, _ := dbc.GetWorkflowInstance(ctx, instID)
+	if inst.State != db.InstanceStateFailed {
+		t.Fatalf("instance state=%s", inst.State)
+	}
+	req, _ := dbc.GetApprovalByInstance(ctx, instID)
+	if req.Status != db.ApprovalTimedOut {
+		t.Fatalf("request status=%s", req.Status)
+	}
+	events, _ := dbc.ListExecutionEvents(ctx, db.ExecutionEventFilter{TaskID: "task-timeout", Type: "approval.timed_out"})
+	if len(events) != 1 {
+		t.Fatalf("timeout events=%d", len(events))
+	}
+}
+
 func TestApproval_ResumeContinuesWorkflow(t *testing.T) {
 	cfg := baseCfg()
 	store := newFakeStore()
@@ -105,6 +207,27 @@ func TestApproval_ResumeContinuesWorkflow(t *testing.T) {
 	// No longer parked.
 	if len(eng.ParkedApprovals()) != 0 {
 		t.Error("instance should no longer be parked")
+	}
+}
+
+func TestApproval_ResponseFeedbackFlowsToNextStep(t *testing.T) {
+	cfg := baseCfg()
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	eng := testEngine(cfg, store, exec, &fakeSide{})
+	instID, _, _ := eng.RunInstance(context.Background(), approvalWorkflow(), model.InternalTask{ID: "c1"})
+	response := db.ApprovalResponse{Decision: "approve", Actor: "alice", Channel: "webhook", Feedback: "Ship during the maintenance window", Values: map[string]any{"change_ticket": "OPS-7"}}
+	if success, err := eng.ResolveApprovalResponse(context.Background(), instID, response); err != nil || !success {
+		t.Fatalf("resolve: success=%v err=%v", success, err)
+	}
+	var prompt string
+	for _, seen := range exec.seen {
+		if seen.Step.ID == "implement" {
+			prompt = seen.MemoryDoc
+		}
+	}
+	if !strings.Contains(prompt, "OPS-7") || !strings.Contains(prompt, "Ship during the maintenance window") {
+		t.Fatalf("approval response missing from next-step memory:\n%s", prompt)
 	}
 }
 

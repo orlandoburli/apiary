@@ -140,6 +140,7 @@ type WorkflowInstanceItem struct {
 	CreatedAt        time.Time
 	Steps            []WorkflowStepItem
 	CIPolls          []CIPollItem // recorded wait_for CI poll history (oldest first)
+	Approval         *db.ApprovalRequest
 
 	// Span and token totals aggregated across this instance's steps (StartedAt =
 	// earliest step start, FinishedAt = latest step finish). Used for the per-

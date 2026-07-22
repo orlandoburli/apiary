@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/orlandoburli/apiary/internal/db"
 )
 
 func TestRenderWorkflowSteps_CIPolls(t *testing.T) {
@@ -85,6 +87,21 @@ func TestRenderWorkflowSteps_ApprovalBanner(t *testing.T) {
 	}
 	if !strings.Contains(out, "Awaiting human approval") {
 		t.Errorf("expected approval message banner:\n%s", out)
+	}
+}
+
+func TestRenderWorkflowSteps_ApprovalActions(t *testing.T) {
+	inst := &WorkflowInstanceItem{ID: "wf-1", Workflow: "release", State: db.InstanceStateApprovalWaiting, Message: "Awaiting approval", Approval: &db.ApprovalRequest{ID: "wf-1:gate", Approvers: []string{"alice", "carol"}, RequiredApprovals: 2}}
+	out := stripANSI(renderWorkflowSteps(inst))
+	for _, want := range []string{"alice, carol", "Press y to approve or n to reject"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+	inst.Approval.Fields = []map[string]any{{"name": "ticket", "required": true}}
+	out = stripANSI(renderWorkflowSteps(inst))
+	if !strings.Contains(out, "signed webhook") {
+		t.Fatalf("structured-field guidance missing:\n%s", out)
 	}
 }
 

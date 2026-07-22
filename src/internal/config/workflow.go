@@ -176,16 +176,26 @@ type StepConfig struct {
 	// Env is the step-scope environment overlay. It is the highest-precedence
 	// explicit scope: it overrides workflow.env and agent.env for the same key.
 	Env map[string]string `yaml:"env,omitempty"`
+	// ActionClass lets settings.approvals.require_for enforce an approval gate
+	// before sensitive work such as push, deploy, destructive, or publication.
+	ActionClass string `yaml:"action_class,omitempty"`
 
 	// ── split step ────────────────────────────────────────────────
 	Multi    bool          `yaml:"multi,omitempty"`
 	Branches []SplitBranch `yaml:"branches,omitempty"`
 
 	// ── approval step ─────────────────────────────────────────────
-	Message  string           `yaml:"message,omitempty"`
-	ResumeOn *ApprovalTrigger `yaml:"resume_on,omitempty"`
-	AbortOn  *ApprovalTrigger `yaml:"abort_on,omitempty"`
-	Timeout  string           `yaml:"timeout,omitempty"`
+	Message           string              `yaml:"message,omitempty"`
+	ResumeOn          *ApprovalTrigger    `yaml:"resume_on,omitempty"`
+	AbortOn           *ApprovalTrigger    `yaml:"abort_on,omitempty"`
+	Timeout           string              `yaml:"timeout,omitempty"`
+	Approvers         []string            `yaml:"approvers,omitempty"`
+	RequiredApprovals int                 `yaml:"required_approvals,omitempty"`
+	ApprovalFields    []ApprovalField     `yaml:"fields,omitempty"`
+	RemindAfter       string              `yaml:"remind_after,omitempty"`
+	EscalateAfter     string              `yaml:"escalate_after,omitempty"`
+	EscalateTo        []string            `yaml:"escalate_to,omitempty"`
+	Delegates         map[string][]string `yaml:"delegates,omitempty"`
 
 	// ── wait_for step ─────────────────────────────────────────────
 	// WaitFor holds configuration for a wait_for step (e.g., wait for CI). The
@@ -237,6 +247,15 @@ type StepConfig struct {
 	Max int `yaml:"max,omitempty"`
 	// Output is the v2 alias for OutputSchema (shorter key in authored YAML).
 	Output *OutputSchema `yaml:"output,omitempty"`
+}
+
+// ApprovalField describes one typed value collected with a response.
+type ApprovalField struct {
+	Name     string   `yaml:"name" json:"name"`
+	Label    string   `yaml:"label,omitempty" json:"label,omitempty"`
+	Type     string   `yaml:"type,omitempty" json:"type,omitempty"`
+	Required bool     `yaml:"required,omitempty" json:"required,omitempty"`
+	Options  []string `yaml:"options,omitempty" json:"options,omitempty"`
 }
 
 // StepType returns the step's type, defaulting to StepTypeAgent when unset.

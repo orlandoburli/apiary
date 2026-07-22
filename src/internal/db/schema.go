@@ -230,6 +230,27 @@ CREATE INDEX IF NOT EXISTS idx_service_logs_timestamp ON service_logs(timestamp 
 CREATE INDEX IF NOT EXISTS idx_execution_events_task ON execution_events(task_id, id);
 CREATE INDEX IF NOT EXISTS idx_execution_events_instance ON execution_events(workflow_instance_id, id);
 CREATE INDEX IF NOT EXISTS idx_execution_events_type ON execution_events(type, id);
+
+CREATE TABLE IF NOT EXISTS approval_requests (
+  id TEXT PRIMARY KEY,
+  workflow_instance_id TEXT NOT NULL,
+  task_id TEXT, workflow_id TEXT, step_id TEXT NOT NULL, message TEXT,
+  approvers TEXT NOT NULL DEFAULT '[]', delegates TEXT NOT NULL DEFAULT '{}', required_approvals INTEGER NOT NULL DEFAULT 1, fields TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'pending', response_values TEXT NOT NULL DEFAULT '{}',
+  feedback TEXT, responded_by TEXT, response_channel TEXT,
+  idempotency_key TEXT UNIQUE, created_at DATETIME NOT NULL, expires_at DATETIME,
+  reminded_at DATETIME, escalated_at DATETIME, responded_at DATETIME,
+  UNIQUE(workflow_instance_id, step_id)
+);
+CREATE TABLE IF NOT EXISTS approval_responses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id TEXT NOT NULL, decision TEXT NOT NULL, actor TEXT NOT NULL, approver TEXT NOT NULL,
+  channel TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+  feedback TEXT, values_json TEXT NOT NULL DEFAULT '{}', created_at DATETIME NOT NULL,
+  UNIQUE(request_id, approver), FOREIGN KEY(request_id) REFERENCES approval_requests(id)
+);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_status ON approval_requests(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_instance ON approval_requests(workflow_instance_id);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_state ON workflow_instances(state);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_cell ON workflow_instances(cell_id);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_parent ON workflow_instances(parent_instance_id);
