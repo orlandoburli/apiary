@@ -679,6 +679,10 @@ func (c *Client) DeleteWorkflowInstances(ctx context.Context, instanceIDs []stri
 	if _, err := c.db.ExecContext(ctx, stmt, args...); err != nil {
 		return err
 	}
+	stmt = "DELETE FROM workflow_instance_snapshots WHERE instance_id IN (" + placeholders + ")"
+	if _, err := c.db.ExecContext(ctx, stmt, args...); err != nil {
+		return err
+	}
 
 	// Delete the workflow instances themselves.
 	stmt = "DELETE FROM workflow_instances WHERE id IN (" + placeholders + ")"

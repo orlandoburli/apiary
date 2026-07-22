@@ -50,7 +50,60 @@ func newInstancesCmd() *cobra.Command {
 	cmd.Flags().StringVar(&state, "state", "", "filter by state (pending, running, approval_waiting, interrupted, done, failed)")
 	cmd.Flags().IntVar(&limit, "limit", 20, "max rows")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output as JSON")
+	cmd.AddCommand(newInstancesCompareCmd())
 	return cmd
+}
+
+func newInstancesCompareCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "compare <before-id> <after-id>",
+		Short: "Compare two workflow attempts step by step",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return compareInstances(args[0], args[1], asJSON)
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "output as JSON")
+	return cmd
+}
+
+func compareInstances(beforeID, afterID string, asJSON bool) error {
+	q := url.Values{"before": {beforeID}, "after": {afterID}}
+	var comparison daemon.InstanceComparison
+	if err := ipcGetJSON("/instances/compare?"+q.Encode(), &comparison); err != nil {
+		return daemonDownHint()
+	}
+	if asJSON {
+		line, _ := json.MarshalIndent(comparison, "", "  ")
+		fmt.Println(string(line))
+		return nil
+	}
+	fmt.Printf("Comparing %s → %s\n\n", comparison.BeforeID, comparison.AfterID)
+	fmt.Println(instHeader.Render(fmt.Sprintf("%-18s %-13s %-13s %-10s %-10s %-12s %-10s", "STEP", "BEFORE", "AFTER", "INPUT", "OUTPUT", "USAGE Δ", "TIME Δ")))
+	for _, row := range comparison.Steps {
+		before, after := "—", "—"
+		if row.Before != nil {
+			before = row.Before.State
+		}
+		if row.After != nil {
+			after = row.After.State
+		}
+		input, output := "same", "same"
+		if row.InputChanged {
+			input = "changed"
+		}
+		if row.OutputChanged {
+			output = "changed"
+		}
+		usage := fmt.Sprintf("%+d / %+.5f", row.TokenDelta, row.CostDeltaUSD)
+		timing := fmt.Sprintf("%+dms", row.DurationDeltaMS)
+		fmt.Printf("%-18s %-13s %-13s %-10s %-10s %-12s %-10s\n", truncate(row.StepID, 18), before, after, input, output, usage, timing)
+		if row.BeforeModel != row.AfterModel || row.BeforeRunner != row.AfterRunner {
+			fmt.Printf("  %s\n", instMuted.Render(fmt.Sprintf("model/runner: %s/%s → %s/%s", row.BeforeModel, row.BeforeRunner, row.AfterModel, row.AfterRunner)))
+		}
+	}
+	return nil
 }
 
 func listInstances(workflow, state string, limit int, asJSON bool) error {

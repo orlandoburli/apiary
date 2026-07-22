@@ -39,6 +39,7 @@ type StepRunView struct {
 	Cached              bool       `json:"cached"`
 	Output              string     `json:"output"`
 	Summary             string     `json:"summary"`
+	InputPrompt         string     `json:"input_prompt,omitempty"`
 	InputTokens         int        `json:"input_tokens"`
 	OutputTokens        int        `json:"output_tokens"`
 	TotalTokens         int        `json:"total_tokens"`
@@ -65,8 +66,9 @@ type CIPollView struct {
 // InstanceDetail is the payload for `apiary instances <id>`.
 type InstanceDetail struct {
 	InstanceSummary
-	Steps   []StepRunView `json:"steps"`
-	CIPolls []CIPollView  `json:"ci_polls"`
+	ResumedFrom string        `json:"resumed_from,omitempty"`
+	Steps       []StepRunView `json:"steps"`
+	CIPolls     []CIPollView  `json:"ci_polls"`
 }
 
 // ciPollViews maps stored CI poll rows to their IPC views.
@@ -330,7 +332,7 @@ func (d *Dispatcher) InstanceDetail(ctx context.Context, id string) (*InstanceDe
 	title, _ := d.db.GetTaskTitle(ctx, inst.CellID)
 	now := time.Now()
 	view := db.WorkflowInstanceView{WorkflowInstance: *inst, Title: title}
-	detail := &InstanceDetail{InstanceSummary: instanceSummary(view, now)}
+	detail := &InstanceDetail{InstanceSummary: instanceSummary(view, now), ResumedFrom: inst.ResumedFrom}
 
 	steps, err := d.db.ListStepRuns(ctx, id)
 	if err != nil {
@@ -349,15 +351,16 @@ func (d *Dispatcher) InstanceDetail(ctx context.Context, id string) (*InstanceDe
 // via the step link columns. Shared by InstanceDetail and TaskHistory.
 func (d *Dispatcher) stepRunView(ctx context.Context, instanceID string, s db.StepRun, now time.Time) StepRunView {
 	srv := StepRunView{
-		StepID:     s.StepID,
-		AgentID:    s.AgentID,
-		State:      s.State,
-		Duration:   stepDuration(s, now),
-		Cached:     s.SkippedCached,
-		Output:     s.Output,
-		Summary:    s.Summary,
-		StartedAt:  s.StartedAt,
-		FinishedAt: s.FinishedAt,
+		StepID:      s.StepID,
+		AgentID:     s.AgentID,
+		State:       s.State,
+		Duration:    stepDuration(s, now),
+		Cached:      s.SkippedCached,
+		Output:      s.Output,
+		Summary:     s.Summary,
+		InputPrompt: s.InputPrompt,
+		StartedAt:   s.StartedAt,
+		FinishedAt:  s.FinishedAt,
 	}
 	// Prefer the step's own usage rollup (summed across failover attempts). Fall
 	// back to the latest task_execution for rows written before step_runs carried
@@ -382,6 +385,103 @@ func (d *Dispatcher) stepRunView(ctx context.Context, instanceID string, s db.St
 		srv.NumToolCalls = usage.NumToolCalls
 	}
 	return srv
+}
+
+type StepComparison struct {
+	StepID          string       `json:"step_id"`
+	Before          *StepRunView `json:"before,omitempty"`
+	After           *StepRunView `json:"after,omitempty"`
+	InputChanged    bool         `json:"input_changed"`
+	OutputChanged   bool         `json:"output_changed"`
+	TokenDelta      int          `json:"token_delta"`
+	CostDeltaUSD    float64      `json:"cost_delta_usd"`
+	DurationDeltaMS int64        `json:"duration_delta_ms"`
+	BeforeModel     string       `json:"before_model,omitempty"`
+	AfterModel      string       `json:"after_model,omitempty"`
+	BeforeRunner    string       `json:"before_runner,omitempty"`
+	AfterRunner     string       `json:"after_runner,omitempty"`
+}
+
+type InstanceComparison struct {
+	BeforeID string           `json:"before_id"`
+	AfterID  string           `json:"after_id"`
+	Steps    []StepComparison `json:"steps"`
+}
+
+func (d *Dispatcher) CompareInstances(ctx context.Context, beforeID, afterID string) (*InstanceComparison, error) {
+	before, err := d.InstanceDetail(ctx, beforeID)
+	if err != nil || before == nil {
+		return nil, err
+	}
+	after, err := d.InstanceDetail(ctx, afterID)
+	if err != nil || after == nil {
+		return nil, err
+	}
+	bm, am := map[string]StepRunView{}, map[string]StepRunView{}
+	order, seen := []string{}, map[string]bool{}
+	for _, s := range before.Steps {
+		bm[s.StepID] = s
+		if !seen[s.StepID] {
+			order = append(order, s.StepID)
+			seen[s.StepID] = true
+		}
+	}
+	for _, s := range after.Steps {
+		am[s.StepID] = s
+		if !seen[s.StepID] {
+			order = append(order, s.StepID)
+			seen[s.StepID] = true
+		}
+	}
+	out := &InstanceComparison{BeforeID: beforeID, AfterID: afterID}
+	for _, id := range order {
+		row := StepComparison{StepID: id}
+		if s, ok := bm[id]; ok {
+			copy := s
+			row.Before = &copy
+		}
+		if s, ok := am[id]; ok {
+			copy := s
+			row.After = &copy
+		}
+		if row.Before != nil {
+			if usage, err := d.db.GetStepUsage(ctx, beforeID, id); err == nil && usage != nil {
+				row.BeforeModel, row.BeforeRunner = usage.Model, usage.Runner
+				if row.Before.InputPrompt == "" {
+					row.Before.InputPrompt = usage.InputPrompt
+				}
+			}
+		}
+		if row.After != nil {
+			if usage, err := d.db.GetStepUsage(ctx, afterID, id); err == nil && usage != nil {
+				row.AfterModel, row.AfterRunner = usage.Model, usage.Runner
+				if row.After.InputPrompt == "" {
+					row.After.InputPrompt = usage.InputPrompt
+				}
+			}
+		}
+		if row.After != nil && row.After.Cached && row.AfterModel == "" {
+			row.AfterModel, row.AfterRunner = row.BeforeModel, row.BeforeRunner
+		}
+		if row.Before != nil && row.After != nil {
+			row.InputChanged = row.Before.InputPrompt != row.After.InputPrompt
+			row.OutputChanged = row.Before.Output != row.After.Output
+			row.TokenDelta = row.After.TotalTokens - row.Before.TotalTokens
+			row.CostDeltaUSD = row.After.CostUSD - row.Before.CostUSD
+			row.DurationDeltaMS = stepViewDurationMS(*row.After) - stepViewDurationMS(*row.Before)
+		} else {
+			row.InputChanged, row.OutputChanged = true, true
+		}
+		out.Steps = append(out.Steps, row)
+	}
+	return out, nil
+}
+
+func stepViewDurationMS(step StepRunView) int64 {
+	if step.StartedAt == nil || step.FinishedAt == nil {
+		return 0
+	}
+	return step.FinishedAt.Sub(*step.StartedAt).Milliseconds()
 }
 
 // TaskLogLineView is one log line scoped to a task-history segment's instance.

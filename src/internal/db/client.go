@@ -270,7 +270,9 @@ func (c *Client) GetStepUsage(ctx context.Context, instanceID, stepID string) (*
 	row := c.db.QueryRowContext(ctx, `
 		SELECT input_tokens, output_tokens, total_tokens,
 		       COALESCE(cache_creation_tokens,0), COALESCE(cache_read_tokens,0),
-		       num_turns, num_tool_calls, cost_usd
+		       num_turns, num_tool_calls, cost_usd,
+		       COALESCE(model,''), COALESCE(runner,''),
+		       COALESCE(input_prompt,''), COALESCE(output_text,'')
 		FROM task_executions
 		WHERE workflow_instance_id = ? AND step_id = ?
 		ORDER BY created_at DESC LIMIT 1
@@ -278,7 +280,8 @@ func (c *Client) GetStepUsage(ctx context.Context, instanceID, stepID string) (*
 	var e Execution
 	err := row.Scan(&e.InputTokens, &e.OutputTokens, &e.TotalTokens,
 		&e.CacheCreationTokens, &e.CacheReadTokens,
-		&e.NumTurns, &e.NumToolCalls, &e.CostUSD)
+		&e.NumTurns, &e.NumToolCalls, &e.CostUSD,
+		&e.Model, &e.Runner, &e.InputPrompt, &e.OutputText)
 	if err != nil {
 		return nil, err
 	}

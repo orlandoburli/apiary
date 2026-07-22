@@ -117,6 +117,15 @@ CREATE TABLE IF NOT EXISTS workflow_instances (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Immutable workflow definition used by an instance. Kept separately from
+-- workflow_instances so the hot instance-list scan remains narrow.
+CREATE TABLE IF NOT EXISTS workflow_instance_snapshots (
+  instance_id TEXT PRIMARY KEY,
+  workflow_json TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(instance_id) REFERENCES workflow_instances(id) ON DELETE CASCADE
+);
+
 -- Step runs: one row per step execution within a workflow instance.
 CREATE TABLE IF NOT EXISTS step_runs (
   id TEXT PRIMARY KEY,

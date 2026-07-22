@@ -21,34 +21,45 @@ import (
 
 func newResumeCmd() *cobra.Command {
 	var (
-		yes      bool
-		workflow string
+		yes        bool
+		workflow   string
+		fromStep   string
+		configMode string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "resume [instance-id]",
 		Short: "Resume a failed or interrupted workflow instance",
-		Long: "Resume a failed or interrupted workflow instance from its last completed step. " +
-			"Completed steps are replayed from cache (not re-executed); the run continues from the failure point.",
+		Long: "Replay a failed or interrupted workflow instance as a new immutable descendant. " +
+			"Completed steps are copied from cache (not re-executed); the descendant continues from the failure point.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := ""
 			if len(args) == 1 {
 				id = args[0]
 			}
-			return runResume(id, workflow, yes)
+			return runResume(id, workflow, fromStep, configMode, yes)
 		},
 	}
 
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
 	cmd.Flags().StringVar(&workflow, "workflow", "", "resume the most recent failed/interrupted instance of this workflow")
+	cmd.Flags().StringVar(&fromStep, "from", "", "re-run from this step instead of the first incomplete step")
+	cmd.Flags().StringVar(&configMode, "definition", daemon.ResumeConfigCurrent, "workflow definition to use: current or original")
 	return cmd
 }
 
-func runResume(id, workflow string, yes bool) error {
+func runResume(id, workflow, fromStep, configMode string, yes bool) error {
 	if (id == "") == (workflow == "") {
 		fmt.Println(instErr.Render("Provide exactly one of <instance-id> or --workflow."))
 		os.Exit(1)
+	}
+	if configMode != daemon.ResumeConfigCurrent && configMode != daemon.ResumeConfigOriginal {
+		return fmt.Errorf("invalid --definition %q: expected current or original", configMode)
+	}
+	resumeQuery := url.Values{"config": {configMode}}
+	if fromStep != "" {
+		resumeQuery.Set("from", fromStep)
 	}
 
 	// Resolve the target instance from --workflow if no id was given.
@@ -65,7 +76,7 @@ func runResume(id, workflow string, yes bool) error {
 
 	// Preview (also validates resumability and maps exit codes).
 	var preview daemon.ResumePreview
-	status, err := ipcDo(http.MethodGet, "/resume/"+url.PathEscape(id), &preview)
+	status, err := ipcDo(http.MethodGet, "/resume/"+url.PathEscape(id)+"?"+resumeQuery.Encode(), &preview)
 	if err != nil {
 		return resumeFail(status, err, id)
 	}
@@ -79,11 +90,14 @@ func runResume(id, workflow string, yes bool) error {
 	}
 
 	// Execute.
-	status, err = ipcDo(http.MethodPost, "/resume/"+url.PathEscape(id), nil)
+	var queued struct {
+		InstanceID string `json:"instance_id"`
+	}
+	status, err = ipcDo(http.MethodPost, "/resume/"+url.PathEscape(id)+"?"+resumeQuery.Encode(), &queued)
 	if err != nil {
 		return resumeFail(status, err, id)
 	}
-	fmt.Println(instOK.Render("✓") + " Resume queued for " + id + " — the daemon will pick it up.")
+	fmt.Println(instOK.Render("✓") + " Resume queued as " + queued.InstanceID + " (from " + id + ").")
 	return nil
 }
 
@@ -93,6 +107,11 @@ func printResumePreview(p daemon.ResumePreview) {
 		cell += " — " + p.Title
 	}
 	fmt.Printf("\nResuming instance %s (%s / %s)\n\n", p.InstanceID, p.Workflow, cell)
+	fmt.Printf("Configuration: %s", p.ConfigMode)
+	if p.FromStep != "" {
+		fmt.Printf("  ·  from step: %s", p.FromStep)
+	}
+	fmt.Println()
 
 	if len(p.Skip) > 0 {
 		fmt.Println(instHeader.Render("Steps to skip (already completed):"))
