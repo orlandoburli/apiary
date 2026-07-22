@@ -450,6 +450,8 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		last := i == len(candidates)-1
 		if !last && x.d.runnerPausedUntil(c.runnerType).After(time.Now()) {
 			aplog.Info("[%s] runner %q paused by rate limit, skipping to fallback", req.Cell.LogLabel(), c.runnerType)
+			x.d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "fallback.selected", WorkflowInstanceID: req.InstanceID, StepID: req.Step.ID,
+				Metadata: map[string]any{"from_runner": c.runnerType, "to_runner": candidates[i+1].runnerType, "reason": "runner paused"}})
 			continue
 		}
 
@@ -500,6 +502,12 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 
 		if failureKind != model.FailureNone && !last {
 			x.d.pauseRunnerWithKind(c.runnerType, out.RateLimitResetsAt, failureKind)
+			if failureKind == model.FailureRateLimited || failureKind == model.FailureCreditExhausted {
+				x.d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "rate_limit.detected", WorkflowInstanceID: req.InstanceID, StepID: req.Step.ID,
+					Metadata: map[string]any{"runner": c.runnerType, "kind": failureKind.String()}})
+			}
+			x.d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "fallback.selected", WorkflowInstanceID: req.InstanceID, StepID: req.Step.ID,
+				Metadata: map[string]any{"from_runner": c.runnerType, "to_runner": candidates[i+1].runnerType, "reason": failureKind.String()}})
 
 			label := "failed"
 			switch failureKind {
@@ -583,6 +591,12 @@ func (x *wfStepExecutor) beginExecution(ctx context.Context, req workflow.StepRe
 	if req.InstanceID != "" {
 		_ = x.d.db.SetStepLink(ctx, exec.ID, req.InstanceID, req.Step.ID)
 	}
+	event := db.ExecutionEvent{Type: "runner.started", WorkflowInstanceID: req.InstanceID, StepID: req.Step.ID, AttemptID: fmt.Sprint(exec.ID),
+		Metadata: map[string]any{"runner": runnerType, "model": model, "attempt": attempt}}
+	if inst, _ := x.d.db.GetWorkflowInstance(ctx, req.InstanceID); inst != nil {
+		event.TaskID, event.WorkflowID = inst.TaskID, inst.WorkflowID
+	}
+	x.d.recordExecutionEvent(ctx, event)
 	return exec
 }
 
@@ -625,6 +639,13 @@ func (x *wfStepExecutor) finishExecution(ctx context.Context, exec *db.Execution
 	if err := x.d.db.UpdateExecution(ctx, exec); err != nil {
 		aplog.Error("cell %s: update execution record: %v", exec.TaskID, err)
 	}
+	event := db.ExecutionEvent{Type: "runner.stopped", WorkflowInstanceID: exec.WorkflowInstanceID, StepID: exec.StepID, AttemptID: fmt.Sprint(exec.ID),
+		Metadata: map[string]any{"runner": exec.Runner, "model": exec.Model, "status": exec.Status, "failure_kind": exec.FailureKind,
+			"duration_ms": exec.DurationMs, "total_tokens": exec.TotalTokens, "cost_usd": exec.CostUSD}}
+	if inst, _ := x.d.db.GetWorkflowInstance(ctx, exec.WorkflowInstanceID); inst != nil {
+		event.TaskID, event.WorkflowID = inst.TaskID, inst.WorkflowID
+	}
+	x.d.recordExecutionEvent(ctx, event)
 }
 
 // wfSideEffects applies source-facing actions for a workflow instance. It fans

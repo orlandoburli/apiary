@@ -109,14 +109,30 @@ func (c *Client) CreateWorkflowInstance(ctx context.Context, inst *WorkflowInsta
 		        COALESCE((SELECT generation FROM internal_tasks WHERE id = ?), 0), ?, ?)
 	`, inst.ID, inst.WorkflowID, nullStr(inst.TaskID), inst.CellID, nullStr(inst.SourceID), inst.State,
 		nullStr(inst.ParentInstanceID), nullStr(inst.ResumedFrom), inst.TaskID, inst.CreatedAt, inst.UpdatedAt)
+	if err == nil {
+		c.recordWorkflowEvent(ctx, inst, "workflow.started", map[string]any{"state": inst.State})
+		if inst.ResumedFrom != "" {
+			c.recordWorkflowEvent(ctx, inst, "workflow.resumed", map[string]any{"resumed_from": inst.ResumedFrom})
+		}
+	}
 	return err
 }
 
 // UpdateWorkflowInstanceState transitions an instance to a new state.
 func (c *Client) UpdateWorkflowInstanceState(ctx context.Context, id, state string) error {
+	inst, _ := c.GetWorkflowInstance(ctx, id)
+	if inst != nil && inst.State == state {
+		return nil
+	}
 	_, err := c.db.ExecContext(ctx, `
 		UPDATE workflow_instances SET state = ?, updated_at = ? WHERE id = ?
 	`, state, time.Now(), id)
+	if err == nil && inst != nil {
+		inst.State = state
+		if eventType := workflowStateEventType(state); eventType != "" {
+			c.recordWorkflowEvent(ctx, inst, eventType, map[string]any{"state": state})
+		}
+	}
 	return err
 }
 
@@ -505,12 +521,17 @@ func (c *Client) CreateStepRun(ctx context.Context, sr *StepRun) error {
 		nullStr(sr.SpawnedTaskID), nullStr(sr.InputPrompt), sr.InputTokens, sr.OutputTokens,
 		sr.TotalTokens, sr.CacheCreationTokens, sr.CacheReadTokens, sr.NumTurns, sr.NumToolCalls,
 		sr.CostUSD, sr.StartedAt, sr.FinishedAt)
+	if err == nil {
+		c.recordStepEvent(ctx, sr, stepStateEventType(sr.State))
+	}
 	return err
 }
 
 // UpdateStepRun persists the mutable fields of a step run (state, output,
 // structured output, summary, exit code, skipped flag, finished timestamp).
 func (c *Client) UpdateStepRun(ctx context.Context, sr *StepRun) error {
+	var previous string
+	_ = c.db.QueryRowContext(ctx, `SELECT state FROM step_runs WHERE id = ?`, sr.ID).Scan(&previous)
 	_, err := c.db.ExecContext(ctx, `
 		UPDATE step_runs
 		SET state = ?, output = ?, structured_output = ?, summary = ?,
@@ -525,7 +546,57 @@ func (c *Client) UpdateStepRun(ctx context.Context, sr *StepRun) error {
 		nullStr(sr.SpawnedTaskID), nullStr(sr.InputPrompt), sr.InputTokens, sr.OutputTokens,
 		sr.TotalTokens, sr.CacheCreationTokens, sr.CacheReadTokens, sr.NumTurns, sr.NumToolCalls,
 		sr.CostUSD, sr.StartedAt, sr.FinishedAt, sr.ID)
+	if err == nil && previous != sr.State {
+		c.recordStepEvent(ctx, sr, stepStateEventType(sr.State))
+	}
 	return err
+}
+
+func workflowStateEventType(state string) string {
+	switch state {
+	case InstanceStateDone:
+		return "workflow.completed"
+	case InstanceStateFailed:
+		return "workflow.failed"
+	case InstanceStateInterrupted:
+		return "workflow.cancelled"
+	}
+	return ""
+}
+
+func stepStateEventType(state string) string {
+	switch state {
+	case StepStateRunning:
+		return "step.started"
+	case StepStatePassed, StepStateSkipped, StepStateSkippedCached:
+		return "step.completed"
+	case StepStateFailed:
+		return "step.failed"
+	case StepStateInterrupted:
+		return "step.cancelled"
+	}
+	return ""
+}
+
+func (c *Client) recordWorkflowEvent(ctx context.Context, inst *WorkflowInstance, eventType string, metadata map[string]any) {
+	if eventType == "" || inst == nil {
+		return
+	}
+	_ = c.RecordExecutionEvent(ctx, &ExecutionEvent{Type: eventType, TaskID: inst.TaskID, WorkflowID: inst.WorkflowID, WorkflowInstanceID: inst.ID, Metadata: metadata})
+}
+
+func (c *Client) recordStepEvent(ctx context.Context, sr *StepRun, eventType string) {
+	if eventType == "" || sr == nil {
+		return
+	}
+	inst, _ := c.GetWorkflowInstance(ctx, sr.WorkflowInstanceID)
+	event := &ExecutionEvent{Type: eventType, WorkflowInstanceID: sr.WorkflowInstanceID, StepID: sr.StepID,
+		Metadata: map[string]any{"state": sr.State, "agent_id": sr.AgentID, "exit_code": sr.ExitCode, "cached": sr.SkippedCached,
+			"total_tokens": sr.TotalTokens, "cost_usd": sr.CostUSD}}
+	if inst != nil {
+		event.TaskID, event.WorkflowID = inst.TaskID, inst.WorkflowID
+	}
+	_ = c.RecordExecutionEvent(ctx, event)
 }
 
 // ListStepRuns returns all step runs for an instance, in insertion order.

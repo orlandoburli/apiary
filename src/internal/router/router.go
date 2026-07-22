@@ -144,6 +144,29 @@ func (r *Router) RouteAll(task model.InternalTask) []Match {
 	return matches
 }
 
+// ExplainTask returns the same fan-out decision as RouteAll together with a
+// stable reason for every route evaluated before an exclusive match.
+func (r *Router) ExplainTask(task model.InternalTask) []RouteTrace {
+	t := targetFromTask(task)
+	traces := make([]RouteTrace, 0, len(r.routes))
+	for _, route := range r.routes {
+		matched, reason := r.evaluateTarget(route, t)
+		selected := false
+		if matched {
+			_, selected = r.resolveMatch(route)
+			if !selected {
+				reason = "matched conditions but route has no resolvable agent or worker"
+			}
+		}
+		traces = append(traces, RouteTrace{RouteID: route.ID, Priority: route.Priority, Agent: route.Agent,
+			Worker: route.Worker, Matched: matched, Selected: selected, Reason: reason})
+		if selected && route.Exclusive {
+			break
+		}
+	}
+	return traces
+}
+
 // resolveMatch turns a matched route into a Match: agent-based routing is
 // preferred (route.Agent), falling back to a defined worker for backward compat.
 // Returns false if the route resolves to neither — the caller skips it.

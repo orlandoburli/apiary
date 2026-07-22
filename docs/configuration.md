@@ -470,6 +470,23 @@ notifications:
       run: curl -s -d "{{number}} escalated ({{label}}): {{summary}}" ntfy.sh/my-alerts
 ```
 
+## Execution event retention and redaction
+
+Structured task timelines are persisted automatically when SQLite is enabled.
+Configure their retention and additional sensitive metadata keys under
+`settings.events`:
+
+```yaml
+settings:
+  events:
+    retention: 720h
+    sensitive_fields: [customer_key]
+```
+
+The default retention is 30 days. Non-positive durations disable pruning. See
+[Structured execution events](execution-events.md) for the envelope, local query
+API, SSE subscription, compatibility contract, and built-in redaction behavior.
+
 ## Environment variables
 
 Agent subprocesses inherit the daemon's environment plus an overlay you

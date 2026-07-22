@@ -457,6 +457,7 @@ func (e *Engine) enterApproval(ctx context.Context, r *dagRun, step config.StepC
 	r.state[step.ID] = stWaiting
 	r.waitingStep = step.ID
 	r.parkedAt = e.now()
+	e.recordExecutionEvent(ctx, r, "approval.requested", map[string]any{"message": step.Message})
 	aplog.Info("workflow %s: instance %s parked at approval step %q", r.wf.ID, r.instID, step.ID)
 }
 

@@ -95,6 +95,21 @@ CREATE TABLE IF NOT EXISTS service_logs (
   timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Versioned structured lifecycle events. Metadata is redacted before insert;
+-- the same stored envelope powers queries, SSE subscribers, CLI, and dashboard.
+CREATE TABLE IF NOT EXISTS execution_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  schema_version INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  task_id TEXT,
+  workflow_id TEXT,
+  workflow_instance_id TEXT,
+  step_id TEXT,
+  attempt_id TEXT,
+  metadata TEXT NOT NULL DEFAULT '{}'
+);
+
 -- Dispatcher state
 CREATE TABLE IF NOT EXISTS dispatcher_state (
   id INTEGER PRIMARY KEY,
@@ -212,6 +227,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_logs_timestamp ON task_logs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_service_logs_timestamp ON service_logs(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_execution_events_task ON execution_events(task_id, id);
+CREATE INDEX IF NOT EXISTS idx_execution_events_instance ON execution_events(workflow_instance_id, id);
+CREATE INDEX IF NOT EXISTS idx_execution_events_type ON execution_events(type, id);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_state ON workflow_instances(state);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_cell ON workflow_instances(cell_id);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_parent ON workflow_instances(parent_instance_id);

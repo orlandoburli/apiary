@@ -257,6 +257,7 @@ type TaskItem struct {
 	Children             []TaskLineageItem      // direct children / spawned tasks (detail only)
 	Instances            []WorkflowInstanceItem // all workflow instances for this task (detail only)
 	PullRequests         []PullRequestItem      // persisted PRs, oldest first; last = most recent
+	Events               []db.ExecutionEvent    // structured task timeline, oldest first
 }
 
 // PullRequestItem is one pull request linked to a task, persisted by the daemon
@@ -301,9 +302,9 @@ type AgentsTab struct {
 	ActivityIdx int          // cursor within Activity
 
 	// Drill-down: logs of the task selected in the activity list.
-	LogsTaskID string
-	LogsTask   *TaskItem // task detail for the logs header
-	TaskLogs   []LogEntry
+	LogsTaskID    string
+	LogsTask      *TaskItem // task detail for the logs header
+	TaskLogs      []LogEntry
 	TaskLogIdx    int  // vertical scroll within TaskLogs (visual lines)
 	TaskLogFollow bool // pin the task-log viewport to the tail; cleared by scrolling up
 

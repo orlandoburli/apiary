@@ -2392,6 +2392,7 @@ func (a *App) augmentTaskDetail(ctx context.Context, dbConn *db.Client, detail *
 	if insts, _ := dbConn.ListWorkflowInstancesByTask(ctx, internalTaskID); len(insts) > 0 {
 		detail.Instances = mapInstances(ctx, dbConn, insts)
 	}
+	detail.Events, _ = dbConn.ListExecutionEvents(ctx, db.ExecutionEventFilter{TaskID: internalTaskID, Limit: 200})
 	// PRs are persisted by the daemon (refreshed on detail open); read them back so
 	// the (p) shortcut and the detail panel stay in sync. Re-runs of this function
 	// from the live tick pick up freshly-discovered PRs automatically.
@@ -3421,6 +3422,7 @@ func (a *App) taskDetailLines(t *TasksTab) []string {
 	b.WriteString(renderSourceBindings(d))
 	b.WriteString(renderTaskLineage(d))
 	b.WriteString(renderTaskInstances(d))
+	b.WriteString(renderTaskTimeline(d))
 	return strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
 }
 
@@ -3527,6 +3529,22 @@ func renderTaskInstances(d *TaskItem) string {
 			StyleMuted.Render(padLeft(fmtTokensShort(in.TotalTokens), colTok)),
 			marker,
 		))
+	}
+	return b.String()
+}
+
+func renderTaskTimeline(d *TaskItem) string {
+	if len(d.Events) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n  " + StyleLabel.Render(fmt.Sprintf("Timeline (%d)", len(d.Events))) + "\n")
+	for _, event := range d.Events {
+		b.WriteString(fmt.Sprintf("    %s  %s", StyleMuted.Render(event.Timestamp.Local().Format("15:04:05")), event.Type))
+		if event.StepID != "" {
+			b.WriteString(StyleMuted.Render(" · " + event.StepID))
+		}
+		b.WriteString("\n")
 	}
 	return b.String()
 }

@@ -504,6 +504,7 @@ type TaskHistorySegmentView struct {
 type TaskHistoryResponse struct {
 	TaskID   string                   `json:"task_id"`
 	Title    string                   `json:"title"`
+	Events   []db.ExecutionEvent      `json:"events"`
 	Segments []TaskHistorySegmentView `json:"segments"`
 }
 
@@ -525,6 +526,7 @@ func (d *Dispatcher) TaskHistory(ctx context.Context, internalTaskID string) (*T
 	// All instances of a task share one cell, so one title lookup covers them all.
 	title, _ := d.db.GetTaskTitle(ctx, segs[0].Instance.CellID)
 	resp := &TaskHistoryResponse{TaskID: internalTaskID, Title: title}
+	resp.Events, _ = d.db.ListExecutionEvents(ctx, db.ExecutionEventFilter{TaskID: internalTaskID, Limit: 1000})
 	for _, seg := range segs {
 		view := db.WorkflowInstanceView{WorkflowInstance: seg.Instance, Title: title}
 		sv := TaskHistorySegmentView{Instance: instanceSummary(view, now)}
