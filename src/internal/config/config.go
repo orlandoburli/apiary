@@ -11,6 +11,7 @@ import (
 
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
+	"github.com/orlandoburli/apiary/internal/plugin"
 )
 
 type Config struct {
@@ -25,6 +26,8 @@ type Config struct {
 	Settings      Settings                            `yaml:"settings"`
 	Tasks         *TasksConfig                        `yaml:"tasks"`
 	Notifications *NotificationsConfig                `yaml:"notifications"`
+	PluginDirs    []string                            `yaml:"plugin_dirs,omitempty"`
+	Plugins       []plugin.InstanceConfig             `yaml:"plugins,omitempty"`
 
 	rawContent string // original YAML text before env expansion; used by Save()
 }

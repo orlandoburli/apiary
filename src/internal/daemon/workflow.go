@@ -55,7 +55,11 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 			}
 			return lister.ListBlockers(ctx, sourceItemID, linkType)
 		}))
-		d.engine = workflow.NewEngine(d.cfg, d.db, &wfStepExecutor{d: d}, opts...)
+		var store workflow.Store = d.db
+		if d.db != nil {
+			store = pluginExportStore{Client: d.db, dispatcher: d}
+		}
+		d.engine = workflow.NewEngine(d.cfg, store, &wfStepExecutor{d: d}, opts...)
 	})
 	return d.engine
 }

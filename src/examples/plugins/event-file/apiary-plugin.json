@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "dev.apiary.event-file",
+  "version": "1.0.0",
+  "apiary": ">= 0.10.0-0",
+  "protocol": 1,
+  "executable": "apiary-plugin-event-file",
+  "capabilities": ["event_exporter"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "minLength": 1}
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  },
+  "security": {
+    "network": false,
+    "write_paths": ["configured event file"]
+  }
+}

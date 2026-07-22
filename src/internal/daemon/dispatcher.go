@@ -24,6 +24,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/logging"
 	"github.com/orlandoburli/apiary/internal/memory"
 	"github.com/orlandoburli/apiary/internal/model"
+	"github.com/orlandoburli/apiary/internal/plugin"
 	"github.com/orlandoburli/apiary/internal/router"
 	runnerimpl "github.com/orlandoburli/apiary/internal/runner"
 	"github.com/orlandoburli/apiary/internal/source"
@@ -98,6 +99,11 @@ type Dispatcher struct {
 	// instances parked at approval steps survive across dispatch cycles.
 	engine     *workflow.Engine
 	engineOnce sync.Once
+
+	// eventExporters are isolated out-of-process plugin clients. Event storage
+	// always completes first; exporter failures are reported but never returned
+	// into dispatcher control flow.
+	eventExporters []*plugin.Client
 }
 
 // runnerCandidate is one rung in an agent's rate-limit failover chain: a
@@ -107,6 +113,17 @@ type runnerCandidate struct {
 	adapter    runnerimpl.Runner
 	runnerType string
 	model      string
+}
+
+// pluginExportStore preserves *db.Client's complete workflow Store surface via
+// embedding while intercepting execution events for configured exporters.
+type pluginExportStore struct {
+	*db.Client
+	dispatcher *Dispatcher
+}
+
+func (s pluginExportStore) RecordExecutionEvent(ctx context.Context, event *db.ExecutionEvent) error {
+	return s.dispatcher.persistAndExportExecutionEvent(ctx, event)
 }
 
 // runnerPausedUntil returns the time a runner type's provider rate limit resets,
@@ -181,6 +198,16 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		sem:             make(chan struct{}, 1), // poll: one at a time
 		agentSem:        make(map[string]chan struct{}),
 		stats:           make(map[string]*sourceStat),
+	}
+
+	registry, pluginErrs := plugin.DiscoverConfigured(cfg.PluginDirs, configFile, version.Version)
+	pluginErrs = append(pluginErrs, plugin.ValidateConfigured(registry, cfg.Plugins)...)
+	if len(pluginErrs) > 0 {
+		return nil, fmt.Errorf("plugins: %w", errors.Join(pluginErrs...))
+	}
+	d.eventExporters, pluginErrs = plugin.EnabledClients(registry, cfg.Plugins, plugin.CapabilityEventExporter)
+	if len(pluginErrs) > 0 {
+		return nil, fmt.Errorf("plugins: %w", errors.Join(pluginErrs...))
 	}
 	if dbClient != nil {
 		dbClient.SetEventSensitiveFields(cfg.Settings.Events.SensitiveFields)
@@ -1452,9 +1479,27 @@ func (d *Dispatcher) bindItem(ctx context.Context, cell model.SourceItem) (task 
 }
 
 func (d *Dispatcher) recordExecutionEvent(ctx context.Context, event db.ExecutionEvent) {
-	if d.db != nil {
-		_ = d.db.RecordExecutionEvent(ctx, &event)
+	if d.db == nil {
+		return
 	}
+	if err := d.persistAndExportExecutionEvent(ctx, &event); err != nil {
+		aplog.Error("execution event %s: persist: %v", event.Type, err)
+	}
+}
+
+func (d *Dispatcher) persistAndExportExecutionEvent(ctx context.Context, event *db.ExecutionEvent) error {
+	if d.db == nil {
+		return nil
+	}
+	if err := d.db.RecordExecutionEvent(ctx, event); err != nil {
+		return err
+	}
+	for _, exporter := range d.eventExporters {
+		if err := exporter.Invoke(ctx, plugin.CapabilityEventExporter, "export", *event, nil); err != nil {
+			aplog.Error("plugin %s: export execution event %s: %v", exporter.ID(), event.Type, err)
+		}
+	}
+	return nil
 }
 
 func (d *Dispatcher) recordRouteEvents(ctx context.Context, task model.InternalTask) {

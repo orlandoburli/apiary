@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/model"
+	"github.com/orlandoburli/apiary/internal/plugin"
 )
 
 // KnownAdapters reports the registered runner adapter names. The cli package
@@ -74,6 +75,12 @@ func validateMCPs(scope string, mcps []model.MCPServer) []error {
 // Validate checks the config for structural errors.
 func (c *Config) Validate() []error {
 	var errs []error
+	errs = append(errs, plugin.ValidateInstanceBasics(c.Plugins)...)
+	for i, path := range c.PluginDirs {
+		if strings.TrimSpace(path) == "" {
+			errs = append(errs, fmt.Errorf("plugin_dirs[%d]: path must not be empty", i))
+		}
+	}
 
 	if c.Version == "" {
 		errs = append(errs, fmt.Errorf("version is required"))
