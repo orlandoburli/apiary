@@ -129,6 +129,25 @@ func renderStatus(r *daemon.StatusResponse) string {
 		}
 	}
 	b.WriteString("\n")
+	if r.Queue.Enabled {
+		fmt.Fprintf(&b, "%s  queued: %d  leased: %d  succeeded: %d  failed: %d  canceled: %d\n",
+			statusKey.Render("Queue"), r.Queue.Jobs["queued"], r.Queue.Jobs["leased"], r.Queue.Jobs["succeeded"], r.Queue.Jobs["failed"], r.Queue.Jobs["canceled"])
+		if len(r.Queue.Workers) == 0 {
+			b.WriteString(statusMuted.Render("  no registered workers") + "\n")
+		}
+		for _, worker := range r.Queue.Workers {
+			state := "ready"
+			if !worker.Healthy {
+				state = "unhealthy"
+			} else if worker.Draining {
+				state = "draining"
+			} else if !worker.Ready {
+				state = "unready"
+			}
+			fmt.Fprintf(&b, "  %-18s pool: %-12s jobs: %d/%d  %-9s heartbeat: %s\n", worker.ID, worker.Pool, worker.ActiveJobs, worker.Capacity, state, worker.LastHeartbeat)
+		}
+		b.WriteString("\n")
+	}
 
 	return b.String()
 }

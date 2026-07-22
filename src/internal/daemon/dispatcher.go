@@ -25,10 +25,12 @@ import (
 	"github.com/orlandoburli/apiary/internal/memory"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/plugin"
+	queuepkg "github.com/orlandoburli/apiary/internal/queue"
 	"github.com/orlandoburli/apiary/internal/router"
 	runnerimpl "github.com/orlandoburli/apiary/internal/runner"
 	"github.com/orlandoburli/apiary/internal/source"
 	"github.com/orlandoburli/apiary/internal/version"
+	workerpkg "github.com/orlandoburli/apiary/internal/worker"
 	"github.com/orlandoburli/apiary/internal/workflow"
 )
 
@@ -104,6 +106,12 @@ type Dispatcher struct {
 	// always completes first; exporter failures are reported but never returned
 	// into dispatcher control flow.
 	eventExporters []*plugin.Client
+
+	// Durable dispatch queue and optional embedded local protocol-1 worker.
+	dispatchQueue  queuepkg.Store
+	localWorker    *workerpkg.Runtime
+	queueProjectID string
+	queueWorkerID  string
 }
 
 // runnerCandidate is one rung in an agent's rate-limit failover chain: a
@@ -208,6 +216,9 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 	d.eventExporters, pluginErrs = plugin.EnabledClients(registry, cfg.Plugins, plugin.CapabilityEventExporter)
 	if len(pluginErrs) > 0 {
 		return nil, fmt.Errorf("plugins: %w", errors.Join(pluginErrs...))
+	}
+	if err := d.configureDispatchQueue(); err != nil {
+		return nil, err
 	}
 	if dbClient != nil {
 		dbClient.SetEventSensitiveFields(cfg.Settings.Events.SensitiveFields)
@@ -416,6 +427,15 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 // Start launches one poll goroutine per source.
 // Cancel ctx to initiate a graceful shutdown; then call wg.Wait().
 func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
+	if d.localWorker != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := d.localWorker.Run(ctx); err != nil {
+				aplog.Error("embedded worker: %v", err)
+			}
+		}()
+	}
 	// Enforce the shared git hooks directory on the agents' repo checkouts
 	// (settings.git_hooks) before the first dispatch, so pre-push hooks gate
 	// agent pushes from the very first run.
@@ -453,6 +473,7 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		} else if n > 0 {
 			aplog.Info("reconciled %d orphaned step run(s) from a previous run", n)
 		}
+		d.reconcileTerminalQueueJobs(ctx)
 
 		// Repair each non-terminal task's outstanding-workflow counter and settle
 		// tasks stranded 'running' with no live instance. The instances just
@@ -810,6 +831,20 @@ func (d *Dispatcher) Status() StatusResponse {
 		})
 		return true
 	})
+	if d.dispatchQueue != nil {
+		resp.Queue.Enabled = true
+		resp.Queue.Jobs = map[string]int{}
+		if jobs, err := d.dispatchQueue.ListJobs(context.Background(), "", 1000); err == nil {
+			for _, job := range jobs {
+				resp.Queue.Jobs[string(job.State)]++
+			}
+		}
+		if workers, err := d.dispatchQueue.ListWorkers(context.Background()); err == nil {
+			for _, worker := range workers {
+				resp.Queue.Workers = append(resp.Queue.Workers, QueueWorkerStatus{ID: worker.ID, Pool: worker.Pool, Ready: worker.Ready, Healthy: time.Since(worker.LastHeartbeat) <= d.cfg.Settings.Queue.WorkerTimeoutValue(), Draining: worker.Draining, Capacity: worker.Capacity, ActiveJobs: worker.ActiveJobs, LastHeartbeat: humanDuration(time.Since(worker.LastHeartbeat)) + " ago"})
+			}
+		}
+	}
 
 	return resp
 }
@@ -1269,6 +1304,10 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
+	if err := d.startQueueProtocolServer(ctx, wg); err != nil {
+		_ = srv.Close()
+		return err
+	}
 
 	return nil
 }
@@ -1358,6 +1397,11 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 // (so RunOnce can wait); onFail, if set, is called with the cell ID per failure.
 func (d *Dispatcher) fanOut(ctx context.Context, cell model.SourceItem, adapter source.Adapter, task model.InternalTask, persisted bool, matches []router.Match, wg *sync.WaitGroup, onFail func(cellID string)) {
 	if len(matches) == 0 {
+		d.inFlight.Delete(cell.ID)
+		return
+	}
+	if persisted && d.dispatchQueue != nil && wg == nil {
+		d.enqueueFanOut(ctx, cell, task, matches)
 		d.inFlight.Delete(cell.ID)
 		return
 	}

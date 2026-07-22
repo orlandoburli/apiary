@@ -46,6 +46,23 @@ Show daemon status and active runs.
 apiary status [--watch]    # --watch refreshes every 2 seconds
 ```
 
+The status payload includes durable job counts and each registered worker's
+readiness, drain state, capacity, active jobs, and last heartbeat.
+
+### `apiary worker`
+
+Connect a separate worker process to a control plane. The worker loads the same
+runner and workflow configuration but does not poll sources.
+
+```sh
+apiary worker --control-plane https://apiary.example \
+  --token "$APIARY_WORKER_TOKEN" --id build-01 --pool build --capacity 4
+```
+
+Use repeatable `--label` and `--capability` flags to advertise scheduling
+attributes. On SIGTERM/SIGINT the worker enters drain mode, stops claiming, lets
+active jobs finish while extending their leases, then becomes unready.
+
 ### `apiary validate`
 
 Validate `apiary.yaml` — schema, reference integrity (agents → runners,

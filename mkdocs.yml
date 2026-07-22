@@ -50,6 +50,7 @@ nav:
       - Tasks & Fan-out: tasks-and-fanout.md
       - Agent Memory: memory.md
       - Rate Limits & Resilience: resilience.md
+      - Distributed Workers: distributed-workers.md
   - Sources:
       - Supported Integrations: supported-integrations.md
       - GitHub: github-source.md

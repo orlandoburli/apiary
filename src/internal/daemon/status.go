@@ -10,6 +10,24 @@ type StatusResponse struct {
 	Sources     []SourceStatus    `json:"sources"`
 	ActiveRuns  []ActiveRunStatus `json:"active_runs"`
 	Concurrency ConcurrencyStatus `json:"concurrency"`
+	Queue       QueueStatus       `json:"queue"`
+}
+
+type QueueStatus struct {
+	Enabled bool                `json:"enabled"`
+	Jobs    map[string]int      `json:"jobs,omitempty"`
+	Workers []QueueWorkerStatus `json:"workers,omitempty"`
+}
+
+type QueueWorkerStatus struct {
+	ID            string `json:"id"`
+	Pool          string `json:"pool"`
+	Ready         bool   `json:"ready"`
+	Healthy       bool   `json:"healthy"`
+	Draining      bool   `json:"draining"`
+	Capacity      int    `json:"capacity"`
+	ActiveJobs    int    `json:"active_jobs"`
+	LastHeartbeat string `json:"last_heartbeat"`
 }
 
 type SourceStatus struct {

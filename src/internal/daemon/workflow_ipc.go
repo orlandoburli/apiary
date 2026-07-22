@@ -269,6 +269,11 @@ func (d *Dispatcher) StopInstance(ctx context.Context, instanceID string) error 
 	if err != nil || inst == nil {
 		return err
 	}
+	if d.dispatchQueue != nil {
+		if _, err := d.dispatchQueue.RequestCancelFor(ctx, inst.TaskID, inst.WorkflowID); err != nil {
+			aplog.Error("stop instance %s: cancel queued work: %v", instanceID, err)
+		}
+	}
 	// Cancel the in-flight run for this cell.
 	if val, ok := d.runCancel.LoadAndDelete(inst.CellID); ok {
 		cancel := val.(context.CancelFunc)
