@@ -642,6 +642,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	cfg.rawContent = raw
+	if err := resolveLocalWorkflows(path, &cfg); err != nil {
+		return nil, err
+	}
 
 	if cfg.Settings.Concurrency == 0 {
 		cfg.Settings.Concurrency = 2

@@ -50,7 +50,10 @@ apiary status [--watch]    # --watch refreshes every 2 seconds
 
 Validate `apiary.yaml` — schema, reference integrity (agents → runners,
 steps → agents, goto targets), workflow graph rules, and condition expression
-syntax (`if:`, `reject_when:`, split branches, `${{ }}` joins).
+syntax (`if:`, `reject_when:`, split branches, `${{ }}` joins). Local
+subworkflow `uses` references are resolved recursively relative to their
+declaring file; typed contracts, output mappings, and reference cycles are
+validated before connectivity checks run.
 
 ```sh
 apiary validate [--connectivity]    # --connectivity also tests each source

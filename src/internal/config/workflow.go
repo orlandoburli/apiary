@@ -71,6 +71,10 @@ const (
 type WorkflowConfig struct {
 	ID          string `yaml:"id"`
 	Description string `yaml:"description,omitempty"`
+	// Inputs and Outputs form the public contract of a reusable workflow. They
+	// are optional for top-level workflows and for legacy same-file references.
+	Inputs  map[string]WorkflowInput  `yaml:"inputs,omitempty"`
+	Outputs map[string]WorkflowOutput `yaml:"outputs,omitempty"`
 	// Resume controls how a failed/interrupted instance may be restarted:
 	// allowed (default), forbidden, or auto. Empty means allowed.
 	Resume string `yaml:"resume,omitempty"`
@@ -197,7 +201,14 @@ type StepConfig struct {
 	Step        *StepConfig `yaml:"step,omitempty"`
 
 	// ── sub-workflow step ─────────────────────────────────────────
+	// Workflow is the resolved child workflow ID used by the engine. It remains
+	// authorable for backwards-compatible same-file references.
 	Workflow string `yaml:"workflow,omitempty"`
+	// Uses references a reusable workflow file relative to the declaring YAML.
+	// Config.Load resolves it into Workflow before validation/execution.
+	Uses string `yaml:"uses,omitempty"`
+	// With binds values to the reusable workflow's declared inputs.
+	With map[string]any `yaml:"with,omitempty"`
 
 	// ── v2 authored fields (present before lowering; absent after) ───
 	// These are written by humans in v2 syntax and lowered to the IR fields
@@ -479,6 +490,19 @@ type OutputSchema struct {
 	Type       string                 `yaml:"type"`
 	Properties map[string]SchemaField `yaml:"properties,omitempty"`
 	Required   []string               `yaml:"required,omitempty"`
+}
+
+// WorkflowInput declares one typed value accepted by a reusable workflow.
+type WorkflowInput struct {
+	Type     string `yaml:"type"`
+	Required bool   `yaml:"required,omitempty"`
+	Default  any    `yaml:"default,omitempty"`
+}
+
+// WorkflowOutput maps one typed public result to a child step output.
+type WorkflowOutput struct {
+	Type  string `yaml:"type"`
+	Value string `yaml:"value"`
 }
 
 // SchemaField describes one property within an OutputSchema. Items is set for

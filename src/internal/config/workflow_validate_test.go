@@ -607,7 +607,7 @@ func TestWorkflow_StepUnknownWorkflowRef(t *testing.T) {
 	assertError(t, cfg, "workflow \"ghost\" not defined")
 }
 
-func TestWorkflow_SubWorkflowNestingNotAllowed(t *testing.T) {
+func TestWorkflow_SubWorkflowNestingAllowedWhenAcyclic(t *testing.T) {
 	cfg := baseWorkflowConfig()
 	cfg.Workflows = []config.WorkflowConfig{
 		{ID: "leaf", Steps: []config.StepConfig{{ID: "x", Agent: "architect"}}},
@@ -618,7 +618,19 @@ func TestWorkflow_SubWorkflowNestingNotAllowed(t *testing.T) {
 			{ID: "s", Type: config.StepTypeWorkflow, Workflow: "mid"},
 		}},
 	}
-	assertError(t, cfg, "nesting is not allowed")
+	if errs := cfg.Validate(); len(errs) > 0 {
+		t.Fatalf("expected acyclic nested workflows to validate, got %v", errs)
+	}
+}
+
+func TestWorkflow_SubWorkflowIndirectCycleRejected(t *testing.T) {
+	cfg := baseWorkflowConfig()
+	cfg.Workflows = []config.WorkflowConfig{
+		{ID: "a", Steps: []config.StepConfig{{ID: "call-b", Type: config.StepTypeWorkflow, Workflow: "b"}}},
+		{ID: "b", Steps: []config.StepConfig{{ID: "call-c", Type: config.StepTypeWorkflow, Workflow: "c"}}},
+		{ID: "c", Steps: []config.StepConfig{{ID: "call-a", Type: config.StepTypeWorkflow, Workflow: "a"}}},
+	}
+	assertError(t, cfg, "cyclic subworkflow reference: a -> b -> c -> a")
 }
 
 func TestWorkflow_OutputSchemaTypeNotObject(t *testing.T) {

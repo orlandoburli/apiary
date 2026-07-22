@@ -8,6 +8,7 @@ _Nenhuma change ativa no momento._
 
 ### 2026-07-22
 
+- **reusable-typed-subworkflows** — Reusable local workflow files with typed inputs and outputs, cycle-safe resolution, linked nested execution history, and explicit failure/cancellation semantics. GitHub issue #210.
 - **immutable-execution-replay** — Immutable workflow replay with descendant attempt lineage, selectable resume points, secret-safe workflow-definition snapshots, and CLI comparison of attempts. GitHub issue #209.
 
 ### 2026-07-07
