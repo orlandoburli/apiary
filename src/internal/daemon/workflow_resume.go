@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/orlandoburli/apiary/internal/config"
@@ -17,8 +19,20 @@ import (
 var (
 	ErrInstanceNotFound     = errors.New("instance not found")
 	ErrInstanceNotResumable = errors.New("instance is not resumable")
+	ErrResumeForbidden      = errors.New("workflow resume policy forbids replay")
 	ErrWorkflowChanged      = errors.New("workflow definition changed or removed")
+	ErrSnapshotNotFound     = errors.New("original workflow snapshot not found")
 )
+
+const (
+	ResumeConfigCurrent  = "current"
+	ResumeConfigOriginal = "original"
+)
+
+type ResumeOptions struct {
+	FromStep   string
+	ConfigMode string
+}
 
 // ResumeStep is one entry in a resume preview's skip/run list.
 type ResumeStep struct {
@@ -34,6 +48,8 @@ type ResumePreview struct {
 	CellID     string       `json:"cell_id"`
 	Title      string       `json:"title"`
 	State      string       `json:"state"`
+	FromStep   string       `json:"from_step,omitempty"`
+	ConfigMode string       `json:"config_mode"`
 	Skip       []ResumeStep `json:"skip"`
 	Run        []ResumeStep `json:"run"`
 }
@@ -57,7 +73,7 @@ func (d *Dispatcher) workflowByID(id string) (config.WorkflowConfig, bool) {
 
 // ResumePreview validates resumability and computes the skip/run breakdown for
 // the confirmation prompt. It returns a typed error for each rejection reason.
-func (d *Dispatcher) ResumePreview(ctx context.Context, id string) (*ResumePreview, error) {
+func (d *Dispatcher) ResumePreview(ctx context.Context, id string, opts ResumeOptions) (*ResumePreview, error) {
 	if d.db == nil {
 		return nil, ErrInstanceNotFound
 	}
@@ -71,9 +87,12 @@ func (d *Dispatcher) ResumePreview(ctx context.Context, id string) (*ResumePrevi
 	if !resumableState(inst.State) {
 		return nil, ErrInstanceNotResumable
 	}
-	wf, ok := d.workflowByID(inst.WorkflowID)
-	if !ok {
-		return nil, ErrWorkflowChanged
+	wf, err := d.resumeWorkflow(ctx, inst, opts.ConfigMode)
+	if err != nil {
+		return nil, err
+	}
+	if wf.ResumePolicy() == config.ResumeForbidden {
+		return nil, ErrResumeForbidden
 	}
 
 	steps, err := d.db.ListStepRuns(ctx, id)
@@ -94,11 +113,26 @@ func (d *Dispatcher) ResumePreview(ctx context.Context, id string) (*ResumePrevi
 		CellID:     inst.CellID,
 		Title:      title,
 		State:      inst.State,
+		FromStep:   opts.FromStep,
+		ConfigMode: normalizeResumeConfigMode(opts.ConfigMode),
 	}
-	for _, st := range wf.Steps {
+	fromIndex := len(wf.Steps)
+	if opts.FromStep != "" {
+		fromIndex = -1
+		for i, st := range wf.Steps {
+			if st.ID == opts.FromStep {
+				fromIndex = i
+				break
+			}
+		}
+		if fromIndex < 0 {
+			return nil, fmt.Errorf("%w: resume step %q not found", ErrWorkflowChanged, opts.FromStep)
+		}
+	}
+	for i, st := range wf.Steps {
 		// Splits are re-evaluated on resume; list them under "run" since they
 		// re-execute (cheaply, with no side effects).
-		if passed[st.ID] && st.StepType() != config.StepTypeSplit {
+		if i < fromIndex && passed[st.ID] && st.StepType() != config.StepTypeSplit {
 			preview.Skip = append(preview.Skip, ResumeStep{StepID: st.ID, Agent: st.Agent, Note: "already passed"})
 		} else {
 			preview.Run = append(preview.Run, ResumeStep{StepID: st.ID, Agent: st.Agent})
@@ -110,39 +144,102 @@ func (d *Dispatcher) ResumePreview(ctx context.Context, id string) (*ResumePrevi
 // StartResume validates the instance and launches the resume on the supplied
 // (daemon-lifetime) context. It returns promptly; the engine replays cached
 // steps and continues the run in the background. ctx must outlive the request.
-func (d *Dispatcher) StartResume(ctx context.Context, id string) error {
+func (d *Dispatcher) StartResume(ctx context.Context, id string, opts ResumeOptions) (string, error) {
 	if d.db == nil {
-		return ErrInstanceNotFound
+		return "", ErrInstanceNotFound
 	}
 	inst, err := d.db.GetWorkflowInstance(ctx, id)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if inst == nil {
-		return ErrInstanceNotFound
+		return "", ErrInstanceNotFound
 	}
 	if !resumableState(inst.State) {
-		return ErrInstanceNotResumable
+		return "", ErrInstanceNotResumable
 	}
-	wf, ok := d.workflowByID(inst.WorkflowID)
-	if !ok {
-		return ErrWorkflowChanged
+	wf, err := d.resumeWorkflow(ctx, inst, opts.ConfigMode)
+	if err != nil {
+		return "", err
+	}
+	if wf.ResumePolicy() == config.ResumeForbidden {
+		return "", ErrResumeForbidden
+	}
+	if opts.FromStep != "" {
+		found := false
+		for _, step := range wf.Steps {
+			if step.ID == opts.FromStep {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", fmt.Errorf("%w: resume step %q not found", ErrWorkflowChanged, opts.FromStep)
+		}
 	}
 	steps, err := d.db.ListStepRuns(ctx, id)
 	if err != nil {
-		return err
+		return "", err
 	}
 	task := d.taskForInstance(ctx, inst)
+	if task.ID != "" {
+		if _, err := d.db.InternalTasks().IncrementOutstanding(ctx, task.ID, 1); err != nil {
+			return "", err
+		}
+	}
+	newID := d.workflowEngine().NewInstanceID()
 
 	go func() {
-		success, rerr := d.workflowEngine().ResumeInstance(ctx, id, wf, task, steps)
+		_, success, rerr := d.workflowEngine().ResumeInstance(ctx, inst, wf, task, steps, opts.FromStep, newID)
 		if rerr != nil {
+			if task.ID != "" {
+				_, _ = d.db.InternalTasks().DecrementOutstanding(ctx, task.ID)
+			}
 			aplog.Error("resume %s: %v", id, rerr)
 			return
 		}
-		aplog.Info("resume %s: finished (success=%v; may be awaiting approval)", id, success)
+		aplog.Info("resume %s: descendant %s finished (success=%v; may be awaiting approval)", id, newID, success)
 	}()
-	return nil
+	return newID, nil
+}
+
+func normalizeResumeConfigMode(mode string) string {
+	if mode == ResumeConfigOriginal {
+		return mode
+	}
+	return ResumeConfigCurrent
+}
+
+func (d *Dispatcher) resumeWorkflow(ctx context.Context, inst *db.WorkflowInstance, mode string) (config.WorkflowConfig, error) {
+	if normalizeResumeConfigMode(mode) == ResumeConfigCurrent {
+		wf, ok := d.workflowByID(inst.WorkflowID)
+		if !ok {
+			return config.WorkflowConfig{}, ErrWorkflowChanged
+		}
+		return wf, nil
+	}
+	snapshot, err := d.db.GetWorkflowSnapshot(ctx, inst.ID)
+	if err != nil {
+		return config.WorkflowConfig{}, err
+	}
+	if snapshot == "" {
+		return config.WorkflowConfig{}, ErrSnapshotNotFound
+	}
+	var wf config.WorkflowConfig
+	if err := json.Unmarshal([]byte(snapshot), &wf); err != nil {
+		return config.WorkflowConfig{}, ErrWorkflowChanged
+	}
+	if current, ok := d.workflowByID(inst.WorkflowID); ok {
+		wf.Env = current.Env
+		stepEnv := make(map[string]map[string]string, len(current.Steps))
+		for _, step := range current.Steps {
+			stepEnv[step.ID] = step.Env
+		}
+		for i := range wf.Steps {
+			wf.Steps[i].Env = stepEnv[wf.Steps[i].ID]
+		}
+	}
+	return wf, nil
 }
 
 // ResolveResumeTarget finds the most recent resumable instance of a workflow,
@@ -168,7 +265,11 @@ func resumeHTTPStatus(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, ErrInstanceNotResumable):
 		return http.StatusConflict
+	case errors.Is(err, ErrResumeForbidden):
+		return http.StatusConflict
 	case errors.Is(err, ErrWorkflowChanged):
+		return http.StatusUnprocessableEntity
+	case errors.Is(err, ErrSnapshotNotFound):
 		return http.StatusUnprocessableEntity
 	default:
 		return http.StatusInternalServerError

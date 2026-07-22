@@ -985,6 +985,28 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	})
+	mux.HandleFunc("/instances/compare", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		before, after := r.URL.Query().Get("before"), r.URL.Query().Get("after")
+		if before == "" || after == "" {
+			http.Error(w, "before and after instance ids are required", http.StatusBadRequest)
+			return
+		}
+		comparison, err := d.CompareInstances(r.Context(), before, after)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if comparison == nil {
+			http.Error(w, "instance not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(comparison)
+	})
 	mux.HandleFunc("/instances/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/instances/")
 		if id == "" {
@@ -1068,6 +1090,7 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 	})
 	mux.HandleFunc("/resume/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/resume/")
+		opts := ResumeOptions{FromStep: r.URL.Query().Get("from"), ConfigMode: r.URL.Query().Get("config")}
 		if id == "" {
 			// `apiary resume --workflow <id>`: resolve the most recent
 			// resumable instance for the workflow.
@@ -1087,7 +1110,7 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		}
 		switch r.Method {
 		case http.MethodGet:
-			preview, err := d.ResumePreview(r.Context(), id)
+			preview, err := d.ResumePreview(r.Context(), id, opts)
 			if err != nil {
 				http.Error(w, err.Error(), resumeHTTPStatus(err))
 				return
@@ -1096,12 +1119,13 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 			_ = json.NewEncoder(w).Encode(preview)
 		case http.MethodPost:
 			// Launch on the daemon-lifetime ctx so the run outlives the request.
-			if err := d.StartResume(ctx, id); err != nil {
+			newID, err := d.StartResume(ctx, id, opts)
+			if err != nil {
 				http.Error(w, err.Error(), resumeHTTPStatus(err))
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"queued": true, "instance_id": id})
+			_ = json.NewEncoder(w).Encode(map[string]any{"queued": true, "instance_id": newID, "resumed_from": id})
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}

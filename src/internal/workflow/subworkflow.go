@@ -65,6 +65,11 @@ func (e *Engine) runChildInstance(ctx context.Context, parentInstID string, chil
 		aplog.Error("sub-workflow %s: create child instance: %v", child.ID, err)
 		return "", false
 	}
+	if err := e.persistWorkflowSnapshot(ctx, childID, child); err != nil {
+		_ = e.store.UpdateWorkflowInstanceState(ctx, childID, db.InstanceStateFailed)
+		aplog.Error("sub-workflow %s: persist snapshot: %v", child.ID, err)
+		return childID, false
+	}
 
 	r := e.initDAG(childID, child, task, bindings, seed, depth)
 	outcome := e.driveDAG(ctx, r)

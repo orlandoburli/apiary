@@ -39,7 +39,7 @@ func TestResume_SkipsCachedAndContinues(t *testing.T) {
 		{ID: "sr-impl", WorkflowInstanceID: instID, StepID: "implement", State: db.StepStateFailed},
 	}
 
-	success, err := eng.ResumeInstance(context.Background(), instID, linearWF(), model.InternalTask{ID: "c1"}, prior)
+	newID, success, err := eng.ResumeInstance(context.Background(), store.instances[instID], linearWF(), model.InternalTask{ID: "c1"}, prior, "", "")
 	if err != nil {
 		t.Fatalf("ResumeInstance: %v", err)
 	}
@@ -54,8 +54,11 @@ func TestResume_SkipsCachedAndContinues(t *testing.T) {
 	if !contains(ids, "implement") || !contains(ids, "review") {
 		t.Errorf("expected implement and review to run, got %v", ids)
 	}
-	if store.instances[instID].State != db.InstanceStateDone {
-		t.Errorf("expected final state done, got %s", store.instances[instID].State)
+	if store.instances[newID].State != db.InstanceStateDone {
+		t.Errorf("expected descendant state done, got %s", store.instances[newID].State)
+	}
+	if store.instances[instID].State != db.InstanceStateFailed {
+		t.Errorf("source instance was mutated: %s", store.instances[instID].State)
 	}
 }
 
@@ -72,7 +75,8 @@ func TestResume_CachedMemoryAvailableDownstream(t *testing.T) {
 		{ID: "sr-impl", WorkflowInstanceID: instID, StepID: "implement", State: db.StepStateFailed},
 	}
 
-	if _, err := eng.ResumeInstance(context.Background(), instID, linearWF(), model.InternalTask{ID: "c1"}, prior); err != nil {
+	source := &db.WorkflowInstance{ID: instID, WorkflowID: "feature", CellID: "c1", State: db.InstanceStateFailed}
+	if _, _, err := eng.ResumeInstance(context.Background(), source, linearWF(), model.InternalTask{ID: "c1"}, prior, "", ""); err != nil {
 		t.Fatalf("ResumeInstance: %v", err)
 	}
 
@@ -104,12 +108,54 @@ func TestResume_MarksPriorStepCached(t *testing.T) {
 			StructuredOutput: `{"approach":"layered"}`},
 		{ID: "sr-impl", WorkflowInstanceID: instID, StepID: "implement", State: db.StepStateFailed},
 	}
+	for i := range prior {
+		_ = store.CreateStepRun(context.Background(), &prior[i])
+	}
 
-	if _, err := eng.ResumeInstance(context.Background(), instID, linearWF(), model.InternalTask{ID: "c1"}, prior); err != nil {
+	source := &db.WorkflowInstance{ID: instID, WorkflowID: "feature", CellID: "c1", State: db.InstanceStateFailed}
+	newID, _, err := eng.ResumeInstance(context.Background(), source, linearWF(), model.InternalTask{ID: "c1"}, prior, "", "")
+	if err != nil {
 		t.Fatalf("ResumeInstance: %v", err)
 	}
-	if sr := store.stepRuns["sr-plan"]; sr == nil || !sr.SkippedCached {
-		t.Errorf("expected sr-plan to be marked skipped_cached, got %+v", sr)
+	if sr := store.stepRuns["sr-plan"]; sr == nil || sr.SkippedCached {
+		t.Errorf("source step should remain unchanged, got %+v", sr)
+	}
+	var cached *db.StepRun
+	for _, sr := range store.stepRuns {
+		if sr.WorkflowInstanceID == newID && sr.StepID == "plan" {
+			cached = sr
+		}
+	}
+	if cached == nil || !cached.SkippedCached {
+		t.Errorf("expected a cached descendant plan step, got %+v", cached)
+	}
+}
+
+func TestResume_FromStepRerunsPassedStep(t *testing.T) {
+	cfg := baseCfg()
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	eng := testEngine(cfg, store, exec, &fakeSide{})
+	wf := linearWF()
+	source := &db.WorkflowInstance{ID: "wf-source", WorkflowID: wf.ID, CellID: "c1", State: db.InstanceStateFailed}
+	prior := []db.StepRun{
+		{ID: "sr-plan", WorkflowInstanceID: source.ID, StepID: "plan", State: db.StepStatePassed},
+		{ID: "sr-implement", WorkflowInstanceID: source.ID, StepID: "implement", State: db.StepStatePassed},
+		{ID: "sr-review", WorkflowInstanceID: source.ID, StepID: "review", State: db.StepStateFailed},
+	}
+	newID, success, err := eng.ResumeInstance(context.Background(), source, wf, model.InternalTask{ID: "c1"}, prior, "implement", "")
+	if err != nil || !success {
+		t.Fatalf("resume: id=%s success=%v err=%v", newID, success, err)
+	}
+	ids := executedIDs(exec.seen)
+	if contains(ids, "plan") {
+		t.Errorf("plan should remain cached: %v", ids)
+	}
+	if !contains(ids, "implement") || !contains(ids, "review") {
+		t.Errorf("implement and review should rerun: %v", ids)
+	}
+	if store.instances[newID].ResumedFrom != source.ID {
+		t.Errorf("resumed_from = %q", store.instances[newID].ResumedFrom)
 	}
 }
 
@@ -144,7 +190,8 @@ func TestResume_ReevaluatesSplit(t *testing.T) {
 		{ID: "sr-senior", WorkflowInstanceID: instID, StepID: "senior", State: db.StepStateFailed},
 	}
 
-	success, err := eng.ResumeInstance(context.Background(), instID, wf, model.InternalTask{ID: "c1"}, prior)
+	source := &db.WorkflowInstance{ID: instID, WorkflowID: wf.ID, CellID: "c1", State: db.InstanceStateFailed}
+	_, success, err := eng.ResumeInstance(context.Background(), source, wf, model.InternalTask{ID: "c1"}, prior, "", "")
 	if err != nil {
 		t.Fatalf("ResumeInstance: %v", err)
 	}
@@ -204,7 +251,8 @@ func TestRestoreCachedSteps_LastPassedRunWins(t *testing.T) {
 			State: db.StepStatePassed, StructuredOutput: `{"action":"already_done"}`},
 	}
 
-	success, err := eng.ResumeInstance(context.Background(), instID, alreadyDoneWF(), model.InternalTask{ID: "c1"}, prior)
+	source := &db.WorkflowInstance{ID: instID, WorkflowID: "implementation", CellID: "c1", State: db.InstanceStateFailed}
+	_, success, err := eng.ResumeInstance(context.Background(), source, alreadyDoneWF(), model.InternalTask{ID: "c1"}, prior, "", "")
 	if err != nil {
 		t.Fatalf("ResumeInstance: %v", err)
 	}

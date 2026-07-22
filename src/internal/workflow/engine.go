@@ -26,6 +26,12 @@ type Store interface {
 	UpdateStepRun(ctx context.Context, sr *db.StepRun) error
 }
 
+// workflowSnapshotStore is implemented by persistent stores that retain the
+// exact workflow definition used by each instance for reproducible replay.
+type workflowSnapshotStore interface {
+	PutWorkflowSnapshot(ctx context.Context, instanceID, workflowJSON string) error
+}
+
 // bindingLister is the optional capability the engine uses to resolve a task's
 // source bindings (for side-effect fan-out and the execution view). *db.Client
 // satisfies it; fake stores in tests that omit it simply yield no bindings.
@@ -285,6 +291,10 @@ func NewEngine(cfg *config.Config, store Store, exec StepExecutor, opts ...Optio
 	return e
 }
 
+// NewInstanceID reserves a process-unique workflow instance identifier for
+// callers that must return a replay ID before asynchronous execution starts.
+func (e *Engine) NewInstanceID() string { return e.newID("wf") }
+
 // RunInstance executes a workflow for an InternalTask. It returns the created
 // instance ID and whether the instance completed successfully. An instance that
 // suspends at an approval step returns success=false with no error — it is parked
@@ -309,6 +319,9 @@ func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, task
 	if err := e.store.CreateWorkflowInstance(ctx, inst); err != nil {
 		return "", false, fmt.Errorf("create workflow instance: %w", err)
 	}
+	if err := e.persistWorkflowSnapshot(ctx, instID, wf); err != nil {
+		return "", false, err
+	}
 
 	// state_lock fires once at workflow start (not per step).
 	if e.cfg.Settings.StateLock && e.side != nil {
@@ -318,6 +331,30 @@ func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, task
 	r := e.initDAG(instID, wf, task, bindings, nil, 0)
 	outcome := e.driveDAG(ctx, r)
 	return instID, e.settle(ctx, r, outcome), nil
+}
+
+func (e *Engine) persistWorkflowSnapshot(ctx context.Context, instanceID string, wf config.WorkflowConfig) error {
+	store, ok := e.store.(workflowSnapshotStore)
+	if !ok {
+		return nil
+	}
+	snapshot := wf
+	// Environment overlays may contain secrets after config expansion. Snapshots
+	// retain workflow structure and prompts but resolve env overlays from the
+	// current configuration when replayed.
+	snapshot.Env = nil
+	snapshot.Steps = append([]config.StepConfig(nil), wf.Steps...)
+	for i := range snapshot.Steps {
+		snapshot.Steps[i].Env = nil
+	}
+	b, err := json.Marshal(snapshot)
+	if err != nil {
+		return fmt.Errorf("marshal workflow snapshot: %w", err)
+	}
+	if err := store.PutWorkflowSnapshot(ctx, instanceID, string(b)); err != nil {
+		return fmt.Errorf("persist workflow snapshot: %w", err)
+	}
+	return nil
 }
 
 // bindingsFor resolves a task's source bindings via the Store when it supports

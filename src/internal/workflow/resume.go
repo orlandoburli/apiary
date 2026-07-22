@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	aplog "github.com/orlandoburli/apiary/internal/log"
 
@@ -11,40 +12,95 @@ import (
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
-// ResumeInstance continues an existing failed or interrupted instance by
-// replaying its already-passed steps from cache and running the rest. It reuses
-// the instance id, restores cached steps' memory and expression context without
-// re-executing them or re-firing their side effects, and drives the DAG for the
-// remaining steps.
+// ResumeInstance creates an immutable descendant of a failed or interrupted
+// instance, restores eligible passed steps from cache, and runs the rest.
 //
 // priorSteps are the instance's persisted step runs in execution order. Split
 // steps are intentionally re-evaluated (they are side-effect-free and their
 // branch routing must re-activate the chosen target), while agent, foreach,
 // sub-workflow, and approval steps that passed are carried over untouched.
-func (e *Engine) ResumeInstance(ctx context.Context, instID string, wf config.WorkflowConfig, task model.InternalTask, priorSteps []db.StepRun) (success bool, err error) {
-	_ = e.store.UpdateWorkflowInstanceState(ctx, instID, db.InstanceStateRunning)
+func (e *Engine) ResumeInstance(ctx context.Context, source *db.WorkflowInstance, wf config.WorkflowConfig, task model.InternalTask, priorSteps []db.StepRun, fromStep, instanceID string) (string, bool, error) {
+	instID := instanceID
+	if instID == "" {
+		instID = e.NewInstanceID()
+	}
+	inst := &db.WorkflowInstance{
+		ID:          instID,
+		WorkflowID:  source.WorkflowID,
+		TaskID:      source.TaskID,
+		CellID:      source.CellID,
+		SourceID:    source.SourceID,
+		State:       db.InstanceStateRunning,
+		ResumedFrom: source.ID,
+		CreatedAt:   e.now(),
+	}
+	if err := e.store.CreateWorkflowInstance(ctx, inst); err != nil {
+		return "", false, err
+	}
+	if err := e.persistWorkflowSnapshot(ctx, instID, wf); err != nil {
+		_ = e.store.UpdateWorkflowInstanceState(ctx, instID, db.InstanceStateFailed)
+		return "", false, err
+	}
 
 	bindings := e.bindingsFor(ctx, task.ID)
 	r := e.initDAG(instID, wf, task, bindings, nil, 0)
-	e.seedResume(ctx, r, priorSteps)
+	selected, err := resumeCacheSelection(wf, priorSteps, fromStep)
+	if err != nil {
+		return "", false, err
+	}
+	if err := e.seedResume(ctx, r, selected); err != nil {
+		_ = e.store.UpdateWorkflowInstanceState(ctx, instID, db.InstanceStateFailed)
+		return "", false, err
+	}
 
-	aplog.Info("workflow %s: resuming instance %s (%d cached step(s))", wf.ID, instID, len(r.passedOrder))
+	aplog.Info("workflow %s: resuming instance %s from %s (%d cached step(s))", wf.ID, instID, source.ID, len(r.passedOrder))
 	outcome := e.driveDAG(ctx, r)
-	return e.settle(ctx, r, outcome), nil
+	return instID, e.settle(ctx, r, outcome), nil
 }
 
 // seedResume restores the graph state of already-passed steps so a resumed run
 // continues from the first incomplete step, and marks each carried-over step run
 // as skipped_cached (display only). It returns nothing; on completion
 // r.passedOrder/contrib/stepStates reflect the cached steps.
-func (e *Engine) seedResume(ctx context.Context, r *dagRun, priorSteps []db.StepRun) {
-	for _, sr := range e.restoreCachedSteps(r, priorSteps) {
-		// Record that this run was carried over a resume (display only).
-		if !sr.SkippedCached {
-			sr.SkippedCached = true
-			_ = e.store.UpdateStepRun(ctx, &sr)
+func (e *Engine) seedResume(ctx context.Context, r *dagRun, priorSteps []db.StepRun) error {
+	for _, source := range e.restoreCachedSteps(r, priorSteps) {
+		cached := source
+		cached.ID = e.newID("sr")
+		cached.WorkflowInstanceID = r.instID
+		cached.SkippedCached = true
+		if err := e.store.CreateStepRun(ctx, &cached); err != nil {
+			return err
 		}
 	}
+	return nil
+}
+
+// resumeCacheSelection returns passed rows eligible for reuse. When fromStep is
+// set, only rows for steps declared before it are reused; the selected step and
+// everything after it run again. Split steps remain in the list but are ignored
+// by restoreCachedSteps so branch routing is always re-evaluated.
+func resumeCacheSelection(wf config.WorkflowConfig, prior []db.StepRun, fromStep string) ([]db.StepRun, error) {
+	if fromStep == "" {
+		return prior, nil
+	}
+	limit := -1
+	order := make(map[string]int, len(wf.Steps))
+	for i, step := range wf.Steps {
+		order[step.ID] = i
+		if step.ID == fromStep {
+			limit = i
+		}
+	}
+	if limit < 0 {
+		return nil, fmt.Errorf("resume step %q not found in workflow %q", fromStep, wf.ID)
+	}
+	out := make([]db.StepRun, 0, len(prior))
+	for _, sr := range prior {
+		if i, ok := order[sr.StepID]; ok && i < limit {
+			out = append(out, sr)
+		}
+	}
+	return out, nil
 }
 
 // restoreCachedSteps replays already-passed steps into the in-memory graph so a

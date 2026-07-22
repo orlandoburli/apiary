@@ -520,13 +520,32 @@ over:
 ```sh
 apiary instances                  # list instances and their states
 apiary instances <instance-id>    # step-level detail
-apiary resume <instance-id>       # replay cached steps, continue from failure
+apiary resume <instance-id>       # create a descendant and continue from failure
+apiary resume <instance-id> --from <step-id>
+apiary resume <instance-id> --definition original
 ```
 
 The workflow's `resume` policy controls eligibility: `allowed` (default),
-`forbidden`, or `auto`. Completed steps are skipped on resume (their cached
-outputs and memory are restored); steps marked `idempotent: true` are safe to
-re-run when the engine needs to.
+`forbidden`, or `auto`. A manual resume creates a new workflow instance whose
+`resumed_from` field points to the source attempt. Completed step rows selected
+for reuse are copied into that descendant and marked cached; the original
+attempt remains immutable. Their outputs and memory are restored without
+re-firing side effects.
+
+By default Apiary uses the current workflow definition. Every new instance also
+stores a definition snapshot, allowing `--definition original` to replay the exact
+definition used by the selected attempt. `--from` reuses passed steps declared
+before the selected step and reruns that step plus subsequent steps. Split steps
+are always re-evaluated so branch activation reflects the restored memory.
+
+Workflow- and step-level environment overlays are not persisted in snapshots,
+because expanded values may contain secrets. Original-definition replay resolves
+those overlays from the current workflow configuration.
+
+Use `apiary instances compare <before> <after>` to compare step states, prompts,
+outputs, model/runner selection, token usage, cost, and timing between attempts.
+Steps marked `idempotent: true` remain the operator's signal that rerunning their
+external effects is safe.
 
 A complete annotated pipeline using most of this page lives at
 [`.apiary/example-workflow.yaml`](https://github.com/orlandoburli/apiary/blob/main/.apiary/example-workflow.yaml).

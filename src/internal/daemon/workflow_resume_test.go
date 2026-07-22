@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"testing"
 
 	"github.com/orlandoburli/apiary/internal/config"
@@ -31,6 +34,7 @@ func TestResumeHTTPStatus(t *testing.T) {
 	}{
 		{ErrInstanceNotFound, http.StatusNotFound},
 		{ErrInstanceNotResumable, http.StatusConflict},
+		{ErrResumeForbidden, http.StatusConflict},
 		{ErrWorkflowChanged, http.StatusUnprocessableEntity},
 		{errOther{}, http.StatusInternalServerError},
 	}
@@ -61,5 +65,37 @@ func TestWorkflowByID(t *testing.T) {
 	}
 	if _, ok := d.workflowByID("ghost"); ok {
 		t.Error("unknown id should not resolve")
+	}
+}
+
+func TestResumePreviewUsesOriginalSnapshotAndFromStep(t *testing.T) {
+	ctx := context.Background()
+	dbc, err := db.New(ctx, filepath.Join(t.TempDir(), "resume.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dbc.Close() })
+	original := config.WorkflowConfig{ID: "feature", Steps: []config.StepConfig{{ID: "plan", Agent: "a"}, {ID: "build", Agent: "b"}}}
+	b, _ := json.Marshal(original)
+	inst := &db.WorkflowInstance{ID: "source", WorkflowID: original.ID, CellID: "1", State: db.InstanceStateFailed}
+	if err := dbc.CreateWorkflowInstance(ctx, inst); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbc.PutWorkflowSnapshot(ctx, inst.ID, string(b)); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbc.CreateStepRun(ctx, &db.StepRun{ID: "plan", WorkflowInstanceID: inst.ID, StepID: "plan", State: db.StepStatePassed}); err != nil {
+		t.Fatal(err)
+	}
+	d := &Dispatcher{db: dbc, cfg: &config.Config{Workflows: []config.WorkflowConfig{{ID: "feature", Steps: []config.StepConfig{{ID: "replacement"}}}}}}
+	preview, err := d.ResumePreview(ctx, inst.ID, ResumeOptions{FromStep: "build", ConfigMode: ResumeConfigOriginal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Skip) != 1 || preview.Skip[0].StepID != "plan" {
+		t.Errorf("skip = %+v", preview.Skip)
+	}
+	if len(preview.Run) != 1 || preview.Run[0].StepID != "build" {
+		t.Errorf("run = %+v", preview.Run)
 	}
 }

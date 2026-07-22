@@ -96,14 +96,30 @@ apiary task <id> --json
 
 ### `apiary resume`
 
-Resume a failed or interrupted workflow instance from the last completed
-step. Cached steps are replayed (their outputs and memory restored), then
-execution continues.
+Replay a failed or interrupted workflow instance as a new immutable descendant.
+Cached steps are copied into the new attempt (their outputs and memory restored),
+then execution continues. The source attempt is never modified.
 
 ```sh
 apiary resume <instance-id> [--yes]
 apiary resume --workflow <workflow-id> [--yes]   # most recent failed/interrupted instance
+apiary resume <instance-id> --from implement     # rerun this step and later steps
+apiary resume <instance-id> --definition original # use the snapshotted definition
 ```
+
+`--definition current` is the default. `--definition original` requires an instance
+created after workflow snapshots were introduced.
+
+Compare any two attempts step by step:
+
+```sh
+apiary instances compare <before-id> <after-id>
+apiary instances compare <before-id> <after-id> --json
+```
+
+The comparison reports state, input/output changes, token and cost deltas, and
+model/runner changes. Use `apiary run --dry-run` to evaluate source matching and
+routing without starting an agent.
 
 ### `apiary dispatch`
 
