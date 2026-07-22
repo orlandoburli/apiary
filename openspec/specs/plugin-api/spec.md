@@ -1,6 +1,8 @@
 # Apiary — Plugin API
 
-Apiary is extended through two plugin types: **Source Adapters** and **Runner Adapters**. Both implement Go interfaces.
+Apiary's built-in extensions implement Go interfaces. Third-party extensions use
+the versioned out-of-process protocol documented below and are adapted to the
+same internal contracts.
 
 ## Source Adapter
 
@@ -230,11 +232,24 @@ func main() {
 }
 ```
 
-## External Plugin Protocol (v2 — planned)
+## External Plugin Protocol (manifest 1 / protocol 1)
 
-In v2, Apiary will support out-of-process plugin binaries via a gRPC-based protocol (similar to the Terraform/Vault plugin model). Plugin binaries will be discovered by name convention (`apiary-source-<type>`, `apiary-runner-<type>`) and launched as child processes with a stable gRPC interface.
+External plugins are installed as directories containing `apiary-plugin.json`
+and a relative executable. The manifest declares semantic plugin and Apiary
+compatibility versions, capabilities, configuration JSON Schema, protocol, and
+security requirements. Supported capability IDs are `source`, `runner`,
+`workflow_action`, `approval_provider`, `secret_provider`, and `event_exporter`.
 
-This allows the community to distribute adapters as standalone binaries without forking Apiary.
+Protocol 1 uses one newline-delimited JSON request and response over child-process
+stdin/stdout. Apiary starts a fresh process per invocation, enforces a deadline
+and output bounds, forwards only declared secret environment variables, and
+reports crash/protocol/timeout errors without crashing the dispatcher. Discovery
+and validation never execute plugin code.
+
+The first runtime proxy is `event_exporter`, method `export`, which receives the
+persisted and redacted execution-event envelope. The other capability IDs reserve
+the same manifest and transport boundary for adapters to the Go contracts above.
+See `docs/plugins.md` for the normative field and envelope definitions.
 
 ## Cell Env Vars (for `script` runner)
 

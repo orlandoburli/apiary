@@ -170,6 +170,42 @@
         }
       }
     },
+    "plugin_dirs": {
+      "type": "array",
+      "description": "Directories searched for installed plugin folders. Relative paths resolve beside apiary.yaml; defaults to .apiary/plugins",
+      "items": {"type": "string"}
+    },
+    "plugins": {
+      "type": "array",
+      "description": "Installed out-of-process plugin instances. Omitted enabled defaults to true; disabled plugins remain discoverable but are not started or schema-validated",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Reverse-DNS plugin ID from apiary-plugin.json"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable this plugin instance",
+            "default": true
+          },
+          "timeout": {
+            "type": "string",
+            "description": "Per-invocation deadline as a Go duration",
+            "default": "10s",
+            "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+          },
+          "config": {
+            "type": "object",
+            "description": "Plugin-specific configuration validated against the manifest config_schema",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
     "agents": {
       "type": "array",
       "description": "Agent definitions",

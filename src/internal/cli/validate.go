@@ -20,6 +20,10 @@ func newValidateCmd() *cobra.Command {
 			}
 
 			errs := cfg.Validate()
+			if len(errs) == 0 {
+				_, pluginErrs := configuredPlugins(cfg)
+				errs = append(errs, pluginErrs...)
+			}
 			if len(errs) > 0 {
 				for _, e := range errs {
 					fmt.Fprintf(cmd.ErrOrStderr(), "  ✗ %s\n", e)

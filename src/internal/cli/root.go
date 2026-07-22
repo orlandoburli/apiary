@@ -60,6 +60,7 @@ func init() {
 		newUpdateCmd(),
 		newMemoryCmd(),
 		newTranscriptCmd(),
+		newPluginsCmd(),
 	)
 }
 

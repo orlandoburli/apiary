@@ -32,6 +32,14 @@ give you live validation and autocomplete while editing.
 version: "1"        # currently the only accepted value
 ```
 
+## Plugins
+
+Out-of-process extensions are discovered through `plugin_dirs` and enabled in
+the top-level `plugins` list. `apiary validate` checks installed manifests,
+Apiary/protocol compatibility, and each enabled instance's configuration schema.
+See [Out-of-process plugins](plugins.md) for the manifest, protocol, CLI, and
+security model.
+
 ## `runners`
 
 Runners define **how** agents execute — a CLI subprocess (`claude`,
