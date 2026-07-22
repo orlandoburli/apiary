@@ -61,6 +61,7 @@ func init() {
 		newMemoryCmd(),
 		newTranscriptCmd(),
 		newPluginsCmd(),
+		newWorkerCmd(),
 	)
 }
 

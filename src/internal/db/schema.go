@@ -231,6 +231,71 @@ CREATE INDEX IF NOT EXISTS idx_execution_events_task ON execution_events(task_id
 CREATE INDEX IF NOT EXISTS idx_execution_events_instance ON execution_events(workflow_instance_id, id);
 CREATE INDEX IF NOT EXISTS idx_execution_events_type ON execution_events(type, id);
 
+-- Durable dispatch queue. A job holds one immutable, versioned dispatch
+-- snapshot and at most one active lease. The lease attempt/token pair is the
+-- compare-and-set fence that prevents a reclaimed worker from completing stale
+-- work after another worker has claimed it.
+CREATE TABLE IF NOT EXISTS dispatch_jobs (
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  project_id TEXT, source_id TEXT, task_id TEXT, workflow_id TEXT,
+  agent_id TEXT, runner_id TEXT, pool TEXT,
+  required_labels TEXT NOT NULL DEFAULT '[]',
+  required_capabilities TEXT NOT NULL DEFAULT '[]',
+  affinity_key TEXT, affinity_worker_id TEXT,
+  payload_version INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'queued',
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 3,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  available_at TIMESTAMP NOT NULL,
+  lease_attempt_id TEXT, lease_token TEXT, lease_worker_id TEXT,
+  lease_expires_at TIMESTAMP,
+  terminal_at TIMESTAMP,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dispatch_attempts (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  attempt_number INTEGER NOT NULL,
+  worker_id TEXT NOT NULL,
+  claim_token TEXT NOT NULL,
+  state TEXT NOT NULL,
+  lease_expires_at TIMESTAMP NOT NULL,
+  heartbeat_at TIMESTAMP NOT NULL,
+  started_at TIMESTAMP NOT NULL,
+  finished_at TIMESTAMP,
+  error_message TEXT,
+  FOREIGN KEY(job_id) REFERENCES dispatch_jobs(id),
+  UNIQUE(job_id, attempt_number)
+);
+
+CREATE TABLE IF NOT EXISTS worker_registrations (
+  id TEXT PRIMARY KEY,
+  protocol_version INTEGER NOT NULL,
+  pool TEXT,
+  labels TEXT NOT NULL DEFAULT '[]',
+  capabilities TEXT NOT NULL DEFAULT '[]',
+  capacity INTEGER NOT NULL DEFAULT 1,
+  ready INTEGER NOT NULL DEFAULT 1,
+  draining INTEGER NOT NULL DEFAULT 0,
+  active_jobs INTEGER NOT NULL DEFAULT 0,
+  last_heartbeat TIMESTAMP NOT NULL,
+  registered_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_dispatch_jobs_claim ON dispatch_jobs(state, available_at, priority DESC, created_at);
+CREATE INDEX IF NOT EXISTS idx_dispatch_jobs_lease ON dispatch_jobs(state, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_dispatch_jobs_scopes ON dispatch_jobs(state, project_id, source_id, agent_id, runner_id, pool);
+CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_job ON dispatch_attempts(job_id, attempt_number);
+CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_lease ON dispatch_attempts(state, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_workers_heartbeat ON worker_registrations(last_heartbeat);
+
 CREATE TABLE IF NOT EXISTS approval_requests (
   id TEXT PRIMARY KEY,
   workflow_instance_id TEXT NOT NULL,

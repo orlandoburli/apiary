@@ -217,6 +217,18 @@ func (s *InternalTaskStore) outstanding(ctx context.Context, id string) (int, er
 	return n, err
 }
 
+// Generation returns the task's current dispatch generation. Queue
+// idempotency keys include it so re-polls deduplicate one active round while a
+// later explicit re-dispatch can enqueue a fresh job.
+func (s *InternalTaskStore) Generation(ctx context.Context, id string) (int, error) {
+	var generation int
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(generation,0) FROM internal_tasks WHERE id=?`, id).Scan(&generation)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return generation, err
+}
+
 // DeleteTask removes a task row by ID. Workflow instances, bindings, and logs are
 // removed by their own stores; this only drops the internal_tasks row. Deleting a
 // non-existent id is a no-op (no error), so it is safe to call for orphaned cells.

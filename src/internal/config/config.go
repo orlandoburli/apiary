@@ -120,6 +120,14 @@ type AgentConfig struct {
 	// layered on top of the runner's MCPs (RunnerConfig.MCPs), overriding any
 	// runner-scope server with the same name.
 	MCPs []model.MCPServer `yaml:"mcps,omitempty"`
+	// Worker scheduling requirements are applied by the durable queue before a
+	// workflow is delivered. Empty values accept any ready worker.
+	WorkerPool           string   `yaml:"worker_pool,omitempty"`
+	RequiresLabels       []string `yaml:"requires_labels,omitempty"`
+	RequiresCapabilities []string `yaml:"requires_capabilities,omitempty"`
+	// WorkspaceAffinity pins retries/resumes to the first worker that claims the
+	// task, preserving a local checkout or other non-portable environment.
+	WorkspaceAffinity bool `yaml:"workspace_affinity,omitempty"`
 }
 
 // FallbackConfig is one entry in an agent's rate-limit failover chain. Runner
@@ -272,12 +280,80 @@ type Settings struct {
 	Telemetry     Telemetry          `yaml:"telemetry"`
 	CursorCost    CursorCostSettings `yaml:"cursor_cost"`
 	GitHooks      GitHooksSettings   `yaml:"git_hooks"`
+	Queue         QueueSettings      `yaml:"queue"`
 	// DefaultFallbacks is a fallback chain applied to every agent that does not
 	// define its own fallbacks[]. Entries must reference defined runner IDs.
 	DefaultFallbacks []FallbackConfig `yaml:"default_fallbacks,omitempty"`
 	// CreditExhaustedCooldown is how long a runner type is paused after a
 	// credit-exhausted failure. Default "24h".
 	CreditExhaustedCooldown string `yaml:"credit_exhausted_cooldown,omitempty"`
+}
+
+// QueueSettings controls durable dispatch and the embedded protocol-1 worker.
+// Zero values preserve single-command local mode with safe defaults.
+type QueueSettings struct {
+	Enabled            *bool                    `yaml:"enabled,omitempty"`
+	EmbeddedWorker     *bool                    `yaml:"embedded_worker,omitempty"`
+	ProjectID          string                   `yaml:"project_id,omitempty"`
+	WorkerID           string                   `yaml:"worker_id,omitempty"`
+	WorkerPool         string                   `yaml:"worker_pool,omitempty"`
+	WorkerLabels       []string                 `yaml:"worker_labels,omitempty"`
+	WorkerCapabilities []string                 `yaml:"worker_capabilities,omitempty"`
+	WorkerCapacity     int                      `yaml:"worker_capacity,omitempty"`
+	LeaseDuration      string                   `yaml:"lease_duration,omitempty"`
+	HeartbeatInterval  string                   `yaml:"heartbeat_interval,omitempty"`
+	WorkerTimeout      string                   `yaml:"worker_timeout,omitempty"`
+	PollInterval       string                   `yaml:"poll_interval,omitempty"`
+	Listen             string                   `yaml:"listen,omitempty"`
+	WorkerToken        string                   `yaml:"worker_token,omitempty"`
+	Concurrency        QueueConcurrencySettings `yaml:"concurrency,omitempty"`
+}
+
+type QueueConcurrencySettings struct {
+	DefaultProject int            `yaml:"default_project,omitempty"`
+	Projects       map[string]int `yaml:"projects,omitempty"`
+	DefaultSource  int            `yaml:"default_source,omitempty"`
+	Sources        map[string]int `yaml:"sources,omitempty"`
+	DefaultAgent   int            `yaml:"default_agent,omitempty"`
+	Agents         map[string]int `yaml:"agents,omitempty"`
+	DefaultRunner  int            `yaml:"default_runner,omitempty"`
+	Runners        map[string]int `yaml:"runners,omitempty"`
+	DefaultPool    int            `yaml:"default_pool,omitempty"`
+	Pools          map[string]int `yaml:"pools,omitempty"`
+}
+
+func (q QueueSettings) IsEnabled() bool          { return q.Enabled == nil || *q.Enabled }
+func (q QueueSettings) UsesEmbeddedWorker() bool { return q.EmbeddedWorker == nil || *q.EmbeddedWorker }
+
+func (q QueueSettings) WorkerCapacityValue() int {
+	if q.WorkerCapacity > 0 {
+		return q.WorkerCapacity
+	}
+	return 1
+}
+
+func (q QueueSettings) LeaseDurationValue() time.Duration {
+	return queueDuration(q.LeaseDuration, 30*time.Second)
+}
+func (q QueueSettings) HeartbeatIntervalValue() time.Duration {
+	return queueDuration(q.HeartbeatInterval, 10*time.Second)
+}
+func (q QueueSettings) WorkerTimeoutValue() time.Duration {
+	return queueDuration(q.WorkerTimeout, 30*time.Second)
+}
+func (q QueueSettings) PollIntervalValue() time.Duration {
+	return queueDuration(q.PollInterval, 500*time.Millisecond)
+}
+
+func queueDuration(value string, fallback time.Duration) time.Duration {
+	if value == "" {
+		return fallback
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return fallback
+	}
+	return duration
 }
 
 // ApprovalSettings controls provider-neutral approval response endpoints.

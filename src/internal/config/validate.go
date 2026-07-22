@@ -218,6 +218,7 @@ func (c *Config) Validate() []error {
 	if c.Settings.Memory.MaxEntryBytes < 0 {
 		errs = append(errs, fmt.Errorf("settings.memory.max_entry_bytes must be >= 0"))
 	}
+	errs = append(errs, validateQueueSettings(c.Settings.Queue)...)
 
 	// settings.git_hooks: dir and repos only make sense together — one without
 	// the other is a config mistake, not a partial setup.
@@ -274,6 +275,55 @@ func (c *Config) Validate() []error {
 
 	errs = append(errs, c.validateNotifications()...)
 
+	return errs
+}
+
+func validateQueueSettings(settings QueueSettings) []error {
+	var errs []error
+	if strings.TrimSpace(settings.Listen) != "" && strings.TrimSpace(settings.WorkerToken) == "" {
+		errs = append(errs, fmt.Errorf("settings.queue.worker_token is required when settings.queue.listen is configured"))
+	}
+	durations := []struct {
+		name, value string
+		fallback    time.Duration
+	}{
+		{"lease_duration", settings.LeaseDuration, 30 * time.Second},
+		{"heartbeat_interval", settings.HeartbeatInterval, 10 * time.Second},
+		{"worker_timeout", settings.WorkerTimeout, 30 * time.Second},
+		{"poll_interval", settings.PollInterval, 500 * time.Millisecond},
+	}
+	parsed := map[string]time.Duration{}
+	for _, field := range durations {
+		parsed[field.name] = field.fallback
+		if field.value == "" {
+			continue
+		}
+		duration, err := time.ParseDuration(field.value)
+		if err != nil || duration <= 0 {
+			errs = append(errs, fmt.Errorf("settings.queue.%s %q: must be a positive duration", field.name, field.value))
+			continue
+		}
+		parsed[field.name] = duration
+	}
+	if parsed["heartbeat_interval"] >= parsed["lease_duration"] {
+		errs = append(errs, fmt.Errorf("settings.queue.heartbeat_interval must be shorter than lease_duration"))
+	}
+	if settings.WorkerCapacity < 0 {
+		errs = append(errs, fmt.Errorf("settings.queue.worker_capacity must be >= 0"))
+	}
+	limits := settings.Concurrency
+	for name, value := range map[string]int{"default_project": limits.DefaultProject, "default_source": limits.DefaultSource, "default_agent": limits.DefaultAgent, "default_runner": limits.DefaultRunner, "default_pool": limits.DefaultPool} {
+		if value < 0 {
+			errs = append(errs, fmt.Errorf("settings.queue.concurrency.%s must be >= 0", name))
+		}
+	}
+	for name, values := range map[string]map[string]int{"projects": limits.Projects, "sources": limits.Sources, "agents": limits.Agents, "runners": limits.Runners, "pools": limits.Pools} {
+		for key, value := range values {
+			if strings.TrimSpace(key) == "" || value <= 0 {
+				errs = append(errs, fmt.Errorf("settings.queue.concurrency.%s[%q] must have a non-empty key and positive limit", name, key))
+			}
+		}
+	}
 	return errs
 }
 

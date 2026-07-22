@@ -246,6 +246,25 @@
             "description": "Maximum concurrent workers for this agent",
             "minimum": 1
           },
+          "worker_pool": {
+            "type": "string",
+            "description": "Queue pool required for workflows using this agent"
+          },
+          "requires_labels": {
+            "type": "array",
+            "description": "Worker labels required before a workflow can be claimed",
+            "items": { "type": "string" }
+          },
+          "requires_capabilities": {
+            "type": "array",
+            "description": "Worker capabilities required before a workflow can be claimed",
+            "items": { "type": "string" }
+          },
+          "workspace_affinity": {
+            "type": "boolean",
+            "description": "Pin retries for this task to the worker that first claims it",
+            "default": false
+          },
           "max_turns": {
             "type": "integer",
             "description": "Maximum agent turns per step run. 0 (default) = unlimited: CLI runners omit the provider's turns flag",
@@ -578,6 +597,43 @@
               "minItems": 1
             }
           }
+        },
+        "queue": {
+          "type": "object",
+          "description": "Durable dispatch queue and distributed worker protocol. Enabled with an embedded local worker by default",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "embedded_worker": { "type": "boolean", "default": true },
+            "project_id": { "type": "string" },
+            "worker_id": { "type": "string" },
+            "worker_pool": { "type": "string", "default": "default" },
+            "worker_labels": { "type": "array", "items": { "type": "string" } },
+            "worker_capabilities": { "type": "array", "items": { "type": "string" } },
+            "worker_capacity": { "type": "integer", "minimum": 0, "default": 1 },
+            "lease_duration": { "type": "string", "default": "30s", "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$" },
+            "heartbeat_interval": { "type": "string", "default": "10s", "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$" },
+            "worker_timeout": { "type": "string", "default": "30s", "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$" },
+            "poll_interval": { "type": "string", "default": "500ms", "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$" },
+            "listen": { "type": "string", "description": "TCP address for the authenticated worker protocol, for example 0.0.0.0:8080" },
+            "worker_token": { "type": "string", "description": "Bearer token required by remote workers; use an environment reference such as ${APIARY_WORKER_TOKEN}" },
+            "concurrency": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "default_project": { "type": "integer", "minimum": 0 },
+                "projects": { "$ref": "#/definitions/QueueLimits" },
+                "default_source": { "type": "integer", "minimum": 0 },
+                "sources": { "$ref": "#/definitions/QueueLimits" },
+                "default_agent": { "type": "integer", "minimum": 0 },
+                "agents": { "$ref": "#/definitions/QueueLimits" },
+                "default_runner": { "type": "integer", "minimum": 0 },
+                "runners": { "$ref": "#/definitions/QueueLimits" },
+                "default_pool": { "type": "integer", "minimum": 0 },
+                "pools": { "$ref": "#/definitions/QueueLimits" }
+              }
+            }
+          }
         }
       }
     },
@@ -631,6 +687,11 @@
     }
   },
   "definitions": {
+    "QueueLimits": {
+      "type": "object",
+      "description": "Positive concurrency limits keyed by scope id",
+      "additionalProperties": { "type": "integer", "minimum": 1 }
+    },
     "MCPServer": {
       "type": "object",
       "description": "A Model Context Protocol server launched over stdio and exposed to the CLI tool",

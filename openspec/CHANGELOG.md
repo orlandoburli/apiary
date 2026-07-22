@@ -6,6 +6,7 @@
 
 ### 2026-07-22
 
+- **persistent-distributed-queue** — Durable SQLite queue and versioned worker protocol with leased at-least-once delivery, capability matching, scoped concurrency, workspace affinity, cancellation, drain, health, and an embedded local worker. GitHub issue #214.
 - **versioned-plugin-sdk** — Versioned out-of-process plugin manifest and JSON protocol with discovery, compatibility/capability checks, schema-backed configuration validation, isolated execution, CLI inspection, and a reference plugin. GitHub issue #213.
 - **multi-channel-human-approvals** — First-class human-in-the-loop approval requests with structured fields, authorized quorum/delegation, dashboard and signed webhook responses, idempotent resolution, escalation, sensitive-action policies, and rejection feedback. GitHub issue #212.
 - **structured-execution-events** — Versioned, redacted execution events with persisted queries, live SSE subscriptions, route/fallback reasons, retention, CLI history, and a dashboard task timeline. GitHub issue #211.
