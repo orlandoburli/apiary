@@ -200,6 +200,11 @@ func (c *Config) Validate() []error {
 			errs = append(errs, fmt.Errorf("settings.memory.task_retention %q: invalid duration: %w", m.TaskRetention, err))
 		}
 	}
+	if e := c.Settings.Events; e.Retention != "" {
+		if _, err := time.ParseDuration(e.Retention); err != nil {
+			errs = append(errs, fmt.Errorf("settings.events.retention %q: invalid duration: %w", e.Retention, err))
+		}
+	}
 	if c.Settings.Memory.MaxInjectChars < 0 {
 		errs = append(errs, fmt.Errorf("settings.memory.max_inject_chars must be >= 0"))
 	}

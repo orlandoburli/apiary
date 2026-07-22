@@ -73,6 +73,13 @@ func renderTaskHistory(resp daemon.TaskHistoryResponse) {
 		head += " — " + resp.Title
 	}
 	fmt.Printf("%s  %s\n", instMuted.Render("Task:"), head)
+	if len(resp.Events) > 0 {
+		fmt.Println()
+		fmt.Println(instHeader.Render("Timeline"))
+		for _, event := range resp.Events {
+			fmt.Printf("  %s %-24s %s\n", instMuted.Render(event.Timestamp.Local().Format("15:04:05")), event.Type, event.StepID)
+		}
+	}
 
 	if len(resp.Segments) == 0 {
 		fmt.Println(instMuted.Render("No workflow instances yet."))

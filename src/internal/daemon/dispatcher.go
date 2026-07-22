@@ -182,6 +182,9 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		agentSem:        make(map[string]chan struct{}),
 		stats:           make(map[string]*sourceStat),
 	}
+	if dbClient != nil {
+		dbClient.SetEventSensitiveFields(cfg.Settings.Events.SensitiveFields)
+	}
 
 	// The binder persists InternalTasks + SourceBindings; it needs the DB.
 	if dbClient != nil {
@@ -437,6 +440,29 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 			aplog.Info("reconciled outstanding counter on %d task(s), settled %d stranded task(s)", recounted, settled)
 		}
 	}
+	if d.db != nil {
+		if retention := d.cfg.Settings.Events.RetentionDuration(); retention > 0 {
+			if n, err := d.db.PruneExecutionEventsBefore(ctx, time.Now().Add(-retention)); err != nil {
+				aplog.Warn("prune execution events: %v", err)
+			} else if n > 0 {
+				aplog.Info("pruned %d expired execution event(s)", n)
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ticker := time.NewTicker(24 * time.Hour)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						_, _ = d.db.PruneExecutionEventsBefore(ctx, time.Now().Add(-retention))
+					}
+				}
+			}()
+		}
+	}
 
 	// Reconstruct workflow instances parked at an approval step into the engine's
 	// in-memory parked set. That set is empty after a restart, so without this the
@@ -682,6 +708,7 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 				continue
 			}
 			task, persisted := d.bindItem(ctx, cell)
+			d.recordRouteEvents(ctx, task)
 			matches := d.router.RouteAll(task)
 			if len(matches) == 0 {
 				aplog.Debug("  %q: no route matched (source=%q labels=%v)", cell.Title, cell.SourceID, cell.Labels)
@@ -929,6 +956,8 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("/events", d.handleExecutionEvents)
+	mux.HandleFunc("/events/stream", d.handleExecutionEventStream)
 	mux.HandleFunc("/restart/", func(w http.ResponseWriter, r *http.Request) {
 		cellID := strings.TrimPrefix(r.URL.Path, "/restart/")
 		if cellID == "" {
@@ -1270,6 +1299,7 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 			continue
 		}
 		task, persisted := d.bindItem(ctx, cell)
+		d.recordRouteEvents(ctx, task)
 		matches := d.router.RouteAll(task)
 		// Source-agnostic in-flight guard: drop any matched workflow that already
 		// has a non-terminal instance for this task, so a re-poll does not dispatch
@@ -1403,13 +1433,37 @@ func (d *Dispatcher) bindItem(ctx context.Context, cell model.SourceItem) (task 
 	if d.binder == nil {
 		return transientTask(cell), false
 	}
+	existing, _ := d.db.SourceBindings().GetBindingBySourceItem(ctx, cell.SourceID, cell.ID)
 	task, err := d.binder.Bind(ctx, cell)
 	if err != nil {
 		aplog.Error("bind source item %s (%q): %v", cell.LogLabel(), cell.Title, err)
 		return transientTask(cell), false
 	}
 	aplog.Debug("bound source item %s → task %s [%s]", cell.LogLabel(), task.ID, task.State)
+	d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "task.discovered", TaskID: task.ID, Metadata: map[string]any{"source_id": cell.SourceID, "source_item_id": cell.ID, "title": cell.Title}})
+	eventType := "task.bound"
+	if existing != nil {
+		eventType = "task.refreshed"
+	}
+	d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: eventType, TaskID: task.ID, Metadata: map[string]any{"source_id": cell.SourceID, "source_item_id": cell.ID}})
 	return task, true
+}
+
+func (d *Dispatcher) recordExecutionEvent(ctx context.Context, event db.ExecutionEvent) {
+	if d.db != nil {
+		_ = d.db.RecordExecutionEvent(ctx, &event)
+	}
+}
+
+func (d *Dispatcher) recordRouteEvents(ctx context.Context, task model.InternalTask) {
+	for _, trace := range d.router.ExplainTask(task) {
+		eventType := "route.rejected"
+		if trace.Selected {
+			eventType = "route.selected"
+		}
+		d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: eventType, TaskID: task.ID, WorkflowID: trace.RouteID,
+			Metadata: map[string]any{"reason": trace.Reason, "priority": trace.Priority, "agent": trace.Agent, "worker": trace.Worker}})
+	}
 }
 
 // dropActiveMatches removes matches whose workflow already has a non-terminal

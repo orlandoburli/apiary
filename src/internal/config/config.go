@@ -14,17 +14,17 @@ import (
 )
 
 type Config struct {
-	Version       string           `yaml:"version"`
-	Runners       []RunnerConfig   `yaml:"runners"`
-	DefaultRunner string           `yaml:"default_runner"`
-	Sources       []SourceConfig   `yaml:"sources"`
-	Agents        []AgentConfig    `yaml:"agents"`
-	Workers       []WorkerConfig   `yaml:"workers"`
-	Workflows     []WorkflowConfig `yaml:"workflows"`
+	Version       string                              `yaml:"version"`
+	Runners       []RunnerConfig                      `yaml:"runners"`
+	DefaultRunner string                              `yaml:"default_runner"`
+	Sources       []SourceConfig                      `yaml:"sources"`
+	Agents        []AgentConfig                       `yaml:"agents"`
+	Workers       []WorkerConfig                      `yaml:"workers"`
+	Workflows     []WorkflowConfig                    `yaml:"workflows"`
 	Profiles      map[string]map[string]ProfileConfig `yaml:"profiles,omitempty"` // NEW: named runner profiles
-	Settings      Settings         `yaml:"settings"`
-	Tasks         *TasksConfig     `yaml:"tasks"`
-	Notifications *NotificationsConfig `yaml:"notifications"`
+	Settings      Settings                            `yaml:"settings"`
+	Tasks         *TasksConfig                        `yaml:"tasks"`
+	Notifications *NotificationsConfig                `yaml:"notifications"`
 
 	rawContent string // original YAML text before env expansion; used by Save()
 }
@@ -32,10 +32,10 @@ type Config struct {
 // ProfileConfig is an overlay that overrides runner, model, fallbacks, and
 // fallback_strategy for a single agent when a profile is active.
 type ProfileConfig struct {
-	Runner           string          `yaml:"runner,omitempty"`
-	Model            string          `yaml:"model,omitempty"`
+	Runner           string           `yaml:"runner,omitempty"`
+	Model            string           `yaml:"model,omitempty"`
 	Fallbacks        []FallbackConfig `yaml:"fallbacks,omitempty"`
-	FallbackStrategy string          `yaml:"fallback_strategy,omitempty"`
+	FallbackStrategy string           `yaml:"fallback_strategy,omitempty"`
 }
 
 type SourceConfig struct {
@@ -264,6 +264,7 @@ type Settings struct {
 	LogMaxBackups int                `yaml:"log_max_backups"`  // rotated files to keep; default 5
 	LogMaxAgeDays int                `yaml:"log_max_age_days"` // prune backups and task logs older than this; default 30
 	Memory        MemorySettings     `yaml:"memory"`
+	Events        EventSettings      `yaml:"events"`
 	Telemetry     Telemetry          `yaml:"telemetry"`
 	CursorCost    CursorCostSettings `yaml:"cursor_cost"`
 	GitHooks      GitHooksSettings   `yaml:"git_hooks"`
@@ -273,6 +274,31 @@ type Settings struct {
 	// CreditExhaustedCooldown is how long a runner type is paused after a
 	// credit-exhausted failure. Default "24h".
 	CreditExhaustedCooldown string `yaml:"credit_exhausted_cooldown,omitempty"`
+}
+
+// EventSettings controls persisted structured execution events. Events are
+// enabled whenever a database is configured; these fields govern retention and
+// additional metadata keys that must be redacted before persistence/export.
+type EventSettings struct {
+	// Retention is a duration string. Empty defaults to 720h (30 days); zero or a
+	// negative duration disables automatic pruning.
+	Retention string `yaml:"retention"`
+	// SensitiveFields extends the built-in credential-key denylist. Matching is
+	// case-insensitive and ignores '-', '_', and '.'.
+	SensitiveFields []string `yaml:"sensitive_fields"`
+}
+
+// RetentionDuration returns the configured event-retention window. Empty or
+// invalid values use 720h; non-positive valid values disable pruning.
+func (e EventSettings) RetentionDuration() time.Duration {
+	if e.Retention == "" {
+		return 720 * time.Hour
+	}
+	d, err := time.ParseDuration(e.Retention)
+	if err != nil {
+		return 720 * time.Hour
+	}
+	return d
 }
 
 // GitHooksSettings makes the daemon enforce a shared git hooks directory on

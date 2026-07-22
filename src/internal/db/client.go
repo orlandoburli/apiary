@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/model"
@@ -15,6 +16,11 @@ import (
 
 type Client struct {
 	db *sql.DB
+
+	eventMu        sync.RWMutex
+	eventSubs      map[uint64]chan ExecutionEvent
+	eventSeq       uint64
+	eventSensitive map[string]struct{}
 }
 
 // execer is the subset of *sql.DB / *sql.Tx used by the insert helpers, so the

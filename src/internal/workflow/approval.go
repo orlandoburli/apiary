@@ -126,6 +126,12 @@ func (e *Engine) ResolveApproval(ctx context.Context, instanceID string, decisio
 	if !ok {
 		return false, fmt.Errorf("instance %q is not awaiting approval", instanceID)
 	}
+	eventType := "approval.granted"
+	decisionName := "resume"
+	if decision == ApprovalAbort {
+		eventType, decisionName = "approval.rejected", "abort"
+	}
+	e.recordExecutionEvent(ctx, r, eventType, map[string]any{"decision": decisionName})
 
 	r.resolveApproval(decision)
 	_ = e.store.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateRunning)

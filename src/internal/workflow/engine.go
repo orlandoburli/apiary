@@ -46,6 +46,19 @@ type ciPollRecorder interface {
 	RecordCIPollCheck(ctx context.Context, p *db.CIPollCheck) error
 }
 
+type executionEventRecorder interface {
+	RecordExecutionEvent(context.Context, *db.ExecutionEvent) error
+}
+
+func (e *Engine) recordExecutionEvent(ctx context.Context, r *dagRun, eventType string, metadata map[string]any) {
+	recorder, ok := e.store.(executionEventRecorder)
+	if !ok || r == nil {
+		return
+	}
+	_ = recorder.RecordExecutionEvent(ctx, &db.ExecutionEvent{Type: eventType, TaskID: r.task.ID, WorkflowID: r.wf.ID,
+		WorkflowInstanceID: r.instID, StepID: r.waitingStep, Metadata: metadata})
+}
+
 // recordCIPoll persists one CI poll result for a wait_for step when the store
 // supports it. Best-effort: a recording failure never affects the poll outcome.
 func (e *Engine) recordCIPoll(ctx context.Context, instID, stepID, status, url, detail string) {
@@ -476,6 +489,11 @@ func (e *Engine) completeTask(ctx context.Context, r *dagRun, failed bool) {
 	if err := e.tracker.SetTaskState(ctx, r.task.ID, finalState); err != nil {
 		aplog.Error("task %s: set state %s: %v", r.task.ID, finalState, err)
 	}
+	eventType := "task.completed"
+	if anyFailed {
+		eventType = "task.escalated"
+	}
+	e.recordExecutionEvent(ctx, r, eventType, map[string]any{"state": finalState})
 
 	if e.cfg.Tasks == nil || e.side == nil {
 		return
