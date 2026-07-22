@@ -236,7 +236,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 					}
 					foreachExitCode = fr.failed
 				case config.StepTypeWorkflow:
-					res = e.executeSubWorkflowStep(ctx, r.instID, step, r.task, r.bindings, memSnap, r.depth, r.wf.ID)
+					res = e.executeSubWorkflowStep(ctx, r.instID, step, r.task, r.bindings, memSnap, contribSnap, r.depth, r.wf.ID)
 				case config.StepTypeWaitFor:
 					res, _ = e.RunWaitStep(ctx, r.instID, step, r.cell.SourceID, r.cell.ID, waitDeadline)
 				default: // StepTypeAgent
@@ -299,6 +299,11 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 		}
 
 		res := wr.res
+		if ctx.Err() != nil {
+			res.Success = false
+			res.Output = "workflow canceled: " + ctx.Err().Error()
+			res.Err = ctx.Err()
+		}
 
 		// Wait_for step with no terminal result yet: suspend the instance at this step
 		// (releasing the worker) and resume it on a later poll cycle, exactly like

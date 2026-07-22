@@ -47,6 +47,7 @@ func (c *Config) validateWorkflows() []error {
 	for i, wf := range c.Workflows {
 		errs = append(errs, c.validateWorkflow(i, wf, agentIDs, sourceIDs, wfByID)...)
 	}
+	errs = append(errs, validateWorkflowReferenceCycles(wfByID)...)
 
 	return errs
 }
@@ -60,6 +61,7 @@ func (c *Config) validateWorkflow(
 ) []error {
 	var errs []error
 	ctx := fmt.Sprintf("workflows[%d] %q", idx, wf.ID)
+	errs = append(errs, validateWorkflowContract(ctx, wf)...)
 
 	// Resume policy.
 	switch wf.Resume {
@@ -444,6 +446,10 @@ func validateWorkflowStep(sctx string, s StepConfig, parent WorkflowConfig, wfBy
 	if s.Agent != "" {
 		errs = append(errs, fmt.Errorf("%s: workflow step must not have an agent field", sctx))
 	}
+	if s.Uses != "" && s.Workflow == "" {
+		errs = append(errs, fmt.Errorf("%s: local uses reference %q was not resolved; load the config with config.Load", sctx, s.Uses))
+		return errs
+	}
 	if s.Workflow == "" {
 		errs = append(errs, fmt.Errorf("%s: workflow step requires a workflow reference", sctx))
 		return errs
@@ -457,11 +463,25 @@ func validateWorkflowStep(sctx string, s StepConfig, parent WorkflowConfig, wfBy
 		errs = append(errs, fmt.Errorf("%s: workflow %q not defined", sctx, s.Workflow))
 		return errs
 	}
-	// One level of nesting only: the child must not itself contain workflow steps.
-	for _, cs := range child.Steps {
-		if cs.StepType() == StepTypeWorkflow {
-			errs = append(errs, fmt.Errorf("%s: referenced workflow %q contains a sub-workflow step %q; nesting is not allowed", sctx, s.Workflow, cs.ID))
-			break
+	if s.Timeout != "" {
+		if _, err := time.ParseDuration(s.Timeout); err != nil {
+			errs = append(errs, fmt.Errorf("%s: invalid timeout %q: %v", sctx, s.Timeout, err))
+		}
+	}
+	for name, value := range s.With {
+		input, exists := child.Inputs[name]
+		if !exists {
+			errs = append(errs, fmt.Errorf("%s: with.%s is not declared by workflow %q", sctx, name, child.ID))
+			continue
+		}
+		if !isWorkflowExpression(value) && !WorkflowValueMatchesType(value, input.Type) {
+			errs = append(errs, fmt.Errorf("%s: with.%s does not match input type %q", sctx, name, input.Type))
+		}
+	}
+	for name, input := range child.Inputs {
+		_, provided := s.With[name]
+		if input.Required && input.Default == nil && !provided {
+			errs = append(errs, fmt.Errorf("%s: required input %q for workflow %q is missing", sctx, name, child.ID))
 		}
 	}
 

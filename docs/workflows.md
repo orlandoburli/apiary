@@ -26,6 +26,7 @@ loops. This page covers the whole surface.
 |---|---|
 | `id` | Unique workflow identifier |
 | `description` | Human-readable description |
+| `inputs` / `outputs` | Typed public contract for a [reusable subworkflow](#reusable-subworkflows) |
 | `trigger` | What starts it — see [Triggers](#triggers). Omit for [spawn-only workflows](tasks-and-fanout.md#named-workflows-without-triggers) |
 | `steps` | The pipeline — see [Steps](#steps) |
 | `on_complete` / `on_fail` | [Hooks](#completion-hooks) applied when the instance finishes |
@@ -475,9 +476,9 @@ How it works:
 - Every check is recorded in the same poll history as CI waits, so the
   dashboard shows which blockers are still pending.
 
-### Sub-workflows
+### Reusable subworkflows
 
-A step can run another workflow as a child:
+A step can still run another workflow declared in the same `apiary.yaml` by ID:
 
 ```yaml
 - id: validate
@@ -485,8 +486,72 @@ A step can run another workflow as a child:
   workflow: qa-suite
 ```
 
-The child runs as its own instance linked to the parent. For *runtime*
-fan-out — an agent deciding to create child tasks — see
+For reusable pipelines, place one workflow definition in a local YAML file. The
+file declares its typed inputs and explicitly maps its public outputs:
+
+```yaml
+# workflows/prepare-repository.yaml
+id: prepare-repository
+inputs:
+  repository:
+    type: string
+    required: true
+  branch:
+    type: string
+    default: main
+outputs:
+  workspace:
+    type: string
+    value: ${{ steps.checkout.workspace }}
+steps:
+  - id: checkout
+    agent: engineer
+    prompt: Clone ${{ inputs.repository }} at ${{ inputs.branch }}.
+    output:
+      type: object
+      properties:
+        workspace: {type: string}
+      required: [workspace]
+```
+
+Reference the file relative to the YAML file containing the call. `.yaml` or
+`.yml` may be omitted:
+
+```yaml
+steps:
+  - id: prepare
+    uses: ./workflows/prepare-repository
+    with:
+      repository: ${{ task.repository }}
+
+  - id: test
+    uses: ./workflows/run-tests.yaml
+    with:
+      workspace: ${{ steps.prepare.workspace }}
+    timeout: 30m
+```
+
+Input and output types are `string`, `number`, `integer`, `boolean`, `array`,
+and `object`. `with` accepts literals and expressions rooted at `task`, `cell`,
+`memory`, or a prior step's structured output (`steps.<id>.<field>`). A child
+may use its values in prompts and nested `with` bindings through
+`${{ inputs.<name> }}`. Only outputs listed in the child's `outputs` map return
+to the parent.
+
+`apiary validate` recursively resolves every local reference, strictly decodes
+the referenced files, validates required/default values and output mappings,
+and rejects direct or indirect cycles with the complete reference chain. Remote
+URLs and versioned packages are not supported yet.
+
+Each call is recorded as a step in the parent instance. The child runs as its
+own instance linked through `parent_instance_id`, so task history exposes the
+call plus every internal child step, log, token count, and cost record. Child
+failure fails the call step and prevents dependent parent steps from running.
+Parent cancellation and an optional call `timeout` cancel the child; both the
+child instance and parent call are recorded as failed. Child hooks do not mutate
+the parent's source item.
+
+For *runtime* fan-out—an agent deciding to create child tasks—see
 [Tasks & fan-out](tasks-and-fanout.md).
 
 ## Completion hooks
