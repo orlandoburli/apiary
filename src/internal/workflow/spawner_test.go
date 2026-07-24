@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -152,8 +153,9 @@ func TestDefaultSpawner_MaterializeOnly(t *testing.T) {
 	if child.Description != "GIVEN ... THEN ..." {
 		t.Errorf("child Description = %q, want body", child.Description)
 	}
-	if len(child.Metadata.Labels) != 1 || child.Metadata.Labels[0] != "agent:backend" {
-		t.Errorf("child labels = %v, want [agent:backend]", child.Metadata.Labels)
+	wantLabels := []string{"apiary:agent-authored", "agent:backend"}
+	if !reflect.DeepEqual(child.Metadata.Labels, wantLabels) {
+		t.Errorf("child labels = %v, want %v", child.Metadata.Labels, wantLabels)
 	}
 	if child.DedupKey != "customer-crud-endpoint" {
 		t.Errorf("child DedupKey = %q, want explicit key", child.DedupKey)
@@ -327,5 +329,71 @@ func TestDefaultSpawner_AwaitUnknownTask(t *testing.T) {
 	)
 	if _, err := s.Await(context.Background(), "never-spawned"); err == nil {
 		t.Fatal("expected error awaiting an untracked task")
+	}
+}
+
+// TestDefaultSpawner_SpawnDepthLimit verifies that Spawn rejects requests that
+// would exceed MaxSpawnDepth, bounding the self-propagating agent loop attack.
+func TestDefaultSpawner_SpawnDepthLimit(t *testing.T) {
+	s := NewDefaultSpawner(
+		func(id string) (config.WorkflowConfig, bool) { return config.WorkflowConfig{ID: id}, true },
+		&fakeCreator{},
+		func(context.Context, config.WorkflowConfig, model.InternalTask) (bool, error) { return true, nil },
+		testIDGen(), func() time.Time { return time.Unix(1000, 0) },
+	)
+
+	// A request at exactly MaxSpawnDepth should succeed (depth = MaxSpawnDepth is valid).
+	_, err := s.Spawn(context.Background(), model.SpawnRequest{
+		ParentTaskID:     "root",
+		WorkflowID:       "w",
+		Title:            "at limit",
+		ParentSpawnDepth: MaxSpawnDepth - 1,
+	})
+	if err != nil {
+		t.Fatalf("Spawn at depth %d (parent depth %d): unexpected error: %v", MaxSpawnDepth, MaxSpawnDepth-1, err)
+	}
+
+	// A request one level beyond MaxSpawnDepth must be rejected.
+	_, err = s.Spawn(context.Background(), model.SpawnRequest{
+		ParentTaskID:     "root",
+		WorkflowID:       "w",
+		Title:            "over limit",
+		ParentSpawnDepth: MaxSpawnDepth,
+	})
+	if err == nil {
+		t.Fatalf("Spawn at depth %d (parent depth %d): expected depth-limit error, got nil", MaxSpawnDepth+1, MaxSpawnDepth)
+	}
+}
+
+// TestDefaultSpawner_ProvenanceLabel verifies that every spawned task carries
+// the apiary:agent-authored provenance label regardless of the caller-supplied labels.
+func TestDefaultSpawner_ProvenanceLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		reqLabels  []string
+		wantLabels []string
+	}{
+		{"no caller labels", nil, []string{"apiary:agent-authored"}},
+		{"with caller labels", []string{"agent:backend"}, []string{"apiary:agent-authored", "agent:backend"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewDefaultSpawner(
+				func(string) (config.WorkflowConfig, bool) { return config.WorkflowConfig{}, true },
+				&fakeCreator{},
+				func(context.Context, config.WorkflowConfig, model.InternalTask) (bool, error) { return true, nil },
+				testIDGen(), func() time.Time { return time.Unix(1000, 0) },
+			)
+			child, err := s.Spawn(context.Background(), model.SpawnRequest{
+				ParentTaskID: "parent",
+				Title:        "t",
+				Labels:       tc.reqLabels,
+			})
+			if err != nil {
+				t.Fatalf("Spawn: %v", err)
+			}
+			if !reflect.DeepEqual(child.Metadata.Labels, tc.wantLabels) {
+				t.Errorf("labels = %v, want %v", child.Metadata.Labels, tc.wantLabels)
+			}
+		})
 	}
 }

@@ -342,14 +342,15 @@ func TestEngine_PublishWritesBackToBindings(t *testing.T) {
 		t.Fatalf("RunInstance: %v", err)
 	}
 
-	if len(side.comments) != 1 || side.comments[0] != "## Result\nshipped" {
-		t.Fatalf("expected one publish comment %q, got %#v", "## Result\nshipped", side.comments)
+	wantComment := "## Result\nshipped" + agentAuthoredFooter
+	if len(side.comments) != 1 || side.comments[0] != wantComment {
+		t.Fatalf("expected one publish comment %q, got %#v", wantComment, side.comments)
 	}
 	sr := store.stepRuns[store.stepOrder[0]]
 	if sr.PublishState != db.PublishStateSent {
 		t.Errorf("expected publish_state %q, got %q", db.PublishStateSent, sr.PublishState)
 	}
-	if sr.PublishPayload != "## Result\nshipped" {
+	if sr.PublishPayload != wantComment {
 		t.Errorf("expected publish_payload persisted, got %q", sr.PublishPayload)
 	}
 }
@@ -380,7 +381,8 @@ func TestEngine_PublishSkippedWhenNoBindings(t *testing.T) {
 	if sr.PublishState != db.PublishStateSkipped {
 		t.Errorf("expected publish_state %q, got %q", db.PublishStateSkipped, sr.PublishState)
 	}
-	if sr.PublishPayload != "should not post" {
+	wantSkippedPayload := "should not post" + agentAuthoredFooter
+	if sr.PublishPayload != wantSkippedPayload {
 		t.Errorf("expected publish_payload persisted even when skipped, got %q", sr.PublishPayload)
 	}
 }

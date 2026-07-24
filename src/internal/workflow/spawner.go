@@ -15,6 +15,12 @@ import (
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
+// MaxSpawnDepth is the maximum allowed nesting depth for agent-driven
+// APIARY_SPAWN chains. A task at depth N may spawn children at depth N+1; a
+// request that would push the child to depth MaxSpawnDepth+1 is rejected.
+// This bounds the blast radius of a self-propagating injection loop.
+const MaxSpawnDepth = 10
+
 // WorkflowSpawner creates a child InternalTask for an APIARY_SPAWN request and
 // runs the named workflow against it. The engine holds one via an interface field
 // so it stays testable in isolation (see Engine.spawner / WithSpawner).
@@ -97,6 +103,20 @@ func NewDefaultSpawner(
 // it without creating a duplicate or launching the workflow again — so re-running
 // the same decomposition does not fan out a second, duplicate set of sub-issues.
 func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (model.InternalTask, error) {
+	// Enforce the spawn-depth limit before doing anything else.  An agent that
+	// has been prompt-injected can emit APIARY_SPAWN to create children that
+	// re-enter the same workflow, which re-emit APIARY_SPAWN, forming an
+	// unbounded recursive loop.  Rejecting requests at depth ≥ MaxSpawnDepth
+	// caps the blast radius at MaxSpawnDepth tasks per root task.
+	childDepth := req.ParentSpawnDepth + 1
+	if childDepth > MaxSpawnDepth {
+		return model.InternalTask{}, fmt.Errorf(
+			"spawn depth limit (%d) exceeded: cannot spawn child at depth %d — "+
+				"check for a self-propagating agent loop or increase MaxSpawnDepth if intentional",
+			MaxSpawnDepth, childDepth,
+		)
+	}
+
 	// A materialize-only spawn (empty workflow) creates the deduped child but runs
 	// no inline workflow — the child is left for the normal poll→route loop to pick
 	// up once it is materialized as a source sub-issue (see step.Materialize). Only
@@ -123,6 +143,9 @@ func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (mod
 	}
 
 	now := s.now()
+	// Prepend the provenance label so reviewers and downstream routing rules
+	// can distinguish agent-authored tasks from human-created ones.
+	labels := append([]string{"apiary:agent-authored"}, req.Labels...)
 	child := model.InternalTask{
 		ID:           s.newID("task"),
 		ParentTaskID: req.ParentTaskID,
@@ -131,7 +154,7 @@ func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (mod
 		Input:        req.Input,
 		DedupKey:     dedupKey,
 		State:        model.TaskStateRegistered,
-		Metadata:     model.TaskMetadata{Type: "internal", Labels: req.Labels},
+		Metadata:     model.TaskMetadata{Type: "internal", Labels: labels, SpawnDepth: childDepth},
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}

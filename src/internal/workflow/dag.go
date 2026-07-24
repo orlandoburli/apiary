@@ -223,17 +223,17 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 				var foreachExitCode int
 				switch step.StepType() {
 				case config.StepTypeParallel:
-					res, parallelContribs = e.runParallelStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, r.wf.Env)
+					res, parallelContribs = e.runParallelStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, r.wf.Env, r.wf.PublishAllowList)
 				case config.StepTypeForeach:
 					var fr foreachResult
 					if step.Concurrency > 1 {
 						// Release our global slot so item goroutines can use all
 						// available slots. Re-acquire before the deferred release fires.
 						<-sem
-						res, fr = e.executeForeachStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, contribSnap, r.wf.ID, sem, r.wf.Env)
+						res, fr = e.executeForeachStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, contribSnap, r.wf.ID, sem, r.wf.Env, r.wf.PublishAllowList)
 						sem <- struct{}{}
 					} else {
-						res, fr = e.executeForeachStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, contribSnap, r.wf.ID, nil, r.wf.Env)
+						res, fr = e.executeForeachStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, contribSnap, r.wf.ID, nil, r.wf.Env, r.wf.PublishAllowList)
 					}
 					foreachExitCode = fr.failed
 				case config.StepTypeWorkflow:
@@ -241,7 +241,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 				case config.StepTypeWaitFor:
 					res, _ = e.RunWaitStep(ctx, r.instID, step, r.cell.SourceID, r.cell.ID, waitDeadline)
 				default: // StepTypeAgent
-					res = e.runStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, r.wf.Env)
+					res = e.runStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, r.wf.Env, r.wf.PublishAllowList)
 				}
 				resultCh <- workerResult{
 					stepID:           step.ID,

@@ -88,6 +88,14 @@ type WorkflowConfig struct {
 	// Env is the workflow-scope environment overlay applied to every step of this
 	// workflow. It overrides agent.env and is overridden by step.env.
 	Env map[string]string `yaml:"env,omitempty"`
+
+	// PublishAllowList, when non-empty, restricts APIARY_PUBLISH write-back to
+	// the listed step IDs. Steps absent from the list have their publish payload
+	// silently dropped, as if publish: off were set. Empty (the default) allows
+	// every step that does not already set publish: off to write back. Use this
+	// to limit which agent steps may post comments back to the source, reducing
+	// the surface area for prompt-injection-driven content injection.
+	PublishAllowList []string `yaml:"publish_allow,omitempty"`
 }
 
 // ResumePolicy returns the effective resume policy, defaulting to ResumeAllowed.
