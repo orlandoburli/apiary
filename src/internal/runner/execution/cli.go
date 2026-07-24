@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -105,7 +104,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 
 	cmd := exec.CommandContext(ctx, r.command, argv...)
 	cmd.Dir = req.WorkingDir
-	cmd.Env = os.Environ()
+	cmd.Env = hostEnv()
 	for k, v := range req.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

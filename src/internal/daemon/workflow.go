@@ -873,9 +873,11 @@ func readSoulFile(agent config.AgentConfig, cellID string) string {
 // the agent runs itself authenticate as the agent, not the daemon's inherited
 // default account). The `gh` CLI honours both variables; we set both for safety.
 //
-// These overlay os.Environ() at the call site (Env on the RunRequest, applied
-// after the inherited environment in the runner), so the agent's token wins over
-// any GITHUB_TOKEN the daemon inherited.
+// These are passed as req.Env, which the runner overlays on top of the
+// allow-listed host environment, so the agent's token wins over any GITHUB_TOKEN
+// the host process might carry. Use per-repo fine-grained tokens via
+// agent.source_token rather than a broad personal access token so that a
+// compromised agent can only affect the repositories it was explicitly granted.
 func agentIdentityEnv(agent config.AgentConfig) map[string]string {
 	env := map[string]string{}
 	if agent.SourceName != "" {
