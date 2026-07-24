@@ -236,3 +236,46 @@ func TestListTaskNotesAndDelete(t *testing.T) {
 		t.Fatalf("delete absent should be no-op: %v", err)
 	}
 }
+
+func TestFilePermissions(t *testing.T) {
+	root := t.TempDir()
+	s, err := Open(root)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	for _, dir := range []string{root, filepath.Join(root, globalDir), filepath.Join(root, tasksDir)} {
+		fi, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if got := fi.Mode().Perm(); got != 0o700 {
+			t.Errorf("dir %s: want 0700 got %04o", dir, got)
+		}
+	}
+
+	if err := s.UpsertGlobal(Entry{Name: "perm-test", Description: "perm test", Content: "ok"}); err != nil {
+		t.Fatalf("UpsertGlobal: %v", err)
+	}
+	for _, name := range []string{IndexFile, filepath.Join(globalDir, "perm-test.md")} {
+		fi, err := os.Stat(filepath.Join(root, name))
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		if got := fi.Mode().Perm(); got != 0o600 {
+			t.Errorf("file %s: want 0600 got %04o", name, got)
+		}
+	}
+
+	s.now = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
+	if err := s.AppendTaskNote("01TASK", Note{Content: "note"}); err != nil {
+		t.Fatalf("AppendTaskNote: %v", err)
+	}
+	fi, err := os.Stat(filepath.Join(root, tasksDir, "01TASK.md"))
+	if err != nil {
+		t.Fatalf("stat task note: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Errorf("task note: want 0600 got %04o", got)
+	}
+}

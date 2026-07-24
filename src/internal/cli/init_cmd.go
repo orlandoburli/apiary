@@ -76,7 +76,7 @@ func newInitCmd() *cobra.Command {
 			if _, err := os.Stat("apiary.yaml"); err == nil {
 				return fmt.Errorf("apiary.yaml already exists")
 			}
-			if err := os.WriteFile("apiary.yaml", []byte(starterConfig), 0644); err != nil {
+			if err := os.WriteFile("apiary.yaml", []byte(starterConfig), 0o600); err != nil {
 				return err
 			}
 			fmt.Println("✓ apiary.yaml created — edit it to configure your sources and agents")

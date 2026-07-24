@@ -76,13 +76,13 @@ type Logger struct {
 // If db is provided, logs also go to SQLite.
 func New(logDir string, dbClient *db.Client, level Level, rot Rotation) (*Logger, error) {
 	if logDir != "" {
-		if err := os.MkdirAll(logDir, 0755); err != nil {
+		if err := os.MkdirAll(logDir, 0o700); err != nil {
 			return nil, fmt.Errorf("create log dir: %w", err)
 		}
 	}
 
 	logFile := filepath.Join(logDir, "apiary.log")
-	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
@@ -225,7 +225,7 @@ func (l *Logger) rotate() {
 		os.Remove(logFile)
 	}
 
-	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		// Leave size past the limit so the next write retries the rotation
 		// (and the reopen) instead of silently giving up for good.
@@ -264,12 +264,12 @@ func (l *Logger) CreateTaskLogger(taskID string) (io.WriteCloser, error) {
 	}
 
 	taskLogDir := filepath.Join(l.logDir, "tasks")
-	if err := os.MkdirAll(taskLogDir, 0755); err != nil {
+	if err := os.MkdirAll(taskLogDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create task log dir: %w", err)
 	}
 
 	taskLogFile := filepath.Join(taskLogDir, taskID+".log")
-	return os.OpenFile(taskLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	return os.OpenFile(taskLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 }
 
 // CreateTranscript opens (append) the markdown transcript file for one step
@@ -280,11 +280,11 @@ func (l *Logger) CreateTranscript(taskID, name string) (*os.File, string, error)
 		return nil, "", fmt.Errorf("no log directory configured")
 	}
 	dir := filepath.Join(l.logDir, "transcripts", SanitizePathComponent(taskID))
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, "", fmt.Errorf("create transcript dir: %w", err)
 	}
 	path := filepath.Join(dir, SanitizePathComponent(name)+".md")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, "", err
 	}

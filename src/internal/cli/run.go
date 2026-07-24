@@ -56,10 +56,10 @@ func newRunCmd() *cobra.Command {
 
 			// Create directories
 			dbDir := filepath.Dir(dbPath)
-			if err := os.MkdirAll(dbDir, 0755); err != nil {
+			if err := os.MkdirAll(dbDir, 0o700); err != nil {
 				return fmt.Errorf("creating database directory: %w", err)
 			}
-			if err := os.MkdirAll(logDir, 0755); err != nil {
+			if err := os.MkdirAll(logDir, 0o700); err != nil {
 				return fmt.Errorf("creating log directory: %w", err)
 			}
 

@@ -80,7 +80,7 @@ func newWorkerCmd() *cobra.Command {
 			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 			workerDataDir := filepath.Join(projectDataDir(), "workers")
-			if err := os.MkdirAll(workerDataDir, 0755); err != nil {
+			if err := os.MkdirAll(workerDataDir, 0o700); err != nil {
 				return fmt.Errorf("create worker data directory: %w", err)
 			}
 			workerDB, err := db.New(ctx, filepath.Join(workerDataDir, safeWorkerFilename(workerID)+".db"))
