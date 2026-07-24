@@ -5,9 +5,15 @@ package log
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"sync"
 	"time"
 )
+
+// jwtPattern matches JWT-shaped bearer tokens (three base64url segments
+// starting with "eyJ"). Mirrors the redaction used in transcript writes so
+// tokens never appear in plain text on stderr either.
+var jwtPattern = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)
 
 var (
 	verbose bool
@@ -55,7 +61,7 @@ func Error(format string, args ...any) {
 
 func print(level, format string, args ...any) {
 	ts := time.Now().Format("15:04:05")
-	msg := fmt.Sprintf(format, args...)
+	msg := jwtPattern.ReplaceAllString(fmt.Sprintf(format, args...), "«redacted-jwt»")
 	fmt.Fprintf(os.Stderr, "%s  %-5s  %s\n", ts, level, msg)
 
 	sinkMu.RLock()
