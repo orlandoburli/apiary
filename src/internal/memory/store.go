@@ -111,8 +111,11 @@ type Store struct {
 // from hand edits since the last write.
 func Open(root string) (*Store, error) {
 	for _, dir := range []string{root, filepath.Join(root, globalDir), filepath.Join(root, tasksDir)} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("memory: create %s: %w", dir, err)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("memory: chmod %s: %w", dir, err)
 		}
 	}
 	s := &Store{root: root, now: time.Now}
@@ -589,7 +592,7 @@ func atomicWrite(path, content string) error {
 		os.Remove(tmpName)
 		return err
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	if err := os.Chmod(tmpName, 0o600); err != nil {
 		os.Remove(tmpName)
 		return err
 	}

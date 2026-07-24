@@ -92,6 +92,33 @@ as the original.
     [release notes](https://github.com/orlandoburli/apiary/releases) before
     upgrading.
 
+## Security hardening (shared hosts)
+
+Apiary writes its config file (`apiary.yaml`), the SQLite database, log files,
+per-task transcripts, and the agent memory store with **0600/0700**
+permissions, so only the owning OS user can read them.  Those files hold
+tokens, prompt history, and issue content that must stay private.
+
+On a shared Linux/macOS host, the additional recommended step is to run the
+daemon under a **dedicated non-login service account** rather than your
+personal user:
+
+```sh
+# Create a dedicated user (Linux)
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin apiary
+
+# Transfer ownership of the data directory
+sudo chown -R apiary:apiary /var/lib/apiary
+
+# Run as the service account (systemd example)
+# User=apiary in your [Service] unit
+```
+
+Because Apiary itself enforces 0600/0700 on everything it creates, the
+service account ensures that no other human login on the same machine can
+reach the data directory even if the directory was created before Apiary
+tightened its permissions.
+
 ## Next step
 
 Continue with the [Quickstart](quickstart.md) — from a fresh install to your

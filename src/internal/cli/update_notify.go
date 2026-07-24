@@ -138,9 +138,9 @@ func saveUpdateCheckState(path string, state updateCheckState) {
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return
 	}
 	// Best-effort cache: ignore write errors (read-only HOME, etc.).
-	_ = os.WriteFile(path, data, 0o644)
+	_ = os.WriteFile(path, data, 0o600)
 }

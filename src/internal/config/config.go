@@ -538,7 +538,7 @@ func (c *Config) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, []byte(out), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(out), 0o600); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
 	return nil
