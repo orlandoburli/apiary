@@ -1,0 +1,64 @@
+name: triage-gate
+
+# SEC-01 — Guard against prompt-injection via untrusted issue content.
+#
+# When an issue is opened or labeled with `ai-ready` by a non-collaborator,
+# remove the trigger label and add `needs-triage` so a maintainer must
+# explicitly approve before Apiary picks it up.
+#
+# "Trusted" = OWNER | MEMBER | COLLABORATOR per GitHub's author_association.
+# CONTRIBUTOR / FIRST_TIME_CONTRIBUTOR / NONE all park in the triage queue.
+
+on:
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  issues: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    # Only fire when the author is not already trusted.
+    if: |
+      !contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'),
+                github.event.issue.author_association)
+
+    steps:
+      - name: Remove ai-ready label (if present)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Ignore 404 — label may not be present yet (opened event before labeling).
+          gh api --method DELETE \
+            /repos/$REPO/issues/$ISSUE/labels/ai-ready \
+            --silent || true
+
+      - name: Add needs-triage label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh issue edit $ISSUE --repo $REPO --add-label needs-triage || true
+
+      - name: Post triage notice
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+        run: |
+          gh issue comment $ISSUE --repo $REPO --body \
+          "👋 Hi @$AUTHOR — thank you for filing this issue!
+
+          Apiary auto-runs AI agents against issues labeled \`ai-ready\`. To prevent
+          prompt-injection attacks, only repository collaborators may trigger that
+          flow directly.
+
+          A maintainer will review this issue and add \`ai-ready\` once it has been
+          triaged. In the meantime the \`needs-triage\` label has been added.
+
+          _This is an automated message from the triage gate (SEC-01)._"

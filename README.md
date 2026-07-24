@@ -210,6 +210,19 @@ See [`docs/vscode-extension.md`](docs/vscode-extension.md) for usage and what
 the diagram shows. The extension source lives under
 [`tools/vscode-apiary`](tools/vscode-apiary).
 
+## Security — Rollout Freeze
+
+> **Org-wide rollout is frozen** until all issues labeled
+> [`bucket:rollout-gate`](https://github.com/orlandoburli/apiary/issues?q=is%3Aopen+label%3Abucket%3Arollout-gate)
+> are closed. See [`security-rollout-issues.md`](security-rollout-issues.md) for the
+> full backlog and rationale.
+>
+> **Issue-creation gate (SEC-01):** Apiary ingests GitHub issues and runs AI agents
+> against their content. To block prompt-injection attacks, the `triage-gate` workflow
+> automatically removes the `ai-ready` label from issues filed by non-collaborators and
+> marks them `needs-triage`. A maintainer must explicitly re-add `ai-ready` after review.
+> Only users with `OWNER`, `MEMBER`, or `COLLABORATOR` association bypass the gate.
+
 ## Status
 
 > **Public beta.** Apiary works end-to-end and is in active use. Config and adapter
