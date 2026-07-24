@@ -22,7 +22,12 @@ type Config struct {
 	Agents        []AgentConfig                       `yaml:"agents"`
 	Workers       []WorkerConfig                      `yaml:"workers"`
 	Workflows     []WorkflowConfig                    `yaml:"workflows"`
-	Profiles      map[string]map[string]ProfileConfig `yaml:"profiles,omitempty"` // NEW: named runner profiles
+	Profiles      map[string]map[string]ProfileConfig `yaml:"profiles,omitempty"`
+	// Environments declares named environment overlays. Each key is an
+	// environment name (e.g. "development", "staging", "production"). Use
+	// apiary run --env <name> or apiary validate --env <name> to apply an
+	// overlay. See Config.ForEnvironment for overlay precedence rules.
+	Environments  map[string]EnvironmentOverlay       `yaml:"environments,omitempty"`
 	Settings      Settings                            `yaml:"settings"`
 	Tasks         *TasksConfig                        `yaml:"tasks"`
 	Notifications *NotificationsConfig                `yaml:"notifications"`

@@ -187,7 +187,16 @@ func (d *Dispatcher) settleRemoteQueueJob(ctx context.Context, job queue.Job) er
 	if job.State == queue.JobCanceled {
 		state = db.InstanceStateInterrupted
 	}
-	if err := d.db.CreateWorkflowInstance(ctx, &db.WorkflowInstance{ID: instanceID, WorkflowID: job.WorkflowID, TaskID: job.TaskID, SourceID: job.SourceID, State: state}); err != nil {
+	if err := d.db.CreateWorkflowInstance(ctx, &db.WorkflowInstance{
+		ID:           instanceID,
+		WorkflowID:   job.WorkflowID,
+		TaskID:       job.TaskID,
+		SourceID:     job.SourceID,
+		State:        state,
+		ConfigDigest: d.configDigest,
+		GitRevision:  d.gitRevision,
+		Environment:  d.environment,
+	}); err != nil {
 		return err
 	}
 	remaining, err := d.db.InternalTasks().DecrementOutstanding(ctx, job.TaskID)

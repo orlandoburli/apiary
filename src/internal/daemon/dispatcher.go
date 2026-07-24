@@ -102,6 +102,12 @@ type Dispatcher struct {
 	engine     *workflow.Engine
 	engineOnce sync.Once
 
+	// configDigest, gitRevision, and environment are captured at construction
+	// and stamped on every workflow instance for the audit trail.
+	configDigest string
+	gitRevision  string
+	environment  string
+
 	// eventExporters are isolated out-of-process plugin clients. Event storage
 	// always completes first; exporter failures are reported but never returned
 	// into dispatcher control flow.
@@ -185,7 +191,10 @@ func (d *Dispatcher) pauseRunnerWithKind(runnerType string, until time.Time, kin
 // Pass nil for db and logger to skip state persistence and logging to SQLite.
 // profileName selects a named runner profile (from cfg.Profiles) that overrides
 // per-agent runner/model/fallbacks settings. An empty string means base config.
-func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *db.Client, logger *logging.Logger, profileName ...string) (*Dispatcher, error) {
+// New constructs and initialises a Dispatcher. profileName selects a runner
+// profile overlay (at most one). envName selects a named environment overlay
+// from cfg.Environments; empty string means use the base config.
+func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *db.Client, logger *logging.Logger, envName string, profileName ...string) (*Dispatcher, error) {
 	r, err := router.New(cfg)
 	if err != nil {
 		return nil, err
@@ -206,6 +215,9 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		sem:             make(chan struct{}, 1), // poll: one at a time
 		agentSem:        make(map[string]chan struct{}),
 		stats:           make(map[string]*sourceStat),
+		configDigest:    config.Digest(cfg),
+		gitRevision:     config.CurrentGitRevision(configFile),
+		environment:     envName,
 	}
 
 	registry, pluginErrs := plugin.DiscoverConfigured(cfg.PluginDirs, configFile, version.Version)

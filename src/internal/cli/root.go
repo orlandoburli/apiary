@@ -62,6 +62,9 @@ func init() {
 		newTranscriptCmd(),
 		newPluginsCmd(),
 		newWorkerCmd(),
+		newDiffCmd(),
+		newPromoteCmd(),
+		newRollbackCmd(),
 	)
 }
 

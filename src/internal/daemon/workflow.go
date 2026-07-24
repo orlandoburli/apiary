@@ -21,7 +21,10 @@ import (
 // approval steps survive across dispatch and poll cycles.
 func (d *Dispatcher) workflowEngine() *workflow.Engine {
 	d.engineOnce.Do(func() {
-		opts := []workflow.Option{workflow.WithSideEffects(&wfSideEffects{d: d})}
+		opts := []workflow.Option{
+			workflow.WithSideEffects(&wfSideEffects{d: d}),
+			workflow.WithRevisionInfo(d.configDigest, d.gitRevision, d.environment),
+		}
 		if d.db != nil {
 			opts = append(opts,
 				workflow.WithSpawner(d.newSpawner()),

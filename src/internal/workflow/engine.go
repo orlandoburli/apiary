@@ -261,6 +261,13 @@ type Engine struct {
 	depChecker        DependencyChecker
 	approvalProviders []ApprovalProvider
 
+	// configDigest, gitRevision, and environment are stamped on every new
+	// WorkflowInstance created by this engine. Set at construction time by
+	// the dispatcher via WithRevisionInfo.
+	configDigest string
+	gitRevision  string
+	environment  string
+
 	now   func() time.Time
 	newID func(prefix string) string
 
@@ -310,6 +317,17 @@ func WithDependencyChecker(checker DependencyChecker) Option {
 	return func(e *Engine) { e.depChecker = checker }
 }
 
+// WithRevisionInfo stamps every new workflow instance with the effective
+// config digest, git revision, and environment name at dispatch time, so the
+// audit trail is queryable in config_revisions and workflow_instances.
+func WithRevisionInfo(configDigest, gitRevision, environment string) Option {
+	return func(e *Engine) {
+		e.configDigest = configDigest
+		e.gitRevision = gitRevision
+		e.environment = environment
+	}
+}
+
 // WithApprovalProvider registers an external approval request transport.
 func WithApprovalProvider(provider ApprovalProvider) Option {
 	return func(e *Engine) {
@@ -354,13 +372,16 @@ func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, task
 
 	instID := e.newID("wf")
 	inst := &db.WorkflowInstance{
-		ID:         instID,
-		WorkflowID: wf.ID,
-		TaskID:     task.ID,
-		CellID:     cell.ID,
-		SourceID:   cell.SourceID,
-		State:      db.InstanceStateRunning,
-		CreatedAt:  e.now(),
+		ID:           instID,
+		WorkflowID:   wf.ID,
+		TaskID:       task.ID,
+		CellID:       cell.ID,
+		SourceID:     cell.SourceID,
+		State:        db.InstanceStateRunning,
+		ConfigDigest: e.configDigest,
+		GitRevision:  e.gitRevision,
+		Environment:  e.environment,
+		CreatedAt:    e.now(),
 	}
 	if err := e.store.CreateWorkflowInstance(ctx, inst); err != nil {
 		return "", false, fmt.Errorf("create workflow instance: %w", err)

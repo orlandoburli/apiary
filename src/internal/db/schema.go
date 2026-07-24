@@ -326,6 +326,23 @@ CREATE INDEX IF NOT EXISTS idx_internal_tasks_parent ON internal_tasks(parent_ta
 CREATE INDEX IF NOT EXISTS idx_source_bindings_task ON source_bindings(task_id);
 CREATE INDEX IF NOT EXISTS idx_source_bindings_item ON source_bindings(source_id, source_item_id);
 CREATE INDEX IF NOT EXISTS idx_task_pull_requests_task ON task_pull_requests(task_id);
+
+-- Config revisions: one row per recorded effective configuration state.
+-- Each row captures the config digest and (when available) git revision at
+-- the time of a promote, rollback, or daemon startup. Used by apiary promote,
+-- apiary rollback, and the environment audit trail.
+CREATE TABLE IF NOT EXISTS config_revisions (
+  id TEXT PRIMARY KEY,              -- ulid
+  environment TEXT NOT NULL DEFAULT '',  -- environment name, or '' for base config
+  config_digest TEXT NOT NULL,          -- hex SHA-256 of the canonical config YAML
+  git_revision TEXT NOT NULL DEFAULT '', -- git HEAD at record time, or ''
+  event TEXT NOT NULL DEFAULT 'startup', -- startup|promote|rollback
+  from_environment TEXT,                 -- set on promote/rollback: the source env
+  note TEXT,                            -- optional operator note
+  recorded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_config_revisions_env ON config_revisions(environment, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_config_revisions_digest ON config_revisions(config_digest);
 `
 
 // migrations are idempotent ALTER statements applied to databases created
@@ -406,6 +423,11 @@ var migrations = []string{
 	// "aborted".
 	`ALTER TABLE task_executions ADD COLUMN credit_exhausted INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE task_executions ADD COLUMN failure_kind TEXT`,
+	// Environment promotion: record the effective config digest and git
+	// revision on each workflow instance so the audit trail is queryable.
+	`ALTER TABLE workflow_instances ADD COLUMN config_digest TEXT`,
+	`ALTER TABLE workflow_instances ADD COLUMN git_revision TEXT`,
+	`ALTER TABLE workflow_instances ADD COLUMN environment TEXT`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).

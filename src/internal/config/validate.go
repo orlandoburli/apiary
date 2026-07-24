@@ -274,6 +274,7 @@ func (c *Config) Validate() []error {
 	errs = append(errs, c.lint()...)
 
 	errs = append(errs, c.validateNotifications()...)
+	errs = append(errs, c.validateEnvironments()...)
 
 	return errs
 }

@@ -92,7 +92,7 @@ func newWorkerCmd() *cobra.Command {
 			workerCfg.Settings = cfg.Settings
 			disabled := false
 			workerCfg.Settings.Queue.Enabled = &disabled
-			dispatcher, err := daemon.New(ctx, &workerCfg, configFile, workerDB, nil)
+			dispatcher, err := daemon.New(ctx, &workerCfg, configFile, workerDB, nil, "")
 			if err != nil {
 				return fmt.Errorf("initialize worker runners: %w", err)
 			}

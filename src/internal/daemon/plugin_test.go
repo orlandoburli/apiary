@@ -52,7 +52,7 @@ printf '{"protocol":1,"request_id":"%s","result":{"exported":true}}\n' "$id"`
 		t.Fatal(err)
 	}
 	defer dbc.Close()
-	dispatcher, err := New(ctx, cfg, filepath.Join(root, "apiary.yaml"), dbc, nil)
+	dispatcher, err := New(ctx, cfg, filepath.Join(root, "apiary.yaml"), dbc, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestEventExporterCrashAndTimeoutDoNotBreakDispatcher(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer dbc.Close()
-			dispatcher, err := New(ctx, cfg, filepath.Join(root, "apiary.yaml"), dbc, nil)
+			dispatcher, err := New(ctx, cfg, filepath.Join(root, "apiary.yaml"), dbc, nil, "")
 			if err != nil {
 				t.Fatal(err)
 			}
