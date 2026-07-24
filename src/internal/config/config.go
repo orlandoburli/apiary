@@ -824,6 +824,7 @@ func loadDotEnv(configPath string) {
 	if err != nil {
 		return
 	}
+	warnDotEnvPerms(envPath)
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
