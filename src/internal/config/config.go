@@ -360,6 +360,18 @@ func queueDuration(value string, fallback time.Duration) time.Duration {
 type ApprovalSettings struct {
 	WebhookSecret string   `yaml:"webhook_secret,omitempty"`
 	RequireFor    []string `yaml:"require_for,omitempty"`
+	// GateUntrustedAuthors, when true, prepends a human-approval step to every
+	// workflow triggered by a source item whose author is not a repository
+	// collaborator. The source adapter must implement CollaboratorChecker;
+	// sources that do not are treated as always-trusted (no gate injected).
+	GateUntrustedAuthors bool `yaml:"gate_untrusted_authors,omitempty"`
+	// UntrustedApprovers is the list of GitHub/source logins that may approve
+	// the injected gate. When empty, any valid approval response (webhook or
+	// dashboard) resolves the gate.
+	UntrustedApprovers []string `yaml:"untrusted_approvers,omitempty"`
+	// UntrustedMessage is the comment posted on the task when the gate parks.
+	// Defaults to a generic message when empty.
+	UntrustedMessage string `yaml:"untrusted_message,omitempty"`
 }
 
 // EventSettings controls persisted structured execution events. Events are

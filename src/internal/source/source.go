@@ -142,6 +142,14 @@ type SubIssueCreator interface {
 	CreateSubIssue(ctx context.Context, parent, child model.SourceItem) (model.SourceItem, error)
 }
 
+// CollaboratorChecker is an optional interface a source may implement to check
+// whether a given user login is a collaborator on the backing repository.
+// The dispatcher uses it to gate untrusted-author runs behind a human-approval
+// step when settings.approvals.gate_untrusted_authors is true.
+type CollaboratorChecker interface {
+	IsCollaborator(ctx context.Context, login string) (bool, error)
+}
+
 // Factory creates a new, unconfigured Adapter instance.
 type Factory func() Adapter
 

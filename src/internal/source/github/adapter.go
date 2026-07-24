@@ -21,13 +21,14 @@ func init() {
 // Compile-time checks: the GitHub adapter supports the optional source
 // capabilities used by the dispatcher and the workflow engine.
 var (
-	_ source.StateSetter     = (*Adapter)(nil)
-	_ source.LabelAdder      = (*Adapter)(nil)
-	_ source.LabelRemover    = (*Adapter)(nil)
-	_ source.TaskPoller      = (*Adapter)(nil)
-	_ source.CIStatusPoller  = (*Adapter)(nil)
-	_ source.SubIssueCreator = (*Adapter)(nil)
-	_ source.BlockerLister   = (*Adapter)(nil)
+	_ source.StateSetter        = (*Adapter)(nil)
+	_ source.LabelAdder         = (*Adapter)(nil)
+	_ source.LabelRemover       = (*Adapter)(nil)
+	_ source.TaskPoller         = (*Adapter)(nil)
+	_ source.CIStatusPoller     = (*Adapter)(nil)
+	_ source.SubIssueCreator    = (*Adapter)(nil)
+	_ source.BlockerLister      = (*Adapter)(nil)
+	_ source.CollaboratorChecker = (*Adapter)(nil)
 )
 
 type Adapter struct {
@@ -687,9 +688,19 @@ func (a *Adapter) toSourceItem(item issue) model.SourceItem {
 		Type:        "issue",
 		State:       item.State,
 		URL:         item.HTMLURL,
+		AuthorLogin: item.User.Login,
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 	}
+}
+
+// IsCollaborator reports whether the given GitHub login is a collaborator on
+// the configured repo. It calls GET /repos/{owner}/{repo}/collaborators/{login}
+// which returns 204 for collaborators and 404 for non-members. Any other error
+// is returned to the caller; the caller should fail-safe (treat as trusted) on
+// non-authoritative errors.
+func (a *Adapter) IsCollaborator(ctx context.Context, login string) (bool, error) {
+	return a.client.isCollaborator(ctx, a.owner, a.repo, login)
 }
 
 func formatComment(result model.RunResult) string {

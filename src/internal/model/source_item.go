@@ -25,6 +25,10 @@ type SourceItem struct {
 	Metadata    map[string]any
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	// AuthorLogin is the source-native username of whoever opened or triggered
+	// this item. Populated by adapters that carry author identity (e.g. GitHub
+	// issues carry the opener's login). Empty when the source does not expose it.
+	AuthorLogin string
 	// Comments is populated only by a TaskPoller (per-task fetch used for
 	// approval steps), not by Poll. It holds comments relevant to evaluating an
 	// approval condition.

@@ -215,6 +215,7 @@ func (d *Dispatcher) dispatchWorkflow(ctx context.Context, cell model.SourceItem
 	}
 
 	wf := d.resolveWorkflow(match)
+	wf = d.maybeInjectAuthorGate(ctx, cell, wf)
 	instID, success, err := d.workflowEngine().RunInstance(ctx, wf, task)
 	if err != nil {
 		aplog.Error("cell %s: workflow run failed: %v", cell.LogLabel(), err)
@@ -222,6 +223,78 @@ func (d *Dispatcher) dispatchWorkflow(ctx context.Context, cell model.SourceItem
 	}
 	aplog.Info("cell %s: workflow instance %s started (success=%v; may be awaiting approval)", cell.LogLabel(), instID, success)
 	return model.RunResult{Success: success, WorkerID: match.Route.Agent}
+}
+
+// maybeInjectAuthorGate returns wf unmodified when gate_untrusted_authors is
+// disabled, the source item has no author, or the author is confirmed as a
+// collaborator. When the author cannot be verified as a collaborator, a
+// synthetic approval step is prepended so the instance parks before any
+// shell/edit-capable agent runs. API errors are fail-open: a non-200 response
+// that is not a definitive "not a collaborator" (404) is logged and skipped so
+// a transient API outage cannot block legitimate work.
+func (d *Dispatcher) maybeInjectAuthorGate(ctx context.Context, cell model.SourceItem, wf config.WorkflowConfig) config.WorkflowConfig {
+	if !d.cfg.Settings.Approvals.GateUntrustedAuthors {
+		return wf
+	}
+	login := cell.AuthorLogin
+	if login == "" {
+		return wf
+	}
+	adapter, ok := d.sources[cell.SourceID]
+	if !ok {
+		return wf
+	}
+	checker, ok := adapter.(source.CollaboratorChecker)
+	if !ok {
+		// Source doesn't support collaborator checking; treat as trusted.
+		return wf
+	}
+	collab, err := checker.IsCollaborator(ctx, login)
+	if err != nil {
+		aplog.Warn("cell %s: collaborator check for @%s: %v (skipping gate)", cell.LogLabel(), login, err)
+		return wf
+	}
+	if collab {
+		aplog.Debug("cell %s: author @%s is a collaborator — no gate injected", cell.LogLabel(), login)
+		return wf
+	}
+
+	aplog.Info("cell %s: author @%s is not a collaborator — injecting approval gate", cell.LogLabel(), login)
+	return injectApprovalGate(wf, d.cfg.Settings.Approvals, login)
+}
+
+const untrustedGateStepID = "_untrusted_author_gate"
+
+// injectApprovalGate prepends a synthetic approval step to wf and wires all
+// root steps (those with no existing explicit or sequential deps) to depend on
+// it, ensuring no agent step executes before a human approves the run.
+func injectApprovalGate(wf config.WorkflowConfig, cfg config.ApprovalSettings, login string) config.WorkflowConfig {
+	msg := cfg.UntrustedMessage
+	if msg == "" {
+		msg = fmt.Sprintf("Run triggered by @%s who is not a repository collaborator. Review the task and approve only if the request is safe to execute.", login)
+	}
+	gate := config.StepConfig{
+		ID:        untrustedGateStepID,
+		Type:      config.StepTypeApproval,
+		Message:   msg,
+		Approvers: cfg.UntrustedApprovers,
+	}
+
+	// Clone steps so we do not mutate the shared config.WorkflowConfig.
+	steps := make([]config.StepConfig, len(wf.Steps))
+	copy(steps, wf.Steps)
+
+	// Wire every root step (no existing deps) to depend on the gate so no
+	// agent starts before approval. Root = both DependsOn and SeqDependsOn empty.
+	for i := range steps {
+		if len(steps[i].DependsOn) == 0 && len(steps[i].SeqDependsOn) == 0 {
+			steps[i].DependsOn = []string{untrustedGateStepID}
+		}
+	}
+
+	out := wf
+	out.Steps = append([]config.StepConfig{gate}, steps...)
+	return out
 }
 
 // resolveWorkflow returns the workflow to run for a matched route: a workflow

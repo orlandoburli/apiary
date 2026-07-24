@@ -170,6 +170,34 @@ func (c *client) getAllIssues(ctx context.Context, path string, params url.Value
 	return all, nil
 }
 
+// isCollaborator checks whether login is a collaborator on owner/repo.
+// GitHub returns 204 No Content for collaborators and 404 for non-members.
+// Any error other than a 404 is propagated; the caller should treat API
+// errors as non-authoritative and fail open (assume trusted) rather than
+// blocking legitimate work.
+func (c *client) isCollaborator(ctx context.Context, owner, repo, login string) (bool, error) {
+	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s", owner, repo, login)
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	aplog.Debug("github: GET %s → %d", path, resp.StatusCode)
+	switch resp.StatusCode {
+	case http.StatusNoContent:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("github: collaborator check: status %d: %s", resp.StatusCode, body)
+	}
+}
+
 var linkNextRe = regexp.MustCompile(`<[^>]+>;\s*rel="([^"]+)"`)
 
 func hasNextPage(link string) bool {
