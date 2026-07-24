@@ -137,6 +137,20 @@ func (e *Engine) checkCIWaitStep(
 			},
 		}, nil
 
+	case "no_pr":
+		// The source found no PR associated with this issue. The implement step most
+		// likely finished as a no-op (e.g. blocked by a dependency) and never opened
+		// a PR. Treat the CI wait as satisfied so the instance ends cleanly instead
+		// of polling until the max-duration timeout expires.
+		aplog.Info("wait_for step %q: no PR found for this issue — skipping CI wait (no-op implement)", step.ID)
+		return StepResult{
+			Success: true,
+			StructuredOutput: map[string]any{
+				"ci_status": "no_pr",
+				"reason":    "no PR was opened; implement step was a no-op",
+			},
+		}, nil
+
 	case "pending":
 		aplog.Debug("wait_for step %q: CI still pending", step.ID)
 		return StepResult{Pending: true}, nil
@@ -288,7 +302,7 @@ func checksToMap(checks []struct {
 // recorded poll always carries a meaningful, non-empty status.
 func normalizeCIStatus(s string) string {
 	switch s {
-	case "passed", "failed", "pending", "conflict":
+	case "passed", "failed", "pending", "conflict", "no_pr":
 		return s
 	default:
 		return "unknown"

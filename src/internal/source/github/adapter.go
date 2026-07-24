@@ -365,7 +365,11 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 		}
 
 		if len(candidates) == 0 {
-			return source.CIStatus{Status: "pending"}, nil // No PR found yet; still pending
+			// No PR has been cross-referenced on the issue's timeline. This happens
+			// when the engineer step finished as a no-op (e.g. blocked by a dep) and
+			// never opened a PR. Return "no_pr" so the wait_for step can short-circuit
+			// instead of polling until the max-duration timeout.
+			return source.CIStatus{Status: "no_pr"}, nil
 		}
 
 		// Fetch candidate PRs until an open one is found. A fetch failure is NOT

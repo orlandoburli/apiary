@@ -403,3 +403,32 @@ func countID(seen []StepRequest, id string) int {
 	}
 	return n
 }
+
+// TestWaitFor_NoPREndsAsNoOp is the regression for issue #200: when the CI
+// poller returns "no_pr" (no PR was ever opened — the implement step was a
+// no-op), the wait_for step must complete successfully on the first check
+// instead of parking the instance until the max-duration timeout expires.
+func TestWaitFor_NoPREndsAsNoOp(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	clock := time.Unix(1000, 0)
+	ci := func() (source.CIStatus, error) { return source.CIStatus{Status: "no_pr"}, nil }
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+
+	instID, success, _ := eng.RunInstance(context.Background(), waitForWorkflow(), model.InternalTask{ID: "c1"})
+
+	// The instance must complete successfully — not park waiting for a PR that never comes.
+	if !success {
+		t.Fatal("no_pr should resolve to success (no-op implement)")
+	}
+	if got := store.instances[instID].State; got != db.InstanceStateDone {
+		t.Errorf("instance state = %q, want done (no PR means no CI to wait for)", got)
+	}
+	if len(eng.ParkedWaits()) != 0 {
+		t.Error("instance must not be parked when no PR was opened")
+	}
+	// The "no_pr" outcome must be recorded so the history is auditable.
+	if statuses := store.pollStatuses(); len(statuses) != 1 || statuses[0] != "no_pr" {
+		t.Errorf("recorded poll statuses = %v, want [no_pr]", statuses)
+	}
+}
