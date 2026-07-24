@@ -42,3 +42,32 @@ func TestDiscoverSkipsGroupAndWorldWritableDirs(t *testing.T) {
 		t.Fatal("safe plugin from good path should still load")
 	}
 }
+
+func TestDiscoverSkipsWritableChildPluginDir(t *testing.T) {
+	// Parent directory is owner-only (0700); one child plugin subdir is
+	// group-writable. The writable child must be skipped with a warning
+	// while a sibling with correct permissions still loads.
+	parent := t.TempDir() // TempDir creates 0700
+
+	writeTestPlugin(t, parent, "bad-plugin", "exit 0", Manifest{})
+	writeTestPlugin(t, parent, "good-plugin", "exit 0", Manifest{})
+
+	// Make only the bad-plugin subdir group-writable.
+	badRoot := filepath.Join(parent, "bad-plugin")
+	if err := os.Chmod(badRoot, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(badRoot, 0o755) })
+
+	registry, errs := Discover([]string{parent}, parent, "v0.10.0")
+
+	if _, ok := registry.Get("dev.apiary.good-plugin"); !ok {
+		t.Fatal("good-plugin with safe permissions should load")
+	}
+	if _, ok := registry.Get("dev.apiary.bad-plugin"); ok {
+		t.Fatal("bad-plugin with group-writable dir must not load")
+	}
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "group- or world-writable") {
+		t.Fatalf("expected exactly 1 permission warning for bad-plugin, got errs=%v", errs)
+	}
+}

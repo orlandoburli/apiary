@@ -53,6 +53,10 @@ func Discover(paths []string, baseDir, apiaryVersion string) (*Registry, []error
 		}
 		sort.Strings(roots)
 		for _, root := range roots {
+			if warn := checkDirOwnerOnly(root); warn != nil {
+				errs = append(errs, warn)
+				continue
+			}
 			if _, err := os.Stat(filepath.Join(root, ManifestFilename)); err != nil {
 				continue
 			}
