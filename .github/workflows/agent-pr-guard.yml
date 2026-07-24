@@ -1,0 +1,75 @@
+name: agent-pr-guard
+
+# SEC-08 — Require human review of agent-authored PRs.
+#
+# When a PR is opened or synchronised by the apiary bot or carries an
+# agent-authorship label, this workflow:
+#   1. Disables auto-merge so CI-green alone cannot land the PR.
+#   2. Posts a one-time comment reminding reviewers that the change was
+#      agent-generated and must be read before approving.
+#
+# Branch protection (required_pull_request_reviews ≥ 1) is the hard gate;
+# this workflow is a defence-in-depth layer that strips the auto-merge flag
+# before any race can occur.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    # Fire only for PRs that carry an agent-authorship label.
+    # Labels set by apiary workflows: agent:engineer, ai-complete, ai-ready.
+    if: |
+      contains(github.event.pull_request.labels.*.name, 'agent:engineer') ||
+      contains(github.event.pull_request.labels.*.name, 'ai-complete') ||
+      contains(github.event.pull_request.labels.*.name, 'ai-ready')
+
+    steps:
+      - name: Disable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.node_id }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Disable auto-merge via GraphQL mutation (idempotent — safe to repeat).
+          gh api graphql -f query='
+            mutation($pr: ID!) {
+              disablePullRequestAutoMerge(input: { pullRequestId: $pr }) {
+                clientMutationId
+              }
+            }
+          ' -f pr="$PR" --silent || true
+
+          echo "Auto-merge disabled for PR #${PR_NUMBER}"
+
+      - name: Post review notice (once)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_ACTION: ${{ github.event.action }}
+        run: |
+          # Only post the notice on the first open, not on every push.
+          if [ "$EVENT_ACTION" != "opened" ]; then
+            echo "Skipping notice (action=${EVENT_ACTION})"
+            exit 0
+          fi
+
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
+          "🤖 **Agent-authored PR — human review required (SEC-08)**
+
+          This pull request was opened by an automated agent. Auto-merge has been
+          disabled: the PR will not merge until a human reviewer explicitly approves
+          it, regardless of CI status.
+
+          Please read the diff carefully before approving — agent PRs can contain
+          plausible-looking but incorrect or injected changes.
+
+          _This is an automated message from the agent-pr-guard workflow (SEC-08)._"

@@ -17,16 +17,16 @@ Ou via CLI:
 hermes kanban create "fix: ..." --assignee engineer --skill git-workflow
 ```
 
-**Regra fundamental:** NUNCA bloquear kanban task para review humano. Sempre criar PR com auto-merge e aguardar o CI. O worker só completa a task após o PR estar mergeado e o dev local sincronizado.
+**Regra fundamental (SEC-08):** Todo PR de agente requer aprovação humana antes do merge. NUNCA ativar auto-merge em PRs de agente — branch protection rejeita merges sem review. O agente cria o PR e aguarda o CI; um humano aprova e realiza o merge. O worker só completa a task após o PR estar mergeado e o dev local sincronizado.
 
 **Pipeline completo de uma task engineer:**
-Kanban cria task → dispatcher spawna worker → worker carrega git-workflow → cria worktree → faz o código → commit → push → PR → auto-merge → aguarda CI → confirma merge → pull main → task dev:rebuild → gitnexus reindex → remove worktree → complete task
+Kanban cria task → dispatcher spawna worker → worker carrega git-workflow → cria worktree → faz o código → commit → push → PR → aguarda CI + aprovação humana → confirma merge → pull main → task dev:rebuild → gitnexus reindex → remove worktree → complete task
 
 **GH_TOKEN:** o profile engineer tem GH_TOKEN no `.env`. Se o worker não conseguir usar `gh`, verificar se o token ainda é válido.
 
 **Pitfalls:**
 - **Skill must be in each target profile's skills directory.** The kanban worker loads skills from `~/.hermes/profiles/<profile>/skills/`, NOT from `~/.hermes/skills/`. If `git-workflow` is absent from any profile's skills dir, the worker crashes immediately with `Error: Unknown skill(s): git-workflow`. This affects ALL profiles (engineer, po, qa) that run tasks with `--skill git-workflow`. Fix: `ln -s ~/.hermes/skills/git-workflow ~/.hermes/profiles/<profile>/skills/git-workflow` for each profile.
-- Worker sem GH_TOKEN → não consegue criar PR nem ativar auto-merge. Solução: `hermes config set terminal.env_passthrough '["GH_TOKEN"]'` no profile, ou adicionar ao `.env` do profile.
+- Worker sem GH_TOKEN → não consegue criar PR. Solução: `hermes config set terminal.env_passthrough '["GH_TOKEN"]'` no profile, ou adicionar ao `.env` do profile.
 - Worktree deletado entre runs → se a task for re-spawnada após um merge, o worktree original sumiu. O worker deve criar um novo worktree ou clonar fresco.
 - CI lento/flaky → `gh pr checks --watch` + `gh run rerun --failed` em flake conhecido. Só desistir após 2-3 reruns do mesmo padrão.
 - Diverging branches no git pull → usar `git reset --hard origin/main` quando o histórico local divergir (worktree worker não deve ter commits locais em main).
@@ -51,10 +51,9 @@ Kanban cria task → dispatcher spawna worker → worker carrega git-workflow �
 4. **Link issue and project**: after creating the PR:
    - The PR body MUST contain `Closes #<issue>` (or `Fixes #<issue>`) to link the issue.
    - Add the PR to the relevant GitHub Project: `gh project item-add 1 --owner orlandoburli-enterprise --url <pr-url>`.
-5. **Enable auto-merge**: run `gh pr merge <number> --auto --squash` so it merges automatically once CI passes.
-   - NUNCA bloquear kanban task para review humano. O worker cria o PR, ativa auto-merge e aguarda o CI. Sem blocker, sem review-required.
+5. **Do NOT enable auto-merge** (SEC-08). Branch protection on `main` requires at least one human approval; `--auto` without an approval would be rejected. Open the PR and stop — a human reviewer will approve and merge.
 6. CI must pass (lint, tests, build, sqlc-check) before merge.
-7. Aguardar o merge — obrigatório, sem exceção. A tarefa não está concluída até o PR estar mergeado e o dev local atualizado. Não pule para a próxima tarefa nem declare pronto antes disso.
+7. Aguardar o merge — obrigatório, sem exceção. A tarefa não está concluída até o PR estar aprovado por um humano, mergeado, e o dev local atualizado. Não pule para a próxima tarefa nem declare pronto antes disso.
    - `gh pr checks <number> --watch` para aguardar o CI.
    - Se o CI travar em flake conhecido (RATE_LIMIT 429, timing em `cadastro-observacoes-markdown`, `vendas-nucleo:438`, `cadastro-auto-rascunho`, etc.), faça `gh run rerun <run-id> --failed` e aguarde de novo. Só desista após 2-3 reruns mostrarem o mesmo padrão de falha.
    - Confirme com `gh pr view <number> --json state,mergedAt` que `state == "MERGED"`.
@@ -76,7 +75,7 @@ Kanban cria task → dispatcher spawna worker → worker carrega git-workflow �
 10. Remove o worktree: `git worktree remove ../project-erp--<branch>` e (opcional) `git branch -d <branch>`.
 11. Never `git push` directly to `main`.
 
-**Resumo: o ciclo completo de uma change é** `worktree → commit → push → PR → auto-merge → aguardar CI → confirmar merge → pull main → task dev:rebuild → gitnexus analyze --skip-agents-md → remover worktree`. Pular qualquer passo (especialmente 7-9) é proibido.
+**Resumo: o ciclo completo de uma change é** `worktree → commit → push → PR → aguardar CI + aprovação humana → confirmar merge → pull main → task dev:rebuild → gitnexus analyze --skip-agents-md → remover worktree`. Pular qualquer passo (especialmente 7-9) é proibido.
 
 ## AGENTS.md / CLAUDE.md — manter atualizados via PR
 
