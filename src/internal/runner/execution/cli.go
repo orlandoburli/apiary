@@ -35,6 +35,80 @@ type CliRunner struct {
 	// mcpRunArgs are extra CLI args injected into every run to activate the MCP
 	// config written by setupMCP (e.g. claude's "--mcp-config <path>").
 	mcpRunArgs []string
+	// sandbox, when non-nil, wraps every agent subprocess in a Docker container
+	// with the given image, restricted user, and network policy.
+	sandbox *cliSandbox
+}
+
+// cliSandbox describes the Docker container isolation applied to a CliRunner.
+type cliSandbox struct {
+	image     string
+	user      string // defaults to "nobody" when empty
+	network   string // defaults to "none" when empty
+	extraArgs []string
+}
+
+// wrapCommand rewrites (binary, argv) to run inside the sandbox container.
+// Per-task credentials in env are injected via --env flags (not host-inherited).
+// Returns the docker binary and the full argument list.
+func (s *cliSandbox) wrapCommand(binary string, argv []string, workDir string, env map[string]string) (string, []string) {
+	user := s.user
+	if user == "" {
+		user = "nobody"
+	}
+	network := s.network
+	if network == "" {
+		network = "none"
+	}
+	dockerArgs := []string{"run", "--rm", "--network", network, "--user", user}
+	if workDir != "" {
+		dockerArgs = append(dockerArgs, "-v", workDir+":"+workDir, "-w", workDir)
+	}
+	for k, v := range env {
+		dockerArgs = append(dockerArgs, "--env", k+"="+v)
+	}
+	dockerArgs = append(dockerArgs, s.extraArgs...)
+	dockerArgs = append(dockerArgs, s.image, binary)
+	dockerArgs = append(dockerArgs, argv...)
+	return "docker", dockerArgs
+}
+
+// hostEnvAllowList is the set of host environment variable names that are safe
+// to inherit by agent subprocesses. All other host variables (API keys, secrets,
+// AWS credentials, etc. that belong to the daemon) are excluded. Per-task
+// credentials arrive via req.Env and are overlaid explicitly.
+var hostEnvAllowList = map[string]bool{
+	"PATH":          true,
+	"HOME":          true,
+	"TMPDIR":        true,
+	"TEMP":          true,
+	"TMP":           true,
+	"TERM":          true,
+	"USER":          true,
+	"LOGNAME":       true,
+	"LANG":          true,
+	"LC_ALL":        true,
+	"LC_CTYPE":      true,
+	"SSL_CERT_FILE": true,
+	"SSL_CERT_DIR":  true,
+	"SSH_AUTH_SOCK": true,
+	"DOCKER_HOST":   true, // needed when the daemon invokes docker for sandboxing
+}
+
+// filteredHostEnv builds the subprocess environment from the safe allowlist of
+// host variables plus the explicitly scoped per-task overlay (req.Env).
+func filteredHostEnv(overlay map[string]string) []string {
+	env := make([]string, 0, len(hostEnvAllowList)+len(overlay))
+	for _, kv := range os.Environ() {
+		k, _, found := strings.Cut(kv, "=")
+		if found && hostEnvAllowList[k] {
+			env = append(env, kv)
+		}
+	}
+	for k, v := range overlay {
+		env = append(env, k+"="+v)
+	}
+	return env
 }
 
 func (r *CliRunner) ID() string { return "cli" }
@@ -80,6 +154,29 @@ func (r *CliRunner) Configure(config map[string]any) error {
 		}
 		r.mcpRunArgs = args
 	}
+	if raw, ok := config["sandbox"].(map[string]any); ok {
+		sc := &cliSandbox{}
+		if v, ok := raw["image"].(string); ok {
+			sc.image = v
+		}
+		if v, ok := raw["user"].(string); ok {
+			sc.user = v
+		}
+		if v, ok := raw["network"].(string); ok {
+			sc.network = v
+		}
+		if extras, ok := raw["extra_args"].([]any); ok {
+			for _, a := range extras {
+				if s, ok := a.(string); ok {
+					sc.extraArgs = append(sc.extraArgs, s)
+				}
+			}
+		}
+		if sc.image == "" {
+			return fmt.Errorf("cli runner: sandbox.image is required when sandbox is configured")
+		}
+		r.sandbox = sc
+	}
 	return nil
 }
 
@@ -103,11 +200,17 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		argv = append(argv, r.promptFlag, prompt)
 	}
 
-	cmd := exec.CommandContext(ctx, r.command, argv...)
-	cmd.Dir = req.WorkingDir
-	cmd.Env = os.Environ()
-	for k, v := range req.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+	var cmd *exec.Cmd
+	if r.sandbox != nil {
+		// Container isolation: credentials are passed via --env flags inside
+		// wrapCommand; the docker host process inherits only the safe allowlist.
+		binary, sandboxArgv := r.sandbox.wrapCommand(r.command, argv, req.WorkingDir, req.Env)
+		cmd = exec.CommandContext(ctx, binary, sandboxArgv...)
+		cmd.Env = filteredHostEnv(nil)
+	} else {
+		cmd = exec.CommandContext(ctx, r.command, argv...)
+		cmd.Dir = req.WorkingDir
+		cmd.Env = filteredHostEnv(req.Env)
 	}
 	if r.promptFlag == "" && !r.promptPositional {
 		cmd.Stdin = strings.NewReader(prompt)

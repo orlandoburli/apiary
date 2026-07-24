@@ -73,6 +73,11 @@ type RunnerConfig struct {
 	// format/location (see runner/execution). Agent-scope MCPs (AgentConfig.MCPs)
 	// are layered on top of these, overriding by name.
 	MCPs []model.MCPServer `yaml:"mcps,omitempty"`
+	// Sandbox, when set, wraps every agent subprocess in a Docker container with
+	// the specified image, restricted user, and network policy. Use this for
+	// runners that process issues from external/untrusted authors to contain
+	// prompt-injection attempts.
+	Sandbox *SandboxConfig `yaml:"sandbox,omitempty"`
 }
 
 // AdapterName returns the runner adapter name as "{provider}-{type}" when both
@@ -128,6 +133,31 @@ type AgentConfig struct {
 	// WorkspaceAffinity pins retries/resumes to the first worker that claims the
 	// task, preserving a local checkout or other non-portable environment.
 	WorkspaceAffinity bool `yaml:"workspace_affinity,omitempty"`
+	// Permissions overrides the default tool permissions written into the OpenCode
+	// agent file. Keys are tool names ("bash", "edit", "webfetch", etc.); values
+	// are "allow" or "deny". Absent keys use the runner's least-privilege defaults
+	// (read/glob/grep/task: allow; bash/edit/webfetch: deny). To grant shell
+	// access explicitly set permissions: {bash: allow, edit: allow}.
+	Permissions map[string]string `yaml:"permissions,omitempty"`
+}
+
+// SandboxConfig describes a container isolation layer for CLI runner processes.
+// When set on a RunnerConfig, every agent subprocess is launched inside a
+// Docker container with the given image, restricted user, and network policy,
+// preventing prompt-injection escapes from reaching the host or other services.
+type SandboxConfig struct {
+	// Image is the Docker image that provides the agent binary (required when
+	// sandbox is enabled).
+	Image string `yaml:"image"`
+	// User is passed as --user to docker run (e.g. "nobody", "1000:1000").
+	// Defaults to "nobody" when empty.
+	User string `yaml:"user,omitempty"`
+	// Network is the --network value for docker run (e.g. "none", "host", or a
+	// named bridge). Defaults to "none" when empty.
+	Network string `yaml:"network,omitempty"`
+	// ExtraArgs are appended verbatim after `docker run --rm` and before the
+	// image name, e.g. ["-v", "/cache:/cache:ro"] for read-only bind mounts.
+	ExtraArgs []string `yaml:"extra_args,omitempty"`
 }
 
 // FallbackConfig is one entry in an agent's rate-limit failover chain. Runner

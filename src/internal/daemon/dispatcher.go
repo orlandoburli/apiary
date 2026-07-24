@@ -357,7 +357,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			return nil, fmt.Errorf("agent %q: runner type %q not found", ac.ID, rc.Type)
 		}
 
-		if err := ra.Configure(runnerConfigWithMCPs(rc.Config, rc.MCPs, ac.MCPs)); err != nil {
+		if err := ra.Configure(injectSandbox(runnerConfigWithMCPs(rc.Config, rc.MCPs, ac.MCPs), rc.Sandbox)); err != nil {
 			return nil, fmt.Errorf("agent %q: configure runner: %w", ac.ID, err)
 		}
 
@@ -389,7 +389,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			if !ok {
 				return nil, fmt.Errorf("agent %q: fallback runner type %q not found", ac.ID, fAdapterName)
 			}
-			if err := fra.Configure(runnerConfigWithMCPs(frc.Config, frc.MCPs, ac.MCPs)); err != nil {
+			if err := fra.Configure(injectSandbox(runnerConfigWithMCPs(frc.Config, frc.MCPs, ac.MCPs), frc.Sandbox)); err != nil {
 				return nil, fmt.Errorf("agent %q: configure fallback runner %q: %w", ac.ID, fb.Runner, err)
 			}
 			if fAdapterName == "opencode" {
@@ -1733,18 +1733,30 @@ func (d *Dispatcher) writeOpencodeAgent(ctx context.Context, ac config.AgentConf
 		}
 	}
 
+	// Least-privilege defaults: read-only tools allowed; write/shell/network
+	// tools denied. Agents that require bash or edit access must opt in via
+	// permissions: {bash: allow, edit: allow} in their agent config.
+	perms := map[string]string{
+		"read":     "allow",
+		"glob":     "allow",
+		"grep":     "allow",
+		"task":     "allow",
+		"edit":     "deny",
+		"bash":     "deny",
+		"webfetch": "deny",
+	}
+	for k, v := range ac.Permissions {
+		perms[k] = v
+	}
+
 	var b strings.Builder
 	b.WriteString("---\n")
 	fmt.Fprintf(&b, "description: %s\n", ac.Description)
 	b.WriteString("mode: primary\n")
 	b.WriteString("permission:\n")
-	b.WriteString("  edit: allow\n")
-	b.WriteString("  bash: allow\n")
-	b.WriteString("  read: allow\n")
-	b.WriteString("  glob: allow\n")
-	b.WriteString("  grep: allow\n")
-	b.WriteString("  webfetch: allow\n")
-	b.WriteString("  task: allow\n")
+	for _, tool := range []string{"read", "glob", "grep", "task", "edit", "bash", "webfetch"} {
+		fmt.Fprintf(&b, "  %s: %s\n", tool, perms[tool])
+	}
 	b.WriteString("---\n")
 	if promptBody != "" {
 		b.WriteString("\n")
@@ -1797,20 +1809,27 @@ func (d *Dispatcher) registerAgentInConfig(workDir string, ac config.AgentConfig
 		_ = json.Unmarshal(data, &cfg)
 	}
 
+	// Build permission map with least-privilege defaults, overridden by agent config.
+	permMap := map[string]any{
+		"read":     "allow",
+		"glob":     "allow",
+		"grep":     "allow",
+		"task":     "allow",
+		"edit":     "deny",
+		"bash":     "deny",
+		"webfetch": "deny",
+	}
+	for k, v := range ac.Permissions {
+		permMap[k] = v
+	}
+
 	// Use a relative reference from the global config directory
 	agentEntry := map[string]any{
 		"description": ac.Description,
 		"mode":        "primary",
 		"prompt":      "{file:./agents/" + ac.ID + ".md}",
 		"skills":      ac.Skills,
-		"permission": map[string]any{
-			"edit": "allow",
-			"bash": "allow",
-			"read": "allow",
-			"glob": "allow",
-			"grep": "allow",
-			"task": "allow",
-		},
+		"permission":  permMap,
 	}
 
 	agents, _ := cfg["agent"].(map[string]any)
@@ -1842,6 +1861,32 @@ func runnerConfigWithMCPs(base map[string]any, runnerMCPs, agentMCPs []model.MCP
 		out[k] = v
 	}
 	out["mcps"] = merged
+	return out
+}
+
+// injectSandbox folds a RunnerConfig.Sandbox into the config map passed to
+// CliRunner.Configure. The base map is never mutated; a copy is returned only
+// when a sandbox is present.
+func injectSandbox(base map[string]any, s *config.SandboxConfig) map[string]any {
+	if s == nil {
+		return base
+	}
+	out := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		out[k] = v
+	}
+	out["sandbox"] = map[string]any{
+		"image":      s.Image,
+		"user":       s.User,
+		"network":    s.Network,
+		"extra_args": func() []any {
+			a := make([]any, len(s.ExtraArgs))
+			for i, v := range s.ExtraArgs {
+				a[i] = v
+			}
+			return a
+		}(),
+	}
 	return out
 }
 
@@ -1891,7 +1936,7 @@ func (d *Dispatcher) UpdateAgentConfig(ctx context.Context, agentID, newModel, n
 		if !ok {
 			return fmt.Errorf("runner type %q not registered", rc.Type)
 		}
-		if err := ra.Configure(rc.Config); err != nil {
+		if err := ra.Configure(injectSandbox(rc.Config, rc.Sandbox)); err != nil {
 			return fmt.Errorf("configure runner %q: %w", newRunner, err)
 		}
 
