@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/orlandoburli/apiary/internal/audit"
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
 	aplog "github.com/orlandoburli/apiary/internal/log"
@@ -479,6 +480,40 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 			execID := exec.ID
 			rr.SetPID = func(pid int) { _ = x.d.db.SetPID(ctx, execID, pid) }
 			rr.Heartbeat = func() { _ = x.d.db.SendHeartbeat(ctx, execID) }
+			if x.d.db != nil {
+				taskID := req.Cell.ID
+				instanceID := req.InstanceID
+				stepID := req.Step.ID
+				rr.AuditSink = func(action model.AuditAction) {
+					flags := audit.Check(action.Tool, action.InputSummary)
+					isAnomalous := len(flags) > 0
+					ev := &db.AuditEvent{
+						TaskID:             taskID,
+						WorkflowInstanceID: instanceID,
+						StepID:             stepID,
+						ExecutionID:        execID,
+						ToolName:           action.Tool,
+						InputSummary:       action.InputSummary,
+						AnomalyFlags:       flags,
+						IsAnomalous:        isAnomalous,
+						OccurredAt:         action.OccurredAt,
+					}
+					if err := x.d.db.RecordAuditEvent(ctx, ev); err != nil {
+						aplog.Error("audit: record event for task %s tool %q: %v", taskID, action.Tool, err)
+					}
+					if isAnomalous {
+						aplog.Warn("[%s] security anomaly: tool=%q flags=%v", req.Cell.LogLabel(), action.Tool, flags)
+						x.d.notifyAnomaly(anomalyEvent{
+							TaskID:             taskID,
+							CellID:             req.Cell.ID,
+							WorkflowInstanceID: instanceID,
+							StepID:             stepID,
+							ToolName:           action.Tool,
+							Flags:              flags,
+						})
+					}
+				}
+			}
 		}
 
 		runCtx, cancel := context.WithTimeout(ctx, rr.Timeout)

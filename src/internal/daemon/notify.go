@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orlandoburli/apiary/internal/audit"
 	"github.com/orlandoburli/apiary/internal/config"
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
@@ -140,6 +141,70 @@ func (d *Dispatcher) escalationSummary(ctx context.Context, task model.InternalT
 		}
 	}
 	return task.Title
+}
+
+// anomalyEvent carries everything a security anomaly notification may reference.
+type anomalyEvent struct {
+	TaskID             string
+	CellID             string
+	WorkflowInstanceID string
+	StepID             string
+	ToolName           string
+	Flags              []audit.Flag
+}
+
+// notifyAnomaly fires every configured notification channel when an anomalous
+// agent action is detected. It reuses the same channels as label escalations so
+// operators only need one notification config. Like notifyEscalation it is
+// asynchronous and errors are logged-and-swallowed — alerts must never block
+// agent execution.
+func (d *Dispatcher) notifyAnomaly(ev anomalyEvent) {
+	n := d.cfg.Notifications
+	if n == nil || len(n.Channels) == 0 {
+		return
+	}
+	flagStrs := make([]string, len(ev.Flags))
+	for i, f := range ev.Flags {
+		flagStrs[i] = string(f)
+	}
+	flagSummary := strings.Join(flagStrs, ",")
+	for i, ch := range n.Channels {
+		if ch.Type != "command" || strings.TrimSpace(ch.Run) == "" {
+			continue
+		}
+		idx, run := i, ch.Run
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+			defer cancel()
+			// Reuse the same shell-quoting template substitution as escalation
+			// notifications, but with security-specific placeholders.
+			cmdline := renderNotifyCommand(run, escalationEvent{
+				TaskID:  ev.TaskID,
+				CellID:  ev.CellID,
+				Label:   "security.anomaly",
+				Summary: "anomalous tool call: " + ev.ToolName + " flags=" + flagSummary,
+			})
+			cmd := exec.CommandContext(ctx, "sh", "-c", cmdline)
+			cmd.Env = append(os.Environ(),
+				"APIARY_TASK_ID="+ev.TaskID,
+				"APIARY_CELL_ID="+ev.CellID,
+				"APIARY_WORKFLOW_INSTANCE_ID="+ev.WorkflowInstanceID,
+				"APIARY_STEP_ID="+ev.StepID,
+				"APIARY_TOOL_NAME="+ev.ToolName,
+				"APIARY_ANOMALY_FLAGS="+flagSummary,
+				"APIARY_LABEL=security.anomaly",
+				"APIARY_SUMMARY="+"anomalous tool call: "+ev.ToolName+" flags="+flagSummary,
+			)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				aplog.Error("anomaly notification channel %d for %s (tool %q flags %s): %v — %s",
+					idx, ev.CellID, ev.ToolName, flagSummary, err, strings.TrimSpace(string(out)))
+				return
+			}
+			aplog.Info("anomaly notification sent: channel %d for %s (tool %q flags %s)",
+				idx, ev.CellID, ev.ToolName, flagSummary)
+		}()
+	}
 }
 
 // firstLine returns the first non-empty line of s, capped for notification use.

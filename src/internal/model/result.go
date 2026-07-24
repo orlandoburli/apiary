@@ -2,6 +2,18 @@ package model
 
 import "time"
 
+// AuditAction describes one tool call made by an agent during a run. It is
+// emitted in real time via RunRequest.AuditSink as the runner parses the
+// provider's stream output.
+type AuditAction struct {
+	// Tool is the provider's tool name (e.g. "bash", "str_replace_editor").
+	Tool string
+	// InputSummary is the raw JSON input object for the tool call, truncated
+	// to 2 KB. Used by the anomaly classifier and persisted for audit queries.
+	InputSummary string
+	OccurredAt   time.Time
+}
+
 type RunRequest struct {
 	Cell          SourceItem
 	WorkerID      string
@@ -49,6 +61,12 @@ type RunRequest struct {
 	// The dispatcher uses it to update last_heartbeat_at in the DB so the
 	// dashboard can detect stale/zombie processes.
 	Heartbeat func() `json:"-"`
+
+	// AuditSink, when set, is called for each tool invocation the agent makes.
+	// It receives the action in real time as the runner parses the provider's
+	// stream. The caller is responsible for persisting the action and running
+	// anomaly checks. Must be safe to call from multiple goroutines.
+	AuditSink func(AuditAction) `json:"-"`
 }
 
 type Usage struct {

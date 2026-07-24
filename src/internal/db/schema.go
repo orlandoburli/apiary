@@ -218,6 +218,22 @@ CREATE TABLE IF NOT EXISTS task_pull_requests (
   UNIQUE(task_id, source_id, pr_number)
 );
 
+-- Agent audit events: one row per tool call made by an agent subprocess.
+-- Records commands run, files touched, network requests, and anomaly flags
+-- triggered by the injection-detection classifier (SEC-14).
+CREATE TABLE IF NOT EXISTS agent_audit_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL,
+  workflow_instance_id TEXT,
+  step_id TEXT,
+  execution_id INTEGER,
+  tool_name TEXT NOT NULL,
+  input_summary TEXT,                      -- raw JSON input, truncated to 2KB
+  anomaly_flags TEXT NOT NULL DEFAULT '[]',-- JSON array of Flag strings
+  is_anomalous INTEGER NOT NULL DEFAULT 0,
+  occurred_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create indices
 CREATE INDEX IF NOT EXISTS idx_executions_task ON task_executions(task_id);
 CREATE INDEX IF NOT EXISTS idx_executions_retry ON task_executions(next_retry_at) WHERE status='failed';
@@ -326,6 +342,9 @@ CREATE INDEX IF NOT EXISTS idx_internal_tasks_parent ON internal_tasks(parent_ta
 CREATE INDEX IF NOT EXISTS idx_source_bindings_task ON source_bindings(task_id);
 CREATE INDEX IF NOT EXISTS idx_source_bindings_item ON source_bindings(source_id, source_item_id);
 CREATE INDEX IF NOT EXISTS idx_task_pull_requests_task ON task_pull_requests(task_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_task ON agent_audit_events(task_id, id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_instance ON agent_audit_events(workflow_instance_id, id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_anomalous ON agent_audit_events(is_anomalous, occurred_at);
 `
 
 // migrations are idempotent ALTER statements applied to databases created
@@ -406,6 +425,25 @@ var migrations = []string{
 	// "aborted".
 	`ALTER TABLE task_executions ADD COLUMN credit_exhausted INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE task_executions ADD COLUMN failure_kind TEXT`,
+	// SEC-14: agent audit event log for injection detection. CREATE TABLE IF NOT
+	// EXISTS is safe here (idempotent); the table is also in the base schema for
+	// fresh installs. Using CREATE here lets existing DBs that predate the base
+	// schema addition pick it up without a "table already exists" error.
+	`CREATE TABLE IF NOT EXISTS agent_audit_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL,
+  workflow_instance_id TEXT,
+  step_id TEXT,
+  execution_id INTEGER,
+  tool_name TEXT NOT NULL,
+  input_summary TEXT,
+  anomaly_flags TEXT NOT NULL DEFAULT '[]',
+  is_anomalous INTEGER NOT NULL DEFAULT 0,
+  occurred_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`,
+	`CREATE INDEX IF NOT EXISTS idx_audit_events_task ON agent_audit_events(task_id, id)`,
+	`CREATE INDEX IF NOT EXISTS idx_audit_events_instance ON agent_audit_events(workflow_instance_id, id)`,
+	`CREATE INDEX IF NOT EXISTS idx_audit_events_anomalous ON agent_audit_events(is_anomalous, occurred_at)`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).

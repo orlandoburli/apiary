@@ -203,6 +203,9 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 				mu.Unlock()
 			}
 			accumulateStreamUsage(line, &usage)
+			if req.AuditSink != nil {
+				emitAuditActions(line, req.AuditSink)
+			}
 			if pretty, ok := formatStreamLine(line); ok {
 				emit("debug", pretty)
 			} else {
@@ -584,4 +587,38 @@ func buildPrompt(req model.RunRequest) string {
 		b.WriteString(summaryInstruction(req.SummaryPrompt))
 	}
 	return b.String()
+}
+
+// emitAuditActions parses one stream-json line and calls sink for each tool
+// invocation found in an assistant message. Only tool_use blocks are emitted;
+// other event types are ignored. The input JSON is truncated to 2 KB before
+// delivery to prevent excessively large rows in the audit table.
+func emitAuditActions(line string, sink func(model.AuditAction)) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "{") {
+		return
+	}
+	var ev streamEvent
+	if err := json.Unmarshal([]byte(trimmed), &ev); err != nil || ev.Type != "assistant" {
+		return
+	}
+	now := time.Now()
+	for _, c := range ev.Message.Content {
+		if c.Type != "tool_use" || c.Name == "" {
+			continue
+		}
+		input := strings.TrimSpace(string(c.Input))
+		if input == "" || input == "null" {
+			input = "{}"
+		}
+		const maxInput = 2048
+		if len(input) > maxInput {
+			input = input[:maxInput]
+		}
+		sink(model.AuditAction{
+			Tool:         c.Name,
+			InputSummary: input,
+			OccurredAt:   now,
+		})
+	}
 }
