@@ -21,6 +21,7 @@ func (d *Dispatcher) startQueueProtocolServer(ctx context.Context, wg *sync.Wait
 	if d.dispatchQueue == nil {
 		return fmt.Errorf("queue protocol listener requires the durable queue")
 	}
+	address = resolveQueueListenAddress(address)
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return fmt.Errorf("listen for queue workers on %s: %w", address, err)
@@ -49,4 +50,22 @@ func (d *Dispatcher) startQueueProtocolServer(ctx context.Context, wg *sync.Wait
 	}()
 	aplog.Info("queue worker protocol listening on %s", listener.Addr())
 	return nil
+}
+
+// resolveQueueListenAddress enforces a loopback-first default: a bare :PORT
+// address is rewritten to 127.0.0.1:PORT, and any non-loopback host triggers
+// a warning because the queue protocol uses plaintext HTTP.
+func resolveQueueListenAddress(address string) string {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return address
+	}
+	if host == "" {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	ip := net.ParseIP(host)
+	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		aplog.Warn("queue worker protocol bound to %s exposes plaintext HTTP to the network; bind to 127.0.0.1 or enable TLS (SEC-13)", address)
+	}
+	return address
 }
