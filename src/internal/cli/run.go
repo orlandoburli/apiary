@@ -85,6 +85,13 @@ func newRunCmd() *cobra.Command {
 			}
 			defer logger.Close()
 
+			logger.SetPersistPrompts(cfg.Settings.ShouldPersistPrompts())
+			if !cfg.Settings.ShouldPersistPrompts() {
+				if err := dbClient.ScrubPrompts(ctx); err != nil {
+					aplog.Warn("scrub prompts: %v", err)
+				}
+			}
+
 			// Persist operational (aplog) messages as service logs so they show
 			// up in the dashboard's Logs tab — not just on the run terminal.
 			aplog.SetSink(func(level, msg string) {

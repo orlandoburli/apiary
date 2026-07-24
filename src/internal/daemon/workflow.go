@@ -644,7 +644,9 @@ func (x *wfStepExecutor) finishExecution(ctx context.Context, exec *db.Execution
 		exec.NumToolCalls = res.Usage.NumToolCalls
 		exec.CostUSD = res.Usage.CostUSD
 	}
-	exec.InputPrompt = res.InputPrompt
+	if x.d.cfg.Settings.ShouldPersistPrompts() {
+		exec.InputPrompt = res.InputPrompt
+	}
 	exec.OutputText = res.Output
 	exec.CreditExhausted = res.CreditExhausted
 	if !res.CreditExhausted && res.RateLimited {

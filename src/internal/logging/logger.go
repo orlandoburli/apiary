@@ -63,13 +63,24 @@ func DefaultRotation() Rotation {
 
 // Logger writes to file and optional SQLite.
 type Logger struct {
-	file   *os.File
-	size   int64
-	db     *db.Client
-	mu     sync.Mutex
-	level  Level
-	logDir string
-	rot    Rotation
+	file           *os.File
+	size           int64
+	db             *db.Client
+	mu             sync.Mutex
+	level          Level
+	logDir         string
+	rot            Rotation
+	persistPrompts bool
+}
+
+// SetPersistPrompts controls whether task-log entries whose message begins with
+// "prompt sent to agent:" are written to the database. The default (true)
+// preserves the historical behaviour; false suppresses DB writes for those
+// entries while still printing them to the log file at DEBUG level.
+func (l *Logger) SetPersistPrompts(v bool) {
+	l.mu.Lock()
+	l.persistPrompts = v
+	l.mu.Unlock()
 }
 
 // New creates a logger that writes to a log file in logDir.
@@ -93,12 +104,13 @@ func New(logDir string, dbClient *db.Client, level Level, rot Rotation) (*Logger
 	}
 
 	l := &Logger{
-		file:   f,
-		size:   size,
-		db:     dbClient,
-		level:  level,
-		logDir: logDir,
-		rot:    rot,
+		file:           f,
+		size:           size,
+		db:             dbClient,
+		level:          level,
+		logDir:         logDir,
+		rot:            rot,
+		persistPrompts: true,
 	}
 	l.pruneOldLogs()
 	return l, nil
@@ -183,10 +195,15 @@ func (l *Logger) log(ctx context.Context, level Level, msg, component, taskID st
 		l.writeLine(line)
 	}
 
-	// Write to database
+	// Write to database. Prompt log entries ("prompt sent to agent:…") are
+	// suppressed when persistPrompts is false so the full ticket text is not
+	// stored on disk. All other entries (including the rest of the agent stream)
+	// are unaffected.
 	if l.db != nil {
 		if taskID != "" {
-			l.db.WriteTaskLog(ctx, taskID, string(level), msg)
+			if l.persistPrompts || !strings.HasPrefix(msg, "prompt sent to agent:") {
+				l.db.WriteTaskLog(ctx, taskID, string(level), msg)
+			}
 		} else {
 			l.db.WriteServiceLog(ctx, string(level), msg, component)
 		}

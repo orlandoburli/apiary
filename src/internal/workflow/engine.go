@@ -593,7 +593,9 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 	sr.FinishedAt = &finished
 	sr.Output = res.Output
 	sr.Summary = res.Summary
-	sr.InputPrompt = res.InputPrompt
+	if e.cfg.Settings.ShouldPersistPrompts() {
+		sr.InputPrompt = res.InputPrompt
+	}
 	if res.Usage != nil {
 		sr.InputTokens = res.Usage.InputTokens
 		sr.OutputTokens = res.Usage.OutputTokens

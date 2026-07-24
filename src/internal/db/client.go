@@ -404,6 +404,27 @@ func (c *Client) ClearTaskLogs(ctx context.Context, taskID string) error {
 	return err
 }
 
+// ScrubPrompts removes full-prompt data already persisted on disk:
+//   - Deletes task_logs rows whose message begins with "prompt sent to agent:".
+//   - Clears input_prompt on task_executions and step_runs.
+//
+// Call once at startup when settings.persist_prompts is false to retroactively
+// apply the opt-out to historical rows. The operation is idempotent and
+// best-effort: errors are returned but partial progress is not rolled back.
+func (c *Client) ScrubPrompts(ctx context.Context) error {
+	stmts := []string{
+		`DELETE FROM task_logs WHERE message LIKE 'prompt sent to agent:%'`,
+		`UPDATE task_executions SET input_prompt = NULL WHERE input_prompt IS NOT NULL`,
+		`UPDATE step_runs SET input_prompt = NULL WHERE input_prompt IS NOT NULL`,
+	}
+	for _, s := range stmts {
+		if _, err := c.db.ExecContext(ctx, s); err != nil {
+			return fmt.Errorf("scrub prompts: %w", err)
+		}
+	}
+	return nil
+}
+
 // Logging
 
 func (c *Client) WriteTaskLog(ctx context.Context, taskID, level, message string) error {

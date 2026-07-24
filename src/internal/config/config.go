@@ -287,6 +287,16 @@ type Settings struct {
 	// CreditExhaustedCooldown is how long a runner type is paused after a
 	// credit-exhausted failure. Default "24h".
 	CreditExhaustedCooldown string `yaml:"credit_exhausted_cooldown,omitempty"`
+	// PersistPrompts controls whether full agent prompts are written to the
+	// database (task_logs "prompt sent to agent:" entries and the input_prompt
+	// columns on task_executions / step_runs). Defaults to true when omitted.
+	// Set to false to stop recording prompts and to scrub any already on disk.
+	PersistPrompts *bool `yaml:"persist_prompts,omitempty"`
+}
+
+// ShouldPersistPrompts returns true unless PersistPrompts is explicitly false.
+func (s Settings) ShouldPersistPrompts() bool {
+	return s.PersistPrompts == nil || *s.PersistPrompts
 }
 
 // QueueSettings controls durable dispatch and the embedded protocol-1 worker.
