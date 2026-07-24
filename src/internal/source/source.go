@@ -142,6 +142,27 @@ type SubIssueCreator interface {
 	CreateSubIssue(ctx context.Context, parent, child model.SourceItem) (model.SourceItem, error)
 }
 
+// AuthorGate is an optional interface a source may implement to enforce a
+// trust check at daemon ingest time. When the dispatcher encounters an item
+// from a source that implements this interface, it calls IsAuthorTrusted
+// before routing or dispatching. Untrusted items are parked (trigger labels
+// removed, a triage label added) so they leave the poll filter set without
+// ever reaching an agent — closing the TOCTOU window that an Actions-only
+// check leaves open.
+type AuthorGate interface {
+	// IsAuthorTrusted reports whether the item's author may be dispatched
+	// automatically. Returns (true, nil) for trusted authors, (false, nil)
+	// for untrusted, or (true, err) on errors so that transient failures
+	// never block legitimate work (fail-open).
+	IsAuthorTrusted(ctx context.Context, item model.SourceItem) (bool, error)
+
+	// ParkUntrusted applies source-side side-effects for items whose author
+	// is not trusted: removes trigger labels so the item exits the dispatch
+	// filter set, and adds a triage label signalling that human review is
+	// required before the item may be re-authorized for dispatch.
+	ParkUntrusted(ctx context.Context, item model.SourceItem) error
+}
+
 // Factory creates a new, unconfigured Adapter instance.
 type Factory func() Adapter
 

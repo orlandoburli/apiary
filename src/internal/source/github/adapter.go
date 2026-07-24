@@ -21,13 +21,14 @@ func init() {
 // Compile-time checks: the GitHub adapter supports the optional source
 // capabilities used by the dispatcher and the workflow engine.
 var (
-	_ source.StateSetter     = (*Adapter)(nil)
-	_ source.LabelAdder      = (*Adapter)(nil)
-	_ source.LabelRemover    = (*Adapter)(nil)
-	_ source.TaskPoller      = (*Adapter)(nil)
+	_ source.StateSetter  = (*Adapter)(nil)
+	_ source.LabelAdder   = (*Adapter)(nil)
+	_ source.LabelRemover = (*Adapter)(nil)
+	_ source.TaskPoller   = (*Adapter)(nil)
 	_ source.CIStatusPoller  = (*Adapter)(nil)
 	_ source.SubIssueCreator = (*Adapter)(nil)
 	_ source.BlockerLister   = (*Adapter)(nil)
+	_ source.AuthorGate      = (*Adapter)(nil)
 )
 
 type Adapter struct {
@@ -39,6 +40,12 @@ type Adapter struct {
 
 	filterStates []string
 	filterLabels []string
+
+	// requireCollaborator, when true, enables the daemon-side author trust gate:
+	// items whose author_association is not OWNER/MEMBER/COLLABORATOR are
+	// parked (trigger labels removed, needs-triage added) instead of being
+	// dispatched. Configured via require_collaborator in the source config.
+	requireCollaborator bool
 }
 
 func (a *Adapter) ID() string { return a.id }
@@ -58,10 +65,12 @@ func (a *Adapter) Connect(_ context.Context, cfg map[string]any) error {
 
 	apiKey, _ := cfg["api_key"].(string)
 	baseURL, _ := cfg["base_url"].(string)
+	requireCollaborator, _ := cfg["require_collaborator"].(bool)
 
 	a.owner = parts[0]
 	a.repo = parts[1]
 	a.client = newClient(baseURL, apiKey)
+	a.requireCollaborator = requireCollaborator
 
 	if baseURL == "" || baseURL == defaultBaseURL {
 		a.webBaseURL = "https://github.com"
@@ -74,7 +83,11 @@ func (a *Adapter) Connect(_ context.Context, cfg map[string]any) error {
 		}
 	}
 
-	aplog.Info("github: configured  repo=%s/%s  host=%s", a.owner, a.repo, a.webBaseURL)
+	if requireCollaborator {
+		aplog.Info("github: configured  repo=%s/%s  host=%s  require_collaborator=true", a.owner, a.repo, a.webBaseURL)
+	} else {
+		aplog.Info("github: configured  repo=%s/%s  host=%s", a.owner, a.repo, a.webBaseURL)
+	}
 	return nil
 }
 
@@ -677,6 +690,8 @@ func (a *Adapter) toSourceItem(item issue) model.SourceItem {
 	updatedAt, _ := time.Parse(time.RFC3339, item.UpdatedAt)
 
 	// Poll skips pull requests, so every ingested item is a plain issue.
+	// author_association is included in list responses so no extra API call is
+	// needed; the dispatcher uses it to enforce the trust gate at ingest time.
 	return model.SourceItem{
 		ID:          fmt.Sprintf("%d", item.Number),
 		SourceID:    a.ID(),
@@ -687,9 +702,47 @@ func (a *Adapter) toSourceItem(item issue) model.SourceItem {
 		Type:        "issue",
 		State:       item.State,
 		URL:         item.HTMLURL,
+		Metadata:    map[string]any{"author_association": item.AuthorAssociation},
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 	}
+}
+
+// IsAuthorTrusted implements source.AuthorGate. When require_collaborator is
+// false (the default), every author is trusted and the gate is a no-op. When
+// true, the item's author_association (stored in Metadata by toSourceItem) must
+// be OWNER, MEMBER, or COLLABORATOR; anything else is untrusted. An absent or
+// empty association is treated as trusted so that a transient metadata gap never
+// blocks legitimate work (fail-open).
+func (a *Adapter) IsAuthorTrusted(_ context.Context, item model.SourceItem) (bool, error) {
+	if !a.requireCollaborator {
+		return true, nil
+	}
+	assoc, _ := item.Metadata["author_association"].(string)
+	if assoc == "" {
+		return true, nil // fail-open: no association data
+	}
+	switch strings.ToUpper(assoc) {
+	case "OWNER", "MEMBER", "COLLABORATOR":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+// ParkUntrusted implements source.AuthorGate. It removes the configured
+// trigger labels (e.g. "ai-ready") so the item exits the poll filter set, then
+// adds "needs-triage" to signal that a maintainer must review and re-authorize
+// the item before it can be dispatched. Both steps are best-effort: a label
+// removal failure is logged but does not prevent the triage label from being
+// added.
+func (a *Adapter) ParkUntrusted(ctx context.Context, item model.SourceItem) error {
+	if len(a.filterLabels) > 0 {
+		if err := a.RemoveLabels(ctx, item, a.filterLabels); err != nil {
+			aplog.Warn("github: park untrusted %s: remove trigger labels %v: %v", item.LogLabel(), a.filterLabels, err)
+		}
+	}
+	return a.AddLabels(ctx, item, []string{"needs-triage"})
 }
 
 func formatComment(result model.RunResult) string {

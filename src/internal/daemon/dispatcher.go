@@ -755,6 +755,11 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 			if _, loaded := d.inFlight.LoadOrStore(cell.ID, struct{}{}); loaded {
 				continue
 			}
+			// Author trust gate: same check as in poll(). See checkAndParkUntrusted.
+			if d.checkAndParkUntrusted(ctx, cell, adapter) {
+				d.inFlight.Delete(cell.ID)
+				continue
+			}
 			task, persisted := d.bindItem(ctx, cell)
 			d.recordRouteEvents(ctx, task)
 			matches := d.router.RouteAll(task)
@@ -1366,6 +1371,15 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 			aplog.Debug("cell %s: already in-flight, skipping", cell.LogLabel())
 			continue
 		}
+		// Author trust gate: if the source enforces require_collaborator and the
+		// item's author is not a trusted collaborator, park the item (remove
+		// trigger labels, add needs-triage) and skip dispatch. This check happens
+		// before bindItem so untrusted items are never persisted as tasks.
+		// The check is synchronous at poll time — no TOCTOU window exists.
+		if d.checkAndParkUntrusted(ctx, cell, adapter) {
+			d.inFlight.Delete(cell.ID)
+			continue
+		}
 		task, persisted := d.bindItem(ctx, cell)
 		d.recordRouteEvents(ctx, task)
 		matches := d.router.RouteAll(task)
@@ -1666,6 +1680,31 @@ func (d *Dispatcher) parkCappedTask(ctx context.Context, task model.InternalTask
 	if err := (&wfSideEffects{d: d}).ApplyHook(ctx, task, bindings, *onFail); err != nil {
 		aplog.Error("park capped task %s: apply on_fail: %v", task.ID, err)
 	}
+}
+
+// checkAndParkUntrusted applies the per-source author trust gate if the adapter
+// implements source.AuthorGate. Returns true when the item must be skipped
+// (author not trusted, item parked). Errors from the trust check are logged and
+// cause a fail-open return of false (dispatch proceeds) so a transient API
+// failure cannot permanently block legitimate work.
+func (d *Dispatcher) checkAndParkUntrusted(ctx context.Context, cell model.SourceItem, adapter source.Adapter) bool {
+	ag, ok := adapter.(source.AuthorGate)
+	if !ok {
+		return false
+	}
+	trusted, err := ag.IsAuthorTrusted(ctx, cell)
+	if err != nil {
+		aplog.Error("cell %s: author trust check: %v — dispatching anyway (fail-open)", cell.LogLabel(), err)
+		return false
+	}
+	if trusted {
+		return false
+	}
+	aplog.Warn("cell %s (%q): author association not trusted — parking for triage", cell.LogLabel(), cell.Title)
+	if err := ag.ParkUntrusted(ctx, cell); err != nil {
+		aplog.Error("cell %s: park untrusted: %v", cell.LogLabel(), err)
+	}
+	return true
 }
 
 // dispatch acknowledges, runs, and writes the result for a single task.
