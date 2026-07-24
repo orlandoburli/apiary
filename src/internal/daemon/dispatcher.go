@@ -535,6 +535,21 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		}()
 	}
 
+	// Scrub raw prompt text from task_executions and step_runs older than the
+	// configured window (settings.prompt_retention_days, defaulting to
+	// log_max_age_days). The rows and token/cost counters are kept; only the
+	// prompt column values are NULLed to bound how long sensitive ticket content
+	// is retained in apiary.db.
+	if d.db != nil {
+		if retention := d.cfg.Settings.PromptRetentionDuration(); retention > 0 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				d.prunePromptsLoop(ctx, retention)
+			}()
+		}
+	}
+
 	// Prune task-memory notes whose task has been terminal longer than the
 	// retention window (settings.memory.task_retention), at startup and then
 	// every 6 hours. Global entries are never auto-pruned.
@@ -580,6 +595,32 @@ func (d *Dispatcher) pruneLogsLoop(ctx context.Context, maxAge time.Duration) {
 			aplog.Warn("prune log rows: %v", err)
 		} else if n > 0 {
 			aplog.Info("pruned %d log row(s) older than %dd", n, int(maxAge.Hours()/24))
+		}
+	}
+	prune()
+
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			prune()
+		}
+	}
+}
+
+// prunePromptsLoop NULLs raw prompt text from task_executions and step_runs
+// older than maxAge, at startup and then once a day. Token/cost counters and
+// the rows themselves are preserved; only the prompt column values are erased.
+func (d *Dispatcher) prunePromptsLoop(ctx context.Context, maxAge time.Duration) {
+	prune := func() {
+		n, err := d.db.ScrubPromptsBefore(ctx, time.Now().Add(-maxAge))
+		if err != nil {
+			aplog.Warn("scrub prompt rows: %v", err)
+		} else if n > 0 {
+			aplog.Info("scrubbed prompt text from %d row(s) older than %dd", n, int(maxAge.Hours()/24))
 		}
 	}
 	prune()

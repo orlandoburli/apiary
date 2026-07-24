@@ -449,6 +449,59 @@ func (c *Client) PruneLogsBefore(ctx context.Context, cutoff time.Time) (int64, 
 	return total, nil
 }
 
+// ScrubPromptsBefore NULLs the input_prompt and output_text columns on
+// task_executions and input_prompt on step_runs whose started_at is older than
+// cutoff. The rows themselves — and all token/cost/turn counters — are
+// preserved so the dashboard history stays intact; only the raw prompt text is
+// erased. Updates run in batches to avoid holding the SQLite write lock.
+// Returns the total number of rows updated.
+func (c *Client) ScrubPromptsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	const batch = 5000
+	var total int64
+
+	// task_executions: NULL both input_prompt and output_text.
+	execStmt := fmt.Sprintf(`
+		UPDATE task_executions SET input_prompt = NULL, output_text = NULL
+		WHERE id IN (
+			SELECT id FROM task_executions
+			WHERE started_at < ? AND (input_prompt IS NOT NULL OR output_text IS NOT NULL)
+			LIMIT %d
+		)`, batch)
+	for {
+		res, err := c.db.ExecContext(ctx, execStmt, cutoff)
+		if err != nil {
+			return total, fmt.Errorf("scrub task_executions prompts: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += n
+		if n < batch {
+			break
+		}
+	}
+
+	// step_runs: NULL input_prompt.
+	stepStmt := fmt.Sprintf(`
+		UPDATE step_runs SET input_prompt = NULL
+		WHERE id IN (
+			SELECT id FROM step_runs
+			WHERE started_at < ? AND input_prompt IS NOT NULL
+			LIMIT %d
+		)`, batch)
+	for {
+		res, err := c.db.ExecContext(ctx, stepStmt, cutoff)
+		if err != nil {
+			return total, fmt.Errorf("scrub step_runs prompts: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += n
+		if n < batch {
+			break
+		}
+	}
+
+	return total, nil
+}
+
 // Agent tracking
 
 func (c *Client) UpsertAgent(ctx context.Context, id, description string) error {

@@ -271,9 +271,14 @@ type Settings struct {
 	MaxAttempts int `yaml:"max_attempts"`
 	// Log rotation for the shared apiary.log file and retention for rotated
 	// backups and per-task log files. 0 means default; negative disables.
-	LogMaxSizeMB  int                `yaml:"log_max_size_mb"`  // rotate apiary.log past this size; default 50
-	LogMaxBackups int                `yaml:"log_max_backups"`  // rotated files to keep; default 5
-	LogMaxAgeDays int                `yaml:"log_max_age_days"` // prune backups and task logs older than this; default 30
+	LogMaxSizeMB  int `yaml:"log_max_size_mb"`  // rotate apiary.log past this size; default 50
+	LogMaxBackups int `yaml:"log_max_backups"`  // rotated files to keep; default 5
+	LogMaxAgeDays int `yaml:"log_max_age_days"` // prune backups and task logs older than this; default 30
+	// PromptRetentionDays caps how long raw prompt text (input_prompt /
+	// output_text) is kept in task_executions and step_runs. After this many
+	// days the columns are NULLed; the rows and all token/cost counters are
+	// preserved. 0 (default) inherits LogMaxAgeDays; negative disables scrubbing.
+	PromptRetentionDays int `yaml:"prompt_retention_days"`
 	Memory        MemorySettings     `yaml:"memory"`
 	Events        EventSettings      `yaml:"events"`
 	Approvals     ApprovalSettings   `yaml:"approvals"`
@@ -488,6 +493,19 @@ func (m MemorySettings) TaskRetentionDuration() time.Duration {
 		return 720 * time.Hour
 	}
 	return d
+}
+
+// PromptRetentionDuration returns the effective prompt-scrub window as a
+// duration. Zero or unset falls back to LogMaxAgeDays; negative disables.
+func (s *Settings) PromptRetentionDuration() time.Duration {
+	days := s.PromptRetentionDays
+	if days == 0 {
+		days = s.LogMaxAgeDays
+	}
+	if days < 0 {
+		return 0
+	}
+	return time.Duration(days) * 24 * time.Hour
 }
 
 // CreditExhaustedCooldownDuration returns the parsed credit-exhausted cooldown
