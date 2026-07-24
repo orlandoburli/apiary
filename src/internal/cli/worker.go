@@ -38,7 +38,7 @@ func newWorkerCmd() *cobra.Command {
 				return fmt.Errorf("config validation failed: %v", errs)
 			}
 			if controlPlane == "" {
-				controlPlane = queueControlPlaneURL(cfg.Settings.Queue.Listen)
+				controlPlane = queueControlPlaneURL(cfg.Settings.Queue.Listen, cfg.Settings.Queue.TLSEnabled())
 			}
 			if controlPlane == "" {
 				return fmt.Errorf("--control-plane is required (for example http://apiary-control:8080)")
@@ -121,7 +121,7 @@ func newWorkerCmd() *cobra.Command {
 	return cmd
 }
 
-func queueControlPlaneURL(listen string) string {
+func queueControlPlaneURL(listen string, tlsEnabled bool) string {
 	listen = strings.TrimSpace(listen)
 	if listen == "" {
 		return ""
@@ -129,14 +129,18 @@ func queueControlPlaneURL(listen string) string {
 	if strings.HasPrefix(listen, "http://") || strings.HasPrefix(listen, "https://") {
 		return listen
 	}
+	scheme := "http"
+	if tlsEnabled {
+		scheme = "https"
+	}
 	if strings.HasPrefix(listen, ":") {
-		return "http://127.0.0.1" + listen
+		return scheme + "://127.0.0.1" + listen
 	}
 	if strings.HasPrefix(listen, "0.0.0.0:") {
-		return "http://127.0.0.1:" + strings.TrimPrefix(listen, "0.0.0.0:")
+		return scheme + "://127.0.0.1:" + strings.TrimPrefix(listen, "0.0.0.0:")
 	}
 	if strings.HasPrefix(listen, "[") || strings.Count(listen, ":") == 1 {
-		return "http://" + listen
+		return scheme + "://" + listen
 	}
 	return listen
 }

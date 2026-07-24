@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -21,14 +22,37 @@ func (d *Dispatcher) startQueueProtocolServer(ctx context.Context, wg *sync.Wait
 	if d.dispatchQueue == nil {
 		return fmt.Errorf("queue protocol listener requires the durable queue")
 	}
-	listener, err := net.Listen("tcp", address)
-	if err != nil {
-		return fmt.Errorf("listen for queue workers on %s: %w", address, err)
+
+	qs := d.cfg.Settings.Queue
+	var listener net.Listener
+	var proto string
+	if qs.TLSEnabled() {
+		cert, err := tls.LoadX509KeyPair(qs.TLSCertFile, qs.TLSKeyFile)
+		if err != nil {
+			return fmt.Errorf("load TLS certificate for queue listener: %w", err)
+		}
+		tlsCfg := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+		listener, err = tls.Listen("tcp", address, tlsCfg)
+		if err != nil {
+			return fmt.Errorf("listen (TLS) for queue workers on %s: %w", address, err)
+		}
+		proto = "https"
+	} else {
+		var err error
+		listener, err = net.Listen("tcp", address)
+		if err != nil {
+			return fmt.Errorf("listen for queue workers on %s: %w", address, err)
+		}
+		proto = "http"
 	}
+
 	handler := queuehttp.Server{
-		Store: d.dispatchQueue, Token: d.cfg.Settings.Queue.WorkerToken,
-		LeaseDuration: d.cfg.Settings.Queue.LeaseDurationValue(),
-		WorkerTimeout: d.cfg.Settings.Queue.WorkerTimeoutValue(), Policy: d.queuePolicy(),
+		Store: d.dispatchQueue, Token: qs.WorkerToken,
+		LeaseDuration: qs.LeaseDurationValue(),
+		WorkerTimeout: qs.WorkerTimeoutValue(), Policy: d.queuePolicy(),
 		OnTerminal: d.settleRemoteQueueJob,
 	}.Handler()
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
@@ -47,6 +71,6 @@ func (d *Dispatcher) startQueueProtocolServer(ctx context.Context, wg *sync.Wait
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	aplog.Info("queue worker protocol listening on %s", listener.Addr())
+	aplog.Info("queue worker protocol listening on %s://%s", proto, listener.Addr())
 	return nil
 }

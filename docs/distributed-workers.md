@@ -50,11 +50,50 @@ settings:
     worker_timeout: 30s
 ```
 
-`worker_token` is mandatory whenever `listen` is configured. Put the listener
-behind TLS (a reverse proxy or private service mesh) when it crosses a trusted
-network boundary; the protocol itself is HTTP with Bearer authentication.
+`worker_token` is mandatory whenever `listen` is configured. Remote worker
+traffic must be encrypted; use one of the two options below.
 
-Start a worker with the same `apiary.yaml` and runner credentials:
+### Option A — Native TLS
+
+Provide a PEM certificate and key (absolute paths or relative to `apiary.yaml`):
+
+```yaml
+settings:
+  queue:
+    listen: 0.0.0.0:8443
+    worker_token: ${APIARY_WORKER_TOKEN}
+    tls_cert_file: /etc/apiary/tls.crt
+    tls_key_file:  /etc/apiary/tls.key
+    embedded_worker: false
+```
+
+When both fields are present the listener starts with TLS (minimum TLS 1.2).
+`apiary worker` auto-derives `https://` from `settings.queue.listen` when TLS is
+configured, so `--control-plane` is optional for co-located workers.
+
+### Option B — TLS-terminating reverse proxy
+
+Run the listener on a loopback address and terminate TLS externally (nginx,
+Caddy, a private service mesh):
+
+```yaml
+settings:
+  queue:
+    listen: 127.0.0.1:8080
+    worker_token: ${APIARY_WORKER_TOKEN}
+    embedded_worker: false
+```
+
+Workers point at the proxy's HTTPS address:
+
+```sh
+apiary worker --control-plane https://apiary.example \
+  --token "$APIARY_WORKER_TOKEN"
+```
+
+Start a worker with the same `apiary.yaml` and runner credentials (choose either
+option above for encryption; `--control-plane` accepts both `http://` and
+`https://` URLs):
 
 ```sh
 apiary worker --control-plane https://apiary.example \

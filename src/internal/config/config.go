@@ -304,9 +304,20 @@ type QueueSettings struct {
 	HeartbeatInterval  string                   `yaml:"heartbeat_interval,omitempty"`
 	WorkerTimeout      string                   `yaml:"worker_timeout,omitempty"`
 	PollInterval       string                   `yaml:"poll_interval,omitempty"`
-	Listen             string                   `yaml:"listen,omitempty"`
-	WorkerToken        string                   `yaml:"worker_token,omitempty"`
-	Concurrency        QueueConcurrencySettings `yaml:"concurrency,omitempty"`
+	Listen      string `yaml:"listen,omitempty"`
+	WorkerToken string `yaml:"worker_token,omitempty"`
+	// TLSCertFile and TLSKeyFile enable native TLS on the queue protocol listener.
+	// Both must be set together; omitting both keeps plain HTTP (use a TLS-
+	// terminating reverse proxy in that case). Paths may be absolute or relative
+	// to the directory that contains apiary.yaml.
+	TLSCertFile string                   `yaml:"tls_cert_file,omitempty"`
+	TLSKeyFile  string                   `yaml:"tls_key_file,omitempty"`
+	Concurrency QueueConcurrencySettings `yaml:"concurrency,omitempty"`
+}
+
+// TLSEnabled reports whether both cert and key are configured.
+func (q QueueSettings) TLSEnabled() bool {
+	return q.TLSCertFile != "" && q.TLSKeyFile != ""
 }
 
 type QueueConcurrencySettings struct {
