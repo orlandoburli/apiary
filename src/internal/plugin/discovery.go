@@ -37,6 +37,10 @@ func Discover(paths []string, baseDir, apiaryVersion string) (*Registry, []error
 			errs = append(errs, fmt.Errorf("discover plugins in %q: %w", path, err))
 			continue
 		}
+		if warn := checkDirOwnerOnly(path); warn != nil {
+			errs = append(errs, warn)
+			continue
+		}
 		roots := []string{}
 		if _, err := os.Stat(filepath.Join(path, ManifestFilename)); err == nil {
 			roots = append(roots, path)
