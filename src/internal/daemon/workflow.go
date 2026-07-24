@@ -404,6 +404,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		WorkingDir:         "/",
 		Env:                env,
 		Timeout:            x.d.cfg.Settings.TaskTimeoutDuration(),
+		Privilege:          mergePrivilege(req.Agent.Privilege, req.Step.Privilege),
 	}
 
 	if x.d.logger != nil {
@@ -930,6 +931,25 @@ func withMemoryDir(env map[string]string, dir string) map[string]string {
 		env["APIARY_MEMORY_DIR"] = dir
 	}
 	return env
+}
+
+// mergePrivilege resolves the effective privilege profile for a step. The step-
+// level config takes precedence: if set it completely replaces the agent-level
+// config (no merging). When both are nil, a nil profile is returned (callers
+// treat nil as "safe defaults", i.e. AllowRoot=false, no env filtering).
+func mergePrivilege(agent, step *config.PrivilegeConfig) *model.PrivilegeProfile {
+	src := agent
+	if step != nil {
+		src = step
+	}
+	if src == nil {
+		return nil
+	}
+	return &model.PrivilegeProfile{
+		AllowRoot:    src.AllowRoot,
+		StripEnv:     src.StripEnv,
+		EnvAllowlist: src.EnvAllowlist,
+	}
 }
 
 // compile-time interface checks.

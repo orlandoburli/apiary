@@ -179,6 +179,10 @@ type StepConfig struct {
 	// ActionClass lets settings.approvals.require_for enforce an approval gate
 	// before sensitive work such as push, deploy, destructive, or publication.
 	ActionClass string `yaml:"action_class,omitempty"`
+	// Privilege overrides the agent-scope privilege ceiling for this step only.
+	// When set, it replaces (not merges) the agent's privilege config. A nil
+	// value inherits the agent-level privilege setting.
+	Privilege *PrivilegeConfig `yaml:"privilege,omitempty"`
 
 	// ── split step ────────────────────────────────────────────────
 	Multi    bool          `yaml:"multi,omitempty"`

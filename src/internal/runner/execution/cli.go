@@ -84,6 +84,9 @@ func (r *CliRunner) Configure(config map[string]any) error {
 }
 
 func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
+	if err := checkPrivilege(req.Privilege); err != nil {
+		return model.RunResult{}, err
+	}
 	start := time.Now()
 	prompt := buildPrompt(req)
 
@@ -105,7 +108,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 
 	cmd := exec.CommandContext(ctx, r.command, argv...)
 	cmd.Dir = req.WorkingDir
-	cmd.Env = os.Environ()
+	cmd.Env = applyPrivilegeEnv(os.Environ(), req.Privilege)
 	for k, v := range req.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

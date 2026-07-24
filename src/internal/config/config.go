@@ -84,6 +84,21 @@ func (r *RunnerConfig) AdapterName() string {
 	return r.Type
 }
 
+// PrivilegeConfig constrains the privilege level of the agent CLI subprocess
+// launched for an agent or step. It maps directly to model.PrivilegeProfile.
+type PrivilegeConfig struct {
+	// AllowRoot permits starting the agent CLI when the orchestrator process is
+	// running as root (uid 0). False by default; must be explicitly opted into.
+	AllowRoot bool `yaml:"allow_root,omitempty"`
+	// StripEnv lists environment-variable key names (case-insensitive) to
+	// remove from the subprocess environment before launch.
+	StripEnv []string `yaml:"strip_env,omitempty"`
+	// EnvAllowlist, when non-empty, restricts the subprocess to only the listed
+	// environment-variable key names (case-insensitive). StripEnv keys are
+	// always removed even when also listed here.
+	EnvAllowlist []string `yaml:"env_allowlist,omitempty"`
+}
+
 type AgentConfig struct {
 	ID          string   `yaml:"id"`
 	Description string   `yaml:"description,omitempty"`
@@ -128,6 +143,10 @@ type AgentConfig struct {
 	// WorkspaceAffinity pins retries/resumes to the first worker that claims the
 	// task, preserving a local checkout or other non-portable environment.
 	WorkspaceAffinity bool `yaml:"workspace_affinity,omitempty"`
+	// Privilege sets the agent-scope privilege ceiling applied to every
+	// subprocess started for this agent. A nil value uses safe defaults
+	// (AllowRoot=false, no env filtering). Step-level privilege overrides this.
+	Privilege *PrivilegeConfig `yaml:"privilege,omitempty"`
 }
 
 // FallbackConfig is one entry in an agent's rate-limit failover chain. Runner

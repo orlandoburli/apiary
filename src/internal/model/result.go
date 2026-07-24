@@ -2,6 +2,25 @@ package model
 
 import "time"
 
+// PrivilegeProfile caps the privilege level of an agent subprocess and
+// restricts which environment variables are forwarded to it. An absent (nil)
+// profile uses safe defaults: root execution is rejected, no env filtering.
+type PrivilegeProfile struct {
+	// AllowRoot, when true, permits the agent CLI to start even when the current
+	// process is running as root (uid 0). Must be explicitly opted into per-agent
+	// or per-step; the default is false (reject).
+	AllowRoot bool
+	// StripEnv is a list of environment-variable key names (case-insensitive
+	// exact match) to remove before the subprocess inherits the environment.
+	// Use it to prevent credentials that the orchestrator needs but the agent
+	// should not see from leaking into the subprocess.
+	StripEnv []string
+	// EnvAllowlist, when non-empty, restricts the subprocess environment to only
+	// the listed key names (case-insensitive exact match). Keys in StripEnv are
+	// still removed even when listed here.
+	EnvAllowlist []string
+}
+
 type RunRequest struct {
 	Cell          SourceItem
 	WorkerID      string
@@ -12,6 +31,10 @@ type RunRequest struct {
 	Env           map[string]string
 	Timeout       time.Duration
 	AgentMetadata map[string]any
+	// Privilege, when set, is applied by CLI runners before starting the agent
+	// subprocess: root-execution guard + env filtering. A nil profile uses
+	// safe defaults (AllowRoot=false, no env filtering).
+	Privilege *PrivilegeProfile
 
 	// SystemPrepend is injected at the very start of the prompt, before the cell
 	// details and SystemAppend. In workflow mode it carries the formatted
