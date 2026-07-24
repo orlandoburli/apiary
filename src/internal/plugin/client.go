@@ -52,6 +52,10 @@ func NewClient(installed *Installed, instance InstanceConfig) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Re-verify checksum to close the TOCTOU window between Load and client creation.
+	if err := verifyChecksum(executable, installed.Manifest.Checksum); err != nil {
+		return nil, fmt.Errorf("plugin %q: %w", installed.Manifest.ID, err)
+	}
 	return &Client{installed: installed, instance: instance, timeout: timeout, executable: executable}, nil
 }
 
@@ -77,6 +81,7 @@ func (c *Client) Invoke(ctx context.Context, capability Capability, method strin
 	command := exec.CommandContext(callCtx, c.executable)
 	command.Dir = c.installed.Root
 	command.Env = c.environment()
+	applySandbox(command, c.installed.Manifest.Security)
 	command.Stdin = bytes.NewReader(raw)
 	stdout := &boundedBuffer{limit: maxProtocolOutput}
 	stderr := &boundedBuffer{limit: 64 << 10}

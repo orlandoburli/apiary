@@ -2,8 +2,11 @@
 package plugin
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -53,6 +56,9 @@ type Manifest struct {
 	Capabilities  []Capability         `json:"capabilities"`
 	ConfigSchema  json.RawMessage      `json:"config_schema,omitempty"`
 	Security      SecurityRequirements `json:"security,omitempty"`
+	// Checksum is the lowercase hex SHA-256 of the executable file.
+	// It is mandatory; plugins without a checksum are refused at load time.
+	Checksum string `json:"checksum"`
 }
 
 type Installed struct {
@@ -135,7 +141,11 @@ func (p *Installed) Validate(apiaryVersion string) error {
 	if err := validateSecurity(m.Security); err != nil {
 		return err
 	}
-	if _, err := secureExecutable(p.Root, m.Executable); err != nil {
+	execPath, err := secureExecutable(p.Root, m.Executable)
+	if err != nil {
+		return err
+	}
+	if err := verifyChecksum(execPath, m.Checksum); err != nil {
 		return err
 	}
 	p.Manifest = m
@@ -217,5 +227,59 @@ func validateSecurity(security SecurityRequirements) error {
 		}
 		seen[name] = true
 	}
+	for _, entry := range []struct {
+		paths []string
+		field string
+	}{
+		{security.ReadPaths, "read_paths"},
+		{security.WritePaths, "write_paths"},
+	} {
+		for _, p := range entry.paths {
+			if p == "" {
+				return fmt.Errorf("security.%s must not contain empty entries", entry.field)
+			}
+			clean := filepath.Clean(p)
+			if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("security.%s %q must not escape the plugin directory", entry.field, p)
+			}
+		}
+	}
 	return nil
+}
+
+// verifyChecksum computes the SHA-256 of execPath and confirms it matches the hex digest
+// declared in the manifest. An empty expected value is rejected so unsigned plugins cannot load.
+func verifyChecksum(execPath, expected string) error {
+	if expected == "" {
+		return fmt.Errorf("executable checksum is required; add a \"checksum\" field (sha256 hex) to the manifest")
+	}
+	f, err := os.Open(execPath)
+	if err != nil {
+		return fmt.Errorf("open executable for checksum verification: %w", err)
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("compute executable checksum: %w", err)
+	}
+	actual := hex.EncodeToString(h.Sum(nil))
+	if actual != expected {
+		return fmt.Errorf("executable checksum mismatch: manifest declares %s but file is %s; the binary may have been replaced", expected, actual)
+	}
+	return nil
+}
+
+// ComputeChecksum returns the lowercase hex SHA-256 digest of the file at path.
+// Plugin authors call this when adding the checksum field to their manifest.
+func ComputeChecksum(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

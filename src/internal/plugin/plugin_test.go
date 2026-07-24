@@ -2,6 +2,8 @@ package plugin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -21,9 +23,15 @@ func writeTestPlugin(t *testing.T, parent, name, script string, manifest Manifes
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture requires Unix")
 	}
-	if err := os.WriteFile(filepath.Join(root, executable), []byte("#!/bin/sh\n"+script+"\n"), 0755); err != nil {
+	content := []byte("#!/bin/sh\n" + script + "\n")
+	if err := os.WriteFile(filepath.Join(root, executable), content, 0755); err != nil {
 		t.Fatal(err)
 	}
+	// Compute the checksum of the executable so the manifest is valid by default.
+	h := sha256.New()
+	h.Write(content)
+	manifest.Checksum = hex.EncodeToString(h.Sum(nil))
+
 	manifest.SchemaVersion = ManifestSchemaVersion
 	manifest.Protocol = ProtocolVersion
 	manifest.Executable = executable
@@ -137,5 +145,120 @@ func TestClientInvocationCrashTimeoutAndSecretAllowlist(t *testing.T) {
 	}
 	if time.Since(started) > time.Second {
 		t.Fatalf("timeout took %s", time.Since(started))
+	}
+}
+
+func TestUnsignedPluginRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture requires Unix")
+	}
+	parent := t.TempDir()
+	root := filepath.Join(parent, "unsigned")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "plugin.sh"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Write a manifest with no checksum field.
+	m := Manifest{
+		SchemaVersion: ManifestSchemaVersion,
+		Protocol:      ProtocolVersion,
+		ID:            "dev.apiary.unsigned",
+		Version:       "1.0.0",
+		Apiary:        ">= 0.10.0-0",
+		Executable:    "plugin.sh",
+		Capabilities:  []Capability{CapabilityEventExporter},
+		// Checksum deliberately left empty.
+	}
+	raw, _ := json.Marshal(m)
+	if err := os.WriteFile(filepath.Join(root, ManifestFilename), raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(root, "v0.10.0")
+	if err == nil || !strings.Contains(err.Error(), "checksum is required") {
+		t.Fatalf("expected unsigned rejection, got: %v", err)
+	}
+}
+
+func TestChecksumMismatchRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture requires Unix")
+	}
+	parent := t.TempDir()
+	root := filepath.Join(parent, "tampered")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("#!/bin/sh\necho original\n")
+	if err := os.WriteFile(filepath.Join(root, "plugin.sh"), content, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := Manifest{
+		SchemaVersion: ManifestSchemaVersion,
+		Protocol:      ProtocolVersion,
+		ID:            "dev.apiary.tampered",
+		Version:       "1.0.0",
+		Apiary:        ">= 0.10.0-0",
+		Executable:    "plugin.sh",
+		Capabilities:  []Capability{CapabilityEventExporter},
+		Checksum:      strings.Repeat("a", 64), // wrong digest
+	}
+	raw, _ := json.Marshal(m)
+	if err := os.WriteFile(filepath.Join(root, ManifestFilename), raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(root, "v0.10.0")
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("expected checksum mismatch, got: %v", err)
+	}
+}
+
+func TestChecksumVerifiedAtNewClient(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture requires Unix")
+	}
+	parent := t.TempDir()
+	root := writeTestPlugin(t, parent, "replace", "exit 0", Manifest{})
+	installed, err := Load(root, "v0.10.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate binary replacement after Load.
+	newContent := []byte("#!/bin/sh\necho replaced\n")
+	if err := os.WriteFile(filepath.Join(root, "plugin.sh"), newContent, 0755); err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewClient(installed, InstanceConfig{ID: installed.Manifest.ID})
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("expected checksum mismatch after replacement, got: %v", err)
+	}
+}
+
+func TestSecurityPathValidation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture requires Unix")
+	}
+	parent := t.TempDir()
+	// A relative path that escapes via ".." should be rejected.
+	root := writeTestPlugin(t, parent, "escapepath", "exit 0", Manifest{
+		Security: SecurityRequirements{ReadPaths: []string{"../secrets"}},
+	})
+	if _, err := Load(root, "v0.10.0"); err == nil || !strings.Contains(err.Error(), "must not escape") {
+		t.Fatalf("expected escape rejection, got: %v", err)
+	}
+	// An empty path entry should be rejected.
+	root = writeTestPlugin(t, parent, "emptypath", "exit 0", Manifest{
+		Security: SecurityRequirements{WritePaths: []string{""}},
+	})
+	if _, err := Load(root, "v0.10.0"); err == nil || !strings.Contains(err.Error(), "empty entries") {
+		t.Fatalf("expected empty path rejection, got: %v", err)
+	}
+	// A valid absolute path should be accepted.
+	root = writeTestPlugin(t, parent, "validpath", "exit 0", Manifest{
+		Security: SecurityRequirements{ReadPaths: []string{"/tmp/data"}, WritePaths: []string{"output"}},
+	})
+	if _, err := Load(root, "v0.10.0"); err != nil {
+		t.Fatalf("unexpected rejection of valid paths: %v", err)
 	}
 }
