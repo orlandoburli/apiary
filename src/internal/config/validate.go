@@ -35,6 +35,20 @@ var SourceSupportsDependencyWait func(sourceType string) bool
 // validFallbackStrategies are the accepted values for fallback_strategy fields.
 var validFallbackStrategies = map[string]bool{"ordered": true, "random": true, "least_cost": true, "fastest": true}
 
+// allowedMCPCommands is the explicit set of executables permitted as MCP server
+// commands. Restricting to known launchers prevents apiary.yaml config-write
+// access from becoming arbitrary code execution.
+var allowedMCPCommands = map[string]bool{
+	"npx":     true,
+	"node":    true,
+	"python":  true,
+	"python3": true,
+	"uvx":     true,
+	"docker":  true,
+	"bunx":    true,
+	"deno":    true,
+}
+
 // adapterCombos renders registered adapter names as the type/provider
 // combinations users write in apiary.yaml, mirroring the table in
 // docs/runners.md: "claude-cli" → `type: cli, provider: claude`; names
@@ -51,9 +65,9 @@ func adapterCombos(names []string) string {
 	return strings.Join(combos, ", ")
 }
 
-// validateMCPs checks that each MCP server has a name and command, and that
-// names are unique within the scope. `scope` is a human label for error
-// messages (e.g. `runners[0] "claude"`).
+// validateMCPs checks that each MCP server has a name and command, that the
+// command is in the explicit allow-list, and that names are unique within the
+// scope. `scope` is a human label for error messages (e.g. `runners[0] "claude"`).
 func validateMCPs(scope string, mcps []model.MCPServer) []error {
 	var errs []error
 	seen := map[string]bool{}
@@ -63,6 +77,9 @@ func validateMCPs(scope string, mcps []model.MCPServer) []error {
 		}
 		if m.Command == "" {
 			errs = append(errs, fmt.Errorf("%s: mcps[%d] %q: command is required", scope, j, m.Name))
+		} else if !allowedMCPCommands[m.Command] {
+			allowed := strings.Join(sortedKeys(allowedMCPCommands), ", ")
+			errs = append(errs, fmt.Errorf("%s: mcps[%d] %q: command %q is not in the allow-list; permitted: %s", scope, j, m.Name, m.Command, allowed))
 		}
 		if m.Name != "" && seen[m.Name] {
 			errs = append(errs, fmt.Errorf("%s: mcps[%d]: duplicate name %q", scope, j, m.Name))
@@ -70,6 +87,22 @@ func validateMCPs(scope string, mcps []model.MCPServer) []error {
 		seen[m.Name] = true
 	}
 	return errs
+}
+
+// sortedKeys returns the keys of a map[string]bool in sorted order, for stable
+// error messages.
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	// simple insertion sort — set is tiny
+	for i := 1; i < len(keys); i++ {
+		for j := i; j > 0 && keys[j] < keys[j-1]; j-- {
+			keys[j], keys[j-1] = keys[j-1], keys[j]
+		}
+	}
+	return keys
 }
 
 // Validate checks the config for structural errors.

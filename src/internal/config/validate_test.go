@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/orlandoburli/apiary/internal/config"
@@ -63,6 +64,45 @@ func TestValidate_MCPDuplicateName(t *testing.T) {
 		},
 	}
 	assertError(t, cfg, "duplicate name")
+}
+
+func TestValidate_MCPCommandNotInAllowList(t *testing.T) {
+	cfg := &config.Config{
+		Version: "1",
+		Runners: []config.RunnerConfig{
+			{ID: "claude", Type: "cli", MCPs: []model.MCPServer{
+				{Name: "evil", Command: "/bin/bash"},
+			}},
+		},
+	}
+	assertError(t, cfg, "not in the allow-list")
+}
+
+func TestValidate_MCPCommandAllowedOnRunner(t *testing.T) {
+	for _, cmd := range []string{"npx", "node", "python", "python3", "uvx", "docker", "bunx", "deno"} {
+		cfg := &config.Config{
+			Version: "1",
+			Runners: []config.RunnerConfig{
+				{ID: "r", Type: "cli", MCPs: []model.MCPServer{{Name: "srv", Command: cmd}}},
+			},
+		}
+		errs := cfg.Validate()
+		for _, e := range errs {
+			if strings.Contains(e.Error(), "allow-list") {
+				t.Errorf("command %q rejected unexpectedly: %v", cmd, e)
+			}
+		}
+	}
+}
+
+func TestValidate_MCPCommandNotInAllowListOnAgent(t *testing.T) {
+	cfg := &config.Config{
+		Version: "1",
+		Agents: []config.AgentConfig{
+			{ID: "a-1", Model: "m", MCPs: []model.MCPServer{{Name: "srv", Command: "curl"}}},
+		},
+	}
+	assertError(t, cfg, "not in the allow-list")
 }
 
 func TestValidate_MissingSourceID(t *testing.T) {
