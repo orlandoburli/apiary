@@ -112,6 +112,10 @@ type Dispatcher struct {
 	localWorker    *workerpkg.Runtime
 	queueProjectID string
 	queueWorkerID  string
+
+	// controlToken is the per-run secret required on every mutating IPC endpoint.
+	// Generated once in StartServer and written to ControlTokenPath(dataDir).
+	controlToken string
 }
 
 // runnerCandidate is one rung in an agent's rate-limit failover chain: a
@@ -995,15 +999,35 @@ func (d *Dispatcher) controlLabels(cell model.SourceItem) []string {
 	return out
 }
 
+// requireControlToken returns middleware that rejects requests without a valid
+// X-Apiary-Control header. Handlers that need auth are wrapped with this so
+// read-only endpoints (status, health, events, etc.) remain freely accessible.
+func (d *Dispatcher) requireControlToken(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.controlToken == "" || r.Header.Get("X-Apiary-Control") != d.controlToken {
+			http.Error(w, "unauthorized: control token required", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
 // StartServer starts an HTTP server on the Unix socket for IPC.
 // It removes any stale socket file before binding.
 func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error {
-	path := SocketPath(config.DataDir(d.configFile))
+	dataDir := config.DataDir(d.configFile)
+	path := SocketPath(dataDir)
 	if err := ensureSocketDir(path); err != nil {
 		return fmt.Errorf("socket dir: %w", err)
 	}
 	// remove stale socket
 	_ = os.Remove(path)
+
+	token, err := GenerateControlToken(dataDir)
+	if err != nil {
+		return fmt.Errorf("control token: %w", err)
+	}
+	d.controlToken = token
 
 	ln, err := net.Listen("unix", path)
 	if err != nil {
@@ -1021,8 +1045,10 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 	mux.HandleFunc("/events", d.handleExecutionEvents)
 	mux.HandleFunc("/events/stream", d.handleExecutionEventStream)
 	mux.HandleFunc("/approvals", d.handleApprovals)
+	// /approvals/<id>/respond requires control-token auth (see handleApprovalResponse).
+	// /approvals/<id>/webhook uses HMAC signature auth instead.
 	mux.HandleFunc("/approvals/", d.handleApprovalResponse)
-	mux.HandleFunc("/restart/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/restart/", d.requireControlToken(func(w http.ResponseWriter, r *http.Request) {
 		cellID := strings.TrimPrefix(r.URL.Path, "/restart/")
 		if cellID == "" {
 			http.Error(w, "missing cell id", http.StatusBadRequest)
@@ -1033,8 +1059,8 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-	})
-	mux.HandleFunc("/api/config/agent/", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	mux.HandleFunc("/api/config/agent/", d.requireControlToken(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPatch {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -1061,7 +1087,7 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"updated": agentID, "model": req.Model, "max_workers": req.MaxWorkers})
-	})
+	}))
 	mux.HandleFunc("/instances", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		limit := 20
@@ -1159,7 +1185,7 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(hist)
 	})
-	mux.HandleFunc("/tasks/pulls/refresh/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/tasks/pulls/refresh/", d.requireControlToken(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -1180,8 +1206,8 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
-	})
-	mux.HandleFunc("/resume/", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	mux.HandleFunc("/resume/", d.requireControlToken(func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/resume/")
 		opts := ResumeOptions{FromStep: r.URL.Query().Get("from"), ConfigMode: r.URL.Query().Get("config")}
 		if id == "" {
@@ -1222,7 +1248,7 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
+	}))
 	mux.HandleFunc("/workflows", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1231,7 +1257,7 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(d.WorkflowList())
 	})
-	mux.HandleFunc("/instances/stop/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/instances/stop/", d.requireControlToken(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -1247,8 +1273,8 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"stopped": instanceID})
-	})
-	mux.HandleFunc("/clearlogs/", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	mux.HandleFunc("/clearlogs/", d.requireControlToken(func(w http.ResponseWriter, r *http.Request) {
 		cellID := strings.TrimPrefix(r.URL.Path, "/clearlogs/")
 		if cellID == "" {
 			http.Error(w, "missing cell id", http.StatusBadRequest)
@@ -1261,8 +1287,8 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 			}
 		}
 		w.WriteHeader(http.StatusOK)
-	})
-	mux.HandleFunc("/tasks/delete/", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	mux.HandleFunc("/tasks/delete/", d.requireControlToken(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -1282,7 +1308,7 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"deleted": taskRef})
-	})
+	}))
 
 	srv := &http.Server{Handler: mux}
 

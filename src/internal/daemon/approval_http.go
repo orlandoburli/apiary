@@ -60,6 +60,15 @@ func (d *Dispatcher) handleApprovalResponse(w http.ResponseWriter, r *http.Reque
 			http.Error(w, "invalid webhook signature", http.StatusUnauthorized)
 			return
 		}
+	} else {
+		// Dashboard (/respond) path: require the control token so that only
+		// authenticated local processes can approve or reject gates. This closes
+		// the bypass described in SEC-11 where an unauthenticated local caller
+		// could approve gates without the signature check the webhook path enforces.
+		if d.controlToken == "" || r.Header.Get("X-Apiary-Control") != d.controlToken {
+			http.Error(w, "unauthorized: control token required", http.StatusUnauthorized)
+			return
+		}
 	}
 	var response db.ApprovalResponse
 	if err := json.Unmarshal(body, &response); err != nil {

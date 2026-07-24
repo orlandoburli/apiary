@@ -21,6 +21,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/orlandoburli/apiary/internal/config"
+	"github.com/orlandoburli/apiary/internal/daemon"
 	"github.com/orlandoburli/apiary/internal/db"
 	"github.com/orlandoburli/apiary/internal/model"
 )
@@ -56,6 +57,7 @@ type App struct {
 	model      *Model
 	dbConn     *db.Client
 	socketPath string
+	dataDir    string
 	cfg        *config.Config
 	// logDir is the daemon's log directory, used to locate per-task markdown
 	// transcripts (logDir/transcripts/<task>/...).
@@ -74,11 +76,12 @@ type App struct {
 	logMDWidth   int
 }
 
-func New(dbConn *db.Client, socketPath string, cfg *config.Config, logDir string) *App {
+func New(dbConn *db.Client, socketPath, dataDir string, cfg *config.Config, logDir string) *App {
 	return &App{
 		model:      NewModel(),
 		dbConn:     dbConn,
 		socketPath: socketPath,
+		dataDir:    dataDir,
 		cfg:        cfg,
 		logDir:     logDir,
 	}
@@ -1560,18 +1563,48 @@ func (a *App) focusedTaskID() (string, bool) {
 	return "", false
 }
 
-// restartTaskCmd sends a force-restart request to the daemon via the IPC socket.
-func (a *App) restartTaskCmd(taskID string) tea.Cmd {
-	return func() tea.Msg {
-		socketPath := a.socketPath
-		transport := &http.Transport{
+// ipcClient returns an HTTP client that dials a.socketPath over Unix.
+func (a *App) ipcClient(timeout time.Duration) *http.Client {
+	socketPath := a.socketPath
+	return &http.Client{
+		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 			},
+		},
+		Timeout: timeout,
+	}
+}
+
+// ipcPost builds an authenticated POST request for a mutating IPC endpoint.
+func (a *App) ipcPost(ctx context.Context, url string, body []byte) (*http.Request, error) {
+	var req *http.Request
+	var err error
+	if body != nil {
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	} else {
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	}
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Apiary-Control", daemon.ReadControlToken(a.dataDir))
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return req, nil
+}
+
+// restartTaskCmd sends a force-restart request to the daemon via the IPC socket.
+func (a *App) restartTaskCmd(taskID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		req, err := a.ipcPost(ctx, fmt.Sprintf("http://apiary/restart/%s", taskID), nil)
+		if err != nil {
+			return nil
 		}
-		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-		url := fmt.Sprintf("http://apiary/restart/%s", taskID)
-		resp, err := client.Post(url, "application/json", nil)
+		resp, err := a.ipcClient(5 * time.Second).Do(req)
 		if err != nil {
 			return nil
 		}
@@ -1589,16 +1622,14 @@ func (a *App) refreshTaskPullsCmd(internalTaskID string) tea.Cmd {
 	if internalTaskID == "" {
 		return nil
 	}
-	socketPath := a.socketPath
 	return func() tea.Msg {
-		transport := &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
-			},
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		req, err := a.ipcPost(ctx, fmt.Sprintf("http://apiary/tasks/pulls/refresh/%s", internalTaskID), nil)
+		if err != nil {
+			return nil
 		}
-		client := &http.Client{Transport: transport, Timeout: 8 * time.Second}
-		url := fmt.Sprintf("http://apiary/tasks/pulls/refresh/%s", internalTaskID)
-		resp, err := client.Post(url, "application/json", nil)
+		resp, err := a.ipcClient(8 * time.Second).Do(req)
 		if err != nil {
 			return nil
 		}
@@ -1612,15 +1643,13 @@ func (a *App) refreshTaskPullsCmd(internalTaskID string) tea.Cmd {
 
 func (a *App) clearLogsCmd(taskID string) tea.Cmd {
 	return func() tea.Msg {
-		socketPath := a.socketPath
-		transport := &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
-			},
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		req, err := a.ipcPost(ctx, fmt.Sprintf("http://apiary/clearlogs/%s", taskID), nil)
+		if err != nil {
+			return nil
 		}
-		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-		url := fmt.Sprintf("http://apiary/clearlogs/%s", taskID)
-		resp, err := client.Post(url, "application/json", nil)
+		resp, err := a.ipcClient(5 * time.Second).Do(req)
 		if err != nil {
 			return nil
 		}
@@ -1633,14 +1662,13 @@ func (a *App) clearLogsCmd(taskID string) tea.Cmd {
 // instance without re-dispatching it.
 func (a *App) stopInstanceCmd(instanceID string) tea.Cmd {
 	return func() tea.Msg {
-		transport := &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", a.socketPath)
-			},
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		req, err := a.ipcPost(ctx, fmt.Sprintf("http://apiary/instances/stop/%s", instanceID), nil)
+		if err != nil {
+			return nil
 		}
-		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-		url := fmt.Sprintf("http://apiary/instances/stop/%s", instanceID)
-		resp, err := client.Post(url, "application/json", nil)
+		resp, err := a.ipcClient(5 * time.Second).Do(req)
 		if err != nil {
 			return nil
 		}
@@ -1656,13 +1684,13 @@ func (a *App) approvalResponseCmd(requestID, decision string) tea.Cmd {
 			actor = "dashboard-user"
 		}
 		body, _ := json.Marshal(map[string]any{"decision": decision, "actor": actor, "idempotency_key": fmt.Sprintf("dashboard:%s:%s:%s", requestID, actor, decision)})
-		transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", a.socketPath)
-		}}
-		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-		req, _ := http.NewRequest(http.MethodPost, "http://apiary/approvals/"+requestID+"/respond", bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := client.Do(req)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		req, err := a.ipcPost(ctx, "http://apiary/approvals/"+requestID+"/respond", body)
+		if err != nil {
+			return nil
+		}
+		resp, err := a.ipcClient(5 * time.Second).Do(req)
 		if err == nil {
 			resp.Body.Close()
 		}
@@ -1921,13 +1949,6 @@ func (a *App) updateAgentConfigCmd(agentID, model, runner string, maxWorkers int
 }
 
 func (a *App) patchAgentViaSocket(agentID, model, runner string, maxWorkers int) error {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", a.socketPath)
-		},
-	}
-	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-
 	body := map[string]any{}
 	if model != "" {
 		body["model"] = model
@@ -1941,12 +1962,15 @@ func (a *App) patchAgentViaSocket(agentID, model, runner string, maxWorkers int)
 	payload, _ := json.Marshal(body)
 	url := fmt.Sprintf("http://apiary/api/config/agent/%s", agentID)
 
-	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader(payload))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
+	req.Header.Set("X-Apiary-Control", daemon.ReadControlToken(a.dataDir))
+	resp, err := a.ipcClient(5 * time.Second).Do(req)
 	if err != nil {
 		return err
 	}

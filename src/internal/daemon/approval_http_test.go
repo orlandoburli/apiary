@@ -74,6 +74,70 @@ func TestValidateApprovalResponseAuthorizationAndFields(t *testing.T) {
 	}
 }
 
+func TestDashboardApprovalRequiresControlToken(t *testing.T) {
+	ctx := context.Background()
+	dbc, err := db.New(ctx, filepath.Join(t.TempDir(), "approvals.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbc.Close()
+	request := &db.ApprovalRequest{ID: "inst:gate", WorkflowInstanceID: "inst", StepID: "gate", Approvers: []string{"alice"}}
+	if err := dbc.CreateApprovalRequest(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	d := &Dispatcher{db: dbc, cfg: &config.Config{}, controlToken: "secret-token"}
+	body := []byte(`{"decision":"approve","actor":"alice","idempotency_key":"d-1"}`)
+
+	// No token → 401.
+	req := httptest.NewRequest(http.MethodPost, "/approvals/inst:gate/respond", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	d.handleApprovalResponse(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token, got %d", w.Code)
+	}
+
+	// Wrong token → 401.
+	req = httptest.NewRequest(http.MethodPost, "/approvals/inst:gate/respond", bytes.NewReader(body))
+	req.Header.Set("X-Apiary-Control", "wrong-token")
+	w = httptest.NewRecorder()
+	d.handleApprovalResponse(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong token, got %d", w.Code)
+	}
+
+	// Correct token → succeeds.
+	req = httptest.NewRequest(http.MethodPost, "/approvals/inst:gate/respond", bytes.NewReader(body))
+	req.Header.Set("X-Apiary-Control", "secret-token")
+	w = httptest.NewRecorder()
+	d.handleApprovalResponse(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 with correct token, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRequireControlTokenMiddleware(t *testing.T) {
+	d := &Dispatcher{controlToken: "tok"}
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	handler := d.requireControlToken(inner)
+
+	// Missing header.
+	req := httptest.NewRequest(http.MethodPost, "/restart/x", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+
+	// Correct header.
+	req = httptest.NewRequest(http.MethodPost, "/restart/x", nil)
+	req.Header.Set("X-Apiary-Control", "tok")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
 func TestValidateApprovalResponseDelegationUsesApproverSlot(t *testing.T) {
 	req := &db.ApprovalRequest{Approvers: []string{"alice"}, Delegates: map[string][]string{"alice": {"bob"}}}
 	response := db.ApprovalResponse{Decision: "approve", Actor: "bob"}
