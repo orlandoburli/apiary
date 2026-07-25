@@ -19,10 +19,10 @@ package editor
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"gopkg.in/yaml.v3"
 
 	"github.com/orlandoburli/apiary/internal/config"
 )
@@ -55,22 +55,24 @@ type Model struct {
 	form *Form // non-nil when editing a step/trigger
 
 	// Graph navigation
-	target    editTarget
-	stepIdx   int  // index of selected step (valid when target == targetStep)
-	stepScroll int  // scroll offset for the step list
+	target     editTarget
+	stepIdx    int // index of selected step (valid when target == targetStep)
+	stepScroll int // scroll offset for the step list
 
 	// Terminal size
 	width, height int
 
 	// State
-	dirty        bool   // unsaved changes
-	origBlock    string // raw YAML of the workflow block at load time (for diff)
-	statusMsg    string // transient status line
-	statusIsErr  bool
+	dirty       bool   // unsaved changes
+	origBlock   string // raw YAML of the workflow block at load time (for diff)
+	statusMsg   string // transient status line
+	statusIsErr bool
 
 	// Unsupported constructs detected at load time
 	unsupported []UnsupportedWarning
-	// readOnlySteps maps step index → true for steps with unsupported constructs
+	// readOnlySteps maps step index → true for steps that contain YAML anchors
+	// or aliases. Such steps cannot be edited through the form interface because
+	// yaml.Marshal would silently discard anchor/alias topology on re-marshal.
 	readOnlySteps map[int]bool
 
 	// Diff computed when entering viewDiffConfirm
@@ -93,8 +95,71 @@ func New(cfg *config.Config, cfgPath string, workflowIdx int, rawYAML string) *M
 		target:        targetTrigger,
 		origBlock:     origBlock,
 		unsupported:   warnings,
-		readOnlySteps: make(map[int]bool),
+		readOnlySteps: buildReadOnlySteps(origBlock, wf.Steps),
 	}
+}
+
+// buildReadOnlySteps returns a map from step index → true for every step whose
+// raw YAML sub-block contains a YAML anchor (&) or alias (*). Steps in the map
+// are displayed read-only and may not be edited through the form interface,
+// because yaml.Marshal would silently discard anchor/alias topology on save.
+func buildReadOnlySteps(origBlock string, steps []config.StepConfig) map[int]bool {
+	result := make(map[int]bool)
+	if len(steps) == 0 || origBlock == "" {
+		return result
+	}
+
+	lines := strings.Split(origBlock, "\n")
+	currentIdx := -1 // index into steps; -1 = not inside a step yet
+
+	// stepIndent is the leading-space count for "- id: <step>" lines.
+	// We discover it lazily from the first matching step line.
+	stepIndent := -1
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		indent := leadingSpaces(line)
+
+		// Check if this line starts a new step block.
+		for i, step := range steps {
+			if matchesStepID(trimmed, step.ID) {
+				if stepIndent < 0 {
+					stepIndent = indent
+				}
+				currentIdx = i
+				break
+			}
+		}
+
+		if currentIdx < 0 {
+			continue
+		}
+
+		// A non-blank line shallower than step-list indent means we left the
+		// steps section; stop tracking.
+		if stepIndent >= 0 && trimmed != "" && indent < stepIndent {
+			currentIdx = -1
+			continue
+		}
+
+		if reAnchorInline.MatchString(line) || reAliasInline.MatchString(line) {
+			result[currentIdx] = true
+		}
+	}
+
+	return result
+}
+
+// reAnchorInline / reAliasInline match YAML anchors and aliases inside a line.
+var reAnchorInline = regexp.MustCompile(`&\S+`)
+var reAliasInline = regexp.MustCompile(`\*\S+`)
+
+// matchesStepID reports whether trimmed is a YAML list-item line that declares
+// the given step id, accepting unquoted, double-quoted, and single-quoted forms.
+func matchesStepID(trimmed, id string) bool {
+	return trimmed == "- id: "+id ||
+		trimmed == `- id: "`+id+`"` ||
+		trimmed == "- id: '"+id+"'"
 }
 
 // workflow returns the workflow being edited (value copy).
@@ -397,12 +462,10 @@ func (m *Model) save() error {
 	wf := m.workflow()
 	updated, err := ReplaceWorkflowInRaw(string(raw), wf.ID, wf)
 	if err != nil {
-		// Fallback: marshal the entire config and write it.
-		data, merr := yaml.Marshal(m.cfg)
-		if merr != nil {
-			return fmt.Errorf("marshalling config: %w (original error: %v)", merr, err)
-		}
-		updated = string(data)
+		// Do NOT fall back to yaml.Marshal(m.cfg): the in-memory Config was
+		// populated by config.Load which expands ${VAR} references, so a full
+		// re-marshal would leak plaintext secrets and destroy comments.
+		return fmt.Errorf("replacing workflow block: %w", err)
 	}
 	if werr := os.WriteFile(m.cfgPath, []byte(updated), 0o600); werr != nil {
 		return fmt.Errorf("writing %s: %w", m.cfgPath, werr)
@@ -621,6 +684,10 @@ func (m *Model) scrolledContent(title string, lines []string, height int) string
 	sb.WriteString(title + "\n")
 	sb.WriteString(styleBorder.Render(strings.Repeat("─", m.width)) + "\n")
 
+	// Guard against very small terminals.
+	if height < 2 {
+		height = 2
+	}
 	lo := m.yamlScroll
 	hi := lo + height - 2
 	if lo > len(lines) {
@@ -628,6 +695,10 @@ func (m *Model) scrolledContent(title string, lines []string, height int) string
 	}
 	if hi > len(lines) {
 		hi = len(lines)
+	}
+	// Ensure hi >= lo after independent clamping (both can land at len(lines)).
+	if hi < lo {
+		hi = lo
 	}
 	for _, l := range lines[lo:hi] {
 		sb.WriteString(l + "\n")
@@ -676,4 +747,10 @@ func Run(cfg *config.Config, cfgPath string, workflowIdx int, rawYAML string) er
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
+}
+
+// ReadOnlyStep reports whether the step at the given index is marked read-only
+// because its raw YAML contains anchors or aliases. Exposed for testing.
+func (m *Model) ReadOnlyStep(idx int) bool {
+	return m.readOnlySteps[idx]
 }

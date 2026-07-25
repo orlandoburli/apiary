@@ -25,8 +25,9 @@ func WorkflowToYAML(wf config.WorkflowConfig) (string, error) {
 // content in rawYAML (other workflows, other config sections, comments outside
 // the replaced block) is preserved byte-for-byte.
 //
-// If the workflow block is not found, an error is returned — the caller should
-// fall back to a full yaml.Marshal of the entire Config.
+// If the workflow block is not found, an error is returned. The caller must
+// surface this error rather than falling back to a full yaml.Marshal of the
+// Config struct, which would expand ${VAR} env references and leak secrets.
 func ReplaceWorkflowInRaw(rawYAML, workflowID string, wf config.WorkflowConfig) (string, error) {
 	newBlock, err := WorkflowToYAML(wf)
 	if err != nil {
@@ -35,15 +36,8 @@ func ReplaceWorkflowInRaw(rawYAML, workflowID string, wf config.WorkflowConfig) 
 
 	lines := strings.Split(rawYAML, "\n")
 
-	// Find the start line: "  - id: <workflowID>" (2-space indent, list item).
-	startLine := -1
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "- id: "+workflowID {
-			startLine = i
-			break
-		}
-	}
+	// Find the start line of the workflow block.
+	startLine := findWorkflowLine(lines, workflowID)
 	if startLine < 0 {
 		return "", fmt.Errorf("workflow %q not found in raw YAML", workflowID)
 	}
@@ -139,13 +133,7 @@ func indentWorkflowBlock(yamlBlock, prefix string) string {
 func ExtractWorkflowBlock(rawYAML, workflowID string) string {
 	lines := strings.Split(rawYAML, "\n")
 
-	startLine := -1
-	for i, line := range lines {
-		if strings.TrimSpace(line) == "- id: "+workflowID {
-			startLine = i
-			break
-		}
-	}
+	startLine := findWorkflowLine(lines, workflowID)
 	if startLine < 0 {
 		return ""
 	}
@@ -170,6 +158,25 @@ func ExtractWorkflowBlock(rawYAML, workflowID string) string {
 	}
 
 	return strings.Join(lines[startLine:endLine], "\n")
+}
+
+// findWorkflowLine returns the index of the YAML list-item line for wfID,
+// accepting unquoted, double-quoted, and single-quoted id values.
+func findWorkflowLine(lines []string, wfID string) int {
+	candidates := [3]string{
+		"- id: " + wfID,
+		`- id: "` + wfID + `"`,
+		"- id: '" + wfID + "'",
+	}
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		for _, c := range candidates {
+			if trimmed == c {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func leadingSpaces(s string) int {

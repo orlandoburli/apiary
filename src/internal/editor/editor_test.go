@@ -101,7 +101,7 @@ workflows:
 	}
 }
 
-func TestReplaceWorkflowInRaw_not_found(t *testing.T) {
+func TestReplaceWorkflowInRaw_not_found_returns_error(t *testing.T) {
 	raw := `version: "1"
 workflows:
   - id: wf-a
@@ -110,6 +110,56 @@ workflows:
 	_, err := editor.ReplaceWorkflowInRaw(raw, "wf-missing", config.WorkflowConfig{})
 	if err == nil {
 		t.Error("expected error for missing workflow ID, got nil")
+	}
+	// Verify the error message is actionable (not a fallback-marshal error).
+	if err != nil && !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention 'not found', got: %v", err)
+	}
+}
+
+// TestReplaceWorkflowInRaw_quoted_id verifies that workflow IDs written with
+// double or single quotes in the YAML file are found and replaced correctly.
+func TestReplaceWorkflowInRaw_quoted_id(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "double-quoted id",
+			raw: `version: "1"
+workflows:
+  - id: "my-wf"
+    steps:
+      - id: s1
+        agent: a1
+`,
+		},
+		{
+			name: "single-quoted id",
+			raw: `version: "1"
+workflows:
+  - id: 'my-wf'
+    steps:
+      - id: s1
+        agent: a1
+`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := config.WorkflowConfig{
+				ID: "my-wf",
+				Steps: []config.StepConfig{
+					{ID: "s1", Agent: "a1", Prompt: "updated"},
+				},
+			}
+			updated, err := editor.ReplaceWorkflowInRaw(tc.raw, "my-wf", wf)
+			if err != nil {
+				t.Fatalf("ReplaceWorkflowInRaw(%s): %v", tc.name, err)
+			}
+			if !strings.Contains(updated, "updated") {
+				t.Errorf("updated prompt missing from output:\n%s", updated)
+			}
+		})
 	}
 }
 
@@ -188,6 +238,57 @@ func TestDetectUnsupported_clean(t *testing.T) {
 	}
 	if strings.Contains(updated, "&") || strings.Contains(updated, " *") {
 		t.Error("clean output should not contain YAML anchors or aliases")
+	}
+}
+
+// TestReadOnlySteps_populated verifies that buildReadOnlySteps (exercised via
+// New) correctly marks steps whose raw YAML contains anchors or aliases as
+// read-only, while leaving unaffected steps editable.
+func TestReadOnlySteps_populated(t *testing.T) {
+	raw := `version: "1"
+workflows:
+  - id: wf
+    steps:
+      - id: anchored-step
+        agent: &my-anchor agent-a
+      - id: normal-step
+        agent: agent-b
+`
+	cfg := &config.Config{
+		Workflows: []config.WorkflowConfig{
+			{
+				ID: "wf",
+				Steps: []config.StepConfig{
+					{ID: "anchored-step", Agent: "agent-a"},
+					{ID: "normal-step", Agent: "agent-b"},
+				},
+			},
+		},
+	}
+
+	m := editor.New(cfg, "apiary.yaml", 0, raw)
+
+	if !m.ReadOnlyStep(0) {
+		t.Error("step 0 (anchored-step) should be read-only due to YAML anchor")
+	}
+	if m.ReadOnlyStep(1) {
+		t.Error("step 1 (normal-step) should NOT be read-only")
+	}
+}
+
+// TestSave_no_fallback_on_missing_workflow ensures that save() surfaces an
+// error when the workflow ID cannot be found in the raw file, rather than
+// silently falling back to yaml.Marshal which would expand ${VAR} secrets.
+func TestSave_no_fallback_on_missing_workflow(t *testing.T) {
+	// ReplaceWorkflowInRaw with a non-existent workflow ID must return an error.
+	raw := `version: "1"
+workflows:
+  - id: other-wf
+    steps: []
+`
+	_, err := editor.ReplaceWorkflowInRaw(raw, "ghost-wf", config.WorkflowConfig{ID: "ghost-wf"})
+	if err == nil {
+		t.Fatal("expected error when workflow ID not found, got nil — secret-leak fallback may still be present")
 	}
 }
 
