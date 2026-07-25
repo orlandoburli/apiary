@@ -38,6 +38,10 @@ type CliRunner struct {
 	// sandbox, when non-nil, wraps every agent subprocess in a Docker container
 	// with the given image, restricted user, and network policy.
 	sandbox *cliSandbox
+	// allowRoot, when true, permits launching the agent CLI even when the daemon
+	// is running as root (uid 0). Defaults to false. Set allow_root: true on the
+	// runner config to acknowledge the risk and opt in explicitly.
+	allowRoot bool
 }
 
 // cliSandbox describes the Docker container isolation applied to a CliRunner.
@@ -177,11 +181,17 @@ func (r *CliRunner) Configure(config map[string]any) error {
 		}
 		r.sandbox = sc
 	}
+	if v, ok := config["allow_root"].(bool); ok {
+		r.allowRoot = v
+	}
 	return nil
 }
 
 func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
 	start := time.Now()
+	if err := checkPrivilegeCeiling(r.allowRoot); err != nil {
+		return model.RunResult{}, err
+	}
 	prompt := buildPrompt(req)
 
 	argv := append([]string{}, r.args...)
