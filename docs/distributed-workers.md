@@ -55,7 +55,7 @@ traffic must be encrypted; use one of the two options below.
 
 ### Option A — Native TLS
 
-Provide a PEM certificate and key (absolute paths or relative to `apiary.yaml`):
+Provide a PEM certificate and key (absolute paths recommended; relative paths resolve from the daemon's working directory):
 
 ```yaml
 settings:

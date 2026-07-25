@@ -14,6 +14,8 @@ func TestValidateQueueSettings(t *testing.T) {
 		{"listener requires token", QueueSettings{Listen: ":8080"}, "worker_token is required"},
 		{"heartbeat before lease", QueueSettings{LeaseDuration: "5s", HeartbeatInterval: "5s"}, "must be shorter"},
 		{"positive scoped limit", QueueSettings{Concurrency: QueueConcurrencySettings{Pools: map[string]int{"build": 0}}}, "positive limit"},
+		{"tls cert without key", QueueSettings{TLSCertFile: "/etc/tls.crt"}, "tls_cert_file and tls_key_file must both be set"},
+		{"tls key without cert", QueueSettings{TLSKeyFile: "/etc/tls.key"}, "tls_cert_file and tls_key_file must both be set"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

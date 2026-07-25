@@ -308,8 +308,8 @@ type QueueSettings struct {
 	WorkerToken string `yaml:"worker_token,omitempty"`
 	// TLSCertFile and TLSKeyFile enable native TLS on the queue protocol listener.
 	// Both must be set together; omitting both keeps plain HTTP (use a TLS-
-	// terminating reverse proxy in that case). Paths may be absolute or relative
-	// to the directory that contains apiary.yaml.
+	// terminating reverse proxy in that case). Use absolute paths; relative paths
+	// are resolved from the daemon's working directory, not the config file location.
 	TLSCertFile string                   `yaml:"tls_cert_file,omitempty"`
 	TLSKeyFile  string                   `yaml:"tls_key_file,omitempty"`
 	Concurrency QueueConcurrencySettings `yaml:"concurrency,omitempty"`
