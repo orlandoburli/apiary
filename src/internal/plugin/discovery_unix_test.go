@@ -9,6 +9,36 @@ import (
 	"testing"
 )
 
+// TestDiscoverSkipsWritablePluginSubdir covers the multi-plugin layout where the
+// top-level plugins directory is correctly owner-only but an individual plugin
+// subdirectory is group- or world-writable. The writable plugin must be skipped
+// while sibling plugins with correct permissions still load.
+func TestDiscoverSkipsWritablePluginSubdir(t *testing.T) {
+	parent := t.TempDir() // 0700 — passes the top-level check
+
+	// A properly-permissioned sibling plugin — must still load.
+	writeTestPlugin(t, parent, "clean", "exit 0", Manifest{})
+
+	// A plugin whose own directory is group-writable — must be skipped.
+	writeTestPlugin(t, parent, "dirty", "exit 0", Manifest{})
+	if err := os.Chmod(filepath.Join(parent, "dirty"), 0o775); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(parent, "dirty"), 0o755) })
+
+	registry, errs := Discover([]string{parent}, parent, "v0.10.0")
+
+	if _, ok := registry.Get("dev.apiary.clean"); !ok {
+		t.Fatal("plugin with correct permissions should load")
+	}
+	if _, ok := registry.Get("dev.apiary.dirty"); ok {
+		t.Fatal("plugin in group-writable subdir must not load")
+	}
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "group- or world-writable") {
+		t.Fatalf("expected exactly 1 permission warning for dirty subdir, got errs=%v", errs)
+	}
+}
+
 func TestDiscoverSkipsGroupAndWorldWritableDirs(t *testing.T) {
 	parent := t.TempDir()
 
