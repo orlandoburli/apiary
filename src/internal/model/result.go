@@ -42,6 +42,12 @@ type RunRequest struct {
 	// goroutines.
 	TranscriptSink func(rawLine string) `json:"-"`
 
+	// AuditSink, when set, receives each raw provider stdout line alongside
+	// TranscriptSink. The daemon uses it to extract tool calls for agent-action
+	// audit logging and anomaly detection (SEC-14). Must be safe to call from
+	// multiple goroutines.
+	AuditSink func(rawLine string) `json:"-"`
+
 	// SetPID is called after the child process starts with its OS PID.
 	SetPID func(pid int) `json:"-"`
 

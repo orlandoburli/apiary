@@ -287,6 +287,26 @@ type Settings struct {
 	// CreditExhaustedCooldown is how long a runner type is paused after a
 	// credit-exhausted failure. Default "24h".
 	CreditExhaustedCooldown string `yaml:"credit_exhausted_cooldown,omitempty"`
+	// Audit controls agent-action audit logging and anomaly detection (SEC-14).
+	Audit AuditConfig `yaml:"audit"`
+}
+
+// AuditConfig controls agent-action audit logging and anomaly detection.
+// When Enabled is true (the default), every tool call an agent makes is
+// recorded as an agent.action execution event, and suspicious patterns trigger
+// an agent.anomaly event plus any configured notification channels.
+type AuditConfig struct {
+	// Enabled turns audit logging on or off. Defaults to true.
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// AllowedEgressDomains, when non-empty, causes any network egress by an
+	// agent to a domain not in this list to be flagged as an anomaly
+	// (RuleUnexpectedEgress). Leave empty to allow all outbound network access.
+	AllowedEgressDomains []string `yaml:"allowed_egress_domains,omitempty"`
+}
+
+// AuditEnabled returns true unless explicitly disabled.
+func (a AuditConfig) AuditEnabled() bool {
+	return a.Enabled == nil || *a.Enabled
 }
 
 // QueueSettings controls durable dispatch and the embedded protocol-1 worker.

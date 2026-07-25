@@ -110,6 +110,7 @@ type TaskTracker interface {
 
 // StepRequest is the input to executing one agent step.
 type StepRequest struct {
+	TaskID     string // internal task ID, for audit event correlation
 	InstanceID string
 	Cell       model.SourceItem
 	Step       config.StepConfig
@@ -579,6 +580,7 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 		ag = *agent
 	}
 	res := e.exec.ExecuteStep(ctx, StepRequest{
+		TaskID:      task.ID,
 		InstanceID:  instID,
 		Cell:        cell,
 		Step:        step,

@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/orlandoburli/apiary/internal/audit"
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
 	aplog "github.com/orlandoburli/apiary/internal/log"
@@ -443,6 +444,25 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 			})
 			rr.TranscriptSink = tr.Feed
 			aplog.Debug("[%s] transcript: %s", req.Cell.LogLabel(), path)
+		}
+	}
+
+	// Agent-action audit logging and anomaly detection (SEC-14). The auditor
+	// receives the same stream-json lines as the transcript renderer and records
+	// every tool call as an agent.action event plus anomaly alerts for suspicious
+	// patterns. Best-effort: a nil DB or disabled config skips setup silently.
+	if x.d.cfg != nil && x.d.db != nil {
+		auditCfg := audit.Config{
+			Enabled:              x.d.cfg.Settings.Audit.AuditEnabled(),
+			AllowedEgressDomains: x.d.cfg.Settings.Audit.AllowedEgressDomains,
+		}
+		if auditCfg.Enabled {
+			alertFn := func(_ context.Context, an audit.Anomaly, taskID, instanceID, stepID string) {
+				aplog.Warn("[audit] anomaly %s severity=%s task=%s instance=%s step=%s: %s",
+					an.Rule, an.Severity, taskID, instanceID, stepID, an.Detail)
+			}
+			auditor := audit.New(auditCfg, x.d.db, alertFn, req.TaskID, req.InstanceID, req.Step.ID)
+			rr.AuditSink = auditor.Feed
 		}
 	}
 
