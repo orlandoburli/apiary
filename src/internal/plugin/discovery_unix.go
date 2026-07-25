@@ -9,8 +9,8 @@ import (
 
 // checkDirOwnerOnly returns a warning error if path has group- or world-write
 // bits set. Attackers with group/world write access to a plugin directory can
-// plant or replace executables; refusing to load from such directories is the
-// stopgap until binary signing is in place.
+// plant or replace executables; this check is a defense-in-depth layer
+// alongside the mandatory executable integrity check (SHA-256 checksum).
 func checkDirOwnerOnly(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
