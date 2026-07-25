@@ -148,9 +148,41 @@ All `config` keys, with each provider's preset defaults:
 | `prompt_flag` | Flag used to pass the prompt | `-p` | *(positional)* | *(positional)* | *(positional)* |
 | `prompt_positional` | Pass the prompt as the last positional argument | `false` | `true` | `true` | `true` |
 | `turns_flag` | Flag used to pass a max-turns limit | — | — | — | — |
+| `allow_root` | Allow launching the agent as uid 0 (root). **Strongly discouraged** — see the security note below. | `false` | `false` | `false` | `false` |
+| `env_passlist` | Allowlist of host environment variable names forwarded to the agent subprocess. When set, only listed vars are passed; `req.Env` overrides are always included. When empty (default), all host vars are forwarded. | *(all)* | *(all)* | *(all)* | *(all)* |
 
 Prompt delivery: via `prompt_flag` when set, as the last positional argument
 when `prompt_positional: true`, otherwise on **stdin**.
+
+!!! danger "Never run the agent CLI as root"
+    Apiary fetches task prompts from external sources (GitHub Issues, Jira
+    tickets, Plane cards). This content is untrusted — a malicious issue body
+    can attempt prompt injection. When the underlying CLI process runs as
+    **uid 0 (root)**, a successful injection has full system access.
+
+    **Do not run `apiary run` (or the CLI tool it invokes) as root.** If your
+    deployment requires elevated privileges for something specific, use
+    `allow_root: true` only for an isolated, offline runner that never
+    processes untrusted-authored content — and document that decision in your
+    runbook.
+
+    Use `env_passlist` to reduce the attack surface further: restrict which
+    credentials and secrets the agent subprocess can read.
+
+    ```yaml
+    runners:
+      - id: claude
+        type: cli
+        provider: claude
+        config:
+          # allow_root: true  # never set this for Jira/GitHub-sourced work
+          env_passlist:       # only forward what the agent actually needs
+            - HOME
+            - PATH
+            - TMPDIR
+            - LANG
+            - ANTHROPIC_API_KEY
+    ```
 
 ## API runners
 
