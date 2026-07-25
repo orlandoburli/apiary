@@ -64,7 +64,7 @@ func TestRoundTrip(t *testing.T) {
 	orig := sampleCfg()
 	origWF := orig.Workflows[0]
 
-	ec := configToEditor(orig, "apiary.yaml")
+	ec := configToEditor(orig, nil, "apiary.yaml")
 	if len(ec.Workflows) != 1 {
 		t.Fatalf("expected 1 workflow, got %d", len(ec.Workflows))
 	}
@@ -159,7 +159,7 @@ func TestSupportedFlag(t *testing.T) {
 		},
 	})
 
-	ec := configToEditor(cfg, "apiary.yaml")
+	ec := configToEditor(cfg, nil, "apiary.yaml")
 	wf := ec.Workflows[0]
 
 	// All non-parallel steps should be supported.
@@ -210,5 +210,124 @@ func TestParseErrorPath(t *testing.T) {
 	}
 	if sid != "classify" {
 		t.Errorf("stepID: got %q, want classify", sid)
+	}
+}
+
+// anchorYAML is a minimal apiary.yaml that uses YAML anchors and aliases.
+const anchorYAML = `version: "1"
+agents:
+  - id: eng
+    model: sonnet
+defaults: &defaults
+  description: shared defaults
+workflows:
+  - id: anchored
+    <<: *defaults
+    steps:
+      - id: do-it
+        agent: eng
+  - id: clean
+    steps:
+      - id: run
+        agent: eng
+`
+
+// TestAnchorDetectionMarksWorkflowUnsupported verifies that a workflow whose
+// YAML block contains an alias (*) is reported as HasUnsupported=true.
+func TestAnchorDetectionMarksWorkflowUnsupported(t *testing.T) {
+	// Build a minimal config whose workflow IDs match those in anchorYAML.
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{{ID: "eng", Model: "sonnet"}},
+		Workflows: []config.WorkflowConfig{
+			{ID: "anchored", Steps: []config.StepConfig{{ID: "do-it", Agent: "eng"}}},
+			{ID: "clean", Steps: []config.StepConfig{{ID: "run", Agent: "eng"}}},
+		},
+	}
+	ec := configToEditor(cfg, []byte(anchorYAML), "apiary.yaml")
+
+	var anchored, clean *EditorWorkflow
+	for i := range ec.Workflows {
+		switch ec.Workflows[i].ID {
+		case "anchored":
+			anchored = &ec.Workflows[i]
+		case "clean":
+			clean = &ec.Workflows[i]
+		}
+	}
+	if anchored == nil || !anchored.HasUnsupported {
+		t.Error("workflow with YAML alias should have HasUnsupported=true")
+	}
+	if clean != nil && clean.HasUnsupported {
+		t.Error("clean workflow should have HasUnsupported=false")
+	}
+}
+
+// TestReplaceWorkflowInTextPreservesEnvRefs verifies that replaceWorkflowInText
+// keeps ${VAR} references in non-workflow sections intact (i.e. the function
+// touches only the targeted workflow block).
+func TestReplaceWorkflowInTextPreservesEnvRefs(t *testing.T) {
+	raw := `version: "1"
+sources:
+  - id: gh
+    type: github
+    config:
+      api_key: ${GITHUB_TOKEN}
+workflows:
+  - id: build
+    steps:
+      - id: compile
+        agent: eng
+`
+	wf := config.WorkflowConfig{
+		ID: "build",
+		Steps: []config.StepConfig{
+			{ID: "compile", Agent: "eng"},
+			{ID: "test", Agent: "eng"},
+		},
+	}
+	result, err := replaceWorkflowInText(raw, wf)
+	if err != nil {
+		t.Fatalf("replaceWorkflowInText error: %v", err)
+	}
+	if !strings.Contains(result, "${GITHUB_TOKEN}") {
+		t.Errorf("${GITHUB_TOKEN} was lost after workflow replacement:\n%s", result)
+	}
+	if !strings.Contains(result, "id: test") {
+		t.Errorf("new step 'test' not present after replacement:\n%s", result)
+	}
+}
+
+// TestReplaceWorkflowInTextQuotedID verifies that replaceWorkflowInText finds
+// a workflow block whose id is double-quoted in the raw YAML.
+func TestReplaceWorkflowInTextQuotedID(t *testing.T) {
+	raw := `version: "1"
+workflows:
+  - id: "my-flow"
+    steps:
+      - id: s1
+        agent: eng
+`
+	wf := config.WorkflowConfig{
+		ID:    "my-flow",
+		Steps: []config.StepConfig{{ID: "s1", Agent: "eng"}, {ID: "s2", Agent: "eng"}},
+	}
+	result, err := replaceWorkflowInText(raw, wf)
+	if err != nil {
+		t.Fatalf("replaceWorkflowInText error: %v", err)
+	}
+	if !strings.Contains(result, "id: s2") {
+		t.Errorf("step s2 not present after replacing quoted-id workflow:\n%s", result)
+	}
+}
+
+// TestScanAnchoredWorkflows verifies that scanAnchoredWorkflows correctly
+// identifies workflows that contain YAML anchors or aliases.
+func TestScanAnchoredWorkflows(t *testing.T) {
+	anchored := scanAnchoredWorkflows([]byte(anchorYAML))
+	if !anchored["anchored"] {
+		t.Error("expected 'anchored' workflow to be detected as anchored")
+	}
+	if anchored["clean"] {
+		t.Error("expected 'clean' workflow to not be detected as anchored")
 	}
 }

@@ -580,11 +580,12 @@ func (c *Config) ApplyAgentDiff(path string, diff AgentDiff) error {
 // indentation, comments, key ordering, and ${VAR} references.
 func (c *Config) mergeRawChanges() (string, error) {
 	if c.rawContent == "" {
-		data, err := yaml.Marshal(c)
-		if err != nil {
-			return "", fmt.Errorf("marshalling config: %w", err)
-		}
-		return string(data), nil
+		// Refusing to fall back to yaml.Marshal: the in-memory Config already
+		// has all ${VAR} env references expanded by Load → marshalling would
+		// write the resolved secret values (e.g. api_key: ghp_abc123) to disk
+		// and destroy comments. Always load the config from a file before
+		// calling Save so rawContent is populated.
+		return "", fmt.Errorf("config.Save called on a config not loaded from a file (rawContent is empty); use config.Load before saving to preserve ${VAR} references")
 	}
 
 	lines := strings.Split(c.rawContent, "\n")
@@ -612,7 +613,7 @@ func (c *Config) mergeRawChanges() (string, error) {
 					insertAt++
 				}
 				kv := fmt.Sprintf("%s  model: %s", strings.Repeat(" ", indent), memAgent.Model)
-				lines = append(lines[:insertAt], append([]string{kv}, lines[insertAt:]...)...)
+				lines = insertLine(lines, insertAt, kv)
 				changed = true
 			}
 		}
@@ -632,7 +633,7 @@ func (c *Config) mergeRawChanges() (string, error) {
 					insertAt++
 				}
 				kv := fmt.Sprintf("%s  runner: %s", strings.Repeat(" ", indent), memAgent.Runner)
-				lines = append(lines[:insertAt], append([]string{kv}, lines[insertAt:]...)...)
+				lines = insertLine(lines, insertAt, kv)
 				changed = true
 			}
 		}
@@ -651,7 +652,7 @@ func (c *Config) mergeRawChanges() (string, error) {
 					insertAt++
 				}
 				kv := fmt.Sprintf("%s  max_workers: %d", strings.Repeat(" ", indent), memAgent.MaxWorkers)
-				lines = append(lines[:insertAt], append([]string{kv}, lines[insertAt:]...)...)
+				lines = insertLine(lines, insertAt, kv)
 				changed = true
 			}
 		}
@@ -663,13 +664,31 @@ func (c *Config) mergeRawChanges() (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
+// insertLine inserts kv at position pos in lines, returning a new slice with a
+// fresh backing array so callers never alias the original slice.
+func insertLine(lines []string, pos int, kv string) []string {
+	out := make([]string, 0, len(lines)+1)
+	out = append(out, lines[:pos]...)
+	out = append(out, kv)
+	out = append(out, lines[pos:]...)
+	return out
+}
+
 // findAgentBlock finds the line index of "- id: <agentID>" in the YAML.
+// It accepts unquoted, double-quoted, and single-quoted id values.
 // Returns -1 if not found.
 func findAgentBlock(lines []string, agentID string) int {
-	target := "- id: " + agentID
+	candidates := [3]string{
+		"- id: " + agentID,
+		`- id: "` + agentID + `"`,
+		"- id: '" + agentID + "'",
+	}
 	for i, line := range lines {
-		if strings.TrimSpace(line) == target {
-			return i
+		trimmed := strings.TrimSpace(line)
+		for _, c := range candidates {
+			if trimmed == c {
+				return i
+			}
 		}
 	}
 	return -1

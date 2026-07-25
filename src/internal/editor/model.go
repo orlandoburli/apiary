@@ -167,7 +167,10 @@ type ValidationError struct {
 }
 
 // configToEditor converts a loaded *config.Config to the editor JSON model.
-func configToEditor(cfg *config.Config, filePath string) EditorConfig {
+// rawYAML is the unexpanded file content; it is parsed to detect YAML anchors
+// and aliases so that affected workflows can be presented as read-only.
+func configToEditor(cfg *config.Config, rawYAML []byte, filePath string) EditorConfig {
+	anchored := scanAnchoredWorkflows(rawYAML)
 	ec := EditorConfig{FilePath: filePath}
 	for _, a := range cfg.Agents {
 		ec.Agents = append(ec.Agents, EditorAgent{
@@ -182,12 +185,12 @@ func configToEditor(cfg *config.Config, filePath string) EditorConfig {
 		ec.Runners = append(ec.Runners, EditorRunner{ID: r.ID, Type: r.Type, Provider: r.Provider})
 	}
 	for _, wf := range cfg.Workflows {
-		ec.Workflows = append(ec.Workflows, workflowToEditor(wf))
+		ec.Workflows = append(ec.Workflows, workflowToEditor(wf, anchored[wf.ID]))
 	}
 	return ec
 }
 
-func workflowToEditor(wf config.WorkflowConfig) EditorWorkflow {
+func workflowToEditor(wf config.WorkflowConfig, hasAnchor bool) EditorWorkflow {
 	ew := EditorWorkflow{
 		ID:          wf.ID,
 		Description: wf.Description,
@@ -217,7 +220,7 @@ func workflowToEditor(wf config.WorkflowConfig) EditorWorkflow {
 	if wf.OnFail != nil {
 		ew.OnFail = hookToEditor(wf.OnFail)
 	}
-	hasUnsupported := false
+	hasUnsupported := hasAnchor
 	for _, s := range wf.Steps {
 		es := stepToEditor(s)
 		if !es.Supported {

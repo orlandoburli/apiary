@@ -19,7 +19,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	ec := configToEditor(s.cfg, s.configPath)
+	ec := configToEditor(s.cfg, s.rawYAML, s.configPath)
 	jsonOK(w, ec)
 }
 
@@ -131,7 +131,9 @@ func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proposed, err := s.renderYAML(req.Workflows)
+	// Use raw-preserving replacement so the diff reflects what would actually
+	// be written to disk (${VAR} references and comments intact).
+	proposed, err := s.renderRaw(req.Workflows)
 	if err != nil {
 		http.Error(w, "render error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -158,8 +160,8 @@ type SaveResponse struct {
 }
 
 // handleSave validates the proposed workflows, then writes the merged config
-// back to the apiary.yaml file. It reloads the in-memory config and rawYAML on
-// success so subsequent renders reflect the saved state.
+// back to the apiary.yaml file using raw-preserving replacement so ${VAR}
+// references and comments in non-workflow sections are never touched.
 func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -186,7 +188,9 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proposed, err := s.renderYAML(req.Workflows)
+	// Write using raw-text replacement to preserve ${VAR} references and
+	// comments in agents, sources, runners, and settings sections.
+	proposed, err := s.renderRaw(req.Workflows)
 	if err != nil {
 		jsonOK(w, SaveResponse{Error: "render error: " + err.Error()})
 		return
@@ -197,8 +201,8 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reload to keep in-memory state consistent with the file.
-	newCfg, err := config.Load(s.configPath)
-	if err == nil {
+	newCfg, loadErr := config.Load(s.configPath)
+	if loadErr == nil {
 		s.cfg = newCfg
 		s.rawYAML = []byte(proposed)
 	}
@@ -206,20 +210,23 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, SaveResponse{OK: true})
 }
 
-// renderYAML merges the proposed EditorWorkflows with the loaded config and
-// marshals the result to YAML text.
-func (s *Server) renderYAML(ews []EditorWorkflow) (string, error) {
-	merged := *s.cfg
-	merged.Workflows = nil
+// renderRaw replaces each changed workflow block in the raw YAML, leaving all
+// other content (agents, sources, runners, settings, comments, ${VAR}
+// references) byte-for-byte identical. Only the targeted workflow sections are
+// re-serialised.
+func (s *Server) renderRaw(ews []EditorWorkflow) (string, error) {
+	text := string(s.rawYAML)
 	for _, ew := range ews {
-		merged.Workflows = append(merged.Workflows, editorToWorkflow(ew))
+		wf := editorToWorkflow(ew)
+		var err error
+		text, err = replaceWorkflowInText(text, wf)
+		if err != nil {
+			return "", fmt.Errorf("replacing workflow %q: %w", wf.ID, err)
+		}
 	}
-	out, err := yaml.Marshal(&merged)
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
+	return text, nil
 }
+
 
 // jsonOK writes v as JSON with status 200.
 func jsonOK(w http.ResponseWriter, v any) {
