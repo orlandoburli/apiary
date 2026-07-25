@@ -306,6 +306,11 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 				mu.Unlock()
 			}
 			accumulateStreamUsage(line, &usage)
+			if req.AuditSink != nil {
+				for _, action := range extractToolActions(line) {
+					req.AuditSink(action)
+				}
+			}
 			if pretty, ok := formatStreamLine(line); ok {
 				emit("debug", pretty)
 			} else {
@@ -619,6 +624,32 @@ func formatStreamLine(line string) (string, bool) {
 		return out, true
 	}
 	return "", false
+}
+
+// extractToolActions parses one stream-json line and returns an AgentAction for
+// each tool_use block in an assistant message.
+func extractToolActions(line string) []model.AgentAction {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "{") {
+		return nil
+	}
+	var ev streamEvent
+	if err := json.Unmarshal([]byte(trimmed), &ev); err != nil || ev.Type != "assistant" {
+		return nil
+	}
+	now := time.Now()
+	var actions []model.AgentAction
+	for _, c := range ev.Message.Content {
+		if c.Type != "tool_use" {
+			continue
+		}
+		actions = append(actions, model.AgentAction{
+			Tool:         c.Name,
+			InputSummary: truncateInput(c.Input),
+			Timestamp:    now,
+		})
+	}
+	return actions
 }
 
 func finalResultText(line string) (string, bool) {

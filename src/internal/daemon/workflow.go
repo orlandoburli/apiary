@@ -446,6 +446,49 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		}
 	}
 
+	// AuditSink: record each tool invocation as an agent.action execution event
+	// and flag anomalous patterns with a separate agent.anomaly event.
+	{
+		instID := req.InstanceID
+		stepID := req.Step.ID
+		var auditTaskID, auditWorkflowID string
+		if x.d.db != nil {
+			if inst, _ := x.d.db.GetWorkflowInstance(ctx, req.InstanceID); inst != nil {
+				auditTaskID, auditWorkflowID = inst.TaskID, inst.WorkflowID
+			}
+		}
+		rr.AuditSink = func(action model.AgentAction) {
+			x.d.recordExecutionEvent(ctx, db.ExecutionEvent{
+				Type:               "agent.action",
+				TaskID:             auditTaskID,
+				WorkflowID:         auditWorkflowID,
+				WorkflowInstanceID: instID,
+				StepID:             stepID,
+				Metadata: map[string]any{
+					"tool":          action.Tool,
+					"input_summary": action.InputSummary,
+				},
+			})
+			if kind, detail, ok := execution.DetectAnomaly(action); ok {
+				aplog.Warn("[%s] anomaly detected in step %s: %s — %s (tool=%s)",
+					req.Cell.LogLabel(), stepID, kind, detail, action.Tool)
+				x.d.recordExecutionEvent(ctx, db.ExecutionEvent{
+					Type:               "agent.anomaly",
+					TaskID:             auditTaskID,
+					WorkflowID:         auditWorkflowID,
+					WorkflowInstanceID: instID,
+					StepID:             stepID,
+					Metadata: map[string]any{
+						"kind":          kind,
+						"detail":        detail,
+						"tool":          action.Tool,
+						"input_summary": action.InputSummary,
+					},
+				})
+			}
+		}
+	}
+
 	// Run chain: the agent's primary runner first, then its rate-limit failover
 	// chain. A candidate whose runner type is currently paused by a provider rate
 	// limit is skipped (unless it is the last resort). Each attempt is its own

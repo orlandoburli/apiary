@@ -2,6 +2,13 @@ package model
 
 import "time"
 
+// AgentAction represents a single tool invocation recorded during agent execution.
+type AgentAction struct {
+	Tool         string    // tool name as emitted by the provider (e.g. "bash", "read_file")
+	InputSummary string    // truncated JSON input, safe for logging
+	Timestamp    time.Time
+}
+
 type RunRequest struct {
 	Cell          SourceItem
 	WorkerID      string
@@ -41,6 +48,11 @@ type RunRequest struct {
 	// markdown transcript of the session. Must be safe to call from multiple
 	// goroutines.
 	TranscriptSink func(rawLine string) `json:"-"`
+
+	// AuditSink, when set, is called for each tool invocation (tool_use block)
+	// observed in the provider's stream output. Must be safe to call from
+	// multiple goroutines.
+	AuditSink func(AgentAction) `json:"-"`
 
 	// SetPID is called after the child process starts with its OS PID.
 	SetPID func(pid int) `json:"-"`
