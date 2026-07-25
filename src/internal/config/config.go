@@ -22,7 +22,11 @@ type Config struct {
 	Agents        []AgentConfig                       `yaml:"agents"`
 	Workers       []WorkerConfig                      `yaml:"workers"`
 	Workflows     []WorkflowConfig                    `yaml:"workflows"`
-	Profiles      map[string]map[string]ProfileConfig `yaml:"profiles,omitempty"` // NEW: named runner profiles
+	Profiles      map[string]map[string]ProfileConfig `yaml:"profiles,omitempty"` // named runner profiles
+	// Environments defines named overlays (development, staging, production, …).
+	// Activate one with `apiary run --env <name>`, validate with
+	// `apiary validate --env <name>`, and compare two with `apiary diff <a> <b>`.
+	Environments  map[string]EnvironmentConfig        `yaml:"environments,omitempty"`
 	Settings      Settings                            `yaml:"settings"`
 	Tasks         *TasksConfig                        `yaml:"tasks"`
 	Notifications *NotificationsConfig                `yaml:"notifications"`

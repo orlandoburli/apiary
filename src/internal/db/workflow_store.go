@@ -50,8 +50,16 @@ type WorkflowInstance struct {
 	State            string
 	ParentInstanceID string
 	ResumedFrom      string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// ConfigDigest is the short SHA256 of the resolved configuration YAML at
+	// the time this instance was dispatched. Empty for instances created before
+	// this feature was added. Set by the workflow engine from the active config.
+	ConfigDigest string
+	// GitRevision is the abbreviated HEAD commit hash of the config's Git
+	// repository at dispatch time. Empty when git is unavailable or the config
+	// is not inside a repository.
+	GitRevision string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // StepRun records one step execution within a workflow instance.
@@ -104,13 +112,18 @@ func (c *Client) CreateWorkflowInstance(ctx context.Context, inst *WorkflowInsta
 	_, err := c.db.ExecContext(ctx, `
 		INSERT INTO workflow_instances
 		  (id, workflow_id, task_id, cell_id, source_id, state, parent_instance_id, resumed_from,
-		   task_generation, created_at, updated_at)
+		   task_generation, config_digest, git_revision, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?,
-		        COALESCE((SELECT generation FROM internal_tasks WHERE id = ?), 0), ?, ?)
+		        COALESCE((SELECT generation FROM internal_tasks WHERE id = ?), 0), ?, ?, ?, ?)
 	`, inst.ID, inst.WorkflowID, nullStr(inst.TaskID), inst.CellID, nullStr(inst.SourceID), inst.State,
-		nullStr(inst.ParentInstanceID), nullStr(inst.ResumedFrom), inst.TaskID, inst.CreatedAt, inst.UpdatedAt)
+		nullStr(inst.ParentInstanceID), nullStr(inst.ResumedFrom), inst.TaskID,
+		nullStr(inst.ConfigDigest), nullStr(inst.GitRevision), inst.CreatedAt, inst.UpdatedAt)
 	if err == nil {
-		c.recordWorkflowEvent(ctx, inst, "workflow.started", map[string]any{"state": inst.State})
+		c.recordWorkflowEvent(ctx, inst, "workflow.started", map[string]any{
+			"state":         inst.State,
+			"config_digest": inst.ConfigDigest,
+			"git_revision":  inst.GitRevision,
+		})
 		if inst.ResumedFrom != "" {
 			c.recordWorkflowEvent(ctx, inst, "workflow.resumed", map[string]any{"resumed_from": inst.ResumedFrom})
 		}
@@ -140,7 +153,8 @@ func (c *Client) UpdateWorkflowInstanceState(ctx context.Context, id, state stri
 func (c *Client) GetWorkflowInstance(ctx context.Context, id string) (*WorkflowInstance, error) {
 	row := c.db.QueryRowContext(ctx, `
 		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
-		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
+		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at,
+		       COALESCE(task_id,''), COALESCE(config_digest,''), COALESCE(git_revision,'')
 		FROM workflow_instances WHERE id = ?
 	`, id)
 	inst, err := scanInstance(row)
@@ -234,7 +248,8 @@ func (c *Client) HasCompletedInstanceForRoute(ctx context.Context, taskID, workf
 func (c *Client) ListWorkflowInstancesByState(ctx context.Context, state string) ([]WorkflowInstance, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
-		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
+		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at,
+		       COALESCE(task_id,''), COALESCE(config_digest,''), COALESCE(git_revision,'')
 		FROM workflow_instances WHERE state = ? ORDER BY created_at ASC
 	`, state)
 	if err != nil {
@@ -251,7 +266,8 @@ func (c *Client) ListWorkflowInstances(ctx context.Context, limit int) ([]Workfl
 	}
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
-		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
+		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at,
+		       COALESCE(task_id,''), COALESCE(config_digest,''), COALESCE(git_revision,'')
 		FROM workflow_instances ORDER BY created_at DESC LIMIT ?
 	`, limit)
 	if err != nil {
@@ -266,7 +282,8 @@ func (c *Client) ListWorkflowInstances(ctx context.Context, limit int) ([]Workfl
 func (c *Client) GetLatestInstanceByCell(ctx context.Context, cellID string) (*WorkflowInstance, error) {
 	row := c.db.QueryRowContext(ctx, `
 		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
-		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
+		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at,
+		       COALESCE(task_id,''), COALESCE(config_digest,''), COALESCE(git_revision,'')
 		FROM workflow_instances WHERE cell_id = ? ORDER BY created_at DESC LIMIT 1
 	`, cellID)
 	inst, err := scanInstance(row)
@@ -282,7 +299,8 @@ func (c *Client) GetLatestInstanceByCell(ctx context.Context, cellID string) (*W
 func (c *Client) ListWorkflowInstancesByCell(ctx context.Context, cellID string) ([]WorkflowInstance, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
-		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
+		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at,
+		       COALESCE(task_id,''), COALESCE(config_digest,''), COALESCE(git_revision,'')
 		FROM workflow_instances WHERE cell_id = ? ORDER BY created_at DESC
 	`, cellID)
 	if err != nil {
@@ -298,7 +316,8 @@ func (c *Client) ListWorkflowInstancesByCell(ctx context.Context, cellID string)
 func (c *Client) ListWorkflowInstancesByTask(ctx context.Context, taskID string) ([]WorkflowInstance, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
-		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
+		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at,
+		       COALESCE(task_id,''), COALESCE(config_digest,''), COALESCE(git_revision,'')
 		FROM workflow_instances WHERE task_id = ? ORDER BY created_at DESC
 	`, taskID)
 	if err != nil {
@@ -313,7 +332,8 @@ func (c *Client) ListWorkflowInstancesByTask(ctx context.Context, taskID string)
 func (c *Client) LatestResumableInstance(ctx context.Context, workflowID string) (*WorkflowInstance, error) {
 	row := c.db.QueryRowContext(ctx, `
 		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
-		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
+		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at,
+		       COALESCE(task_id,''), COALESCE(config_digest,''), COALESCE(git_revision,'')
 		FROM workflow_instances
 		WHERE workflow_id = ? AND state IN ('failed','interrupted')
 		ORDER BY created_at DESC LIMIT 1
@@ -341,7 +361,8 @@ func (c *Client) ListWorkflowInstanceViews(ctx context.Context, state, workflowI
 	q := `
 		SELECT wi.id, wi.workflow_id, wi.cell_id, COALESCE(wi.source_id,''), wi.state,
 		       COALESCE(wi.parent_instance_id,''), COALESCE(wi.resumed_from,''),
-		       wi.created_at, wi.updated_at, COALESCE(wi.task_id,''), COALESCE(t.title,'')
+		       wi.created_at, wi.updated_at, COALESCE(wi.task_id,''),
+		       COALESCE(wi.config_digest,''), COALESCE(wi.git_revision,''), COALESCE(t.title,'')
 		FROM workflow_instances wi
 		LEFT JOIN tasks t ON t.id = wi.cell_id
 		WHERE 1=1`
@@ -367,7 +388,8 @@ func (c *Client) ListWorkflowInstanceViews(ctx context.Context, state, workflowI
 	for rows.Next() {
 		var v WorkflowInstanceView
 		if err := rows.Scan(&v.ID, &v.WorkflowID, &v.CellID, &v.SourceID, &v.State,
-			&v.ParentInstanceID, &v.ResumedFrom, &v.CreatedAt, &v.UpdatedAt, &v.TaskID, &v.Title); err != nil {
+			&v.ParentInstanceID, &v.ResumedFrom, &v.CreatedAt, &v.UpdatedAt,
+			&v.TaskID, &v.ConfigDigest, &v.GitRevision, &v.Title); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -691,7 +713,8 @@ type scanner interface {
 func scanInstance(s scanner) (*WorkflowInstance, error) {
 	var inst WorkflowInstance
 	err := s.Scan(&inst.ID, &inst.WorkflowID, &inst.CellID, &inst.SourceID, &inst.State,
-		&inst.ParentInstanceID, &inst.ResumedFrom, &inst.CreatedAt, &inst.UpdatedAt, &inst.TaskID)
+		&inst.ParentInstanceID, &inst.ResumedFrom, &inst.CreatedAt, &inst.UpdatedAt,
+		&inst.TaskID, &inst.ConfigDigest, &inst.GitRevision)
 	if err != nil {
 		return nil, err
 	}

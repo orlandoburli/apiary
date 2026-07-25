@@ -27,6 +27,7 @@ func newRunCmd() *cobra.Command {
 		src     string
 		worker  string
 		profile string
+		envName string
 	)
 
 	cmd := &cobra.Command{
@@ -101,7 +102,7 @@ func newRunCmd() *cobra.Command {
 			})
 			defer aplog.SetSink(nil)
 
-			disp, err := daemon.New(ctx, cfg, configFile, dbClient, logger, profile)
+			disp, err := daemon.New(ctx, cfg, configFile, dbClient, logger, profile, envName)
 			if err != nil {
 				return fmt.Errorf("initialising dispatcher: %w", err)
 			}
@@ -153,6 +154,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&src, "source", "", "restrict to a single source id")
 	cmd.Flags().StringVar(&worker, "worker", "", "restrict to a single worker id")
 	cmd.Flags().StringVar(&profile, "profile", "", "activate a named runner profile from config profiles.<name>")
+	cmd.Flags().StringVar(&envName, "env", "", "activate a named environment overlay from config environments.<name>")
 
 	return cmd
 }

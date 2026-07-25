@@ -261,6 +261,12 @@ type Engine struct {
 	depChecker        DependencyChecker
 	approvalProviders []ApprovalProvider
 
+	// configDigest and gitRevision are recorded on every workflow instance for
+	// audit purposes. Set via WithConfigRevision; empty strings are stored as
+	// NULLs in the database.
+	configDigest string
+	gitRevision  string
+
 	now   func() time.Time
 	newID func(prefix string) string
 
@@ -319,6 +325,16 @@ func WithApprovalProvider(provider ApprovalProvider) Option {
 	}
 }
 
+// WithConfigRevision records the effective configuration digest and Git revision
+// on every workflow instance this engine creates, providing a full audit trail
+// of which configuration version was active at dispatch time.
+func WithConfigRevision(digest, gitRevision string) Option {
+	return func(e *Engine) {
+		e.configDigest = digest
+		e.gitRevision = gitRevision
+	}
+}
+
 // NewEngine builds an Engine. cfg, store, and exec are required.
 func NewEngine(cfg *config.Config, store Store, exec StepExecutor, opts ...Option) *Engine {
 	e := &Engine{
@@ -354,13 +370,15 @@ func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, task
 
 	instID := e.newID("wf")
 	inst := &db.WorkflowInstance{
-		ID:         instID,
-		WorkflowID: wf.ID,
-		TaskID:     task.ID,
-		CellID:     cell.ID,
-		SourceID:   cell.SourceID,
-		State:      db.InstanceStateRunning,
-		CreatedAt:  e.now(),
+		ID:           instID,
+		WorkflowID:   wf.ID,
+		TaskID:       task.ID,
+		CellID:       cell.ID,
+		SourceID:     cell.SourceID,
+		State:        db.InstanceStateRunning,
+		ConfigDigest: e.configDigest,
+		GitRevision:  e.gitRevision,
+		CreatedAt:    e.now(),
 	}
 	if err := e.store.CreateWorkflowInstance(ctx, inst); err != nil {
 		return "", false, fmt.Errorf("create workflow instance: %w", err)

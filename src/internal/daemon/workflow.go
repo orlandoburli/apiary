@@ -59,6 +59,7 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 		if d.db != nil {
 			store = pluginExportStore{Client: d.db, dispatcher: d}
 		}
+		opts = append(opts, workflow.WithConfigRevision(d.configDigest, d.gitRevision))
 		d.engine = workflow.NewEngine(d.cfg, store, &wfStepExecutor{d: d}, opts...)
 	})
 	return d.engine

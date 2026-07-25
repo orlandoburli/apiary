@@ -274,6 +274,7 @@ func (c *Config) Validate() []error {
 	errs = append(errs, c.lint()...)
 
 	errs = append(errs, c.validateNotifications()...)
+	errs = append(errs, c.validateEnvironments(sourceIDs)...)
 
 	return errs
 }
@@ -321,6 +322,44 @@ func validateQueueSettings(settings QueueSettings) []error {
 		for key, value := range values {
 			if strings.TrimSpace(key) == "" || value <= 0 {
 				errs = append(errs, fmt.Errorf("settings.queue.concurrency.%s[%q] must have a non-empty key and positive limit", name, key))
+			}
+		}
+	}
+	return errs
+}
+
+// validateEnvironments checks the environments: block. sourceIDs is the set of
+// already-validated source ids, used to catch overrides that reference unknown
+// sources.
+func (c *Config) validateEnvironments(sourceIDs map[string]bool) []error {
+	if len(c.Environments) == 0 {
+		return nil
+	}
+	var errs []error
+	for name, env := range c.Environments {
+		scope := fmt.Sprintf("environments.%s", name)
+		seen := map[string]bool{}
+		for i, so := range env.Sources {
+			if so.ID == "" {
+				errs = append(errs, fmt.Errorf("%s.sources[%d]: id is required", scope, i))
+				continue
+			}
+			if !sourceIDs[so.ID] {
+				errs = append(errs, fmt.Errorf("%s.sources[%d]: source id %q not defined in sources:", scope, i, so.ID))
+			}
+			if seen[so.ID] {
+				errs = append(errs, fmt.Errorf("%s.sources[%d]: duplicate source override for %q", scope, i, so.ID))
+			}
+			seen[so.ID] = true
+		}
+		if r := env.Rollout; r != nil {
+			if r.Percent < 0 || r.Percent > 100 {
+				errs = append(errs, fmt.Errorf("%s.rollout.percent must be between 0 and 100, got %d", scope, r.Percent))
+			}
+			for i, src := range r.Sources {
+				if !sourceIDs[src] {
+					errs = append(errs, fmt.Errorf("%s.rollout.sources[%d]: source id %q not defined in sources:", scope, i, src))
+				}
 			}
 		}
 	}

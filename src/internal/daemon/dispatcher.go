@@ -49,6 +49,14 @@ type Dispatcher struct {
 	configFile string
 	startedAt  time.Time
 
+	// configDigest and gitRevision are the effective config revision at
+	// daemon startup. Written to every workflow instance via the engine.
+	configDigest string
+	gitRevision  string
+	// rollout is the active environment's rollout filter, or nil when no
+	// environment is active or the environment has no rollout: block.
+	rollout *config.RolloutConfig
+
 	router      *router.Router
 	sources     map[string]source.Adapter
 	runners     map[string]runnerimpl.Runner
@@ -185,16 +193,31 @@ func (d *Dispatcher) pauseRunnerWithKind(runnerType string, until time.Time, kin
 // Pass nil for db and logger to skip state persistence and logging to SQLite.
 // profileName selects a named runner profile (from cfg.Profiles) that overrides
 // per-agent runner/model/fallbacks settings. An empty string means base config.
-func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *db.Client, logger *logging.Logger, profileName ...string) (*Dispatcher, error) {
+func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *db.Client, logger *logging.Logger, profileAndEnv ...string) (*Dispatcher, error) {
 	r, err := router.New(cfg)
 	if err != nil {
 		return nil, err
 	}
 
+	// Extract profile name (positional 0) and env name (positional 1).
+	var profileName, envName string
+	if len(profileAndEnv) > 0 {
+		profileName = profileAndEnv[0]
+	}
+	if len(profileAndEnv) > 1 {
+		envName = profileAndEnv[1]
+	}
+	// Compute the config revision at startup for audit trail on every instance.
+	digest, _ := config.Digest(cfg)
+	gitRev := config.GitRevision(configFile)
+
 	d := &Dispatcher{
 		cfg:             cfg,
 		configFile:      configFile,
 		startedAt:       time.Now(),
+		configDigest:    digest,
+		gitRevision:     gitRev,
+		rollout:         cfg.ActiveRollout(envName),
 		router:          r,
 		sources:         make(map[string]source.Adapter),
 		runners:         make(map[string]runnerimpl.Runner),
@@ -295,10 +318,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 	// Apply the active profile overlay (if any) before building runners.
 	// Profiles override per-agent runner/model/fallbacks/fallback_strategy from
 	// the named entry in cfg.Profiles, selected via --profile=<name>.
-	var activeProfile string
-	if len(profileName) > 0 {
-		activeProfile = profileName[0]
-	}
+	activeProfile := profileName
 	if activeProfile != "" {
 		profile, ok := cfg.Profiles[activeProfile]
 		if !ok {
@@ -1378,6 +1398,14 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 			matches = d.dropOnceMatches(ctx, task.ID, matches)
 			matches = d.dropCappedMatches(ctx, task, matches)
 		}
+		// Apply the active environment's rollout filter. When a rollout is
+		// configured, only tasks that pass the source/label/percent filters are
+		// dispatched; the rest are skipped for this poll cycle.
+		if d.rollout != nil && !d.rolloutMatches(cell, d.rollout) {
+			aplog.Debug("cell %s (%q): excluded by rollout filter", cell.LogLabel(), cell.Title)
+			d.inFlight.Delete(cell.ID)
+			continue
+		}
 		if len(matches) == 0 {
 			aplog.Debug("cell %s (%q): no matching route, skipping", cell.LogLabel(), cell.Title)
 			d.inFlight.Delete(cell.ID)
@@ -1385,6 +1413,68 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 		}
 		d.fanOut(ctx, cell, adapter, task, persisted, matches, nil, nil)
 	}
+}
+
+// rolloutMatches reports whether a cell passes the active environment's rollout
+// filter. All non-empty criteria must match (they are ANDed).
+func (d *Dispatcher) rolloutMatches(cell model.SourceItem, r *config.RolloutConfig) bool {
+	// Source filter.
+	if len(r.Sources) > 0 {
+		found := false
+		for _, src := range r.Sources {
+			if src == cell.SourceID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
+	// Label filter — at least one of r.Labels must appear in the cell's labels.
+	if len(r.Labels) > 0 {
+		labelSet := make(map[string]bool, len(cell.Labels))
+		for _, l := range cell.Labels {
+			labelSet[strings.ToLower(l)] = true
+		}
+		found := false
+		for _, wanted := range r.Labels {
+			if labelSet[strings.ToLower(wanted)] {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
+	// Percentage filter — deterministic hash of the cell ID.
+	if r.Percent > 0 && r.Percent < 100 {
+		h := rolloutHash(cell.ID)
+		if h%100 >= uint64(r.Percent) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// rolloutHash computes a stable, uniform-looking hash of a string for the
+// percentage rollout filter. We use a simple FNV-1a 64-bit hash; the modulo
+// distribution is good enough for rollout decisions.
+func rolloutHash(s string) uint64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	h := uint64(offset64)
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= prime64
+	}
+	return h
 }
 
 // fanOut dispatches every workflow matched for a polled cell. One InternalTask

@@ -326,6 +326,21 @@ CREATE INDEX IF NOT EXISTS idx_internal_tasks_parent ON internal_tasks(parent_ta
 CREATE INDEX IF NOT EXISTS idx_source_bindings_task ON source_bindings(task_id);
 CREATE INDEX IF NOT EXISTS idx_source_bindings_item ON source_bindings(source_id, source_item_id);
 CREATE INDEX IF NOT EXISTS idx_task_pull_requests_task ON task_pull_requests(task_id);
+
+-- Auditable record of every promoted configuration revision. Written by
+-- "apiary promote" after validation and dry-run checks pass. Each row carries
+-- the full resolved YAML so "apiary rollback" can restore any prior revision
+-- without consulting the Git history of the config file.
+CREATE TABLE IF NOT EXISTS environment_revisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  env_name TEXT NOT NULL,
+  config_digest TEXT NOT NULL,
+  git_revision TEXT NOT NULL DEFAULT '',
+  config_yaml TEXT NOT NULL,
+  promoted_by TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_env_revisions_env ON environment_revisions(env_name, created_at DESC);
 `
 
 // migrations are idempotent ALTER statements applied to databases created
@@ -406,6 +421,13 @@ var migrations = []string{
 	// "aborted".
 	`ALTER TABLE task_executions ADD COLUMN credit_exhausted INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE task_executions ADD COLUMN failure_kind TEXT`,
+	// Config revision tracking: record the effective configuration digest and
+	// Git revision on every workflow instance so promotions and rollbacks are
+	// fully auditable. config_digest is a short SHA256 of the resolved YAML;
+	// git_revision is the HEAD commit hash at the time of dispatch (empty when
+	// the config is not inside a Git repository or git is unavailable).
+	`ALTER TABLE workflow_instances ADD COLUMN config_digest TEXT`,
+	`ALTER TABLE workflow_instances ADD COLUMN git_revision TEXT`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).
