@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,10 +26,13 @@ func installDaemonTestPlugin(t *testing.T, parent, id, script string) {
 	if err := os.MkdirAll(root, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "plugin.sh"), []byte("#!/bin/sh\n"+script+"\n"), 0755); err != nil {
+	content := []byte("#!/bin/sh\n" + script + "\n")
+	if err := os.WriteFile(filepath.Join(root, "plugin.sh"), content, 0755); err != nil {
 		t.Fatal(err)
 	}
-	manifest := plugin.Manifest{SchemaVersion: 1, ID: id, Version: "1.0.0", Apiary: ">= 0.0.0-0", Protocol: 1, Executable: "plugin.sh", Capabilities: []plugin.Capability{plugin.CapabilityEventExporter}}
+	sum := sha256.Sum256(content)
+	checksum := fmt.Sprintf("sha256:%x", sum)
+	manifest := plugin.Manifest{SchemaVersion: 1, ID: id, Version: "1.0.0", Apiary: ">= 0.0.0-0", Protocol: 1, Executable: "plugin.sh", Checksum: checksum, Capabilities: []plugin.Capability{plugin.CapabilityEventExporter}}
 	raw, _ := json.Marshal(manifest)
 	if err := os.WriteFile(filepath.Join(root, plugin.ManifestFilename), raw, 0644); err != nil {
 		t.Fatal(err)

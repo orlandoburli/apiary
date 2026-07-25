@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,10 +23,13 @@ func TestValidateCommandIncludesPluginSchema(t *testing.T) {
 	if err := os.MkdirAll(pluginRoot, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(pluginRoot, "plugin.sh"), []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+	pluginContent := []byte("#!/bin/sh\nexit 0\n")
+	if err := os.WriteFile(filepath.Join(pluginRoot, "plugin.sh"), pluginContent, 0755); err != nil {
 		t.Fatal(err)
 	}
-	manifest := plugin.Manifest{SchemaVersion: 1, ID: "dev.apiary.cli-test", Version: "1.0.0", Apiary: ">= 0.0.0-0", Protocol: 1, Executable: "plugin.sh", Capabilities: []plugin.Capability{plugin.CapabilityEventExporter}, ConfigSchema: json.RawMessage(`{"type":"object","properties":{"endpoint":{"type":"string"}},"required":["endpoint"],"additionalProperties":false}`)}
+	sum := sha256.Sum256(pluginContent)
+	checksum := fmt.Sprintf("sha256:%x", sum)
+	manifest := plugin.Manifest{SchemaVersion: 1, ID: "dev.apiary.cli-test", Version: "1.0.0", Apiary: ">= 0.0.0-0", Protocol: 1, Executable: "plugin.sh", Checksum: checksum, Capabilities: []plugin.Capability{plugin.CapabilityEventExporter}, ConfigSchema: json.RawMessage(`{"type":"object","properties":{"endpoint":{"type":"string"}},"required":["endpoint"],"additionalProperties":false}`)}
 	rawManifest, _ := json.Marshal(manifest)
 	if err := os.WriteFile(filepath.Join(pluginRoot, plugin.ManifestFilename), rawManifest, 0644); err != nil {
 		t.Fatal(err)
