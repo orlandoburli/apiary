@@ -1,0 +1,37 @@
+name: Require human review for agent PRs
+
+# SEC-08: Immediately revoke auto-merge whenever it is enabled on any PR.
+# Branch protection already requires one approving review, so a human must
+# both approve AND manually trigger the merge — no agent PR can slip through
+# on CI-green alone.
+on:
+  pull_request:
+    types: [auto_merge_enabled]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  block-auto-merge:
+    name: Disable auto-merge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Disable auto-merge via GraphQL
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api graphql -f query='
+            mutation DisableAutoMerge($prId: ID!) {
+              disablePullRequestAutoMerge(input: { pullRequestId: $prId }) {
+                pullRequest { number }
+              }
+            }
+          ' -f prId="${{ github.event.pull_request.node_id }}"
+
+      - name: Post explanation comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo "${{ github.repository }}" \
+            --body "**Auto-merge disabled (SEC-08):** Agent-authored PRs must not merge without human involvement. Branch protection requires one approving review; once you have approved, please merge manually."
