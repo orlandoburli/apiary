@@ -53,6 +53,15 @@ func Discover(paths []string, baseDir, apiaryVersion string) (*Registry, []error
 		}
 		sort.Strings(roots)
 		for _, root := range roots {
+			if root != path {
+				// root is a per-plugin subdirectory; the parent was already checked
+				// above. Re-check each child so an attacker cannot plant executables
+				// in a group/world-writable child even when the parent is 0700.
+				if warn := checkDirOwnerOnly(root); warn != nil {
+					errs = append(errs, warn)
+					continue
+				}
+			}
 			if _, err := os.Stat(filepath.Join(root, ManifestFilename)); err != nil {
 				continue
 			}
