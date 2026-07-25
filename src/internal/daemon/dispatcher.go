@@ -763,6 +763,11 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 				d.inFlight.Delete(cell.ID)
 				continue
 			}
+			// Trust gate: only OWNER / MEMBER / COLLABORATOR authors may proceed to
+			// dispatch. See parkUntrustedCell for the full rationale.
+			if d.parkUntrustedCell(ctx, cell, adapter) {
+				continue
+			}
 			d.fanOut(ctx, cell, adapter, task, persisted, matches, &wg, func(id string) {
 				mu.Lock()
 				failedIDs = append(failedIDs, id)
@@ -1383,7 +1388,57 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 			d.inFlight.Delete(cell.ID)
 			continue
 		}
+		// Trust gate: only OWNER / MEMBER / COLLABORATOR authors may proceed to
+		// dispatch. See parkUntrustedCell for the full rationale.
+		if d.parkUntrustedCell(ctx, cell, adapter) {
+			continue
+		}
 		d.fanOut(ctx, cell, adapter, task, persisted, matches, nil, nil)
+	}
+}
+
+// parkUntrustedCell checks the author_association metadata on a cell and, if
+// the author is not trusted, strips ai-ready, adds needs-triage, clears the
+// in-flight marker, and returns true — signalling the caller to skip dispatch.
+// It returns false (gate open) when the field is absent (non-GitHub sources)
+// or when the author has OWNER / MEMBER / COLLABORATOR association.
+func (d *Dispatcher) parkUntrustedCell(ctx context.Context, cell model.SourceItem, adapter source.Adapter) bool {
+	assocRaw, hasAssoc := cell.Metadata["author_association"]
+	if !hasAssoc {
+		return false // not a GitHub source or field absent — bypass the gate
+	}
+	assoc, _ := assocRaw.(string)
+	if isTrustedAssociation(assoc) {
+		return false
+	}
+	login, _ := cell.Metadata["author_login"].(string)
+	aplog.Warn("cell %s (%q): blocking dispatch — author %q has association %q, not OWNER/MEMBER/COLLABORATOR; parking as needs-triage",
+		cell.LogLabel(), cell.Title, login, assoc)
+	if lr, ok := adapter.(source.LabelRemover); ok {
+		if err := lr.RemoveLabels(ctx, cell, []string{"ai-ready"}); err != nil {
+			aplog.Error("cell %s: remove ai-ready label: %v", cell.LogLabel(), err)
+		}
+	}
+	if la, ok := adapter.(source.LabelAdder); ok {
+		if err := la.AddLabels(ctx, cell, []string{"needs-triage"}); err != nil {
+			aplog.Error("cell %s: add needs-triage label: %v", cell.LogLabel(), err)
+		}
+	}
+	d.inFlight.Delete(cell.ID)
+	return true
+}
+
+// isTrustedAssociation reports whether a GitHub author_association value
+// grants the author permission to trigger automated agent runs without human
+// approval. Only repository-level collaborators are trusted; all other roles
+// (CONTRIBUTOR, FIRST_TIMER, FIRST_TIME_CONTRIBUTOR, MANNEQUIN, NONE, or any
+// unknown value) are parked for human review.
+func isTrustedAssociation(assoc string) bool {
+	switch assoc {
+	case "OWNER", "MEMBER", "COLLABORATOR":
+		return true
+	default:
+		return false
 	}
 }
 

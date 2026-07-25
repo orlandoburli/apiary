@@ -689,6 +689,10 @@ func (a *Adapter) toSourceItem(item issue) model.SourceItem {
 		URL:         item.HTMLURL,
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
+		Metadata: map[string]any{
+			"author_login":       item.User.Login,
+			"author_association": item.AuthorAssociation,
+		},
 	}
 }
 
