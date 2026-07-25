@@ -1383,7 +1383,55 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 			d.inFlight.Delete(cell.ID)
 			continue
 		}
+		// Trust gate: block dispatch for issues whose author is not a repository
+		// collaborator. The GitHub /issues endpoint returns author_association on
+		// every item, so no extra API call is required. Only items that carry an
+		// explicit association string are subject to this check — non-GitHub
+		// sources (which never set the key) pass through unchanged.
+		//
+		// A TOCTOU race exists between issue creation and the triage-gate Action
+		// removing the trigger label: this daemon-side check closes that window by
+		// refusing to dispatch regardless of which labels are currently set.
+		if assoc, ok := cell.Metadata["author_association"].(string); ok && assoc != "" {
+			if !isTrustedAssociation(assoc) {
+				login, _ := cell.Metadata["author_login"].(string)
+				aplog.Warn("cell %s (%q): author %q has association %q — parking as needs-triage, dispatch blocked",
+					cell.LogLabel(), cell.Title, login, assoc)
+				d.parkUntrustedCell(ctx, cell, adapter, sc.Filters.Labels)
+				d.inFlight.Delete(cell.ID)
+				continue
+			}
+		}
 		d.fanOut(ctx, cell, adapter, task, persisted, matches, nil, nil)
+	}
+}
+
+// isTrustedAssociation reports whether the GitHub author_association value
+// represents a repository insider. Mirrors the trust set in triage-gate.yml.
+func isTrustedAssociation(assoc string) bool {
+	switch assoc {
+	case "OWNER", "MEMBER", "COLLABORATOR":
+		return true
+	default:
+		return false
+	}
+}
+
+// parkUntrustedCell marks a cell whose author is not trusted: it adds the
+// "needs-triage" label and strips the source filter labels that caused it to
+// be polled, preventing re-dispatch on the next poll cycle before the
+// triage-gate Action fires. Both operations are best-effort — a failure is
+// logged but never fatal.
+func (d *Dispatcher) parkUntrustedCell(ctx context.Context, cell model.SourceItem, adapter source.Adapter, triggerLabels []string) {
+	if la, ok := adapter.(source.LabelAdder); ok {
+		if err := la.AddLabels(ctx, cell, []string{"needs-triage"}); err != nil {
+			aplog.Error("cell %s: trust gate: adding needs-triage: %v", cell.LogLabel(), err)
+		}
+	}
+	if lr, ok := adapter.(source.LabelRemover); ok && len(triggerLabels) > 0 {
+		if err := lr.RemoveLabels(ctx, cell, triggerLabels); err != nil {
+			aplog.Error("cell %s: trust gate: removing trigger labels %v: %v", cell.LogLabel(), triggerLabels, err)
+		}
 	}
 }
 

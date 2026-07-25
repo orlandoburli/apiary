@@ -14,6 +14,11 @@ type issue struct {
 	UpdatedAt   string    `json:"updated_at"`
 	PullRequest *struct{} `json:"pull_request,omitempty"`
 	User        user      `json:"user"`
+	// AuthorAssociation is GitHub's trust level for the issue author relative to
+	// the repository: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR,
+	// FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, or NONE. Populated by the /issues
+	// REST endpoint with no extra API call.
+	AuthorAssociation string `json:"author_association"`
 }
 
 type user struct {

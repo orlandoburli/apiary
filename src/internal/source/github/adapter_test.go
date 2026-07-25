@@ -380,3 +380,46 @@ func TestAddLabels_AppendsWithoutReplacing(t *testing.T) {
 		t.Errorf("posted body must not replay the snapshot labels: %s", postedBody)
 	}
 }
+
+// TestToCell_AuthorAssociation verifies that toSourceItem carries author_association
+// and author_login from the raw issue into SourceItem.Metadata, so the daemon
+// trust gate can read them without an extra API call.
+func TestToCell_AuthorAssociation(t *testing.T) {
+	a := &Adapter{id: "gh-test"}
+	item := issue{
+		Number:            10,
+		Title:             "Security report",
+		AuthorAssociation: "COLLABORATOR",
+		User:              user{Login: "trusted-dev"},
+	}
+
+	cell := a.toSourceItem(item)
+
+	if cell.Metadata == nil {
+		t.Fatal("Metadata must not be nil")
+	}
+	if got := cell.Metadata["author_association"]; got != "COLLABORATOR" {
+		t.Errorf("author_association = %q, want %q", got, "COLLABORATOR")
+	}
+	if got := cell.Metadata["author_login"]; got != "trusted-dev" {
+		t.Errorf("author_login = %q, want %q", got, "trusted-dev")
+	}
+}
+
+// TestToCell_AuthorAssociation_None verifies that NONE (external contributor)
+// is captured verbatim — the trust gate decides what to do with it.
+func TestToCell_AuthorAssociation_None(t *testing.T) {
+	a := &Adapter{id: "gh-test"}
+	item := issue{
+		Number:            11,
+		Title:             "Spam issue",
+		AuthorAssociation: "NONE",
+		User:              user{Login: "random-user"},
+	}
+
+	cell := a.toSourceItem(item)
+
+	if got := cell.Metadata["author_association"]; got != "NONE" {
+		t.Errorf("author_association = %q, want %q", got, "NONE")
+	}
+}
