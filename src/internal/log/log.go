@@ -5,6 +5,7 @@ package log
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"sync"
 	"time"
 )
@@ -14,6 +15,27 @@ var (
 	sinkMu  sync.RWMutex
 	sink    func(level, msg string)
 )
+
+// jwtPattern matches JWT-shaped bearer tokens (three base64url segments
+// starting with "eyJ"). Keeping them out of stderr prevents credential leaks
+// into log files and process-inspection tools.
+var jwtPattern = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)
+
+// secretPattern matches well-known token prefixes (GitHub PATs, Slack tokens,
+// AWS access-key IDs) followed by at least 8 word characters.
+var secretPattern = regexp.MustCompile(`(ghp_|github_pat_|xoxb-|xoxp-|AKIA)[A-Za-z0-9_-]{8,}`)
+
+// bearerPattern matches HTTP Authorization header values written into logs.
+var bearerPattern = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9_\-.]{8,}`)
+
+// redactSecrets replaces recognisable token patterns with placeholder text so
+// they never appear on stderr or reach external log sinks.
+func redactSecrets(s string) string {
+	s = jwtPattern.ReplaceAllString(s, "«redacted-jwt»")
+	s = secretPattern.ReplaceAllString(s, "«redacted»")
+	s = bearerPattern.ReplaceAllString(s, "bearer «redacted»")
+	return s
+}
 
 // Enable turns verbose (debug) output on or off.
 func Enable(v bool) { verbose = v }
@@ -55,7 +77,7 @@ func Error(format string, args ...any) {
 
 func print(level, format string, args ...any) {
 	ts := time.Now().Format("15:04:05")
-	msg := fmt.Sprintf(format, args...)
+	msg := redactSecrets(fmt.Sprintf(format, args...))
 	fmt.Fprintf(os.Stderr, "%s  %-5s  %s\n", ts, level, msg)
 
 	sinkMu.RLock()
