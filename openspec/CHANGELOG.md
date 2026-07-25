@@ -2,6 +2,8 @@
 
 ## Ativas
 
+- **visual-workflow-editor** — Bidirectional VS Code/Cursor workflow editor backed by comment-preserving YAML, shared schema validation, unsupported-construct read-only safeguards, node-level diagnostics, semantic diff preview, and CLI validation/dry-run actions. GitHub issue #215.
+
 ## Arquivadas
 
 ### 2026-07-22

@@ -42,6 +42,7 @@ function sourceDisplay(source: Source): string {
 }
 
 export interface DiagramResult {
+  workflowId: string;
   title: string;
   diagram: string;
 }
@@ -55,6 +56,7 @@ export function renderApiary(config: ApiaryConfig): DiagramResult[] {
   );
 
   return (config.workflows ?? []).map(wf => ({
+    workflowId: wf.id,
     title: wf.id + (wf.description ? ` — ${wf.description}` : ''),
     diagram: renderWorkflow(wf, agentMap, sourceMap),
   }));
@@ -76,6 +78,8 @@ function renderWorkflow(
     '  classDef agentNode fill:#1a3a6b,stroke:#5b9bd5,color:#dce8f8,stroke-width:1px',
     '  classDef splitNode fill:#3a1a6b,stroke:#9b5bd5,color:#e8dcf8,stroke-width:1px',
     '  classDef approvalNode fill:#5a4a0a,stroke:#c8a83a,color:#f8f0dc,stroke-width:1px',
+    '  classDef waitNode fill:#16404a,stroke:#49a9ba,color:#dcf5f8,stroke-width:1px',
+    '  classDef workflowNode fill:#4a2638,stroke:#c26791,color:#f8deea,stroke-width:1px',
     '  classDef sourceNode fill:#0a3a1a,stroke:#3aaa6a,color:#dcf8e8,stroke-width:1px',
   ];
 
@@ -109,12 +113,20 @@ function renderWorkflow(
       lines.push(`    ${id}{"${esc(step.id)}\\nsplit"}:::splitNode`);
     } else if (step.type === 'approval') {
       lines.push(`    ${id}[/"⏳ ${esc(step.id)}\\napproval"/]:::approvalNode`);
+    } else if (step.type === 'wait_for') {
+      lines.push(`    ${id}[/"◷ ${esc(step.id)}\\nwait: ${esc(step.wait_for?.kind ?? 'ci')}"/]:::waitNode`);
+    } else if (step.type === 'workflow') {
+      lines.push(`    ${id}[["↳ ${esc(step.id)}\\n${esc(step.workflow ?? step.uses ?? 'subworkflow')}"]]:::workflowNode`);
     } else {
       const agent = step.agent ? agentMap.get(step.agent) : undefined;
       const agentStr = step.agent ? `\\n${esc(step.agent)}` : '';
       const modelStr = agent?.model ? ` · ${esc(shortModel(agent.model))}` : '';
       lines.push(`    ${id}["${esc(step.id)}${agentStr}${modelStr}"]:::agentNode`);
     }
+  }
+
+  for (const step of steps) {
+    lines.push(`    click ${stepId(step)} selectNode "Edit ${esc(step.id)}"`);
   }
 
   // Collect branch target step IDs so we skip the sequential edge into them —

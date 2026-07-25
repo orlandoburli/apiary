@@ -1,4 +1,4 @@
-import * as yaml from 'js-yaml';
+import { analyzeApiary } from './documentModel';
 
 export interface ApiaryConfig {
   version?: string;
@@ -75,6 +75,10 @@ export interface Step {
   message?: string;
   resume_on?: Record<string, string>;
   abort_on?: Record<string, string>;
+	wait_for?: { kind?: string; check_interval?: string; max_duration?: string; fail_if_not_passed?: boolean; remove_label?: string; satisfied_when?: string[]; blocker_link_type?: string; on_timeout?: string };
+	workflow?: string;
+	uses?: string;
+	with?: Record<string, unknown>;
 }
 
 export interface Branch {
@@ -100,9 +104,5 @@ export interface Settings {
 }
 
 export function parseApiary(content: string): ApiaryConfig {
-  const doc = yaml.load(content) as ApiaryConfig;
-  if (!doc || typeof doc !== 'object') {
-    throw new Error('Invalid apiary YAML: expected an object at the root level');
-  }
-  return doc;
+  return analyzeApiary(content).config;
 }
