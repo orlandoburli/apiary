@@ -287,6 +287,10 @@ type Settings struct {
 	// CreditExhaustedCooldown is how long a runner type is paused after a
 	// credit-exhausted failure. Default "24h".
 	CreditExhaustedCooldown string `yaml:"credit_exhausted_cooldown,omitempty"`
+	// SocketSecret, when set, is used as the control-plane Bearer token instead
+	// of the auto-generated token stored in socket.token. Prefer leaving this
+	// empty and letting the daemon manage the token file.
+	SocketSecret string `yaml:"socket_secret,omitempty"`
 }
 
 // QueueSettings controls durable dispatch and the embedded protocol-1 worker.

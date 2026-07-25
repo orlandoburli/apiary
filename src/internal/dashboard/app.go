@@ -53,10 +53,11 @@ const logPrefixWidth = 15
 // event-loop goroutine) is allowed to mutate the model. This is what keeps
 // the data-fetching goroutines from racing with View.
 type App struct {
-	model      *Model
-	dbConn     *db.Client
-	socketPath string
-	cfg        *config.Config
+	model       *Model
+	dbConn      *db.Client
+	socketPath  string
+	socketToken string
+	cfg         *config.Config
 	// logDir is the daemon's log directory, used to locate per-task markdown
 	// transcripts (logDir/transcripts/<task>/...).
 	logDir string
@@ -74,13 +75,43 @@ type App struct {
 	logMDWidth   int
 }
 
-func New(dbConn *db.Client, socketPath string, cfg *config.Config, logDir string) *App {
+func New(dbConn *db.Client, socketPath, socketToken string, cfg *config.Config, logDir string) *App {
 	return &App{
-		model:      NewModel(),
-		dbConn:     dbConn,
-		socketPath: socketPath,
-		cfg:        cfg,
-		logDir:     logDir,
+		model:       NewModel(),
+		dbConn:      dbConn,
+		socketPath:  socketPath,
+		socketToken: socketToken,
+		cfg:         cfg,
+		logDir:      logDir,
+	}
+}
+
+// authTransport wraps a transport and injects Authorization: Bearer on every
+// mutating (non-GET/HEAD) request destined for the control-plane socket.
+type authTransport struct {
+	inner *http.Transport
+	token string
+}
+
+func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.token != "" && req.Method != http.MethodGet && req.Method != http.MethodHead {
+		req = req.Clone(req.Context())
+		req.Header.Set("Authorization", "Bearer "+t.token)
+	}
+	return t.inner.RoundTrip(req)
+}
+
+// socketClient returns an HTTP client that dials the control-plane Unix socket
+// and attaches the Bearer token on mutating requests.
+func (a *App) socketClient(timeout time.Duration) *http.Client {
+	inner := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", a.socketPath)
+		},
+	}
+	return &http.Client{
+		Transport: &authTransport{inner: inner, token: a.socketToken},
+		Timeout:   timeout,
 	}
 }
 
@@ -1589,14 +1620,8 @@ func (a *App) refreshTaskPullsCmd(internalTaskID string) tea.Cmd {
 	if internalTaskID == "" {
 		return nil
 	}
-	socketPath := a.socketPath
 	return func() tea.Msg {
-		transport := &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
-			},
-		}
-		client := &http.Client{Transport: transport, Timeout: 8 * time.Second}
+		client := a.socketClient(8 * time.Second)
 		url := fmt.Sprintf("http://apiary/tasks/pulls/refresh/%s", internalTaskID)
 		resp, err := client.Post(url, "application/json", nil)
 		if err != nil {
@@ -1612,13 +1637,7 @@ func (a *App) refreshTaskPullsCmd(internalTaskID string) tea.Cmd {
 
 func (a *App) clearLogsCmd(taskID string) tea.Cmd {
 	return func() tea.Msg {
-		socketPath := a.socketPath
-		transport := &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
-			},
-		}
-		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+		client := a.socketClient(5 * time.Second)
 		url := fmt.Sprintf("http://apiary/clearlogs/%s", taskID)
 		resp, err := client.Post(url, "application/json", nil)
 		if err != nil {
@@ -1633,12 +1652,7 @@ func (a *App) clearLogsCmd(taskID string) tea.Cmd {
 // instance without re-dispatching it.
 func (a *App) stopInstanceCmd(instanceID string) tea.Cmd {
 	return func() tea.Msg {
-		transport := &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", a.socketPath)
-			},
-		}
-		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+		client := a.socketClient(5 * time.Second)
 		url := fmt.Sprintf("http://apiary/instances/stop/%s", instanceID)
 		resp, err := client.Post(url, "application/json", nil)
 		if err != nil {
@@ -1656,10 +1670,7 @@ func (a *App) approvalResponseCmd(requestID, decision string) tea.Cmd {
 			actor = "dashboard-user"
 		}
 		body, _ := json.Marshal(map[string]any{"decision": decision, "actor": actor, "idempotency_key": fmt.Sprintf("dashboard:%s:%s:%s", requestID, actor, decision)})
-		transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", a.socketPath)
-		}}
-		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+		client := a.socketClient(5 * time.Second)
 		req, _ := http.NewRequest(http.MethodPost, "http://apiary/approvals/"+requestID+"/respond", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
@@ -1921,12 +1932,7 @@ func (a *App) updateAgentConfigCmd(agentID, model, runner string, maxWorkers int
 }
 
 func (a *App) patchAgentViaSocket(agentID, model, runner string, maxWorkers int) error {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", a.socketPath)
-		},
-	}
-	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	client := a.socketClient(5 * time.Second)
 
 	body := map[string]any{}
 	if model != "" {

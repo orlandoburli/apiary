@@ -41,7 +41,11 @@ from the routes' exclude_label_prefix / exclude_labels.`,
 			client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 
 			url := fmt.Sprintf("http://apiary/restart/%s", cellID)
-			resp, err := client.Post(url, "application/json", nil)
+			req, _ := http.NewRequest(http.MethodPost, url, nil)
+			if tok := socketToken(); tok != "" {
+				req.Header.Set("Authorization", "Bearer "+tok)
+			}
+			resp, err := client.Do(req)
 			if err != nil {
 				return fmt.Errorf("cannot reach daemon: %w", err)
 			}

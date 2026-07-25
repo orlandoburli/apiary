@@ -178,6 +178,9 @@ func ipcDo(method, path string, out any) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if tok := socketToken(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err

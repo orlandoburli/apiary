@@ -45,7 +45,8 @@ func runDashboard(ctx context.Context) error {
 	}
 
 	socketPath := daemon.SocketPath(config.DataDir(configFile))
-	app := dashboard.New(dbConn, socketPath, cfg, getLogDir())
+	socketTok, _ := daemon.ReadSocketToken(config.DataDir(configFile))
+	app := dashboard.New(dbConn, socketPath, socketTok, cfg, getLogDir())
 	if err := app.Run(); err != nil {
 		return fmt.Errorf("dashboard error: %w", err)
 	}

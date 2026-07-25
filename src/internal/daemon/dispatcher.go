@@ -112,6 +112,10 @@ type Dispatcher struct {
 	localWorker    *workerpkg.Runtime
 	queueProjectID string
 	queueWorkerID  string
+
+	// socketToken is the Bearer token required on mutating control-plane
+	// endpoints. Loaded or auto-generated in StartServer.
+	socketToken string
 }
 
 // runnerCandidate is one rung in an agent's rate-limit failover chain: a
@@ -1005,6 +1009,13 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 	// remove stale socket
 	_ = os.Remove(path)
 
+	// Load or auto-generate the control-plane auth token.
+	tok, err := LoadOrCreateSocketToken(config.DataDir(d.configFile), d.cfg.Settings.SocketSecret)
+	if err != nil {
+		return fmt.Errorf("socket auth token: %w", err)
+	}
+	d.socketToken = tok
+
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		return fmt.Errorf("listening on socket %s: %w", path, err)
@@ -1284,7 +1295,14 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		_ = json.NewEncoder(w).Encode(map[string]any{"deleted": taskRef})
 	})
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{
+		Handler: controlAuth(d.socketToken, mux),
+		// Inject the raw net.Conn into each request context so the auth
+		// middleware can perform SO_PEERCRED checks on Linux.
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			return context.WithValue(ctx, connKey{}, c)
+		},
+	}
 
 	wg.Add(1)
 	go func() {

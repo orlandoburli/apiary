@@ -342,3 +342,12 @@ func daemonDownHint() error {
 		"  Start it with: " + instHeader.Render("apiary run"))
 	return nil
 }
+
+// socketToken reads the control-plane auth token written by the running daemon.
+// Returns "" when the token file is absent (daemon not started or on a stale
+// install) so callers degrade gracefully on platforms where SO_PEERCRED alone
+// is sufficient.
+func socketToken() string {
+	tok, _ := daemon.ReadSocketToken(config.DataDir(configFile))
+	return tok
+}
