@@ -365,7 +365,11 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 		}
 
 		if len(candidates) == 0 {
-			return source.CIStatus{Status: "pending"}, nil // No PR found yet; still pending
+			// No PR has ever been cross-referenced on this issue. This is not a
+			// transient state: it means the engineer step exited without opening
+			// one (e.g. self-declared blocked, nothing to implement). Signal NoPR
+			// so the engine can fail fast instead of polling indefinitely.
+			return source.CIStatus{NoPR: true}, nil
 		}
 
 		// Fetch candidate PRs until an open one is found. A fetch failure is NOT

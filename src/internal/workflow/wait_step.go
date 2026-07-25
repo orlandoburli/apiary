@@ -92,6 +92,22 @@ func (e *Engine) checkCIWaitStep(
 		return StepResult{Pending: true}, nil
 	}
 
+	// No PR was ever linked to this task — the engineer step exited without opening
+	// one (e.g. self-declared blocked, nothing to implement). Fail immediately
+	// rather than polling the source forever with an answer that will never change.
+	if status.NoPR {
+		aplog.Info("wait_for step %q: no PR associated with this task — failing fast", step.ID)
+		e.recordCIPoll(ctx, instID, step.ID, "no_pr", "", "no pull request found for this task")
+		return StepResult{
+			Success: false,
+			Err:     fmt.Errorf("no PR associated with this task — engineer step exited without opening one"),
+			StructuredOutput: map[string]any{
+				"ci_status": "no_pr",
+				"reason":    "no pull request found for this task",
+			},
+		}, nil
+	}
+
 	// Record every poll result (passed/failed/pending/unknown) with the per-check
 	// detail, so the wait's full history is auditable from the dashboard.
 	e.recordCIPoll(ctx, instID, step.ID, normalizeCIStatus(status.Status), status.URL, encodeChecks(status.Checks))
@@ -288,7 +304,7 @@ func checksToMap(checks []struct {
 // recorded poll always carries a meaningful, non-empty status.
 func normalizeCIStatus(s string) string {
 	switch s {
-	case "passed", "failed", "pending", "conflict":
+	case "passed", "failed", "pending", "conflict", "no_pr":
 		return s
 	default:
 		return "unknown"

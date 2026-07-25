@@ -75,6 +75,12 @@ type CIStatus struct {
 		Name   string // Check name (e.g., "test", "lint")
 		Status string // "passed", "failed", "pending", "skipped"
 	}
+	// NoPR is true when the source confirmed that no pull request has ever been
+	// linked to this task. Unlike a "pending" status (which means "a PR exists but
+	// CI is not done yet"), NoPR signals a permanent condition: the engineer step
+	// exited without opening one. The engine treats this as an immediate terminal
+	// failure rather than parking the instance to poll indefinitely.
+	NoPR bool
 }
 
 // CIStatusPoller is an optional interface that sources may implement to check the

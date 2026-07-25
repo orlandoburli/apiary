@@ -176,6 +176,35 @@ func TestPollCIStatus_NoSignalsYet(t *testing.T) {
 	}
 }
 
+// When no PR has ever been cross-referenced on the issue, PollCIStatus returns
+// NoPR=true so the engine can fail fast instead of polling indefinitely.
+func TestPollCIStatus_NoPR(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pulls/1958"):
+			http.NotFound(w, r)
+		case strings.HasSuffix(r.URL.Path, "/issues/1958/timeline"):
+			// Timeline exists but contains no cross-referenced PR events.
+			_, _ = w.Write([]byte(`[{"event":"labeled","label":{"name":"ai-ready"}}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	a := &Adapter{id: "gh", owner: "o", repo: "r", client: newClient(srv.URL, "")}
+
+	got, err := a.PollCIStatus(context.Background(), "1958")
+	if err != nil {
+		t.Fatalf("PollCIStatus: %v", err)
+	}
+	if !got.NoPR {
+		t.Errorf("NoPR = false, want true when no PR cross-referenced on the issue")
+	}
+	if got.Status != "" {
+		t.Errorf("Status = %q, want empty when NoPR is true", got.Status)
+	}
+}
+
 // The regression behind the 2026-07-05 needs-human cascade: the issue timeline
 // cross-references BOTH a stale CLOSED PR with conflicts (from a sibling issue
 // that merely mentioned this one) and the issue's real OPEN PR. The poller must

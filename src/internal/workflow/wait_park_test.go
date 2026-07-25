@@ -380,6 +380,48 @@ func TestWaitFor_RecordsErrorAndTimeout(t *testing.T) {
 	}
 }
 
+// TestWaitFor_NoPR_FailsFast verifies that when the CI checker reports no PR
+// (NoPR=true), the wait_for step fails immediately rather than parking the
+// instance to poll indefinitely. This exercises the fix for the production
+// issue where a no-op engineer step left check-ci parked forever.
+func TestWaitFor_NoPR_FailsFast(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	clock := time.Unix(1000, 0)
+	ci := func() (source.CIStatus, error) { return source.CIStatus{NoPR: true}, nil }
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+
+	// Use a simple implement → check-ci workflow with no on_fail retry loop,
+	// so check-ci runs exactly once and the instance settles immediately.
+	wf := config.WorkflowConfig{ID: "impl", Steps: []config.StepConfig{
+		{ID: "implement", Agent: "backend-dev"},
+		{ID: "check-ci", Type: config.StepTypeWaitFor, DependsOn: []string{"implement"},
+			WaitFor: &config.WaitForConfig{Kind: "ci", MaxDuration: "2h"}},
+	}}
+
+	instID, success, err := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
+	if err != nil {
+		t.Fatalf("RunInstance: %v", err)
+	}
+	if success {
+		t.Error("instance with NoPR should not report success")
+	}
+
+	// Must settle as failed immediately — never parked in waiting state.
+	if store.instances[instID].State == db.InstanceStateWaiting {
+		t.Error("instance must not be parked in waiting state when there is no PR")
+	}
+	if store.instances[instID].State != db.InstanceStateFailed {
+		t.Errorf("instance state = %q, want failed", store.instances[instID].State)
+	}
+
+	// A single no_pr poll must be recorded.
+	polls := store.pollStatuses()
+	if len(polls) != 1 || polls[0] != "no_pr" {
+		t.Errorf("recorded polls = %v, want [no_pr]", polls)
+	}
+}
+
 // priorStepsFor returns the instance's persisted step runs in creation order,
 // mirroring db.Client.ListStepRuns for the rehydration path.
 func priorStepsFor(f *fakeStore, instID string) []db.StepRun {
