@@ -220,6 +220,33 @@ func TestPollCIStatus_PrefersOpenPROverStaleClosedOne(t *testing.T) {
 	}
 }
 
+// When the issue timeline exists but contains no cross-referenced PR at all —
+// i.e. the agent completed without opening one — PollCIStatus must return "no_pr"
+// (not "pending") so the wait_for step fails fast instead of polling indefinitely.
+func TestPollCIStatus_NoPRInTimeline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pulls/1958"):
+			http.NotFound(w, r) // issue number is not a PR
+		case strings.HasSuffix(r.URL.Path, "/issues/1958/timeline"):
+			// Timeline has events (labels, comments) but no cross-referenced PR.
+			_, _ = w.Write([]byte(`[{"event":"labeled","label":{"name":"ai-ready"}}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	a := &Adapter{id: "gh", owner: "o", repo: "r", client: newClient(srv.URL, "")}
+
+	got, err := a.PollCIStatus(context.Background(), "1958")
+	if err != nil {
+		t.Fatalf("PollCIStatus: %v", err)
+	}
+	if got.Status != "no_pr" {
+		t.Errorf("status = %q, want no_pr (no PR cross-referenced in timeline)", got.Status)
+	}
+}
+
 // Legacy commit statuses (non-Actions CI) still work and are aggregated with checks.
 func TestPollCIStatus_LegacyStatusesGreen(t *testing.T) {
 	a := ciServer(t,

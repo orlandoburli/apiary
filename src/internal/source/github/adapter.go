@@ -365,7 +365,11 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 		}
 
 		if len(candidates) == 0 {
-			return source.CIStatus{Status: "pending"}, nil // No PR found yet; still pending
+			// The issue timeline contains no cross-referenced PR. The agent step has
+			// already completed before this poll fires, so any PR it opened would be
+			// indexed by now. Signal "no_pr" (not "pending") so the wait_for step can
+			// fail fast instead of polling indefinitely.
+			return source.CIStatus{Status: "no_pr"}, nil
 		}
 
 		// Fetch candidate PRs until an open one is found. A fetch failure is NOT
@@ -399,7 +403,9 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 			prBody = fallbackBody
 		}
 		if prBody == nil {
-			return source.CIStatus{Status: "pending"}, nil
+			// Candidates were found (cross-references exist) but none could be fetched —
+			// treat as "no_pr" so the wait fails fast rather than looping forever.
+			return source.CIStatus{Status: "no_pr"}, nil
 		}
 	}
 

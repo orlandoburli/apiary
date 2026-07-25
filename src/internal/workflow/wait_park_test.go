@@ -380,6 +380,41 @@ func TestWaitFor_RecordsErrorAndTimeout(t *testing.T) {
 	}
 }
 
+// When the CI checker reports no PR was opened (status "no_pr"), the wait_for
+// step should fail immediately — not park and poll indefinitely — so the
+// on_fail hook fires and the cell re-enters the pool rather than sitting in
+// the waiting state forever.
+func TestWaitFor_NoPRFailsImmediately(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	clock := time.Unix(1000, 0)
+	ci := func() (source.CIStatus, error) {
+		return source.CIStatus{Status: "no_pr"}, nil
+	}
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+
+	wf := config.WorkflowConfig{ID: "impl", Steps: []config.StepConfig{
+		{ID: "implement", Agent: "backend-dev"},
+		{ID: "check-ci", Type: config.StepTypeWaitFor, DependsOn: []string{"implement"},
+			WaitFor: &config.WaitForConfig{Kind: "ci", MaxDuration: "2h"}},
+	}}
+	instID, success, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
+	if success {
+		t.Fatal("no_pr must not report success")
+	}
+	if got := store.instances[instID].State; got != db.InstanceStateFailed {
+		t.Errorf("instance state = %q, want failed (no_pr is terminal, not parked)", got)
+	}
+	if len(eng.ParkedWaits()) != 0 {
+		t.Error("no_pr must not leave the instance parked")
+	}
+	// The poll record carries the "no_pr" status so dashboards can display it.
+	got := store.pollStatuses()
+	if len(got) != 1 || got[0] != "no_pr" {
+		t.Errorf("recorded polls = %v, want [no_pr]", got)
+	}
+}
+
 // priorStepsFor returns the instance's persisted step runs in creation order,
 // mirroring db.Client.ListStepRuns for the rehydration path.
 func priorStepsFor(f *fakeStore, instID string) []db.StepRun {

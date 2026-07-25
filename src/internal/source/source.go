@@ -69,7 +69,11 @@ type TaskPoller interface {
 // CIStatus represents the result of a CI status check. Used by poll steps waiting
 // for CI to complete.
 type CIStatus struct {
-	Status string // "passed", "failed", "pending", "conflict"
+	// Status is the aggregate CI result: "passed", "failed", "pending", "conflict",
+	// or "no_pr" (no pull request is associated with the task — the agent did not
+	// open one). "no_pr" is terminal; the wait_for step fails immediately so the
+	// workflow does not poll indefinitely when an agent no-ops.
+	Status string
 	URL    string // Link to the CI run
 	Checks []struct {
 		Name   string // Check name (e.g., "test", "lint")

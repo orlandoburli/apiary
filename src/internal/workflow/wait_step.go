@@ -137,6 +137,21 @@ func (e *Engine) checkCIWaitStep(
 			},
 		}, nil
 
+	case "no_pr":
+		// No pull request was opened for this task. The agent step already completed
+		// before this check ran, so a missing PR signals a deliberate no-op (e.g.
+		// the agent was blocked and chose not to open one). Fail fast so the workflow
+		// escalates via on_fail rather than polling indefinitely.
+		aplog.Info("wait_for step %q: no PR opened — failing CI wait", step.ID)
+		return StepResult{
+			Success: false,
+			Err:     fmt.Errorf("no PR was opened for this task"),
+			StructuredOutput: map[string]any{
+				"ci_status": "no_pr",
+				"reason":    "no PR was opened for this task",
+			},
+		}, nil
+
 	case "pending":
 		aplog.Debug("wait_for step %q: CI still pending", step.ID)
 		return StepResult{Pending: true}, nil
@@ -288,7 +303,7 @@ func checksToMap(checks []struct {
 // recorded poll always carries a meaningful, non-empty status.
 func normalizeCIStatus(s string) string {
 	switch s {
-	case "passed", "failed", "pending", "conflict":
+	case "passed", "failed", "pending", "conflict", "no_pr":
 		return s
 	default:
 		return "unknown"
