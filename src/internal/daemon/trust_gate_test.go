@@ -231,3 +231,45 @@ func TestTrustGate_SourceWithoutAssociation(t *testing.T) {
 		t.Error("dispatch count = 0: items without author_association must be dispatched")
 	}
 }
+
+// TestTrustGate_RunOnce_BlocksUntrustedAuthor verifies that RunOnce() enforces
+// the trust gate on the same code path as poll().
+func TestTrustGate_RunOnce_BlocksUntrustedAuthor(t *testing.T) {
+	d, runner, _ := newTrustDispatcher(t, []string{"ai-ready"})
+
+	adapter := &trustAdapter{
+		items: []model.SourceItem{
+			{
+				ID:       "100",
+				SourceID: "gh-trust",
+				Title:    "Untrusted via RunOnce",
+				Labels:   []string{"ai-ready"},
+				Metadata: map[string]any{
+					"author_association": "CONTRIBUTOR",
+					"author_login":       "external",
+				},
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			},
+		},
+	}
+	d.sources["gh-trust"] = adapter
+
+	if err := d.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	if got := runner.n.Load(); got != 0 {
+		t.Errorf("dispatch count = %d via RunOnce, want 0: untrusted author must be blocked", got)
+	}
+
+	foundNeedsTriage := false
+	for _, l := range adapter.addedLabels {
+		if l == "needs-triage" {
+			foundNeedsTriage = true
+		}
+	}
+	if !foundNeedsTriage {
+		t.Errorf("RunOnce added labels = %v, want needs-triage", adapter.addedLabels)
+	}
+}

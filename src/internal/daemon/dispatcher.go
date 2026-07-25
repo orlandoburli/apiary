@@ -763,6 +763,18 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 				d.inFlight.Delete(cell.ID)
 				continue
 			}
+			// Trust gate: same check as in poll() — block untrusted authors before
+			// any shell-capable agent can be dispatched.
+			if assoc, ok := cell.Metadata["author_association"].(string); ok && assoc != "" {
+				if !isTrustedAssociation(assoc) {
+					login, _ := cell.Metadata["author_login"].(string)
+					aplog.Warn("cell %s (%q): author %q has association %q — parking as needs-triage, dispatch blocked",
+						cell.LogLabel(), cell.Title, login, assoc)
+					d.parkUntrustedCell(ctx, cell, adapter, sc.Filters.Labels)
+					d.inFlight.Delete(cell.ID)
+					continue
+				}
+			}
 			d.fanOut(ctx, cell, adapter, task, persisted, matches, &wg, func(id string) {
 				mu.Lock()
 				failedIDs = append(failedIDs, id)
