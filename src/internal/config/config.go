@@ -73,6 +73,31 @@ type RunnerConfig struct {
 	// format/location (see runner/execution). Agent-scope MCPs (AgentConfig.MCPs)
 	// are layered on top of these, overriding by name.
 	MCPs []model.MCPServer `yaml:"mcps,omitempty"`
+	// Sandbox, when set, wraps every agent subprocess in a Docker container with
+	// the specified image, restricted user, and network policy. Apply to runners
+	// that process issues from external/untrusted authors to contain
+	// prompt-injection escapes. Per-task credentials (agent.env) are injected
+	// into the container via docker's env mechanism, not host inheritance.
+	Sandbox *SandboxConfig `yaml:"sandbox,omitempty"`
+}
+
+// SandboxConfig describes container isolation applied to every subprocess
+// spawned by a CliRunner. When present on a RunnerConfig, the daemon wraps
+// each agent invocation in `docker run --rm` with the specified image,
+// user, and network policy.
+type SandboxConfig struct {
+	// Image is the Docker image providing the agent binary (required).
+	Image string `yaml:"image"`
+	// User is passed as --user to docker run (e.g. "nobody", "1000:1000").
+	// Defaults to "nobody" when empty.
+	User string `yaml:"user,omitempty"`
+	// Network is the --network value for docker run (e.g. "none", "host", or a
+	// named bridge). Defaults to "none" when empty.
+	Network string `yaml:"network,omitempty"`
+	// ExtraArgs are appended verbatim between the security flags and the image
+	// name, e.g. ["-v", "/data:/data:ro"] for read-only bind mounts. These are
+	// trusted operator overrides; do not allow untrusted user input here.
+	ExtraArgs []string `yaml:"extra_args,omitempty"`
 }
 
 // AdapterName returns the runner adapter name as "{provider}-{type}" when both
@@ -128,6 +153,11 @@ type AgentConfig struct {
 	// WorkspaceAffinity pins retries/resumes to the first worker that claims the
 	// task, preserving a local checkout or other non-portable environment.
 	WorkspaceAffinity bool `yaml:"workspace_affinity,omitempty"`
+	// Permissions overrides the default tool permissions written into the OpenCode
+	// agent file. Keys are tool names ("bash", "edit", "webfetch", etc.); values
+	// are "allow" or "deny". Absent keys use least-privilege defaults:
+	// read/glob/grep/task → allow; bash/edit/webfetch → deny.
+	Permissions map[string]string `yaml:"permissions,omitempty"`
 }
 
 // FallbackConfig is one entry in an agent's rate-limit failover chain. Runner

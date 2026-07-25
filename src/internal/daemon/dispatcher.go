@@ -357,7 +357,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			return nil, fmt.Errorf("agent %q: runner type %q not found", ac.ID, rc.Type)
 		}
 
-		if err := ra.Configure(runnerConfigWithMCPs(rc.Config, rc.MCPs, ac.MCPs)); err != nil {
+		if err := ra.Configure(injectSandbox(runnerConfigWithMCPs(rc.Config, rc.MCPs, ac.MCPs), rc.Sandbox)); err != nil {
 			return nil, fmt.Errorf("agent %q: configure runner: %w", ac.ID, err)
 		}
 
@@ -389,7 +389,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			if !ok {
 				return nil, fmt.Errorf("agent %q: fallback runner type %q not found", ac.ID, fAdapterName)
 			}
-			if err := fra.Configure(runnerConfigWithMCPs(frc.Config, frc.MCPs, ac.MCPs)); err != nil {
+			if err := fra.Configure(injectSandbox(runnerConfigWithMCPs(frc.Config, frc.MCPs, ac.MCPs), frc.Sandbox)); err != nil {
 				return nil, fmt.Errorf("agent %q: configure fallback runner %q: %w", ac.ID, fb.Runner, err)
 			}
 			if fAdapterName == "opencode" {
@@ -1733,18 +1733,16 @@ func (d *Dispatcher) writeOpencodeAgent(ctx context.Context, ac config.AgentConf
 		}
 	}
 
+	perms := opencodeDefaultPerms(ac)
+
 	var b strings.Builder
 	b.WriteString("---\n")
 	fmt.Fprintf(&b, "description: %s\n", ac.Description)
 	b.WriteString("mode: primary\n")
 	b.WriteString("permission:\n")
-	b.WriteString("  edit: allow\n")
-	b.WriteString("  bash: allow\n")
-	b.WriteString("  read: allow\n")
-	b.WriteString("  glob: allow\n")
-	b.WriteString("  grep: allow\n")
-	b.WriteString("  webfetch: allow\n")
-	b.WriteString("  task: allow\n")
+	for _, tool := range []string{"read", "glob", "grep", "task", "edit", "bash", "webfetch"} {
+		fmt.Fprintf(&b, "  %s: %s\n", tool, perms[tool])
+	}
 	b.WriteString("---\n")
 	if promptBody != "" {
 		b.WriteString("\n")
@@ -1797,20 +1795,19 @@ func (d *Dispatcher) registerAgentInConfig(workDir string, ac config.AgentConfig
 		_ = json.Unmarshal(data, &cfg)
 	}
 
+	perms := opencodeDefaultPerms(ac)
+	permMap := make(map[string]any, len(perms))
+	for k, v := range perms {
+		permMap[k] = v
+	}
+
 	// Use a relative reference from the global config directory
 	agentEntry := map[string]any{
 		"description": ac.Description,
 		"mode":        "primary",
 		"prompt":      "{file:./agents/" + ac.ID + ".md}",
 		"skills":      ac.Skills,
-		"permission": map[string]any{
-			"edit": "allow",
-			"bash": "allow",
-			"read": "allow",
-			"glob": "allow",
-			"grep": "allow",
-			"task": "allow",
-		},
+		"permission":  permMap,
 	}
 
 	agents, _ := cfg["agent"].(map[string]any)
@@ -1825,6 +1822,49 @@ func (d *Dispatcher) registerAgentInConfig(workDir string, ac config.AgentConfig
 		return err
 	}
 	return os.WriteFile(globalConfigPath, raw, 0644)
+}
+
+// opencodeDefaultPerms returns the OpenCode permission map for an agent, applying
+// least-privilege defaults (bash/edit/webfetch: deny; read/glob/grep/task: allow)
+// overridden by the agent's explicit Permissions.
+func opencodeDefaultPerms(ac config.AgentConfig) map[string]string {
+	perms := map[string]string{
+		"read":     "allow",
+		"glob":     "allow",
+		"grep":     "allow",
+		"task":     "allow",
+		"edit":     "deny",
+		"bash":     "deny",
+		"webfetch": "deny",
+	}
+	for k, v := range ac.Permissions {
+		perms[k] = v
+	}
+	return perms
+}
+
+// injectSandbox folds a RunnerConfig.Sandbox into the config map passed to
+// CliRunner.Configure. The base map is never mutated; a copy is returned only
+// when a sandbox is present.
+func injectSandbox(base map[string]any, s *config.SandboxConfig) map[string]any {
+	if s == nil {
+		return base
+	}
+	out := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		out[k] = v
+	}
+	extras := make([]any, len(s.ExtraArgs))
+	for i, v := range s.ExtraArgs {
+		extras[i] = v
+	}
+	out["sandbox"] = map[string]any{
+		"image":      s.Image,
+		"user":       s.User,
+		"network":    s.Network,
+		"extra_args": extras,
+	}
+	return out
 }
 
 // runnerConfigWithMCPs returns the runner's config map augmented with the

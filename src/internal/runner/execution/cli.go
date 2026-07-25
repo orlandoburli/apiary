@@ -35,6 +35,104 @@ type CliRunner struct {
 	// mcpRunArgs are extra CLI args injected into every run to activate the MCP
 	// config written by setupMCP (e.g. claude's "--mcp-config <path>").
 	mcpRunArgs []string
+	// sandbox, when non-nil, wraps every agent subprocess in a Docker container
+	// with the given image, restricted user, and network policy. Prevents
+	// prompt-injection escapes from reaching the host or other services.
+	sandbox *cliSandbox
+}
+
+// cliSandbox describes the Docker container isolation layer for a CliRunner.
+type cliSandbox struct {
+	image     string
+	user      string   // defaults to "nobody"
+	network   string   // defaults to "none"
+	extraArgs []string // operator-controlled; trusted config only
+}
+
+// hostEnvAllowList is the set of host environment variable names that the
+// docker host process (the docker CLI binary itself) needs to operate. These
+// do not flow into the container unless they also appear in req.Env. All other
+// host vars (API keys, AWS credentials, etc.) are excluded so that daemon
+// secrets cannot reach the sandboxed agent.
+var hostEnvAllowList = map[string]bool{
+	"PATH":          true,
+	"HOME":          true,
+	"TMPDIR":        true,
+	"TEMP":          true,
+	"TMP":           true,
+	"TERM":          true,
+	"USER":          true,
+	"LOGNAME":       true,
+	"LANG":          true,
+	"LC_ALL":        true,
+	"LC_CTYPE":      true,
+	"SSL_CERT_FILE": true,
+	"SSL_CERT_DIR":  true,
+	"SSH_AUTH_SOCK": true,
+	"DOCKER_HOST":   true, // docker daemon socket; needed by the docker CLI
+}
+
+// filteredHostEnv returns a subset of os.Environ() that matches hostEnvAllowList
+// plus every entry in overlay. Used for the docker host process env so that
+// secrets present in the daemon process do not reach the docker CLI argv/env.
+func filteredHostEnv(overlay map[string]string) []string {
+	env := make([]string, 0, len(hostEnvAllowList)+len(overlay))
+	for _, kv := range os.Environ() {
+		name, _, ok := strings.Cut(kv, "=")
+		if ok && hostEnvAllowList[name] {
+			env = append(env, kv)
+		}
+	}
+	for k, v := range overlay {
+		env = append(env, k+"="+v)
+	}
+	return env
+}
+
+// wrapCommand rewrites (binary, argv) to execute inside the sandbox container.
+// Per-task credentials in overlay are injected via `--env KEY` (without the
+// value in argv) and are placed in the docker host process's environment so
+// Docker passes them into the container. This prevents secrets from appearing
+// in the host process table (/proc/<pid>/cmdline / `ps`).
+// Returns (dockerBinary, dockerArgv, dockerHostEnv).
+func (s *cliSandbox) wrapCommand(binary string, argv []string, workDir string, overlay map[string]string) (string, []string, []string) {
+	user := s.user
+	if user == "" {
+		user = "nobody"
+	}
+	network := s.network
+	if network == "" {
+		network = "none"
+	}
+
+	dockerArgs := []string{
+		"run", "--rm",
+		"--network", network,
+		"--user", user,
+		"--read-only",
+		"--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+		"--cap-drop", "all",
+		"--security-opt", "no-new-privileges",
+	}
+	if workDir != "" {
+		dockerArgs = append(dockerArgs, "-v", workDir+":"+workDir, "-w", workDir)
+	}
+
+	// Inject per-task credentials as --env KEY (no value in argv).
+	// Docker resolves the value from its own process environment, keeping
+	// secrets out of the host process table.
+	for k := range overlay {
+		dockerArgs = append(dockerArgs, "--env", k)
+	}
+
+	// extraArgs are trusted operator additions (e.g. read-only cache mounts).
+	dockerArgs = append(dockerArgs, s.extraArgs...)
+	dockerArgs = append(dockerArgs, s.image, binary)
+	dockerArgs = append(dockerArgs, argv...)
+
+	// Build the docker host process env: safe subset of host + per-task creds.
+	hostEnv := filteredHostEnv(overlay)
+	return "docker", dockerArgs, hostEnv
 }
 
 func (r *CliRunner) ID() string { return "cli" }
@@ -80,6 +178,29 @@ func (r *CliRunner) Configure(config map[string]any) error {
 		}
 		r.mcpRunArgs = args
 	}
+	if raw, ok := config["sandbox"].(map[string]any); ok {
+		sc := &cliSandbox{}
+		if v, ok := raw["image"].(string); ok {
+			sc.image = v
+		}
+		if v, ok := raw["user"].(string); ok {
+			sc.user = v
+		}
+		if v, ok := raw["network"].(string); ok {
+			sc.network = v
+		}
+		if extras, ok := raw["extra_args"].([]any); ok {
+			for _, a := range extras {
+				if s, ok := a.(string); ok {
+					sc.extraArgs = append(sc.extraArgs, s)
+				}
+			}
+		}
+		if sc.image == "" {
+			return fmt.Errorf("cli runner: sandbox.image is required when sandbox is configured")
+		}
+		r.sandbox = sc
+	}
 	return nil
 }
 
@@ -103,11 +224,25 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		argv = append(argv, r.promptFlag, prompt)
 	}
 
-	cmd := exec.CommandContext(ctx, r.command, argv...)
-	cmd.Dir = req.WorkingDir
-	cmd.Env = os.Environ()
-	for k, v := range req.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+	var cmd *exec.Cmd
+	if r.sandbox != nil {
+		// Container isolation: run the agent CLI inside Docker. Per-task
+		// credentials are injected via --env KEY (no value in argv) to keep
+		// them out of the host process table. The docker host process inherits
+		// only the safe allowlist of host env vars.
+		dockerBin, dockerArgv, dockerEnv := r.sandbox.wrapCommand(r.command, argv, req.WorkingDir, req.Env)
+		cmd = exec.CommandContext(ctx, dockerBin, dockerArgv...)
+		cmd.Env = dockerEnv
+	} else {
+		// Non-sandbox: inherit the full daemon env so provider CLI tools
+		// (claude, opencode, etc.) can pick up ANTHROPIC_API_KEY and other
+		// credentials from the host environment. req.Env overlays on top.
+		cmd = exec.CommandContext(ctx, r.command, argv...)
+		cmd.Dir = req.WorkingDir
+		cmd.Env = os.Environ()
+		for k, v := range req.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 	}
 	if r.promptFlag == "" && !r.promptPositional {
 		cmd.Stdin = strings.NewReader(prompt)
