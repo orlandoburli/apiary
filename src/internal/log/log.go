@@ -5,6 +5,8 @@ package log
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,6 +16,11 @@ var (
 	sinkMu  sync.RWMutex
 	sink    func(level, msg string)
 )
+
+// jwtPattern matches JWT-shaped bearer tokens (three base64url segments
+// starting with "eyJ"). Kept out of logs for the same reason it is stripped
+// from transcripts: agents routinely emit tokens in tool call output.
+var jwtPattern = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)
 
 // Enable turns verbose (debug) output on or off.
 func Enable(v bool) { verbose = v }
@@ -55,7 +62,7 @@ func Error(format string, args ...any) {
 
 func print(level, format string, args ...any) {
 	ts := time.Now().Format("15:04:05")
-	msg := fmt.Sprintf(format, args...)
+	msg := redactMsg(fmt.Sprintf(format, args...))
 	fmt.Fprintf(os.Stderr, "%s  %-5s  %s\n", ts, level, msg)
 
 	sinkMu.RLock()
@@ -64,4 +71,22 @@ func print(level, format string, args ...any) {
 	if f != nil {
 		f(level, msg)
 	}
+}
+
+// redactMsg removes credential-shaped strings from a log message before it
+// reaches stderr or the sink. It mirrors the patterns used in
+// db/execution_event.go (looksLikeSecret) and runner/execution/transcript.go
+// (jwtPattern) so all output surfaces share the same redaction logic.
+func redactMsg(s string) string {
+	s = jwtPattern.ReplaceAllString(s, "[redacted-jwt]")
+	lower := strings.ToLower(s)
+	for _, marker := range []string{"ghp_", "github_pat_", "xoxb-", "xoxp-", "bearer "} {
+		if strings.Contains(lower, marker) {
+			return "[redacted]"
+		}
+	}
+	if strings.Contains(s, "AKIA") {
+		return "[redacted]"
+	}
+	return s
 }
