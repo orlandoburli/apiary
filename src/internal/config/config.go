@@ -274,6 +274,13 @@ type Settings struct {
 	LogMaxSizeMB  int                `yaml:"log_max_size_mb"`  // rotate apiary.log past this size; default 50
 	LogMaxBackups int                `yaml:"log_max_backups"`  // rotated files to keep; default 5
 	LogMaxAgeDays int                `yaml:"log_max_age_days"` // prune backups and task logs older than this; default 30
+	// PromptRetentionDays controls how long full input/output prompts are kept in
+	// the SQLite database and whether they are written at all.
+	// 0 (default): inherit from log_max_age_days.
+	// Positive: keep prompts for this many days, then NULL them.
+	// Negative: disable prompt persistence entirely; existing rows are scrubbed
+	// once at startup.
+	PromptRetentionDays int `yaml:"prompt_retention_days,omitempty"`
 	Memory        MemorySettings     `yaml:"memory"`
 	Events        EventSettings      `yaml:"events"`
 	Approvals     ApprovalSettings   `yaml:"approvals"`
@@ -488,6 +495,29 @@ func (m MemorySettings) TaskRetentionDuration() time.Duration {
 		return 720 * time.Hour
 	}
 	return d
+}
+
+// PromptRetentionDuration returns the effective retention window for prompt
+// data stored in the database. A return value of 0 means prompt persistence is
+// disabled: no new prompts are written and all existing rows are scrubbed at
+// startup.
+//
+// Mapping rules:
+//   - PromptRetentionDays < 0  → 0 (disabled)
+//   - PromptRetentionDays > 0  → that many days
+//   - PromptRetentionDays == 0 → inherit LogMaxAgeDays (0 if also unset)
+func (s *Settings) PromptRetentionDuration() time.Duration {
+	switch {
+	case s.PromptRetentionDays < 0:
+		return 0
+	case s.PromptRetentionDays > 0:
+		return time.Duration(s.PromptRetentionDays) * 24 * time.Hour
+	default: // inherit
+		if s.LogMaxAgeDays <= 0 {
+			return 0
+		}
+		return time.Duration(s.LogMaxAgeDays) * 24 * time.Hour
+	}
 }
 
 // CreditExhaustedCooldownDuration returns the parsed credit-exhausted cooldown

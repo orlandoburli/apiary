@@ -535,6 +535,32 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		}()
 	}
 
+	// Scrub full input/output prompts from the database according to
+	// settings.prompt_retention_days. When the retention duration is positive,
+	// runs at startup and then daily. When the setting is negative (disabled),
+	// runs once at startup to scrub all existing prompt data.
+	if d.db != nil {
+		if retention := d.cfg.Settings.PromptRetentionDuration(); retention > 0 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				d.scrubPromptsLoop(ctx, retention)
+			}()
+		} else if d.cfg.Settings.PromptRetentionDays < 0 {
+			// Persistence disabled: scrub all existing prompt data once at startup.
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				n, err := d.db.ScrubPromptsBefore(ctx, time.Now())
+				if err != nil {
+					aplog.Warn("scrub all prompts: %v", err)
+				} else if n > 0 {
+					aplog.Info("scrubbed %d existing prompt row(s) (prompt persistence disabled)", n)
+				}
+			}()
+		}
+	}
+
 	// Prune task-memory notes whose task has been terminal longer than the
 	// retention window (settings.memory.task_retention), at startup and then
 	// every 6 hours. Global entries are never auto-pruned.
@@ -592,6 +618,31 @@ func (d *Dispatcher) pruneLogsLoop(ctx context.Context, maxAge time.Duration) {
 			return
 		case <-ticker.C:
 			prune()
+		}
+	}
+}
+
+// scrubPromptsLoop NULLs input/output prompt columns on rows older than
+// retention, at startup and then once a day.
+func (d *Dispatcher) scrubPromptsLoop(ctx context.Context, retention time.Duration) {
+	scrub := func() {
+		n, err := d.db.ScrubPromptsBefore(ctx, time.Now().Add(-retention))
+		if err != nil {
+			aplog.Warn("scrub prompts: %v", err)
+		} else if n > 0 {
+			aplog.Info("scrubbed %d prompt row(s) older than %dd", n, int(retention.Hours()/24))
+		}
+	}
+	scrub()
+
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			scrub()
 		}
 	}
 }

@@ -564,12 +564,19 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		usage = &u
 	}
 
+	// Don't surface the full prompt to the engine (and hence step_runs) when
+	// prompt persistence is disabled.
+	inputPrompt := res.InputPrompt
+	if x.d.cfg.Settings.PromptRetentionDays < 0 {
+		inputPrompt = ""
+	}
+
 	// A malformed APIARY_SPAWN block is a step-level error so the workflow fails
 	// with a descriptive message rather than silently dropping the request. The
 	// step's memorize requests still travel — persisted knowledge should survive
 	// an unrelated spawn failure.
 	if res.SpawnError != nil {
-		return workflow.StepResult{Success: false, Output: res.Output, Usage: usage, InputPrompt: res.InputPrompt,
+		return workflow.StepResult{Success: false, Output: res.Output, Usage: usage, InputPrompt: inputPrompt,
 			MemorizeRequests: memorizeRequests, MemorizeError: memorizeError, Err: res.SpawnError}
 	}
 
@@ -584,7 +591,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		MemorizeRequests: memorizeRequests,
 		MemorizeError:    memorizeError,
 		Usage:            usage,
-		InputPrompt:      res.InputPrompt,
+		InputPrompt:      inputPrompt,
 		Err:              res.Error,
 	}
 }
@@ -644,8 +651,10 @@ func (x *wfStepExecutor) finishExecution(ctx context.Context, exec *db.Execution
 		exec.NumToolCalls = res.Usage.NumToolCalls
 		exec.CostUSD = res.Usage.CostUSD
 	}
-	exec.InputPrompt = res.InputPrompt
-	exec.OutputText = res.Output
+	if x.d.cfg.Settings.PromptRetentionDays >= 0 {
+		exec.InputPrompt = res.InputPrompt
+		exec.OutputText = res.Output
+	}
 	exec.CreditExhausted = res.CreditExhausted
 	if !res.CreditExhausted && res.RateLimited {
 		exec.FailureKind = "rate_limited"
