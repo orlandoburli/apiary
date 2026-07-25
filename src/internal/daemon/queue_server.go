@@ -32,11 +32,20 @@ func (d *Dispatcher) startQueueProtocolServer(ctx context.Context, wg *sync.Wait
 		OnTerminal: d.settleRemoteQueueJob,
 	}.Handler()
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	certFile := strings.TrimSpace(d.cfg.Settings.Queue.TLSCertFile)
+	keyFile := strings.TrimSpace(d.cfg.Settings.Queue.TLSKeyFile)
+	tlsEnabled := certFile != "" && keyFile != ""
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			aplog.Error("queue protocol server: %v", err)
+		var serveErr error
+		if tlsEnabled {
+			serveErr = server.ServeTLS(listener, certFile, keyFile)
+		} else {
+			serveErr = server.Serve(listener)
+		}
+		if serveErr != nil && serveErr != http.ErrServerClosed {
+			aplog.Error("queue protocol server: %v", serveErr)
 		}
 	}()
 	wg.Add(1)
@@ -47,6 +56,10 @@ func (d *Dispatcher) startQueueProtocolServer(ctx context.Context, wg *sync.Wait
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	aplog.Info("queue worker protocol listening on %s", listener.Addr())
+	if tlsEnabled {
+		aplog.Info("queue worker protocol listening on %s (TLS)", listener.Addr())
+	} else {
+		aplog.Info("queue worker protocol listening on %s", listener.Addr())
+	}
 	return nil
 }

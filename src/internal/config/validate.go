@@ -283,6 +283,14 @@ func validateQueueSettings(settings QueueSettings) []error {
 	if strings.TrimSpace(settings.Listen) != "" && strings.TrimSpace(settings.WorkerToken) == "" {
 		errs = append(errs, fmt.Errorf("settings.queue.worker_token is required when settings.queue.listen is configured"))
 	}
+	hasCert := strings.TrimSpace(settings.TLSCertFile) != ""
+	hasKey := strings.TrimSpace(settings.TLSKeyFile) != ""
+	if hasCert != hasKey {
+		errs = append(errs, fmt.Errorf("settings.queue.tls_cert_file and settings.queue.tls_key_file must both be set or both be empty"))
+	}
+	if strings.TrimSpace(settings.TLSCAFile) != "" && !hasCert {
+		errs = append(errs, fmt.Errorf("settings.queue.tls_ca_file requires tls_cert_file and tls_key_file to be set"))
+	}
 	durations := []struct {
 		name, value string
 		fallback    time.Duration

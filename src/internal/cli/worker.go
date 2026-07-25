@@ -2,7 +2,10 @@ package cli
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -38,7 +41,8 @@ func newWorkerCmd() *cobra.Command {
 				return fmt.Errorf("config validation failed: %v", errs)
 			}
 			if controlPlane == "" {
-				controlPlane = queueControlPlaneURL(cfg.Settings.Queue.Listen)
+				tlsEnabled := strings.TrimSpace(cfg.Settings.Queue.TLSCertFile) != ""
+				controlPlane = queueControlPlaneURL(cfg.Settings.Queue.Listen, tlsEnabled)
 			}
 			if controlPlane == "" {
 				return fmt.Errorf("--control-plane is required (for example http://apiary-control:8080)")
@@ -96,7 +100,11 @@ func newWorkerCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("initialize worker runners: %w", err)
 			}
-			remote := &queuehttp.Client{BaseURL: controlPlane, Token: token}
+			httpClient, err := workerHTTPClient(cfg.Settings.Queue.TLSCAFile)
+			if err != nil {
+				return fmt.Errorf("configure TLS for control-plane connection: %w", err)
+			}
+			remote := &queuehttp.Client{BaseURL: controlPlane, Token: token, HTTPClient: httpClient}
 			runtimeWorker, err := worker.New(remote, worker.ExecutorFunc(func(execCtx context.Context, job queue.Job) queue.FinishResult {
 				return dispatcher.ExecuteQueuedJob(execCtx, job, workerID)
 			}), worker.Config{
@@ -121,7 +129,7 @@ func newWorkerCmd() *cobra.Command {
 	return cmd
 }
 
-func queueControlPlaneURL(listen string) string {
+func queueControlPlaneURL(listen string, tlsEnabled bool) string {
 	listen = strings.TrimSpace(listen)
 	if listen == "" {
 		return ""
@@ -129,16 +137,44 @@ func queueControlPlaneURL(listen string) string {
 	if strings.HasPrefix(listen, "http://") || strings.HasPrefix(listen, "https://") {
 		return listen
 	}
+	scheme := "http"
+	if tlsEnabled {
+		scheme = "https"
+	}
 	if strings.HasPrefix(listen, ":") {
-		return "http://127.0.0.1" + listen
+		return scheme + "://127.0.0.1" + listen
 	}
 	if strings.HasPrefix(listen, "0.0.0.0:") {
-		return "http://127.0.0.1:" + strings.TrimPrefix(listen, "0.0.0.0:")
+		return scheme + "://127.0.0.1:" + strings.TrimPrefix(listen, "0.0.0.0:")
 	}
 	if strings.HasPrefix(listen, "[") || strings.Count(listen, ":") == 1 {
-		return "http://" + listen
+		return scheme + "://" + listen
 	}
 	return listen
+}
+
+// workerHTTPClient returns an *http.Client suitable for connecting to the
+// control-plane. When caFile is set the returned client trusts only that CA,
+// enabling mutual verification against self-signed certificates. When caFile
+// is empty the system root pool is used.
+func workerHTTPClient(caFile string) (*http.Client, error) {
+	caFile = strings.TrimSpace(caFile)
+	if caFile == "" {
+		return http.DefaultClient, nil
+	}
+	caCert, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read TLS CA file %q: %w", caFile, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caCert) {
+		return nil, fmt.Errorf("TLS CA file %q contains no valid PEM certificates", caFile)
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: pool},
+		},
+	}, nil
 }
 
 func normalizedValues(values []string) []string {

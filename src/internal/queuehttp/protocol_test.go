@@ -71,6 +71,45 @@ func TestAuthenticatedWorkerLifecycle(t *testing.T) {
 	}
 }
 
+func TestTLSWorkerLifecycle(t *testing.T) {
+	ctx := context.Background()
+	clientDB, err := db.New(ctx, filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = clientDB.Close() })
+	store := clientDB.Queue()
+
+	// httptest.NewTLSServer uses a self-signed cert; server.Client() has the
+	// matching trust pool, simulating a client that trusts the server's CA.
+	server := httptest.NewTLSServer(queuehttp.Server{Store: store, Token: "tls-secret", LeaseDuration: time.Minute, WorkerTimeout: time.Minute}.Handler())
+	t.Cleanup(server.Close)
+	remote := &queuehttp.Client{BaseURL: server.URL, Token: "tls-secret", HTTPClient: server.Client()}
+
+	w := &queue.Worker{ID: "tls-worker-1", ProtocolVersion: queue.WorkerProtocolVersion, Pool: "build", Labels: []string{"linux"}, Capabilities: []string{"runner:codex"}, Capacity: 1, Ready: true}
+	if err := remote.RegisterWorker(ctx, w); err != nil {
+		t.Fatalf("RegisterWorker over TLS: %v", err)
+	}
+	job := &queue.Job{IdempotencyKey: "tls:1", Pool: "build", RequiredLabels: []string{"linux"}, RequiredCapabilities: []string{"runner:codex"}, PayloadVersion: 1, Payload: []byte(`{"task":"tls"}`), MaxAttempts: 1}
+	if created, err := store.Enqueue(ctx, job); err != nil || !created {
+		t.Fatalf("enqueue created=%v err=%v", created, err)
+	}
+	claim, err := remote.Claim(ctx, queue.ClaimRequest{WorkerID: w.ID})
+	if err != nil {
+		t.Fatalf("Claim over TLS: %v", err)
+	}
+	if err := remote.Finish(ctx, job.ID, claim.Attempt.ID, claim.Attempt.ClaimToken, queue.FinishResult{Success: true}); err != nil {
+		t.Fatalf("Finish over TLS: %v", err)
+	}
+	got, err := remote.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != queue.JobSucceeded {
+		t.Fatalf("state=%s, want succeeded", got.State)
+	}
+}
+
 func TestProtocolRejectsInvalidAuthenticationAndVersion(t *testing.T) {
 	ctx := context.Background()
 	clientDB, err := db.New(ctx, filepath.Join(t.TempDir(), "queue.db"))
