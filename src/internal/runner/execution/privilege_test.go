@@ -119,3 +119,28 @@ func TestApplyPrivilegeEnv_EmptyProfile(t *testing.T) {
 		t.Errorf("empty profile: want %d entries, got %d", len(env), len(got))
 	}
 }
+
+// TestApplyPrivilegeEnv_ReqEnvFiltered verifies that caller-supplied env entries
+// (simulating req.Env keys appended after os.Environ) are subject to the same
+// allowlist — a non-allowlisted req.Env key such as GITHUB_TOKEN must be dropped.
+func TestApplyPrivilegeEnv_ReqEnvFiltered(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",          // os.Environ()-like entry
+		"HOME=/root",             // os.Environ()-like entry, not allowlisted
+		"GITHUB_TOKEN=secret123", // req.Env-like entry, must be filtered out
+		"GH_TOKEN=tok",          // req.Env-like entry, must be filtered out
+	}
+	profile := &model.PrivilegeProfile{
+		EnvAllowlist: []string{"PATH"},
+	}
+	got := applyPrivilegeEnv(env, profile)
+	for _, entry := range got {
+		key := envKey(entry)
+		if key == "GITHUB_TOKEN" || key == "GH_TOKEN" || key == "HOME" {
+			t.Errorf("non-allowlisted req.Env key %q must be filtered, but appeared in output: %v", key, got)
+		}
+	}
+	if len(got) != 1 || envKey(got[0]) != "PATH" {
+		t.Errorf("want [PATH=/usr/bin], got %v", got)
+	}
+}

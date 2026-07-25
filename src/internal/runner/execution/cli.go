@@ -108,10 +108,12 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 
 	cmd := exec.CommandContext(ctx, r.command, argv...)
 	cmd.Dir = req.WorkingDir
-	cmd.Env = applyPrivilegeEnv(os.Environ(), req.Privilege)
+	merged := make([]string, 0, len(os.Environ())+len(req.Env))
+	merged = append(merged, os.Environ()...)
 	for k, v := range req.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+		merged = append(merged, k+"="+v)
 	}
+	cmd.Env = applyPrivilegeEnv(merged, req.Privilege)
 	if r.promptFlag == "" && !r.promptPositional {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
