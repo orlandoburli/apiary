@@ -817,9 +817,16 @@ func expandEnv(s string) string {
 
 // loadDotEnv reads .env from the same directory as the config file and calls
 // os.Setenv for each entry. Lines starting with # are skipped.
+// If the file is group- or world-readable, loading is refused and an error is
+// printed to stderr — credentials must not be exposed to other local accounts.
+// Run: chmod 0600 .env
 func loadDotEnv(configPath string) {
 	dir := filepath.Dir(configPath)
 	envPath := filepath.Join(dir, ".env")
+	if err := checkDotEnvPerms(envPath); err != nil {
+		fmt.Fprintf(os.Stderr, "apiary: error: %s\n", err)
+		return
+	}
 	data, err := os.ReadFile(envPath)
 	if err != nil {
 		return

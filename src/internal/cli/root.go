@@ -106,10 +106,16 @@ func resolveConfigFile() string {
 
 // loadDotEnv loads the .env file if it exists. Already-set environment
 // variables take precedence — godotenv.Load does not overwrite them.
+// If the file is group- or world-readable, loading is refused — credentials
+// must not be exposed to other local accounts. Fix with: chmod 0600 <path>
 func loadDotEnv(cmd *cobra.Command) {
 	path, _ := cmd.Root().PersistentFlags().GetString("env-file")
 	if path == "" {
 		path = ".env"
+	}
+	if err := checkDotEnvPerms(path); err != nil {
+		aplog.Warn("%s", err)
+		return
 	}
 	if err := godotenv.Load(path); err == nil {
 		aplog.Debug("loaded env file: %s", path)
