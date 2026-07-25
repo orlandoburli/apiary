@@ -817,9 +817,14 @@ func expandEnv(s string) string {
 
 // loadDotEnv reads .env from the same directory as the config file and calls
 // os.Setenv for each entry. Lines starting with # are skipped.
+// If the file is group- or world-readable a warning is printed and the file is
+// still loaded — startup is never blocked by a permission mismatch.
 func loadDotEnv(configPath string) {
 	dir := filepath.Dir(configPath)
 	envPath := filepath.Join(dir, ".env")
+	if warn := checkDotEnvPerms(envPath); warn != "" {
+		aplog.Warn("%s", warn)
+	}
 	data, err := os.ReadFile(envPath)
 	if err != nil {
 		return
