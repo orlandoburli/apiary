@@ -861,7 +861,7 @@ func (e *Engine) applyCompletion(ctx context.Context, r *dagRun, failed bool) {
 
 	if !failed && e.resultCommentMode(wf) == config.ResultCommentOnComplete {
 		doc := e.mem.Build(r.cell, r.memSteps())
-		_ = e.side.PostComment(ctx, r.task, r.bindings, finalComment(wf, false, doc))
+		_ = e.side.PostComment(ctx, r.task, r.bindings, agentProvenanceMarker+finalComment(wf, false, doc))
 	}
 
 	var hook *config.OnComplete

@@ -524,6 +524,35 @@ func TestEngine_SpawnDepthPropagated(t *testing.T) {
 	}
 }
 
+// TestEngine_CompletionCommentProvenanceMarker verifies that the result comment
+// posted by applyCompletion (result_comment: on_complete) carries the provenance
+// marker so it is distinguishable from human-written comments (SEC-12).
+func TestEngine_CompletionCommentProvenanceMarker(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Settings.ResultComment = true
+	store := newFakeStore()
+	store.bindings["T1"] = []model.SourceBinding{{TaskID: "T1", SourceID: "s1", SourceItemID: "I-1"}}
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"run": {Success: true, Output: "done"},
+	}}
+	side := &fakeSide{}
+	eng := testEngine(cfg, store, exec, side)
+
+	wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+	if _, _, err := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "T1", Title: "T"}); err != nil {
+		t.Fatalf("RunInstance: %v", err)
+	}
+
+	if len(side.comments) == 0 {
+		t.Fatal("expected at least one comment from result_comment, got none")
+	}
+	for _, c := range side.comments {
+		if !strings.HasPrefix(c, agentProvenanceMarker) {
+			t.Errorf("completion comment missing provenance marker: %q", c)
+		}
+	}
+}
+
 // TestEngine_SpawnWithoutSpawnerFailsStep: a spawn marker with no spawner wired
 // is a step error, never a silent no-op (7.3.4 spirit).
 func TestEngine_SpawnWithoutSpawnerFailsStep(t *testing.T) {
