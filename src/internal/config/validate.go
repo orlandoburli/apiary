@@ -39,14 +39,15 @@ var validFallbackStrategies = map[string]bool{"ordered": true, "random": true, "
 // commands. Restricting to known launchers prevents apiary.yaml config-write
 // access from becoming arbitrary code execution.
 var allowedMCPCommands = map[string]bool{
-	"npx":     true,
+	"bun":     true,
+	"bunx":    true,
+	"deno":    true,
+	"docker":  true,
 	"node":    true,
+	"npx":     true,
 	"python":  true,
 	"python3": true,
 	"uvx":     true,
-	"docker":  true,
-	"bunx":    true,
-	"deno":    true,
 }
 
 // adapterCombos renders registered adapter names as the type/provider
