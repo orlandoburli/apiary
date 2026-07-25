@@ -274,7 +274,11 @@ type Settings struct {
 	LogMaxSizeMB  int                `yaml:"log_max_size_mb"`  // rotate apiary.log past this size; default 50
 	LogMaxBackups int                `yaml:"log_max_backups"`  // rotated files to keep; default 5
 	LogMaxAgeDays int                `yaml:"log_max_age_days"` // prune backups and task logs older than this; default 30
-	Memory        MemorySettings     `yaml:"memory"`
+	// PromptRetentionDays controls how long full prompt/output text is kept in
+	// task_executions and step_runs before being NULLed. 0 inherits
+	// LogMaxAgeDays; negative disables prompt scrubbing entirely.
+	PromptRetentionDays int              `yaml:"prompt_retention_days"`
+	Memory              MemorySettings   `yaml:"memory"`
 	Events        EventSettings      `yaml:"events"`
 	Approvals     ApprovalSettings   `yaml:"approvals"`
 	Telemetry     Telemetry          `yaml:"telemetry"`
@@ -512,6 +516,20 @@ func (s *Settings) TaskTimeoutDuration() time.Duration {
 		return 120 * time.Minute
 	}
 	return d
+}
+
+// PromptRetentionDuration returns the window after which prompt/output text is
+// scrubbed from task_executions and step_runs. Zero means inherit
+// LogMaxAgeDays; negative means disabled (returns 0).
+func (s *Settings) PromptRetentionDuration() time.Duration {
+	if s.PromptRetentionDays < 0 {
+		return 0
+	}
+	days := s.PromptRetentionDays
+	if days == 0 {
+		days = s.LogMaxAgeDays
+	}
+	return time.Duration(days) * 24 * time.Hour
 }
 
 type Telemetry struct {

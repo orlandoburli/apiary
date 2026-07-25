@@ -535,6 +535,19 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		}()
 	}
 
+	// Scrub prompt/output text from task_executions and step_runs older than the
+	// retention window (settings.prompt_retention_days, inheriting
+	// log_max_age_days when unset). Runs at startup and then once a day.
+	if d.db != nil {
+		if retention := d.cfg.Settings.PromptRetentionDuration(); retention > 0 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				d.prunePromptsLoop(ctx, retention)
+			}()
+		}
+	}
+
 	// Prune task-memory notes whose task has been terminal longer than the
 	// retention window (settings.memory.task_retention), at startup and then
 	// every 6 hours. Global entries are never auto-pruned.
@@ -592,6 +605,32 @@ func (d *Dispatcher) pruneLogsLoop(ctx context.Context, maxAge time.Duration) {
 			return
 		case <-ticker.C:
 			prune()
+		}
+	}
+}
+
+// prunePromptsLoop NULLs prompt/output text in task_executions and step_runs
+// older than maxAge, at startup and then once a day. Token counts and cost
+// columns are preserved so cost reporting remains accurate.
+func (d *Dispatcher) prunePromptsLoop(ctx context.Context, maxAge time.Duration) {
+	scrub := func() {
+		n, err := d.db.ScrubPromptsBefore(ctx, time.Now().Add(-maxAge))
+		if err != nil {
+			aplog.Warn("scrub prompt rows: %v", err)
+		} else if n > 0 {
+			aplog.Info("scrubbed %d prompt row(s) older than %dd", n, int(maxAge.Hours()/24))
+		}
+	}
+	scrub()
+
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			scrub()
 		}
 	}
 }
