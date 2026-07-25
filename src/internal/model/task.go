@@ -52,6 +52,11 @@ type TaskMetadata struct {
 	// State mirrors the live source item's state (e.g. "todo", "in_progress")
 	// so triggers gated on match.states resolve. Empty for spawned tasks.
 	State string
+	// SpawnDepth is the APIARY_SPAWN nesting depth of this task. Root tasks
+	// (created from a source binding) have depth 0. Each APIARY_SPAWN hop
+	// increments this by one. The spawner rejects requests whose depth would
+	// exceed MaxSpawnDepth, bounding runaway spawn loops.
+	SpawnDepth int
 }
 
 // SourceBinding links a source item to an InternalTask. One task may have many
@@ -96,6 +101,10 @@ type SpawnRequest struct {
 	// Body is the description written to the source sub-issue when the child is
 	// materialized (the spec / acceptance criteria for the downstream agent).
 	Body string `json:"body,omitempty"`
+	// Depth is the spawn-chain depth of the child to be created. Never taken from
+	// agent output (json:"-"); the engine always sets it to parent.Metadata.SpawnDepth+1
+	// before calling the spawner, which rejects requests exceeding MaxSpawnDepth.
+	Depth int `json:"-"`
 }
 
 // Memorize scopes — which memory tier an APIARY_MEMORIZE request targets.

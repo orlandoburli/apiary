@@ -329,3 +329,53 @@ func TestDefaultSpawner_AwaitUnknownTask(t *testing.T) {
 		t.Fatal("expected error awaiting an untracked task")
 	}
 }
+
+// TestDefaultSpawner_DepthLimitRejected asserts that a spawn request whose
+// Depth exceeds MaxSpawnDepth is rejected with an error and no task is created.
+// This is the primary guard against runaway spawn loops (SEC-12).
+func TestDefaultSpawner_DepthLimitRejected(t *testing.T) {
+	creator := &fakeCreator{}
+	s := NewDefaultSpawner(
+		func(string) (config.WorkflowConfig, bool) { return config.WorkflowConfig{ID: "w"}, true },
+		creator,
+		func(context.Context, config.WorkflowConfig, model.InternalTask) (bool, error) { return true, nil },
+		testIDGen(), func() time.Time { return time.Unix(1000, 0) },
+	)
+
+	_, err := s.Spawn(context.Background(), model.SpawnRequest{
+		WorkflowID: "w",
+		Title:      "deep child",
+		Depth:      MaxSpawnDepth + 1,
+	})
+	if err == nil {
+		t.Fatal("expected error when spawn depth exceeds MaxSpawnDepth, got nil")
+	}
+	if len(creator.created()) != 0 {
+		t.Errorf("no task should be persisted when depth limit is exceeded, got %d", len(creator.created()))
+	}
+}
+
+// TestDefaultSpawner_DepthLimitBoundary checks that a request at exactly
+// MaxSpawnDepth is accepted (boundary not exceeded) and the child carries the
+// right SpawnDepth in its metadata.
+func TestDefaultSpawner_DepthLimitBoundary(t *testing.T) {
+	creator := &fakeCreator{}
+	s := NewDefaultSpawner(
+		func(string) (config.WorkflowConfig, bool) { return config.WorkflowConfig{ID: "w"}, true },
+		creator,
+		func(context.Context, config.WorkflowConfig, model.InternalTask) (bool, error) { return true, nil },
+		testIDGen(), func() time.Time { return time.Unix(1000, 0) },
+	)
+
+	child, err := s.Spawn(context.Background(), model.SpawnRequest{
+		WorkflowID: "w",
+		Title:      "boundary child",
+		Depth:      MaxSpawnDepth,
+	})
+	if err != nil {
+		t.Fatalf("expected Spawn to succeed at depth %d, got: %v", MaxSpawnDepth, err)
+	}
+	if child.Metadata.SpawnDepth != MaxSpawnDepth {
+		t.Errorf("child SpawnDepth = %d, want %d", child.Metadata.SpawnDepth, MaxSpawnDepth)
+	}
+}

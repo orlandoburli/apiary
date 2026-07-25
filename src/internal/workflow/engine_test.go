@@ -342,8 +342,12 @@ func TestEngine_PublishWritesBackToBindings(t *testing.T) {
 		t.Fatalf("RunInstance: %v", err)
 	}
 
-	if len(side.comments) != 1 || side.comments[0] != "## Result\nshipped" {
-		t.Fatalf("expected one publish comment %q, got %#v", "## Result\nshipped", side.comments)
+	// The comment posted to the source must carry the provenance marker so
+	// tooling can identify it as agent-authored; the raw payload in the step
+	// run is stored without the marker (it records what the agent emitted).
+	wantPosted := agentProvenanceMarker + "## Result\nshipped"
+	if len(side.comments) != 1 || side.comments[0] != wantPosted {
+		t.Fatalf("expected one publish comment %q, got %#v", wantPosted, side.comments)
 	}
 	sr := store.stepRuns[store.stepOrder[0]]
 	if sr.PublishState != db.PublishStateSent {
@@ -468,6 +472,55 @@ func TestEngine_SpawnErrorFailsStep(t *testing.T) {
 	instID, _, _ := eng.RunInstance(context.Background(), spawnWF(config.SpawnAuto), model.InternalTask{ID: "C1"})
 	if store.instances[instID].State != db.InstanceStateFailed {
 		t.Errorf("expected failed instance on spawn error, got %s", store.instances[instID].State)
+	}
+}
+
+// TestEngine_PublishProvenanceMarker verifies that publishStep prepends the
+// provenance marker to the payload it posts, while storing the raw agent payload
+// in the step run (SEC-12).
+func TestEngine_PublishProvenanceMarker(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Settings.ResultComment = false
+	store := newFakeStore()
+	store.bindings["T1"] = []model.SourceBinding{{TaskID: "T1", SourceID: "s1", SourceItemID: "I-1"}}
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"run": {Success: true, Output: "ok", PublishPayload: "hello world"},
+	}}
+	side := &fakeSide{}
+	eng := testEngine(cfg, store, exec, side)
+
+	wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+	if _, _, err := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "T1", Title: "T"}); err != nil {
+		t.Fatalf("RunInstance: %v", err)
+	}
+
+	wantPosted := agentProvenanceMarker + "hello world"
+	if len(side.comments) != 1 || side.comments[0] != wantPosted {
+		t.Errorf("posted payload = %q, want %q", side.comments, wantPosted)
+	}
+}
+
+// TestEngine_SpawnDepthPropagated verifies that spawnStep sets req.Depth to
+// parent.Metadata.SpawnDepth+1 before calling the spawner (SEC-12).
+func TestEngine_SpawnDepthPropagated(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"run": {Success: true, Output: "ok", SpawnRequest: &model.SpawnRequest{WorkflowID: "child"}},
+	}}
+	sp := &fakeSpawner{child: model.InternalTask{ID: "task-child"}}
+	eng := testEngineWithSpawner(baseCfg(), store, exec, &fakeSide{}, sp)
+
+	parent := model.InternalTask{ID: "P1", Title: "Parent", Metadata: model.TaskMetadata{SpawnDepth: 2}}
+	if _, _, err := eng.RunInstance(context.Background(), spawnWF(config.SpawnAuto), parent); err != nil {
+		t.Fatalf("RunInstance: %v", err)
+	}
+
+	req, ok := sp.lastRequest()
+	if !ok {
+		t.Fatal("spawner was not called")
+	}
+	if req.Depth != 3 {
+		t.Errorf("spawn Depth = %d, want 3 (parent depth 2 + 1)", req.Depth)
 	}
 }
 

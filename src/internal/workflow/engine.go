@@ -763,6 +763,7 @@ func (e *Engine) spawnStep(ctx context.Context, task model.InternalTask, step co
 	var spawnErrs []error
 	for _, req := range reqs {
 		req.ParentTaskID = task.ID
+		req.Depth = task.Metadata.SpawnDepth + 1
 		child, err := e.spawner.Spawn(ctx, req)
 		if err != nil {
 			spawnErrs = append(spawnErrs, fmt.Errorf("spawn workflow %q: %w", req.WorkflowID, err))
@@ -819,11 +820,20 @@ func (e *Engine) materializeChild(ctx context.Context, parent model.InternalTask
 	return e.side.MaterializeChild(ctx, parent, parentBindings, child)
 }
 
+// agentProvenanceMarker is prepended to every APIARY_PUBLISH payload before it
+// is posted as a comment. It marks the content as agent-authored so tooling and
+// human reviewers can distinguish it from human-written comments. The marker is
+// an invisible HTML comment so it does not clutter the rendered output.
+const agentProvenanceMarker = "<!-- apiary:agent-authored -->\n"
+
 // publishStep writes an agent-emitted APIARY_PUBLISH payload back to the task's
 // source bindings and records the outcome on the step run. The executor has
 // already cleared the payload when the step set publish: off, so a non-empty
 // payload here means write-back was requested. A task with no bindings (e.g. a
 // spawned task) is silently skipped.
+//
+// Every posted payload is prefixed with agentProvenanceMarker so that tooling
+// can reliably distinguish agent-authored comments from human-written ones.
 func (e *Engine) publishStep(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, res StepResult, sr *db.StepRun) {
 	if res.PublishPayload == "" {
 		return
@@ -833,7 +843,8 @@ func (e *Engine) publishStep(ctx context.Context, task model.InternalTask, bindi
 		sr.PublishState = db.PublishStateSkipped
 		return
 	}
-	if err := e.side.PostComment(ctx, task, bindings, res.PublishPayload); err != nil {
+	payload := agentProvenanceMarker + res.PublishPayload
+	if err := e.side.PostComment(ctx, task, bindings, payload); err != nil {
 		sr.PublishState = db.PublishStateFailed
 		return
 	}

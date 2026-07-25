@@ -15,6 +15,12 @@ import (
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
+// MaxSpawnDepth is the maximum number of consecutive APIARY_SPAWN hops a chain
+// may take. Root tasks have depth 0; each spawn increments the depth by one. A
+// request that would produce a child at depth > MaxSpawnDepth is rejected by
+// DefaultSpawner.Spawn to prevent runaway spawn loops.
+const MaxSpawnDepth = 5
+
 // WorkflowSpawner creates a child InternalTask for an APIARY_SPAWN request and
 // runs the named workflow against it. The engine holds one via an interface field
 // so it stays testable in isolation (see Engine.spawner / WithSpawner).
@@ -97,6 +103,13 @@ func NewDefaultSpawner(
 // it without creating a duplicate or launching the workflow again — so re-running
 // the same decomposition does not fan out a second, duplicate set of sub-issues.
 func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (model.InternalTask, error) {
+	// Depth guard: reject chains that have grown too deep to prevent an injected
+	// agent from creating a self-perpetuating spawn loop. Depth is set by the
+	// engine (parent.Metadata.SpawnDepth+1) and never taken from agent output.
+	if req.Depth > MaxSpawnDepth {
+		return model.InternalTask{}, fmt.Errorf("spawn depth %d exceeds limit of %d: request rejected to prevent spawn loop", req.Depth, MaxSpawnDepth)
+	}
+
 	// A materialize-only spawn (empty workflow) creates the deduped child but runs
 	// no inline workflow — the child is left for the normal poll→route loop to pick
 	// up once it is materialized as a source sub-issue (see step.Materialize). Only
@@ -131,7 +144,7 @@ func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (mod
 		Input:        req.Input,
 		DedupKey:     dedupKey,
 		State:        model.TaskStateRegistered,
-		Metadata:     model.TaskMetadata{Type: "internal", Labels: req.Labels},
+		Metadata:     model.TaskMetadata{Type: "internal", Labels: req.Labels, SpawnDepth: req.Depth},
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
