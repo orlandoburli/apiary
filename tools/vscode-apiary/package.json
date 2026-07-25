@@ -1,8 +1,8 @@
 {
   "name": "vscode-apiary",
   "displayName": "Apiary Workflow Visualizer",
-  "description": "Live visual preview of apiary.yaml workflow files",
-  "version": "0.1.3",
+  "description": "Live visual preview and bidirectional visual editor for apiary.yaml workflow files",
+  "version": "0.2.0",
   "publisher": "orlandoburli",
   "license": "BSD-3-Clause",
   "icon": "icon.png",
@@ -16,7 +16,7 @@
   },
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Visualization", "Other"],
-  "keywords": ["apiary", "workflow", "yaml", "preview", "diagram"],
+  "keywords": ["apiary", "workflow", "yaml", "preview", "diagram", "editor"],
   "activationEvents": ["onLanguage:yaml"],
   "main": "./dist/extension.js",
   "contributes": {
@@ -25,6 +25,11 @@
         "command": "apiary.showPreview",
         "title": "Apiary: Show Workflow Preview",
         "icon": "$(type-hierarchy-super)"
+      },
+      {
+        "command": "apiary.openEditor",
+        "title": "Apiary: Open Visual Editor",
+        "icon": "$(edit)"
       }
     ],
     "menus": {
@@ -32,7 +37,12 @@
         {
           "command": "apiary.showPreview",
           "when": "resourceFilename == apiary.yaml",
-          "group": "navigation"
+          "group": "navigation@2"
+        },
+        {
+          "command": "apiary.openEditor",
+          "when": "resourceFilename == apiary.yaml",
+          "group": "navigation@1"
         }
       ]
     }
@@ -40,7 +50,8 @@
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --platform=node --target=node18 --format=cjs",
     "watch": "npm run build -- --watch",
-    "package": "vsce package --no-dependencies"
+    "package": "vsce package --no-dependencies",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
