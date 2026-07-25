@@ -35,6 +35,16 @@ type CliRunner struct {
 	// mcpRunArgs are extra CLI args injected into every run to activate the MCP
 	// config written by setupMCP (e.g. claude's "--mcp-config <path>").
 	mcpRunArgs []string
+
+	// allowRoot permits launching the agent CLI as uid 0. Disabled by default
+	// because Jira/GitHub-sourced prompt text is untrusted and executing as root
+	// maximises the blast radius of a successful prompt injection.
+	allowRoot bool
+	// envPasslist, when non-empty, restricts which host env vars are forwarded to
+	// the agent subprocess. Only vars whose names appear in this list are passed;
+	// vars added via req.Env are always forwarded regardless of this list.
+	// When empty, all host env vars are forwarded (legacy behaviour).
+	envPasslist []string
 }
 
 func (r *CliRunner) ID() string { return "cli" }
@@ -70,6 +80,16 @@ func (r *CliRunner) Configure(config map[string]any) error {
 	if v, ok := config["mcps"].([]model.MCPServer); ok {
 		r.mcps = v
 	}
+	if v, ok := config["allow_root"].(bool); ok {
+		r.allowRoot = v
+	}
+	if raw, ok := config["env_passlist"].([]any); ok {
+		for _, e := range raw {
+			if s, ok := e.(string); ok {
+				r.envPasslist = append(r.envPasslist, s)
+			}
+		}
+	}
 	// Materialise the provider's MCP config (and any per-run CLI args) once the
 	// servers are known. Configure runs at load time, sequentially across agents,
 	// so the global-config merges (cursor/opencode) are race-free.
@@ -84,6 +104,9 @@ func (r *CliRunner) Configure(config map[string]any) error {
 }
 
 func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
+	if err := checkPrivilege(os.Getuid(), r.allowRoot); err != nil {
+		return model.RunResult{}, err
+	}
 	start := time.Now()
 	prompt := buildPrompt(req)
 
@@ -105,7 +128,11 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 
 	cmd := exec.CommandContext(ctx, r.command, argv...)
 	cmd.Dir = req.WorkingDir
-	cmd.Env = os.Environ()
+	if len(r.envPasslist) > 0 {
+		cmd.Env = filteredEnv(os.Environ(), r.envPasslist)
+	} else {
+		cmd.Env = os.Environ()
+	}
 	for k, v := range req.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
