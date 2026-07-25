@@ -306,6 +306,9 @@ type QueueSettings struct {
 	PollInterval       string                   `yaml:"poll_interval,omitempty"`
 	Listen             string                   `yaml:"listen,omitempty"`
 	WorkerToken        string                   `yaml:"worker_token,omitempty"`
+	TLSCertFile        string                   `yaml:"tls_cert_file,omitempty"`
+	TLSKeyFile         string                   `yaml:"tls_key_file,omitempty"`
+	TLSProxyMode       bool                     `yaml:"tls_proxy_mode,omitempty"`
 	Concurrency        QueueConcurrencySettings `yaml:"concurrency,omitempty"`
 }
 
