@@ -287,6 +287,14 @@ type Settings struct {
 	// CreditExhaustedCooldown is how long a runner type is paused after a
 	// credit-exhausted failure. Default "24h".
 	CreditExhaustedCooldown string `yaml:"credit_exhausted_cooldown,omitempty"`
+	// AllowRoot, when true, permits Apiary to launch agent CLIs running as
+	// root (uid 0). The default is false: launching a CLI agent as root is
+	// refused because untrusted task content (e.g. Jira ticket bodies) may
+	// contain prompt injection that would execute with unrestricted privileges.
+	// Only set this to true in controlled environments where root is required
+	// (e.g. container-bootstrapping workflows) and prompt injection risk is
+	// separately mitigated.
+	AllowRoot bool `yaml:"allow_root,omitempty"`
 }
 
 // QueueSettings controls durable dispatch and the embedded protocol-1 worker.

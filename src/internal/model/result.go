@@ -49,6 +49,11 @@ type RunRequest struct {
 	// The dispatcher uses it to update last_heartbeat_at in the DB so the
 	// dashboard can detect stale/zombie processes.
 	Heartbeat func() `json:"-"`
+
+	// AllowRoot, when true, permits the CLI runner to launch the agent process
+	// as root (uid 0). Populated from settings.allow_root in apiary.yaml.
+	// False by default; see CliRunner.Run for the enforcement logic.
+	AllowRoot bool
 }
 
 type Usage struct {

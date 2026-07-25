@@ -84,6 +84,9 @@ func (r *CliRunner) Configure(config map[string]any) error {
 }
 
 func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
+	if err := checkPrivilege(req.AllowRoot); err != nil {
+		return model.RunResult{}, err
+	}
 	start := time.Now()
 	prompt := buildPrompt(req)
 

@@ -404,6 +404,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		WorkingDir:         "/",
 		Env:                env,
 		Timeout:            x.d.cfg.Settings.TaskTimeoutDuration(),
+		AllowRoot:          x.d.cfg.Settings.AllowRoot,
 	}
 
 	if x.d.logger != nil {
