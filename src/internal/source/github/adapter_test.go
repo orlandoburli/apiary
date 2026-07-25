@@ -380,3 +380,14 @@ func TestAddLabels_AppendsWithoutReplacing(t *testing.T) {
 		t.Errorf("posted body must not replay the snapshot labels: %s", postedBody)
 	}
 }
+
+func TestToCell_MapsAuthorAssociation(t *testing.T) {
+	a := &Adapter{id: "gh"}
+	for _, assoc := range []string{"OWNER", "MEMBER", "COLLABORATOR", "NONE", ""} {
+		item := issue{Number: 1, AuthorAssociation: assoc}
+		cell := a.toSourceItem(item)
+		if cell.AuthorAssociation != assoc {
+			t.Errorf("assoc %q: toSourceItem set AuthorAssociation=%q", assoc, cell.AuthorAssociation)
+		}
+	}
+}

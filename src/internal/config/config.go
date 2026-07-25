@@ -47,6 +47,16 @@ type SourceConfig struct {
 	Config       map[string]any `yaml:"config"`
 	PollInterval string         `yaml:"poll_interval"`
 	Filters      SourceFilters  `yaml:"filters"`
+	Security     SourceSecurity `yaml:"security,omitempty"`
+}
+
+// SourceSecurity holds ingest-time trust controls for a source.
+type SourceSecurity struct {
+	// RequireTrustedAuthor, when true, prevents dispatch of items whose author
+	// is not a repository OWNER, MEMBER, or COLLABORATOR. Untrusted items are
+	// labelled needs-triage and skipped. Only effective for sources that carry
+	// author association information (e.g. GitHub).
+	RequireTrustedAuthor bool `yaml:"require_trusted_author"`
 }
 
 func (s SourceConfig) ParsedPollInterval() (time.Duration, error) {

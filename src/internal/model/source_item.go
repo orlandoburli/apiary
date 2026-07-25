@@ -25,6 +25,10 @@ type SourceItem struct {
 	Metadata    map[string]any
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	// AuthorAssociation is the author's relationship to the source repository.
+	// Populated by adapters that carry this information (e.g. GitHub). Empty
+	// string means unknown / not provided by the source.
+	AuthorAssociation string
 	// Comments is populated only by a TaskPoller (per-task fetch used for
 	// approval steps), not by Poll. It holds comments relevant to evaluating an
 	// approval condition.

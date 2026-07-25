@@ -1366,6 +1366,15 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 			aplog.Debug("cell %s: already in-flight, skipping", cell.LogLabel())
 			continue
 		}
+		// Trust gate: when the source requires trusted authors, refuse to dispatch
+		// items from non-collaborators. The check runs before bindItem so untrusted
+		// items are never persisted as tasks — eliminating the TOCTOU window that
+		// exists when relying solely on the triage-gate GitHub Action.
+		if sc.Security.RequireTrustedAuthor && !isTrustedAuthor(cell) {
+			d.parkUntrustedItem(ctx, cell, sc.ID)
+			d.inFlight.Delete(cell.ID)
+			continue
+		}
 		task, persisted := d.bindItem(ctx, cell)
 		d.recordRouteEvents(ctx, task)
 		matches := d.router.RouteAll(task)

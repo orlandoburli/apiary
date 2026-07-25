@@ -14,6 +14,9 @@ type issue struct {
 	UpdatedAt   string    `json:"updated_at"`
 	PullRequest *struct{} `json:"pull_request,omitempty"`
 	User        user      `json:"user"`
+	// AuthorAssociation is the issue author's relationship to the repository:
+	// OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE, etc.
+	AuthorAssociation string `json:"author_association"`
 }
 
 type user struct {

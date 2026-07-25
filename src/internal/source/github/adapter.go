@@ -678,17 +678,18 @@ func (a *Adapter) toSourceItem(item issue) model.SourceItem {
 
 	// Poll skips pull requests, so every ingested item is a plain issue.
 	return model.SourceItem{
-		ID:          fmt.Sprintf("%d", item.Number),
-		SourceID:    a.ID(),
-		Number:      fmt.Sprintf("#%d", item.Number),
-		Title:       item.Title,
-		Description: item.Body,
-		Labels:      labels,
-		Type:        "issue",
-		State:       item.State,
-		URL:         item.HTMLURL,
-		CreatedAt:   createdAt,
-		UpdatedAt:   updatedAt,
+		ID:                fmt.Sprintf("%d", item.Number),
+		SourceID:          a.ID(),
+		Number:            fmt.Sprintf("#%d", item.Number),
+		Title:             item.Title,
+		Description:       item.Body,
+		Labels:            labels,
+		Type:              "issue",
+		State:             item.State,
+		URL:               item.HTMLURL,
+		CreatedAt:         createdAt,
+		UpdatedAt:         updatedAt,
+		AuthorAssociation: item.AuthorAssociation,
 	}
 }
 
