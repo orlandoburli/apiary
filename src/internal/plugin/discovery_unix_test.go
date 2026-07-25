@@ -42,3 +42,30 @@ func TestDiscoverSkipsGroupAndWorldWritableDirs(t *testing.T) {
 		t.Fatal("safe plugin from good path should still load")
 	}
 }
+
+func TestDiscoverSkipsWritableChildPluginDir(t *testing.T) {
+	// Parent dir has correct permissions (0700); one child plugin dir is
+	// group-writable — discovery must skip that child and warn, while still
+	// loading a sibling child with safe permissions.
+	parent := t.TempDir() // 0700 by default
+
+	writeTestPlugin(t, parent, "bad", "exit 0", Manifest{})
+	if err := os.Chmod(filepath.Join(parent, "bad"), 0o775); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(parent, "bad"), 0o755) })
+
+	writeTestPlugin(t, parent, "good", "exit 0", Manifest{})
+
+	registry, errs := Discover([]string{parent}, parent, "v0.10.0")
+
+	if _, ok := registry.Get("dev.apiary.bad"); ok {
+		t.Fatal("group-writable child plugin dir must not be loaded")
+	}
+	if _, ok := registry.Get("dev.apiary.good"); !ok {
+		t.Fatal("sibling with safe permissions must still load")
+	}
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "group- or world-writable") {
+		t.Fatalf("expected exactly 1 permission warning for the bad child, got errs=%v", errs)
+	}
+}
