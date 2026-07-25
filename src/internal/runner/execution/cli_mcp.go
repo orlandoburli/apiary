@@ -5,10 +5,43 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/orlandoburli/apiary/internal/model"
 )
+
+// allowedMCPCommands is the explicit allow-list of executables that may be
+// launched as stdio MCP server processes. Any command not in this set is
+// rejected to prevent arbitrary code execution via apiary.yaml config writes.
+var allowedMCPCommands = map[string]bool{
+	"bun":     true,
+	"bunx":    true,
+	"deno":    true,
+	"docker":  true,
+	"node":    true,
+	"npx":     true,
+	"python":  true,
+	"python3": true,
+	"uvx":     true,
+}
+
+// validateMCPCommands returns an error if any MCP server's command is not in
+// the allow-list.
+func validateMCPCommands(mcps []model.MCPServer) error {
+	for _, m := range mcps {
+		if !allowedMCPCommands[m.Command] {
+			allowed := make([]string, 0, len(allowedMCPCommands))
+			for k := range allowedMCPCommands {
+				allowed = append(allowed, k)
+			}
+			sort.Strings(allowed)
+			return fmt.Errorf("mcp server %q: command %q is not allowed; permitted commands: %s",
+				m.Name, m.Command, strings.Join(allowed, ", "))
+		}
+	}
+	return nil
+}
 
 // setupMCP writes the runner's MCP servers into the provider's native config
 // format/location and returns extra CLI args to inject into every run.
@@ -31,6 +64,9 @@ import (
 func (r *CliRunner) setupMCP() ([]string, error) {
 	if len(r.mcps) == 0 {
 		return nil, nil
+	}
+	if err := validateMCPCommands(r.mcps); err != nil {
+		return nil, err
 	}
 	switch r.mcpFormat {
 	case "claude":

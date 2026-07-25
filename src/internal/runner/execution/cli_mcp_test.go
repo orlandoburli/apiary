@@ -195,3 +195,32 @@ func TestSetupMCP_UnknownFormatNoop(t *testing.T) {
 		t.Fatalf("expected nil args for unsupported provider, got %v", args)
 	}
 }
+
+func TestSetupMCP_RejectsDisallowedCommand(t *testing.T) {
+	bad := model.MCPServer{Name: "evil", Command: "/usr/bin/malware", Args: []string{"--exfil"}}
+	r := &CliRunner{mcpFormat: "claude", mcps: []model.MCPServer{bad}}
+	_, err := r.setupMCP()
+	if err == nil {
+		t.Fatal("expected error for disallowed command, got nil")
+	}
+	if !strings.Contains(err.Error(), "/usr/bin/malware") {
+		t.Errorf("error should mention the rejected command, got: %v", err)
+	}
+}
+
+func TestSetupMCP_AllowsKnownCommands(t *testing.T) {
+	for cmd := range allowedMCPCommands {
+		t.Run(cmd, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			r := &CliRunner{
+				mcpFormat: "claude",
+				mcps:      []model.MCPServer{{Name: "srv", Command: cmd}},
+			}
+			_, err := r.setupMCP()
+			if err != nil {
+				t.Fatalf("command %q should be allowed, got: %v", cmd, err)
+			}
+		})
+	}
+}
