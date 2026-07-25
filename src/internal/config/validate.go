@@ -51,9 +51,27 @@ func adapterCombos(names []string) string {
 	return strings.Join(combos, ", ")
 }
 
-// validateMCPs checks that each MCP server has a name and command, and that
-// names are unique within the scope. `scope` is a human label for error
-// messages (e.g. `runners[0] "claude"`).
+// mcpCommandAllowList is the set of executable names that are permitted as MCP
+// server commands. Only bare names (no path separators) are matched; absolute
+// or relative paths are rejected outright. The list covers the common stdio MCP
+// server launchers; extend it here when a new well-known launcher is needed.
+var mcpCommandAllowList = map[string]bool{
+	"npx":     true, // Node.js package runner (most common: npx -y <package> mcp)
+	"node":    true, // direct Node.js script execution
+	"bunx":    true, // Bun package runner
+	"bun":     true, // Bun runtime
+	"deno":    true, // Deno runtime
+	"uvx":     true, // Python UV package runner
+	"uv":      true, // UV tool runner
+	"python":  true, // Python interpreter
+	"python3": true, // Python 3 interpreter
+	"docker":  true, // containerised MCP servers
+}
+
+// validateMCPs checks that each MCP server has a name and command, that the
+// command is in the allow-list of known-safe launchers, and that names are
+// unique within the scope. `scope` is a human label for error messages (e.g.
+// `runners[0] "claude"`).
 func validateMCPs(scope string, mcps []model.MCPServer) []error {
 	var errs []error
 	seen := map[string]bool{}
@@ -61,8 +79,18 @@ func validateMCPs(scope string, mcps []model.MCPServer) []error {
 		if m.Name == "" {
 			errs = append(errs, fmt.Errorf("%s: mcps[%d]: name is required", scope, j))
 		}
-		if m.Command == "" {
+		switch {
+		case m.Command == "":
 			errs = append(errs, fmt.Errorf("%s: mcps[%d] %q: command is required", scope, j, m.Name))
+		case strings.ContainsRune(m.Command, '/'):
+			errs = append(errs, fmt.Errorf("%s: mcps[%d] %q: command %q must be a bare executable name, not a path", scope, j, m.Name, m.Command))
+		case !mcpCommandAllowList[m.Command]:
+			allowed := make([]string, 0, len(mcpCommandAllowList))
+			for k := range mcpCommandAllowList {
+				allowed = append(allowed, k)
+			}
+			errs = append(errs, fmt.Errorf("%s: mcps[%d] %q: command %q is not in the allow-list; permitted commands: %s",
+				scope, j, m.Name, m.Command, strings.Join(allowed, ", ")))
 		}
 		if m.Name != "" && seen[m.Name] {
 			errs = append(errs, fmt.Errorf("%s: mcps[%d]: duplicate name %q", scope, j, m.Name))

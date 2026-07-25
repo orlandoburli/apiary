@@ -64,6 +64,49 @@ func TestValidate_MCPDuplicateName(t *testing.T) {
 	}
 	assertError(t, cfg, "duplicate name")
 }
+func TestValidate_MCPCommandNotAllowed(t *testing.T) {
+	cfg := &config.Config{
+		Version: "1",
+		Runners: []config.RunnerConfig{
+			{ID: "r", Type: "cli", MCPs: []model.MCPServer{
+				{Name: "evil", Command: "bash"},
+			}},
+		},
+	}
+	assertError(t, cfg, "is not in the allow-list")
+}
+
+func TestValidate_MCPCommandPath(t *testing.T) {
+	cfg := &config.Config{
+		Version: "1",
+		Runners: []config.RunnerConfig{
+			{ID: "r", Type: "cli", MCPs: []model.MCPServer{
+				{Name: "evil", Command: "/usr/bin/npx"},
+			}},
+		},
+	}
+	assertError(t, cfg, "must be a bare executable name, not a path")
+}
+
+func TestValidate_MCPCommandAllowedCommands(t *testing.T) {
+	for _, cmd := range []string{"npx", "node", "uvx", "python3", "deno", "bun", "bunx", "uv", "python", "docker"} {
+		t.Run(cmd, func(t *testing.T) {
+			cfg := &config.Config{
+				Version: "1",
+				Runners: []config.RunnerConfig{
+					{ID: "r", Type: "cli", MCPs: []model.MCPServer{
+						{Name: "srv", Command: cmd},
+					}},
+				},
+			}
+			for _, e := range cfg.Validate() {
+				if containsStr(e.Error(), "allow-list") || containsStr(e.Error(), "not a path") {
+					t.Errorf("command %q unexpectedly rejected: %v", cmd, e)
+				}
+			}
+		})
+	}
+}
 
 func TestValidate_MissingSourceID(t *testing.T) {
 	cfg := &config.Config{
