@@ -11,6 +11,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// shortStr returns at most n characters of s, safe for any input length.
+func shortStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
 func newRollbackCmd() *cobra.Command {
 	var env string
 	var toDigest string
@@ -77,9 +85,9 @@ func listRevisions(ctx context.Context, dbClient *db.Client, env string) error {
 	}
 	fmt.Printf("Config revisions for %s (newest first):\n\n", label)
 	for _, r := range revs {
-		fmt.Printf("  %-16s  %-12s  %s", r.ConfigDigest[:16], r.Event, r.RecordedAt.Format(time.RFC3339))
+		fmt.Printf("  %-16s  %-12s  %s", shortStr(r.ConfigDigest, 16), r.Event, r.RecordedAt.Format(time.RFC3339))
 		if r.GitRevision != "" {
-			fmt.Printf("  git:%s", r.GitRevision[:8])
+			fmt.Printf("  git:%s", shortStr(r.GitRevision, 8))
 		}
 		if r.FromEnvironment != "" {
 			fmt.Printf("  from:%s", r.FromEnvironment)
@@ -93,24 +101,15 @@ func listRevisions(ctx context.Context, dbClient *db.Client, env string) error {
 }
 
 func recordRollback(ctx context.Context, dbClient *db.Client, env, digestPrefix, note string) error {
-	// Look up the target revision by digest prefix.
-	revs, err := dbClient.ListConfigRevisions(ctx, env, 100)
+	target, err := dbClient.FindConfigRevisionByDigestPrefix(ctx, env, digestPrefix)
 	if err != nil {
 		return fmt.Errorf("querying revisions: %w", err)
-	}
-
-	var target *db.ConfigRevision
-	for i, r := range revs {
-		if len(r.ConfigDigest) >= len(digestPrefix) && r.ConfigDigest[:len(digestPrefix)] == digestPrefix {
-			target = &revs[i]
-			break
-		}
 	}
 	if target == nil {
 		return fmt.Errorf("no revision found with digest prefix %q for environment %q", digestPrefix, env)
 	}
 
-	id := fmt.Sprintf("rev_%d", time.Now().UnixNano())
+	id := db.NewRevisionID()
 	rev := &db.ConfigRevision{
 		ID:           id,
 		Environment:  env,

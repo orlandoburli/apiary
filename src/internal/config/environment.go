@@ -82,6 +82,10 @@ type EnvironmentSettingsOverlay struct {
 
 // RolloutPolicy restricts which tasks receive environment-specific dispatch.
 // All non-empty criteria must be satisfied (AND semantics).
+//
+// Note: the policy is validated but not yet enforced at dispatch time. A future
+// release will wire it into the dispatcher so that only matching tasks are
+// routed to the environment's runners.
 type RolloutPolicy struct {
 	// Sources restricts dispatch to tasks originating from these source ids.
 	Sources []string `yaml:"sources,omitempty"`
@@ -111,11 +115,16 @@ func (c *Config) ForEnvironment(name string) (*Config, error) {
 	}
 	resolved.rawContent = c.rawContent
 
+	// Clear sibling environment definitions so that Digest(resolved) only
+	// reflects the effective configuration for this environment and is not
+	// contaminated by changes to other environments' overlays.
+	resolved.Environments = nil
+
 	applyEnvironmentOverlay(&resolved, overlay)
 	return &resolved, nil
 }
 
-// EnvironmentNames returns the sorted list of declared environment names.
+// EnvironmentNames returns the declared environment names (order not guaranteed).
 func (c *Config) EnvironmentNames() []string {
 	if len(c.Environments) == 0 {
 		return nil

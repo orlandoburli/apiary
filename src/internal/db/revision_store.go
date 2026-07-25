@@ -2,6 +2,10 @@ package db
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -15,6 +19,15 @@ type ConfigRevision struct {
 	FromEnvironment string // set on promote/rollback
 	Note            string
 	RecordedAt      time.Time
+}
+
+// NewRevisionID returns a collision-resistant ID for config_revisions rows,
+// using the same millisecond-timestamp + random-bytes scheme as task IDs.
+func NewRevisionID() string {
+	ts := uint64(time.Now().UnixMilli())
+	var r [10]byte
+	_, _ = rand.Read(r[:])
+	return fmt.Sprintf("rev_%012x%s", ts&0xFFFFFFFFFFFF, hex.EncodeToString(r[:]))
 }
 
 // RecordConfigRevision inserts a new audit entry.
@@ -61,20 +74,28 @@ func (c *Client) ListConfigRevisions(ctx context.Context, environment string, li
 	return out, rows.Err()
 }
 
-// GetConfigRevisionByDigest returns the most recent revision matching a digest.
-func (c *Client) GetConfigRevisionByDigest(ctx context.Context, digest string) (*ConfigRevision, error) {
-	row := c.db.QueryRowContext(ctx, `
+// FindConfigRevisionByDigestPrefix returns the most recent revision whose
+// config_digest starts with prefix, scoped to the given environment. Returns
+// nil (no error) when no matching row exists.
+func (c *Client) FindConfigRevisionByDigestPrefix(ctx context.Context, environment, prefix string) (*ConfigRevision, error) {
+	rows, err := c.db.QueryContext(ctx, `
 		SELECT id, environment, config_digest, COALESCE(git_revision,''), event,
 		       COALESCE(from_environment,''), COALESCE(note,''), recorded_at
 		FROM config_revisions
-		WHERE config_digest = ?
+		WHERE environment = ? AND config_digest LIKE ?
 		ORDER BY recorded_at DESC LIMIT 1
-	`, digest)
-	var r ConfigRevision
-	err := row.Scan(&r.ID, &r.Environment, &r.ConfigDigest, &r.GitRevision,
-		&r.Event, &r.FromEnvironment, &r.Note, &r.RecordedAt)
+	`, environment, strings.ReplaceAll(prefix, "%", "\\%")+"%")
 	if err != nil {
 		return nil, err
 	}
-	return &r, nil
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, rows.Err()
+	}
+	var r ConfigRevision
+	if err := rows.Scan(&r.ID, &r.Environment, &r.ConfigDigest, &r.GitRevision,
+		&r.Event, &r.FromEnvironment, &r.Note, &r.RecordedAt); err != nil {
+		return nil, err
+	}
+	return &r, rows.Err()
 }

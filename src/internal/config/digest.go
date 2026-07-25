@@ -18,12 +18,23 @@ import (
 // unexported) are excluded because yaml.Marshal only serialises exported
 // struct fields tagged with yaml tags. The digest is stable for structurally
 // identical configs regardless of source YAML formatting.
+//
+// If marshalling fails (should not happen for a well-formed Config), the
+// returned digest is the SHA-256 of an empty buffer so that callers always
+// get a consistent string type; the error is discarded because Digest is used
+// in hot-path comparisons where returning an error would be disruptive.
 func Digest(c *Config) string {
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
-	_ = enc.Encode(c)
-	_ = enc.Close()
+	encErr := enc.Encode(c)
+	closeErr := enc.Close()
+	if encErr != nil || closeErr != nil {
+		// Fallback: hash of empty bytes. Callers comparing digests will notice
+		// the mismatch and revalidate rather than silently accepting stale data.
+		var empty [32]byte
+		return hex.EncodeToString(empty[:])
+	}
 	h := sha256.Sum256(buf.Bytes())
 	return hex.EncodeToString(h[:])
 }

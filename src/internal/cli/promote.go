@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"time"
 
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
@@ -97,7 +96,7 @@ Examples:
 			}
 			defer dbClient.Close()
 
-			id := fmt.Sprintf("rev_%d", time.Now().UnixNano())
+			id := db.NewRevisionID()
 			rev := &db.ConfigRevision{
 				ID:              id,
 				Environment:     toEnv,

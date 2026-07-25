@@ -499,6 +499,18 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		} else if recounted > 0 || settled > 0 {
 			aplog.Info("reconciled outstanding counter on %d task(s), settled %d stranded task(s)", recounted, settled)
 		}
+
+		// Record the active configuration so rollback can reference it.
+		rev := &db.ConfigRevision{
+			ID:           db.NewRevisionID(),
+			Environment:  d.environment,
+			ConfigDigest: d.configDigest,
+			GitRevision:  d.gitRevision,
+			Event:        "startup",
+		}
+		if err := d.db.RecordConfigRevision(ctx, rev); err != nil {
+			aplog.Warn("record startup config revision: %v", err)
+		}
 	}
 	if d.db != nil {
 		if retention := d.cfg.Settings.Events.RetentionDuration(); retention > 0 {
