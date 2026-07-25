@@ -1,6 +1,6 @@
 ---
 name: git-workflow
-description: Git workflow obrigatório do projeto — toda change via feature branch + PR usando `git worktree`, auto-merge via `gh pr merge --auto --squash`, sync da `main`/rebuild do dev/`gitnexus analyze` após merge. Use ao iniciar qualquer change, abrir PR, ou após merge de PR.
+description: Git workflow obrigatório do projeto — toda change via feature branch + PR usando `git worktree`, PR aberto para review humano (sem auto-merge por agente), sync da `main`/rebuild do dev/`gitnexus analyze` após merge. Use ao iniciar qualquer change, abrir PR, ou após merge de PR.
 ---
 
 # Git Workflow — Projeto ERP
@@ -17,10 +17,10 @@ Ou via CLI:
 hermes kanban create "fix: ..." --assignee engineer --skill git-workflow
 ```
 
-**Regra fundamental:** NUNCA bloquear kanban task para review humano. Sempre criar PR com auto-merge e aguardar o CI. O worker só completa a task após o PR estar mergeado e o dev local sincronizado.
+**Regra fundamental (SEC-08):** Agentes NUNCA ativam auto-merge. O engineer cria o PR e para — um revisor humano (ou o reviewer council) deve aprovar explicitamente antes do merge. `gh pr merge --auto --squash` é proibido para agentes engineer.
 
 **Pipeline completo de uma task engineer:**
-Kanban cria task → dispatcher spawna worker → worker carrega git-workflow → cria worktree → faz o código → commit → push → PR → auto-merge → aguarda CI → confirma merge → pull main → task dev:rebuild → gitnexus reindex → remove worktree → complete task
+Kanban cria task → dispatcher spawna worker → worker carrega git-workflow → cria worktree → faz o código → commit → push → PR aberto → aguarda review/aprovação humana → merge realizado pelo revisor → pull main → task dev:rebuild → gitnexus reindex → remove worktree → complete task
 
 **GH_TOKEN:** o profile engineer tem GH_TOKEN no `.env`. Se o worker não conseguir usar `gh`, verificar se o token ainda é válido.
 
@@ -51,13 +51,10 @@ Kanban cria task → dispatcher spawna worker → worker carrega git-workflow �
 4. **Link issue and project**: after creating the PR:
    - The PR body MUST contain `Closes #<issue>` (or `Fixes #<issue>`) to link the issue.
    - Add the PR to the relevant GitHub Project: `gh project item-add 1 --owner orlandoburli-enterprise --url <pr-url>`.
-5. **Enable auto-merge**: run `gh pr merge <number> --auto --squash` so it merges automatically once CI passes.
-   - NUNCA bloquear kanban task para review humano. O worker cria o PR, ativa auto-merge e aguarda o CI. Sem blocker, sem review-required.
-6. CI must pass (lint, tests, build, sqlc-check) before merge.
-7. Aguardar o merge — obrigatório, sem exceção. A tarefa não está concluída até o PR estar mergeado e o dev local atualizado. Não pule para a próxima tarefa nem declare pronto antes disso.
-   - `gh pr checks <number> --watch` para aguardar o CI.
-   - Se o CI travar em flake conhecido (RATE_LIMIT 429, timing em `cadastro-observacoes-markdown`, `vendas-nucleo:438`, `cadastro-auto-rascunho`, etc.), faça `gh run rerun <run-id> --failed` e aguarde de novo. Só desista após 2-3 reruns mostrarem o mesmo padrão de falha.
-   - Confirme com `gh pr view <number> --json state,mergedAt` que `state == "MERGED"`.
+5. **Stop here — do NOT enable auto-merge (SEC-08).** An engineer agent MUST NOT run `gh pr merge --auto --squash`. Leave the PR open for a reviewer. A human or the reviewer council will approve and enable merge after inspecting the diff.
+6. CI must pass (lint, tests, build, sqlc-check) before merge — the reviewer verifies this before approving.
+7. After a reviewer approves and enables merge, confirm the merge completed:
+   - `gh pr view <number> --json state,mergedAt` that `state == "MERGED"`.
 8. **Sync da `main` local + rebuild do dev — executar imediatamente após confirmar o merge.** Não esperar o usuário pedir. No checkout principal (não no worktree):
    ```bash
    cd <repo-root> && git checkout main && git pull --ff-only
@@ -76,7 +73,7 @@ Kanban cria task → dispatcher spawna worker → worker carrega git-workflow �
 10. Remove o worktree: `git worktree remove ../project-erp--<branch>` e (opcional) `git branch -d <branch>`.
 11. Never `git push` directly to `main`.
 
-**Resumo: o ciclo completo de uma change é** `worktree → commit → push → PR → auto-merge → aguardar CI → confirmar merge → pull main → task dev:rebuild → gitnexus analyze --skip-agents-md → remover worktree`. Pular qualquer passo (especialmente 7-9) é proibido.
+**Resumo: o ciclo completo de uma change é** `worktree → commit → push → PR aberto → aguardar review humano → merge pelo revisor → pull main → task dev:rebuild → gitnexus analyze --skip-agents-md → remover worktree`. Pular qualquer passo (especialmente 8-9) é proibido. O agente engineer NUNCA ativa auto-merge.
 
 ## AGENTS.md / CLAUDE.md — manter atualizados via PR
 

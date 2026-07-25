@@ -1,0 +1,199 @@
+# Apiary dogfooding config — apiary orchestrating work on apiary itself.
+#
+# This root-level apiary.yaml takes lookup precedence over .apiary/apiary.yaml
+# (which targets project-erp and is left untouched). State still lives under
+# .apiary/ (apiary.db, logs, socket).
+#
+# Requires GITHUB_TOKEN in the environment or in a .env next to this file
+# (classic PAT scope `repo`, or fine-grained: Issues → Read & Write,
+# Metadata → Read, Pull requests → Read & Write for wait_for/ci + reviews).
+
+version: "1"
+
+# ── Runners ────────────────────────────────────────────────────────────────────
+runners:
+  - id: claude-cli
+    type: cli
+    provider: claude
+    mcps:
+      - name: gitnexus
+        command: npx
+        args: ["-y", "gitnexus@latest", "mcp"]
+
+default_runner: claude-cli
+
+# ── Sources ────────────────────────────────────────────────────────────────────
+sources:
+  - id: apiary
+    type: github
+    config:
+      repo: orlandoburli/apiary
+      api_key: ${GITHUB_TOKEN}
+    poll_interval: 120s
+    filters:
+      states: [open]
+      # Only issues explicitly handed to the swarm — the apiary tracker also
+      # holds planning/discussion issues that agents must not pick up.
+      labels: [ai-ready]
+
+# ── Agents ─────────────────────────────────────────────────────────────────────
+agents:
+  - id: investigator
+    description: "Classifies incoming apiary issues and picks the right agent"
+    soul_file: .apiary/souls/investigator.md
+    model: claude-opus-4-8
+    skills: [gitnexus-codebase]
+    max_workers: 1
+
+  - id: engineer
+    description: "Implements apiary changes (Go daemon, dashboard, docs)"
+    soul_file: .apiary/souls/engineer.md
+    model: claude-sonnet-4-6
+    skills: [git-workflow, gitnexus-codebase]
+    max_workers: 5
+
+  - id: reviewer
+    description: "Reviews apiary pull requests for correctness and conventions"
+    soul_file: .apiary/souls/reviewer-council.md
+    model: claude-sonnet-4-6
+    skills: [git-workflow, gitnexus-codebase]
+    max_workers: 2
+
+# ── Workflows ──────────────────────────────────────────────────────────────────
+workflows:
+  # Direct routes when a human pre-labels the issue.
+  - id: engineer-implement
+    # SEC-08: engineer opens the PR but does NOT enable auto-merge.
+    # The reviewer council gates the merge, just like the triage flow.
+    resume: allowed
+    trigger:
+      priority: 20
+      match:
+        source: apiary
+        labels: [agent:engineer]
+    steps:
+      - id: implement
+        agent: engineer
+        prompt: >-
+          Implement the change following apiary project conventions (Go, English
+          commits/PRs). Open a PR whose body includes `Closes #<issue>`.
+          IMPORTANT: do NOT enable auto-merge and do NOT merge or wait for the
+          merge — stop as soon as the PR is open. A reviewer will approve and
+          enable the merge. This overrides the git-workflow skill's auto-merge step.
+        on_pass:
+          next: review
+
+      - id: review
+        agent: reviewer
+        prompt: >-
+          Convene the five-member review council (per your soul) on the open PR
+          the engineer created for this issue. Post the full council verdict as
+          a PR comment, then apply the decision rule: on approval, approve and
+          enable merge (`gh pr merge <n> --auto --squash`); on rejection, request
+          changes with the dissenters' reasons, leave the PR open, and do NOT
+          enable merge.
+
+    # Issue closes via `Closes #<issue>` in the PR body when the PR merges.
+    on_fail:
+      add_labels: [needs-attention]
+
+  - id: code-review
+    trigger:
+      priority: 25
+      match:
+        source: apiary
+        types: [pull_request]
+        labels: [agent:reviewer]
+    steps:
+      - id: review
+        agent: reviewer
+    on_complete:
+      add_labels: [reviewed]
+
+  # Triage — unlabeled ai-ready issues get classified and handled in one instance.
+  - id: triage
+    description: "Classify an apiary issue and route it to the right agent."
+    resume: allowed
+    trigger:
+      priority: 100
+      match:
+        source: apiary
+        exclude_label_prefix: "agent:"
+        exclude_labels: [draft]
+    steps:
+      - id: classify
+        agent: investigator
+        summary_prompt: "One line: which agent you chose and the key reason."
+        output_schema:
+          type: object
+          properties:
+            agent: {type: string, enum: [engineer, reviewer]}
+          required: [agent]
+        memory:
+          write: [agent]
+
+      - id: route
+        type: split
+        branches:
+          - if: 'memory.agent == "reviewer"'
+            goto: review
+          - else: true
+            goto: implement
+
+      - id: implement
+        agent: engineer
+        prompt: >-
+          Implement the change following apiary project conventions (Go, English
+          commits/PRs). Open a PR whose body includes `Closes #<issue>`.
+          IMPORTANT: do NOT enable auto-merge and do NOT merge or wait for the
+          merge — stop as soon as the PR is open. A reviewer will approve and
+          enable the merge. This overrides the git-workflow skill's auto-merge step.
+        # Chain into the council review. `review` is a split target (reviewer
+        # branch), so without this explicit edge the engineer path would settle
+        # after `implement` and the PR would never be reviewed/merged.
+        on_pass:
+          next: review
+
+      - id: review
+        agent: reviewer
+        prompt: >-
+          Convene the five-member review council (per your soul) on the open PR
+          the engineer created for this issue. Post the full council verdict as
+          a PR comment, then apply the decision rule: on approval, approve and
+          enable merge (`gh pr merge <n> --auto --squash`); on rejection, request
+          changes with the dissenters' reasons, leave the PR open, and do NOT
+          enable merge.
+
+    # No forced set_state here: an approved PR carries `Closes #<issue>` and
+    # auto-closes the issue when it merges. A rejected/unmerged PR leaves the
+    # issue open so it can be picked up again.
+    on_fail:
+      add_labels: [needs-attention]
+
+# ── Settings ───────────────────────────────────────────────────────────────────
+settings:
+  concurrency: 7
+  log_level: info
+  state_lock: true
+  max_attempts: 3
+  log_max_size_mb: 50
+  log_max_backups: 5
+  log_max_age_days: 30
+  memory:
+    enabled: true   # agents accumulate apiary-specific facts via APIARY_MEMORIZE
+
+# ── Task completion hook ───────────────────────────────────────────────────────
+tasks:
+  on_complete:
+    add_labels: [ai-complete]
+  on_fail:
+    add_labels: [ai-failed, needs-attention]
+
+# ── Escalation notifications ───────────────────────────────────────────────────
+# Uncomment and pick a channel to get pinged when a flow parks with
+# needs-attention instead of freezing silently.
+# notifications:
+#   on_labels: [needs-attention]
+#   channels:
+#     - type: command
+#       run: osascript -e 'display notification {{summary}} with title "apiary #{{number}} escalated"'

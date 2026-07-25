@@ -130,6 +130,10 @@ workflows:
     steps:
       - id: run
         agent: backend
+        prompt: >-
+          Implement the change following project conventions. Open a PR whose
+          body includes `Closes #<issue>`. IMPORTANT: do NOT enable auto-merge
+          and do NOT merge — stop as soon as the PR is open (SEC-08).
     on_complete:
       set_state: closed
 
@@ -142,6 +146,10 @@ workflows:
     steps:
       - id: run
         agent: frontend
+        prompt: >-
+          Implement the change following project conventions. Open a PR whose
+          body includes `Closes #<issue>`. IMPORTANT: do NOT enable auto-merge
+          and do NOT merge — stop as soon as the PR is open (SEC-08).
     on_complete:
       set_state: closed
 
@@ -154,6 +162,10 @@ workflows:
     steps:
       - id: run
         agent: engineer
+        prompt: >-
+          Implement the change following project conventions. Open a PR whose
+          body includes `Closes #<issue>`. IMPORTANT: do NOT enable auto-merge
+          and do NOT merge — stop as soon as the PR is open (SEC-08).
     on_complete:
       set_state: closed
 
