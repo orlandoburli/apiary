@@ -53,6 +53,15 @@ func Discover(paths []string, baseDir, apiaryVersion string) (*Registry, []error
 		}
 		sort.Strings(roots)
 		for _, root := range roots {
+			if root != path {
+				// Per-plugin subdirectory: enforce owner-only permissions just like
+				// the parent. A writable child dir is the common attack surface —
+				// it bypasses the top-level check when the parent is correctly locked.
+				if warn := checkDirOwnerOnly(root); warn != nil {
+					errs = append(errs, warn)
+					continue
+				}
+			}
 			if _, err := os.Stat(filepath.Join(root, ManifestFilename)); err != nil {
 				continue
 			}
