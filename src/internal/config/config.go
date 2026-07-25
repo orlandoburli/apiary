@@ -287,6 +287,13 @@ type Settings struct {
 	// CreditExhaustedCooldown is how long a runner type is paused after a
 	// credit-exhausted failure. Default "24h".
 	CreditExhaustedCooldown string `yaml:"credit_exhausted_cooldown,omitempty"`
+	// PersistPrompts controls whether the full composed prompt sent to the agent
+	// is saved to the database (task_logs "prompt sent to agent" entries,
+	// task_executions.input_prompt, step_runs.input_prompt). Prompts can contain
+	// the entire ticket body including PII and confidential data, so persistence
+	// is off by default. Set to true only when prompt auditing is explicitly
+	// required.
+	PersistPrompts bool `yaml:"persist_prompts"`
 }
 
 // QueueSettings controls durable dispatch and the embedded protocol-1 worker.

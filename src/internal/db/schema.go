@@ -427,6 +427,9 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	if err := repairSupersededFailedTasks(ctx, db); err != nil {
 		return fmt.Errorf("repair superseded failed tasks: %w", err)
 	}
+	if err := scrubPersistedPrompts(ctx, db); err != nil {
+		return fmt.Errorf("scrub persisted prompts: %w", err)
+	}
 	return nil
 }
 
@@ -454,6 +457,25 @@ func repairSupersededFailedTasks(ctx context.Context, db *sql.DB) error {
 		  ) = 'done'
 	`, time.Now())
 	return err
+}
+
+// scrubPersistedPrompts removes full prompt text that was persisted by older
+// builds. Prompts can contain the entire ticket body including PII and
+// confidential data; the new default (persist_prompts: false) stops writing
+// them, but existing rows must also be cleared. The function is idempotent —
+// re-runs on an already-scrubbed database affect zero rows and are cheap.
+func scrubPersistedPrompts(ctx context.Context, db *sql.DB) error {
+	stmts := []string{
+		`UPDATE task_executions SET input_prompt = NULL WHERE input_prompt IS NOT NULL`,
+		`UPDATE step_runs SET input_prompt = NULL WHERE input_prompt IS NOT NULL`,
+		`DELETE FROM task_logs WHERE message LIKE 'prompt sent to agent:%'`,
+	}
+	for _, s := range stmts {
+		if _, err := db.ExecContext(ctx, s); err != nil {
+			return fmt.Errorf("%s: %w", s, err)
+		}
+	}
+	return nil
 }
 
 // legacyTimestampColumns lists every TIMESTAMP column written from a time.Time.

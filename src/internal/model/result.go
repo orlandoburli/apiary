@@ -32,6 +32,11 @@ type RunRequest struct {
 	// logging/tracing (empty for plain routes).
 	WorkflowInstanceID string
 
+	// LogPrompts, when true, causes the runner to emit the full composed prompt
+	// as a debug log entry and include it in RunResult.InputPrompt for DB
+	// persistence. Off by default; mirrors settings.persist_prompts.
+	LogPrompts bool
+
 	// LogSink receives log entries in real time as the runner produces them.
 	// Must be safe to call from multiple goroutines.
 	LogSink func(LogEntry) `json:"-"`

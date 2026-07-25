@@ -139,7 +139,9 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	}
 
 	emit("debug", fmt.Sprintf("$ %s %s", r.command, strings.Join(argv, " ")))
-	emit("debug", "prompt sent to agent:\n"+prompt)
+	if req.LogPrompts {
+		emit("debug", "prompt sent to agent:\n"+prompt)
+	}
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -236,6 +238,10 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	if usage.TotalTokens == 0 && usage.NumTurns == 0 && usage.CostUSD == 0 {
 		usagePtr = nil
 	}
+	var inputPrompt string
+	if req.LogPrompts {
+		inputPrompt = prompt
+	}
 	result := model.RunResult{
 		WorkerID:    req.WorkerID,
 		Success:     runErr == nil,
@@ -243,7 +249,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		Logs:        logs,
 		Duration:    time.Since(start),
 		Usage:       usagePtr,
-		InputPrompt: prompt,
+		InputPrompt: inputPrompt,
 		RateLimited: rateLimited,
 	}
 	if rateLimited && rateLimitResetsAt > 0 {
