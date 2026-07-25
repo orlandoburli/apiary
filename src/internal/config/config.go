@@ -277,6 +277,7 @@ type Settings struct {
 	Memory        MemorySettings     `yaml:"memory"`
 	Events        EventSettings      `yaml:"events"`
 	Approvals     ApprovalSettings   `yaml:"approvals"`
+	TrustGate     TrustGateSettings  `yaml:"trust_gate"`
 	Telemetry     Telemetry          `yaml:"telemetry"`
 	CursorCost    CursorCostSettings `yaml:"cursor_cost"`
 	GitHooks      GitHooksSettings   `yaml:"git_hooks"`
@@ -360,6 +361,30 @@ func queueDuration(value string, fallback time.Duration) time.Duration {
 type ApprovalSettings struct {
 	WebhookSecret string   `yaml:"webhook_secret,omitempty"`
 	RequireFor    []string `yaml:"require_for,omitempty"`
+}
+
+// TrustGateSettings controls the pre-dispatch approval gate for workflow runs
+// triggered by non-collaborator GitHub issue authors.
+//
+// When Enabled, every run whose source item carries an author_association that
+// is not OWNER, MEMBER, or COLLABORATOR gets a synthetic approval step
+// prepended to the matched workflow. The run parks in approval_waiting state
+// until a human approves (or rejects) via the existing multi-channel approval
+// infrastructure (dashboard, webhook, or comment).
+//
+// Non-GitHub sources (Jira, Plane, …) never set author_association and are
+// therefore unaffected regardless of this setting.
+type TrustGateSettings struct {
+	// Enabled activates the gate. Must be explicitly set to true.
+	Enabled bool `yaml:"enabled"`
+	// Approvers lists GitHub logins (or email addresses for non-GitHub approval
+	// providers) that may approve or reject a parked trust-gate run via the
+	// dashboard / webhook path. When empty the legacy comment-based triggers
+	// (/approve / /reject) are used instead, which do not enforce approver identity.
+	Approvers []string `yaml:"approvers,omitempty"`
+	// Message overrides the default comment posted to the issue when the run
+	// parks at the trust gate.
+	Message string `yaml:"message,omitempty"`
 }
 
 // EventSettings controls persisted structured execution events. Events are
