@@ -274,6 +274,7 @@ func (c *Config) Validate() []error {
 	errs = append(errs, c.lint()...)
 
 	errs = append(errs, c.validateNotifications()...)
+	errs = append(errs, c.validateEnvironments()...)
 
 	return errs
 }
@@ -321,6 +322,52 @@ func validateQueueSettings(settings QueueSettings) []error {
 		for key, value := range values {
 			if strings.TrimSpace(key) == "" || value <= 0 {
 				errs = append(errs, fmt.Errorf("settings.queue.concurrency.%s[%q] must have a non-empty key and positive limit", name, key))
+			}
+		}
+	}
+	return errs
+}
+
+// validateEnvironments checks the environments block for structural errors.
+func (c *Config) validateEnvironments() []error {
+	if len(c.Environments) == 0 {
+		return nil
+	}
+	var errs []error
+	sourceIDs := map[string]bool{}
+	for _, s := range c.Sources {
+		sourceIDs[s.ID] = true
+	}
+
+	seen := map[string]bool{}
+	for i, env := range c.Environments {
+		if strings.TrimSpace(env.Name) == "" {
+			errs = append(errs, fmt.Errorf("environments[%d]: name is required", i))
+			continue
+		}
+		if seen[env.Name] {
+			errs = append(errs, fmt.Errorf("environments[%d]: duplicate name %q", i, env.Name))
+		}
+		seen[env.Name] = true
+
+		for j, sov := range env.Sources {
+			if sov.ID == "" {
+				errs = append(errs, fmt.Errorf("environments[%d] %q: sources[%d]: id is required", i, env.Name, j))
+				continue
+			}
+			if !sourceIDs[sov.ID] {
+				errs = append(errs, fmt.Errorf("environments[%d] %q: sources[%d]: source %q not defined in sources", i, env.Name, j, sov.ID))
+			}
+		}
+
+		if r := env.Rollout; r != nil {
+			if r.Percentage < 0 || r.Percentage > 100 {
+				errs = append(errs, fmt.Errorf("environments[%d] %q: rollout.percentage must be 0–100 (got %d)", i, env.Name, r.Percentage))
+			}
+			for k, sid := range r.Sources {
+				if !sourceIDs[sid] {
+					errs = append(errs, fmt.Errorf("environments[%d] %q: rollout.sources[%d]: source %q not defined in sources", i, env.Name, k, sid))
+				}
 			}
 		}
 	}

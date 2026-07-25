@@ -28,6 +28,7 @@ type Config struct {
 	Notifications *NotificationsConfig                `yaml:"notifications"`
 	PluginDirs    []string                            `yaml:"plugin_dirs,omitempty"`
 	Plugins       []plugin.InstanceConfig             `yaml:"plugins,omitempty"`
+	Environments  []EnvironmentConfig                 `yaml:"environments,omitempty"`
 
 	rawContent string // original YAML text before env expansion; used by Save()
 }

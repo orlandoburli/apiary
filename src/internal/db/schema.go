@@ -406,6 +406,12 @@ var migrations = []string{
 	// "aborted".
 	`ALTER TABLE task_executions ADD COLUMN credit_exhausted INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE task_executions ADD COLUMN failure_kind TEXT`,
+	// Environment audit: the config digest (SHA-256 prefix of resolved apiary.yaml)
+	// and the short git HEAD revision of the repo containing the config file at
+	// dispatch time. Both are nullable: git_revision is empty outside git repos;
+	// config_digest is empty for instances created before this migration.
+	`ALTER TABLE workflow_instances ADD COLUMN config_digest TEXT`,
+	`ALTER TABLE workflow_instances ADD COLUMN git_revision TEXT`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).

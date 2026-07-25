@@ -62,6 +62,8 @@ func init() {
 		newTranscriptCmd(),
 		newPluginsCmd(),
 		newWorkerCmd(),
+		newEnvCmd(),
+		newDiffCmd(),
 	)
 }
 

@@ -261,6 +261,11 @@ type Engine struct {
 	depChecker        DependencyChecker
 	approvalProviders []ApprovalProvider
 
+	// configDigest and gitRevision are stamped on every new WorkflowInstance for
+	// audit and rollback. Both are optional: empty values are stored as NULL.
+	configDigest string
+	gitRevision  string
+
 	now   func() time.Time
 	newID func(prefix string) string
 
@@ -278,6 +283,15 @@ type Option func(*Engine)
 
 // WithSideEffects sets the source-facing side-effects implementation.
 func WithSideEffects(s SideEffects) Option { return func(e *Engine) { e.side = s } }
+
+// WithConfigRevision stamps every new WorkflowInstance with the resolved
+// config digest and the git HEAD revision for audit and rollback.
+func WithConfigRevision(digest, gitRev string) Option {
+	return func(e *Engine) {
+		e.configDigest = digest
+		e.gitRevision = gitRev
+	}
+}
 
 // WithClock overrides the time source (for deterministic tests).
 func WithClock(now func() time.Time) Option { return func(e *Engine) { e.now = now } }
@@ -354,13 +368,15 @@ func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, task
 
 	instID := e.newID("wf")
 	inst := &db.WorkflowInstance{
-		ID:         instID,
-		WorkflowID: wf.ID,
-		TaskID:     task.ID,
-		CellID:     cell.ID,
-		SourceID:   cell.SourceID,
-		State:      db.InstanceStateRunning,
-		CreatedAt:  e.now(),
+		ID:           instID,
+		WorkflowID:   wf.ID,
+		TaskID:       task.ID,
+		CellID:       cell.ID,
+		SourceID:     cell.SourceID,
+		State:        db.InstanceStateRunning,
+		ConfigDigest: e.configDigest,
+		GitRevision:  e.gitRevision,
+		CreatedAt:    e.now(),
 	}
 	if err := e.store.CreateWorkflowInstance(ctx, inst); err != nil {
 		return "", false, fmt.Errorf("create workflow instance: %w", err)
