@@ -36,10 +36,11 @@ func ReplaceWorkflowInRaw(rawYAML, workflowID string, wf config.WorkflowConfig) 
 	lines := strings.Split(rawYAML, "\n")
 
 	// Find the start line: "  - id: <workflowID>" (2-space indent, list item).
+	// Handles unquoted, double-quoted, and single-quoted id values.
 	startLine := -1
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "- id: "+workflowID {
+		if matchesWorkflowID(trimmed, workflowID) {
 			startLine = i
 			break
 		}
@@ -141,7 +142,7 @@ func ExtractWorkflowBlock(rawYAML, workflowID string) string {
 
 	startLine := -1
 	for i, line := range lines {
-		if strings.TrimSpace(line) == "- id: "+workflowID {
+		if matchesWorkflowID(strings.TrimSpace(line), workflowID) {
 			startLine = i
 			break
 		}
@@ -170,6 +171,15 @@ func ExtractWorkflowBlock(rawYAML, workflowID string) string {
 	}
 
 	return strings.Join(lines[startLine:endLine], "\n")
+}
+
+// matchesWorkflowID reports whether a trimmed YAML list line declares the
+// given workflow ID. It handles unquoted, double-quoted, and single-quoted
+// forms (e.g. `- id: foo`, `- id: "foo"`, `- id: 'foo'`).
+func matchesWorkflowID(trimmed, workflowID string) bool {
+	return trimmed == "- id: "+workflowID ||
+		trimmed == `- id: "`+workflowID+`"` ||
+		trimmed == "- id: '"+workflowID+"'"
 }
 
 func leadingSpaces(s string) int {

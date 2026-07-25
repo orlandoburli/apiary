@@ -22,7 +22,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"gopkg.in/yaml.v3"
 
 	"github.com/orlandoburli/apiary/internal/config"
 )
@@ -93,7 +92,7 @@ func New(cfg *config.Config, cfgPath string, workflowIdx int, rawYAML string) *M
 		target:        targetTrigger,
 		origBlock:     origBlock,
 		unsupported:   warnings,
-		readOnlySteps: make(map[int]bool),
+		readOnlySteps: unsupportedStepIndices(origBlock, wf.Steps),
 	}
 }
 
@@ -389,7 +388,9 @@ type savedMsg struct{}
 type errMsg struct{ err error }
 
 func (m *Model) save() error {
-	// Read the current raw file content (re-read to pick up any external edits).
+	// Re-read the on-disk file so we preserve any external edits and, crucially,
+	// keep all ${VAR} references unexpanded (the in-memory cfg has been through
+	// config.Load which expands them — marshalling cfg directly would leak secrets).
 	raw, err := os.ReadFile(m.cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", m.cfgPath, err)
@@ -397,17 +398,12 @@ func (m *Model) save() error {
 	wf := m.workflow()
 	updated, err := ReplaceWorkflowInRaw(string(raw), wf.ID, wf)
 	if err != nil {
-		// Fallback: marshal the entire config and write it.
-		data, merr := yaml.Marshal(m.cfg)
-		if merr != nil {
-			return fmt.Errorf("marshalling config: %w (original error: %v)", merr, err)
-		}
-		updated = string(data)
+		// Do NOT fall back to yaml.Marshal(m.cfg): it would expand ${VAR} secrets.
+		return fmt.Errorf("patching workflow %q in %s: %w", wf.ID, m.cfgPath, err)
 	}
 	if werr := os.WriteFile(m.cfgPath, []byte(updated), 0o600); werr != nil {
 		return fmt.Errorf("writing %s: %w", m.cfgPath, werr)
 	}
-	// Update the origBlock to the just-saved content.
 	m.origBlock, _ = WorkflowToYAML(wf)
 	return nil
 }
@@ -622,9 +618,12 @@ func (m *Model) scrolledContent(title string, lines []string, height int) string
 	sb.WriteString(styleBorder.Render(strings.Repeat("─", m.width)) + "\n")
 
 	lo := m.yamlScroll
-	hi := lo + height - 2
 	if lo > len(lines) {
 		lo = len(lines)
+	}
+	hi := lo + height - 2
+	if hi < lo {
+		hi = lo
 	}
 	if hi > len(lines) {
 		hi = len(lines)
@@ -668,6 +667,12 @@ func filterStepErrors(errs []error, stepID string) []error {
 		}
 	}
 	return out
+}
+
+// ReadOnlyStep reports whether the step at index idx is marked read-only
+// (contains unsupported YAML constructs). It is exported for testing.
+func (m *Model) ReadOnlyStep(idx int) bool {
+	return m.readOnlySteps[idx]
 }
 
 // Run starts the editor TUI.
