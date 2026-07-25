@@ -84,6 +84,9 @@ func (r *CliRunner) Configure(config map[string]any) error {
 }
 
 func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
+	if err := checkPrivilege(os.Getuid(), req.Security.AllowRoot); err != nil {
+		return model.RunResult{}, err
+	}
 	start := time.Now()
 	prompt := buildPrompt(req)
 
@@ -105,10 +108,14 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 
 	cmd := exec.CommandContext(ctx, r.command, argv...)
 	cmd.Dir = req.WorkingDir
-	cmd.Env = os.Environ()
+	// Merge host environment and per-agent overlay, then apply the allowlist to
+	// the combined slice. Filtering after the merge ensures req.Env cannot
+	// smuggle keys that os.Environ() would have had stripped.
+	merged := os.Environ()
 	for k, v := range req.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+		merged = append(merged, k+"="+v)
 	}
+	cmd.Env = filteredEnv(merged, envPasslist)
 	if r.promptFlag == "" && !r.promptPositional {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
