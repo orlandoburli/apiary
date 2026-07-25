@@ -49,6 +49,11 @@ type RunRequest struct {
 	// The dispatcher uses it to update last_heartbeat_at in the DB so the
 	// dashboard can detect stale/zombie processes.
 	Heartbeat func() `json:"-"`
+
+	// ActionSink receives each observable agent tool invocation (tool_use blocks
+	// in stream-json output) in real time. Used for audit logging and anomaly
+	// detection. Must be safe to call from multiple goroutines.
+	ActionSink func(AgentAction) `json:"-"`
 }
 
 type Usage struct {

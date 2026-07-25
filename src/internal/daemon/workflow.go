@@ -446,6 +446,44 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		}
 	}
 
+	// Agent action audit: wire the ActionSink to record every observable tool
+	// call as an agent.action (or agent.anomaly) execution event. The task and
+	// workflow IDs are resolved once from the instance to avoid per-action DB
+	// round-trips; a missing instance is fine — the event records without them.
+	if x.d.db != nil {
+		var taskID, workflowID string
+		if req.InstanceID != "" {
+			if inst, _ := x.d.db.GetWorkflowInstance(ctx, req.InstanceID); inst != nil {
+				taskID = inst.TaskID
+				workflowID = inst.WorkflowID
+			}
+		}
+		instanceID := req.InstanceID
+		stepID := req.Step.ID
+		rr.ActionSink = func(action model.AgentAction) {
+			eventType := "agent.action"
+			if action.IsAnomaly {
+				eventType = "agent.anomaly"
+			}
+			meta := map[string]any{
+				"tool_name": action.ToolName,
+				"input":     action.Input,
+			}
+			if action.IsAnomaly {
+				meta["reason"] = action.AnomalyReason
+			}
+			x.d.recordExecutionEvent(ctx, db.ExecutionEvent{
+				Type:               eventType,
+				Timestamp:          action.Timestamp,
+				TaskID:             taskID,
+				WorkflowID:         workflowID,
+				WorkflowInstanceID: instanceID,
+				StepID:             stepID,
+				Metadata:           meta,
+			})
+		}
+	}
+
 	// Run chain: the agent's primary runner first, then its rate-limit failover
 	// chain. A candidate whose runner type is currently paused by a provider rate
 	// limit is skipped (unless it is the last resort). Each attempt is its own

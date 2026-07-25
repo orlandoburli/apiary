@@ -203,6 +203,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 				mu.Unlock()
 			}
 			accumulateStreamUsage(line, &usage)
+			emitAgentActions(line, time.Now(), req.ActionSink)
 			if pretty, ok := formatStreamLine(line); ok {
 				emit("debug", pretty)
 			} else {
@@ -546,6 +547,33 @@ func truncateInput(raw json.RawMessage) string {
 		return s[:max] + "…"
 	}
 	return s
+}
+
+// emitAgentActions parses a stream-json line for tool_use blocks in assistant
+// messages. For each tool call it invokes sink with the action and its anomaly
+// classification. A nil sink or a line with no tool_use is a no-op.
+func emitAgentActions(line string, ts time.Time, sink func(model.AgentAction)) {
+	if sink == nil || !strings.Contains(line, `"tool_use"`) {
+		return
+	}
+	var ev streamEvent
+	if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &ev); err != nil || ev.Type != "assistant" {
+		return
+	}
+	for _, c := range ev.Message.Content {
+		if c.Type != "tool_use" {
+			continue
+		}
+		input := truncateInput(c.Input)
+		anomaly, reason := DetectAnomaly(c.Name, input)
+		sink(model.AgentAction{
+			ToolName:      c.Name,
+			Input:         input,
+			Timestamp:     ts,
+			IsAnomaly:     anomaly,
+			AnomalyReason: reason,
+		})
+	}
 }
 
 func buildPrompt(req model.RunRequest) string {

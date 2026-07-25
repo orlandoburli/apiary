@@ -107,6 +107,17 @@ const (
 	MemorizeScopeGlobal = "global"
 )
 
+// AgentAction is one observable tool invocation captured from the agent's
+// stream-json output (a tool_use block in an assistant message). Passed to
+// ActionSink for real-time audit logging and anomaly detection.
+type AgentAction struct {
+	ToolName      string
+	Input         string // truncated, sanitized tool input
+	Timestamp     time.Time
+	IsAnomaly     bool
+	AnomalyReason string
+}
+
 // MemorizeRequest is one agent-emitted APIARY_MEMORIZE_BEGIN/END payload (the
 // block carries a single object or a JSON array of them, mirroring
 // APIARY_SPAWN). Scope defaults to "task" when empty. Name and Description are
