@@ -105,7 +105,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 
 	cmd := exec.CommandContext(ctx, r.command, argv...)
 	cmd.Dir = req.WorkingDir
-	cmd.Env = os.Environ()
+	cmd.Env = filteredEnv(os.Environ(), hostEnvPasslist)
 	for k, v := range req.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
