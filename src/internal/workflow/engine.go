@@ -823,7 +823,9 @@ func (e *Engine) materializeChild(ctx context.Context, parent model.InternalTask
 // source bindings and records the outcome on the step run. The executor has
 // already cleared the payload when the step set publish: off, so a non-empty
 // payload here means write-back was requested. A task with no bindings (e.g. a
-// spawned task) is silently skipped.
+// spawned task) is silently skipped. When settings.agent_publish_sources is
+// non-empty, only bindings whose source ID appears in the allow-list receive the
+// comment; others are silently dropped (payload still recorded for auditing).
 func (e *Engine) publishStep(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, res StepResult, sr *db.StepRun) {
 	if res.PublishPayload == "" {
 		return
@@ -833,11 +835,37 @@ func (e *Engine) publishStep(ctx context.Context, task model.InternalTask, bindi
 		sr.PublishState = db.PublishStateSkipped
 		return
 	}
+	// Enforce the publish allow-list: if configured, filter out bindings for
+	// sources not in the list. A fully-filtered result skips the write-back
+	// without error so the step does not fail due to a config restriction.
+	if allowed := e.cfg.Settings.AgentPublishSources; len(allowed) > 0 {
+		bindings = filterAllowedBindings(bindings, allowed)
+		if len(bindings) == 0 {
+			sr.PublishState = db.PublishStateSkipped
+			return
+		}
+	}
 	if err := e.side.PostComment(ctx, task, bindings, res.PublishPayload); err != nil {
 		sr.PublishState = db.PublishStateFailed
 		return
 	}
 	sr.PublishState = db.PublishStateSent
+}
+
+// filterAllowedBindings returns the subset of bindings whose SourceID appears
+// in allowed. The original slice is never mutated.
+func filterAllowedBindings(bindings []model.SourceBinding, allowed []string) []model.SourceBinding {
+	set := make(map[string]struct{}, len(allowed))
+	for _, s := range allowed {
+		set[s] = struct{}{}
+	}
+	out := make([]model.SourceBinding, 0, len(bindings))
+	for _, b := range bindings {
+		if _, ok := set[b.SourceID]; ok {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // applyCompletion applies the on_complete/on_fail hook and posts the on_complete

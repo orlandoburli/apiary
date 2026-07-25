@@ -287,6 +287,13 @@ type Settings struct {
 	// CreditExhaustedCooldown is how long a runner type is paused after a
 	// credit-exhausted failure. Default "24h".
 	CreditExhaustedCooldown string `yaml:"credit_exhausted_cooldown,omitempty"`
+	// AgentPublishSources is an optional allow-list of source IDs that agent
+	// steps are permitted to post APIARY_PUBLISH comments to. When non-empty,
+	// publish write-backs targeting any other source are silently skipped — the
+	// payload is still recorded on the step run for auditing, but the comment is
+	// not posted. When empty (the default) there is no restriction and all bound
+	// sources may receive agent-authored comments.
+	AgentPublishSources []string `yaml:"agent_publish_sources,omitempty"`
 }
 
 // QueueSettings controls durable dispatch and the embedded protocol-1 worker.

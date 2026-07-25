@@ -15,6 +15,35 @@ import (
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
+// maxSpawnDepth is the maximum number of times an agent-driven APIARY_SPAWN
+// chain may nest before the engine refuses to create further children. It
+// prevents runaway self-propagating spawn loops triggered by prompt injection.
+// Depth is tracked via the spawn context; the root caller has depth 0 and each
+// spawned child increments it by one.
+const maxSpawnDepth = 10
+
+// ProvenanceLabel is automatically appended to every child task created by an
+// agent APIARY_SPAWN request so agent-authored artifacts are distinguishable
+// from human-authored work in logs, routing rules, and source sub-issues.
+const ProvenanceLabel = "apiary:agent-spawned"
+
+// spawnDepthKey is the unexported context key used to track the current spawn
+// nesting depth across goroutine boundaries.
+type spawnDepthKey struct{}
+
+// spawnDepth returns the spawn depth embedded in ctx, or 0 when absent.
+func spawnDepth(ctx context.Context) int {
+	if v, ok := ctx.Value(spawnDepthKey{}).(int); ok {
+		return v
+	}
+	return 0
+}
+
+// withSpawnDepth returns a child context carrying the given spawn depth.
+func withSpawnDepth(ctx context.Context, depth int) context.Context {
+	return context.WithValue(ctx, spawnDepthKey{}, depth)
+}
+
 // WorkflowSpawner creates a child InternalTask for an APIARY_SPAWN request and
 // runs the named workflow against it. The engine holds one via an interface field
 // so it stays testable in isolation (see Engine.spawner / WithSpawner).
@@ -97,6 +126,15 @@ func NewDefaultSpawner(
 // it without creating a duplicate or launching the workflow again — so re-running
 // the same decomposition does not fan out a second, duplicate set of sub-issues.
 func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (model.InternalTask, error) {
+	// Enforce the spawn depth limit before any work: an injected agent can emit
+	// APIARY_SPAWN to create a child that itself spawns more children, forming a
+	// self-propagating loop. Rejecting requests beyond maxSpawnDepth stops the
+	// chain at a safe bound regardless of how the injection was crafted.
+	depth := spawnDepth(ctx)
+	if depth >= maxSpawnDepth {
+		return model.InternalTask{}, fmt.Errorf("spawn depth limit (%d) exceeded — refusing to create child task (possible injection loop)", maxSpawnDepth)
+	}
+
 	// A materialize-only spawn (empty workflow) creates the deduped child but runs
 	// no inline workflow — the child is left for the normal poll→route loop to pick
 	// up once it is materialized as a source sub-issue (see step.Materialize). Only
@@ -122,6 +160,13 @@ func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (mod
 		return *existing, nil
 	}
 
+	// Attach the provenance label to every agent-authored child so it is
+	// distinguishable from human-authored work in logs, routing rules, and source
+	// sub-issues without requiring callers to add it explicitly.
+	labels := make([]string, 0, len(req.Labels)+1)
+	labels = append(labels, req.Labels...)
+	labels = append(labels, ProvenanceLabel)
+
 	now := s.now()
 	child := model.InternalTask{
 		ID:           s.newID("task"),
@@ -131,7 +176,7 @@ func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (mod
 		Input:        req.Input,
 		DedupKey:     dedupKey,
 		State:        model.TaskStateRegistered,
-		Metadata:     model.TaskMetadata{Type: "internal", Labels: req.Labels},
+		Metadata:     model.TaskMetadata{Type: "internal", Labels: labels},
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -162,11 +207,13 @@ func (s *DefaultSpawner) Spawn(ctx context.Context, req model.SpawnRequest) (mod
 	s.running[child.ID] = h
 	s.mu.Unlock()
 
-	// Fire-and-forget: the child workflow runs on its own goroutine with a context
-	// detached from the parent step, so cancelling the step does not abort the
-	// spawned work. spawn:await callers observe completion through Await.
+	// Pass depth+1 into the child context so any further APIARY_SPAWN inside the
+	// child's workflow is counted against the limit. WithoutCancel preserves
+	// context values (including the depth key) while detaching from the parent
+	// cancellation, so the spawned work outlives the parent step.
+	childCtx := withSpawnDepth(context.WithoutCancel(ctx), depth+1)
 	go func() {
-		success, err := s.run(context.WithoutCancel(ctx), wf, child)
+		success, err := s.run(childCtx, wf, child)
 		h.success = success && err == nil
 		close(h.done)
 	}()

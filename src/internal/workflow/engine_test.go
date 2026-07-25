@@ -737,6 +737,96 @@ func TestEngine_StructuredOutputPersisted(t *testing.T) {
 	}
 }
 
+// TestEngine_PublishAllowList verifies that settings.agent_publish_sources
+// restricts APIARY_PUBLISH write-backs: a binding in the allow-list receives
+// the comment; a binding not in the list is silently skipped while the payload
+// is still recorded on the step run for auditing.
+func TestEngine_PublishAllowList(t *testing.T) {
+	t.Run("binding in allow-list posts comment", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.Settings.ResultComment = false
+		cfg.Settings.AgentPublishSources = []string{"allowed-source"}
+		store := newFakeStore()
+		store.bindings["T1"] = []model.SourceBinding{
+			{TaskID: "T1", SourceID: "allowed-source", SourceItemID: "ISSUE-10"},
+		}
+		exec := &fakeExecutor{results: map[string]StepResult{
+			"run": {Success: true, Output: "done", PublishPayload: "allowed comment"},
+		}}
+		side := &fakeSide{}
+		eng := testEngine(cfg, store, exec, side)
+
+		wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+		if _, _, err := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "T1", Title: "T"}); err != nil {
+			t.Fatalf("RunInstance: %v", err)
+		}
+		if len(side.comments) != 1 || side.comments[0] != "allowed comment" {
+			t.Errorf("expected comment to allowed-source, got %#v", side.comments)
+		}
+		sr := store.stepRuns[store.stepOrder[0]]
+		if sr.PublishState != db.PublishStateSent {
+			t.Errorf("publish_state = %q, want %q", sr.PublishState, db.PublishStateSent)
+		}
+		if sr.PublishPayload != "allowed comment" {
+			t.Errorf("publish_payload not persisted: %q", sr.PublishPayload)
+		}
+	})
+
+	t.Run("binding not in allow-list is skipped", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.Settings.ResultComment = false
+		cfg.Settings.AgentPublishSources = []string{"allowed-source"}
+		store := newFakeStore()
+		store.bindings["T2"] = []model.SourceBinding{
+			{TaskID: "T2", SourceID: "blocked-source", SourceItemID: "ISSUE-20"},
+		}
+		exec := &fakeExecutor{results: map[string]StepResult{
+			"run": {Success: true, Output: "done", PublishPayload: "should be blocked"},
+		}}
+		side := &fakeSide{}
+		eng := testEngine(cfg, store, exec, side)
+
+		wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+		if _, _, err := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "T2", Title: "T"}); err != nil {
+			t.Fatalf("RunInstance: %v", err)
+		}
+		if len(side.comments) != 0 {
+			t.Errorf("expected no comment for blocked source, got %#v", side.comments)
+		}
+		sr := store.stepRuns[store.stepOrder[0]]
+		if sr.PublishState != db.PublishStateSkipped {
+			t.Errorf("publish_state = %q, want %q", sr.PublishState, db.PublishStateSkipped)
+		}
+		// Payload still persisted for auditing even when skipped.
+		if sr.PublishPayload != "should be blocked" {
+			t.Errorf("publish_payload not persisted: %q", sr.PublishPayload)
+		}
+	})
+
+	t.Run("empty allow-list permits all sources", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.Settings.ResultComment = false
+		// AgentPublishSources is nil → no restriction.
+		store := newFakeStore()
+		store.bindings["T3"] = []model.SourceBinding{
+			{TaskID: "T3", SourceID: "any-source", SourceItemID: "ISSUE-30"},
+		}
+		exec := &fakeExecutor{results: map[string]StepResult{
+			"run": {Success: true, Output: "done", PublishPayload: "open comment"},
+		}}
+		side := &fakeSide{}
+		eng := testEngine(cfg, store, exec, side)
+
+		wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+		if _, _, err := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "T3", Title: "T"}); err != nil {
+			t.Fatalf("RunInstance: %v", err)
+		}
+		if len(side.comments) != 1 {
+			t.Errorf("expected comment when allow-list is empty, got %#v", side.comments)
+		}
+	})
+}
+
 func TestSynthWF(t *testing.T) {
 	route := config.RouteConfig{
 		ID: "backend-bugs", Priority: 10, Agent: "backend-dev",

@@ -152,8 +152,13 @@ func TestDefaultSpawner_MaterializeOnly(t *testing.T) {
 	if child.Description != "GIVEN ... THEN ..." {
 		t.Errorf("child Description = %q, want body", child.Description)
 	}
-	if len(child.Metadata.Labels) != 1 || child.Metadata.Labels[0] != "agent:backend" {
-		t.Errorf("child labels = %v, want [agent:backend]", child.Metadata.Labels)
+	// Caller-supplied labels plus the automatic provenance label must be present.
+	wantLabels := map[string]bool{"agent:backend": true, ProvenanceLabel: true}
+	for _, l := range child.Metadata.Labels {
+		delete(wantLabels, l)
+	}
+	if len(wantLabels) != 0 {
+		t.Errorf("child labels = %v, missing: %v", child.Metadata.Labels, wantLabels)
 	}
 	if child.DedupKey != "customer-crud-endpoint" {
 		t.Errorf("child DedupKey = %q, want explicit key", child.DedupKey)
@@ -327,5 +332,117 @@ func TestDefaultSpawner_AwaitUnknownTask(t *testing.T) {
 	)
 	if _, err := s.Await(context.Background(), "never-spawned"); err == nil {
 		t.Fatal("expected error awaiting an untracked task")
+	}
+}
+
+// TestDefaultSpawner_SpawnDepthLimit verifies that Spawn rejects requests once
+// the context depth reaches maxSpawnDepth, preventing runaway injection loops.
+func TestDefaultSpawner_SpawnDepthLimit(t *testing.T) {
+	s := NewDefaultSpawner(
+		func(string) (config.WorkflowConfig, bool) { return config.WorkflowConfig{ID: "w"}, true },
+		&fakeCreator{},
+		func(context.Context, config.WorkflowConfig, model.InternalTask) (bool, error) { return true, nil },
+		testIDGen(), func() time.Time { return time.Unix(1000, 0) },
+	)
+	req := model.SpawnRequest{WorkflowID: "w", Title: "child"}
+
+	// One below the limit must succeed.
+	belowCtx := withSpawnDepth(context.Background(), maxSpawnDepth-1)
+	if _, err := s.Spawn(belowCtx, req); err != nil {
+		t.Fatalf("Spawn at depth %d: unexpected error: %v", maxSpawnDepth-1, err)
+	}
+
+	// At the limit must be rejected.
+	atCtx := withSpawnDepth(context.Background(), maxSpawnDepth)
+	_, err := s.Spawn(atCtx, req)
+	if err == nil {
+		t.Fatalf("Spawn at depth %d: expected error, got nil", maxSpawnDepth)
+	}
+}
+
+// TestDefaultSpawner_ProvenanceLabel verifies that every agent-spawned child
+// carries ProvenanceLabel regardless of what labels the spawn request supplied.
+func TestDefaultSpawner_ProvenanceLabel(t *testing.T) {
+	creator := &fakeCreator{}
+	s := NewDefaultSpawner(
+		func(string) (config.WorkflowConfig, bool) { return config.WorkflowConfig{ID: "w"}, true },
+		creator,
+		func(context.Context, config.WorkflowConfig, model.InternalTask) (bool, error) { return true, nil },
+		testIDGen(), func() time.Time { return time.Unix(1000, 0) },
+	)
+
+	for _, tc := range []struct {
+		name   string
+		labels []string
+	}{
+		{"no caller labels", nil},
+		{"with caller labels", []string{"agent:backend", "priority:high"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			creator.mu.Lock()
+			creator.tasks = nil
+			creator.mu.Unlock()
+
+			child, err := s.Spawn(context.Background(), model.SpawnRequest{
+				WorkflowID: "w",
+				Title:      "task-" + tc.name,
+				Labels:     tc.labels,
+				Key:        tc.name, // unique key per sub-test
+			})
+			if err != nil {
+				t.Fatalf("Spawn: %v", err)
+			}
+
+			found := false
+			for _, l := range child.Metadata.Labels {
+				if l == ProvenanceLabel {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("child labels %v missing ProvenanceLabel %q", child.Metadata.Labels, ProvenanceLabel)
+			}
+			// Caller-supplied labels must still be present.
+			for _, want := range tc.labels {
+				present := false
+				for _, got := range child.Metadata.Labels {
+					if got == want {
+						present = true
+						break
+					}
+				}
+				if !present {
+					t.Errorf("child labels %v missing caller label %q", child.Metadata.Labels, want)
+				}
+			}
+		})
+	}
+}
+
+// TestDefaultSpawner_DepthPropagates verifies that the depth embedded in the
+// child's run context is one greater than the parent's, so cascading spawns
+// accumulate correctly toward the limit.
+func TestDefaultSpawner_DepthPropagates(t *testing.T) {
+	var capturedDepth int
+	run := func(ctx context.Context, _ config.WorkflowConfig, _ model.InternalTask) (bool, error) {
+		capturedDepth = spawnDepth(ctx)
+		return true, nil
+	}
+	s := NewDefaultSpawner(
+		func(string) (config.WorkflowConfig, bool) { return config.WorkflowConfig{ID: "w"}, true },
+		&fakeCreator{},
+		run,
+		testIDGen(), func() time.Time { return time.Unix(1000, 0) },
+	)
+
+	parentCtx := withSpawnDepth(context.Background(), 3)
+	if _, err := s.Spawn(parentCtx, model.SpawnRequest{WorkflowID: "w", Title: "child"}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	// Give the goroutine a moment to run.
+	time.Sleep(50 * time.Millisecond)
+	if capturedDepth != 4 {
+		t.Errorf("child context depth = %d, want 4 (parent 3 + 1)", capturedDepth)
 	}
 }
