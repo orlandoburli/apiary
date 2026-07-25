@@ -1,0 +1,65 @@
+name: require-human-review
+
+# SEC-08 — Block agent-authored PRs from merging without human approval.
+#
+# Any PR carrying the `agent-authored` label must have at least one approving
+# review from a human before the `require-human-review` status check turns
+# green. Branch protection on `main` lists this check as required AND enforces
+# reviews for admins (enforce_admins: true), so no path exists to merge without
+# a human in the loop.
+#
+# Trigger matrix:
+#   pull_request (opened / synchronize / labeled / unlabeled)
+#     → recheck whenever the PR head changes or the label is toggled.
+#   pull_request_review (submitted)
+#     → recheck immediately when a review is submitted or dismissed.
+
+on:
+  pull_request:
+    types: [opened, synchronize, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  gate:
+    name: require-human-review
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check for agent-authored label
+        id: label-check
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels) }}
+        run: |
+          if echo "$LABELS" | grep -q 'agent-authored'; then
+            echo "is_agent=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_agent=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pass — not an agent PR
+        if: steps.label-check.outputs.is_agent == 'false'
+        run: echo "PR is not agent-authored. No review gate required."
+
+      - name: Check for human approval
+        if: steps.label-check.outputs.is_agent == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          approved=$(gh api \
+            /repos/$REPO/pulls/$PR/reviews \
+            --jq '[.[] | select(.state == "APPROVED")] | length')
+
+          echo "Approved review count: $approved"
+
+          if [ "$approved" -ge 1 ]; then
+            echo "Human approval present — gate passed."
+          else
+            echo "::error::This PR is agent-authored and requires at least one human approval before merging (SEC-08)."
+            exit 1
+          fi
