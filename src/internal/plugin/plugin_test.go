@@ -13,6 +13,16 @@ import (
 	"time"
 )
 
+// TestMain handles the Landlock re-exec trampoline: when the test binary is
+// re-invoked as a sandbox launcher it applies filesystem restrictions and
+// exec()s the actual plugin binary, never returning to the test runner.
+func TestMain(m *testing.M) {
+	if IsSandboxLauncher() {
+		RunSandboxLauncher()
+	}
+	os.Exit(m.Run())
+}
+
 func writeTestPlugin(t *testing.T, parent, name, script string, manifest Manifest) string {
 	t.Helper()
 	root := filepath.Join(parent, name)
