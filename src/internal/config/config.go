@@ -820,11 +820,14 @@ func expandEnv(s string) string {
 func loadDotEnv(configPath string) {
 	dir := filepath.Dir(configPath)
 	envPath := filepath.Join(dir, ".env")
+	if err := checkDotEnvPerms(envPath); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", err)
+		return
+	}
 	data, err := os.ReadFile(envPath)
 	if err != nil {
 		return
 	}
-	warnDotEnvPerms(envPath)
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {

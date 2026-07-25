@@ -2,6 +2,6 @@
 
 package cli
 
-// warnDotEnvPerms is a no-op on Windows, which does not use Unix-style
+// checkDotEnvPerms is a no-op on Windows, which does not use Unix-style
 // permission bits for file access control.
-func warnDotEnvPerms(_ string) {}
+func checkDotEnvPerms(_ string) error { return nil }

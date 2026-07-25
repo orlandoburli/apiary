@@ -111,7 +111,10 @@ func loadDotEnv(cmd *cobra.Command) {
 	if path == "" {
 		path = ".env"
 	}
-	warnDotEnvPerms(path)
+	if err := checkDotEnvPerms(path); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", err)
+		return
+	}
 	if err := godotenv.Load(path); err == nil {
 		aplog.Debug("loaded env file: %s", path)
 	}
