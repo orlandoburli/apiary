@@ -2,8 +2,10 @@
 package plugin
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -50,9 +52,13 @@ type Manifest struct {
 	Apiary        string               `json:"apiary"`
 	Protocol      int                  `json:"protocol"`
 	Executable    string               `json:"executable"`
-	Capabilities  []Capability         `json:"capabilities"`
-	ConfigSchema  json.RawMessage      `json:"config_schema,omitempty"`
-	Security      SecurityRequirements `json:"security,omitempty"`
+	// Checksum is the SHA-256 digest of the plugin executable in the form
+	// "sha256:<64-hex-chars>". Required — plugins without a checksum are refused.
+	// Generate with: sha256sum <executable>
+	Checksum     string               `json:"checksum"`
+	Capabilities []Capability         `json:"capabilities"`
+	ConfigSchema json.RawMessage      `json:"config_schema,omitempty"`
+	Security     SecurityRequirements `json:"security,omitempty"`
 }
 
 type Installed struct {
@@ -135,7 +141,7 @@ func (p *Installed) Validate(apiaryVersion string) error {
 	if err := validateSecurity(m.Security); err != nil {
 		return err
 	}
-	if _, err := secureExecutable(p.Root, m.Executable); err != nil {
+	if _, err := secureExecutable(p.Root, m.Executable, m.Checksum); err != nil {
 		return err
 	}
 	p.Manifest = m
@@ -180,7 +186,7 @@ func validPluginID(id string) bool {
 	return true
 }
 
-func secureExecutable(root, name string) (string, error) {
+func secureExecutable(root, name, checksum string) (string, error) {
 	if strings.TrimSpace(name) == "" || filepath.IsAbs(name) {
 		return "", fmt.Errorf("executable must be a relative path inside the plugin directory")
 	}
@@ -203,7 +209,39 @@ func secureExecutable(root, name string) (string, error) {
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
 		return "", fmt.Errorf("executable %q is not executable; run chmod +x", name)
 	}
+	if err := verifyChecksum(path, checksum); err != nil {
+		return "", err
+	}
 	return path, nil
+}
+
+// verifyChecksum requires checksum to be "sha256:<64-hex>" and verifies it
+// against the file at path. An empty or malformed checksum is always rejected.
+func verifyChecksum(path, checksum string) error {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(checksum, prefix) || len(checksum) != len(prefix)+64 {
+		return fmt.Errorf("checksum must be sha256:<64-hex-chars>; generate with: sha256sum <executable> (got %q)", checksum)
+	}
+	hexPart := checksum[len(prefix):]
+	for _, c := range hexPart {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return fmt.Errorf("checksum %q contains invalid hex character %q", checksum, string(c))
+		}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("checksum: open executable: %w", err)
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("checksum: read executable: %w", err)
+	}
+	actual := fmt.Sprintf("%x", h.Sum(nil))
+	if actual != hexPart {
+		return fmt.Errorf("executable checksum mismatch: expected sha256:%s, got sha256:%s; update the manifest checksum field", hexPart, actual)
+	}
+	return nil
 }
 
 func validateSecurity(security SecurityRequirements) error {
@@ -216,6 +254,30 @@ func validateSecurity(security SecurityRequirements) error {
 			return fmt.Errorf("security.secret_env contains duplicate %q", name)
 		}
 		seen[name] = true
+	}
+	if err := validatePaths("security.read_paths", security.ReadPaths); err != nil {
+		return err
+	}
+	if err := validatePaths("security.write_paths", security.WritePaths); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validatePaths(field string, paths []string) error {
+	seen := map[string]bool{}
+	for _, p := range paths {
+		if !filepath.IsAbs(p) {
+			return fmt.Errorf("%s %q must be an absolute path", field, p)
+		}
+		clean := filepath.Clean(p)
+		if clean != p {
+			return fmt.Errorf("%s %q must be a clean absolute path (use %q)", field, p, clean)
+		}
+		if seen[p] {
+			return fmt.Errorf("%s contains duplicate %q", field, p)
+		}
+		seen[p] = true
 	}
 	return nil
 }

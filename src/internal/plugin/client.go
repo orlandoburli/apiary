@@ -48,7 +48,7 @@ func NewClient(installed *Installed, instance InstanceConfig) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	executable, err := secureExecutable(installed.Root, installed.Manifest.Executable)
+	executable, err := secureExecutable(installed.Root, installed.Manifest.Executable, installed.Manifest.Checksum)
 	if err != nil {
 		return nil, err
 	}
@@ -135,9 +135,14 @@ func (c *Client) sanitizeDiagnostic(value string) string {
 }
 
 func (c *Client) environment() []string {
+	sec := c.installed.Manifest.Security
 	allowed := []string{"PATH", "HOME", "TMPDIR", "TEMP", "LANG", "LC_ALL", "TZ"}
-	allowed = append(allowed, c.installed.Manifest.Security.SecretEnv...)
-	env := make([]string, 0, len(allowed)+2)
+	if sec.Network {
+		// Propagate proxy configuration only when the plugin declared network access.
+		allowed = append(allowed, "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")
+	}
+	allowed = append(allowed, sec.SecretEnv...)
+	env := make([]string, 0, len(allowed)+8)
 	seen := map[string]bool{}
 	for _, key := range allowed {
 		if seen[key] {
@@ -148,7 +153,17 @@ func (c *Client) environment() []string {
 			env = append(env, key+"="+value)
 		}
 	}
-	env = append(env, "APIARY_PLUGIN_ID="+c.ID(), fmt.Sprintf("APIARY_PLUGIN_PROTOCOL=%d", ProtocolVersion))
+	env = append(env,
+		"APIARY_PLUGIN_ID="+c.ID(),
+		fmt.Sprintf("APIARY_PLUGIN_PROTOCOL=%d", ProtocolVersion),
+		fmt.Sprintf("APIARY_PLUGIN_NETWORK=%t", sec.Network),
+	)
+	if len(sec.ReadPaths) > 0 {
+		env = append(env, "APIARY_PLUGIN_READ_PATHS="+strings.Join(sec.ReadPaths, string(os.PathListSeparator)))
+	}
+	if len(sec.WritePaths) > 0 {
+		env = append(env, "APIARY_PLUGIN_WRITE_PATHS="+strings.Join(sec.WritePaths, string(os.PathListSeparator)))
+	}
 	return env
 }
 
