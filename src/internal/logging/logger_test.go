@@ -60,6 +60,44 @@ func TestLog_TaskDebugPersistsBelowThreshold(t *testing.T) {
 	}
 }
 
+// When SetPersistPrompts(false), task-log entries that begin with
+// "prompt sent to agent:" must be silently dropped from the DB while all
+// other entries — including the rest of the agent stream — are still written.
+func TestLog_SetPersistPromptsDropsPromptEntries(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	dbClient, err := db.New(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("db.New: %v", err)
+	}
+	defer dbClient.Close()
+
+	logger, err := New(t.TempDir(), dbClient, LevelDebug, DefaultRotation())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer logger.Close()
+
+	logger.SetPersistPrompts(false)
+
+	logger.TaskDebug(ctx, "task-1", "prompt sent to agent:\nfull ticket text here")
+	logger.TaskDebug(ctx, "task-1", "$ claude --model claude-sonnet-5 -p ...")
+	logger.TaskDebug(ctx, "task-1", "[assistant] working on it")
+
+	logs, err := dbClient.GetTaskLogs(ctx, "task-1", 100)
+	if err != nil {
+		t.Fatalf("GetTaskLogs: %v", err)
+	}
+	for _, l := range logs {
+		if strings.HasPrefix(l.Message, "prompt sent to agent:") {
+			t.Errorf("prompt entry must not reach DB, got: %q", l.Message)
+		}
+	}
+	if len(logs) != 2 {
+		t.Errorf("DB log count = %d, want 2 (non-prompt entries only)", len(logs))
+	}
+}
+
 // A write that would push apiary.log past the size limit must rotate the file
 // into a .1 backup and start a fresh one, shifting older backups up a slot and
 // dropping the oldest beyond MaxBackups.
