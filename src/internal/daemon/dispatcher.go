@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -995,6 +996,28 @@ func (d *Dispatcher) controlLabels(cell model.SourceItem) []string {
 	return out
 }
 
+// socketAuthMiddleware enforces Bearer token authentication on all mutating
+// (non-GET, non-HEAD) requests to the IPC socket. Read-only endpoints remain
+// accessible without credentials so that health checks and status queries work
+// even when the token file is temporarily unavailable.
+//
+// The token is written to <dataDir>/apiary.token (mode 0600) at daemon startup.
+// Clients read it with daemon.ReadSocketToken before sending mutating requests.
+func socketAuthMiddleware(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			next.ServeHTTP(w, r)
+			return
+		}
+		provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if len(provided) == 0 || len(provided) != len(token) || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+			http.Error(w, "unauthorized: valid socket token required", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // StartServer starts an HTTP server on the Unix socket for IPC.
 // It removes any stale socket file before binding.
 func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error {
@@ -1004,6 +1027,11 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 	}
 	// remove stale socket
 	_ = os.Remove(path)
+
+	token, err := writeSocketToken(config.DataDir(d.configFile))
+	if err != nil {
+		return fmt.Errorf("socket auth: %w", err)
+	}
 
 	ln, err := net.Listen("unix", path)
 	if err != nil {
@@ -1284,7 +1312,7 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		_ = json.NewEncoder(w).Encode(map[string]any{"deleted": taskRef})
 	})
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{Handler: socketAuthMiddleware(token, mux)}
 
 	wg.Add(1)
 	go func() {

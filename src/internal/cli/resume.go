@@ -166,7 +166,8 @@ func confirm(prompt string) bool {
 // JSON response into out (when non-nil). It returns the HTTP status code (0 on
 // transport failure) so callers can map distinct exit codes.
 func ipcDo(method, path string, out any) (int, error) {
-	socketPath := daemon.SocketPath(config.DataDir(configFile))
+	dataDir := config.DataDir(configFile)
+	socketPath := daemon.SocketPath(dataDir)
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
@@ -177,6 +178,9 @@ func ipcDo(method, path string, out any) (int, error) {
 	req, err := http.NewRequest(method, "http://apiary"+path, nil)
 	if err != nil {
 		return 0, err
+	}
+	if token, err := daemon.ReadSocketToken(dataDir); err == nil {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := client.Do(req)
 	if err != nil {

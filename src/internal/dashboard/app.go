@@ -53,10 +53,11 @@ const logPrefixWidth = 15
 // event-loop goroutine) is allowed to mutate the model. This is what keeps
 // the data-fetching goroutines from racing with View.
 type App struct {
-	model      *Model
-	dbConn     *db.Client
-	socketPath string
-	cfg        *config.Config
+	model       *Model
+	dbConn      *db.Client
+	socketPath  string
+	socketToken string
+	cfg         *config.Config
 	// logDir is the daemon's log directory, used to locate per-task markdown
 	// transcripts (logDir/transcripts/<task>/...).
 	logDir string
@@ -74,13 +75,14 @@ type App struct {
 	logMDWidth   int
 }
 
-func New(dbConn *db.Client, socketPath string, cfg *config.Config, logDir string) *App {
+func New(dbConn *db.Client, socketPath, socketToken string, cfg *config.Config, logDir string) *App {
 	return &App{
-		model:      NewModel(),
-		dbConn:     dbConn,
-		socketPath: socketPath,
-		cfg:        cfg,
-		logDir:     logDir,
+		model:       NewModel(),
+		dbConn:      dbConn,
+		socketPath:  socketPath,
+		socketToken: socketToken,
+		cfg:         cfg,
+		logDir:      logDir,
 	}
 }
 
@@ -1570,8 +1572,14 @@ func (a *App) restartTaskCmd(taskID string) tea.Cmd {
 			},
 		}
 		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-		url := fmt.Sprintf("http://apiary/restart/%s", taskID)
-		resp, err := client.Post(url, "application/json", nil)
+		req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://apiary/restart/%s", taskID), nil)
+		if err != nil {
+			return nil
+		}
+		if a.socketToken != "" {
+			req.Header.Set("Authorization", "Bearer "+a.socketToken)
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			return nil
 		}
@@ -1597,8 +1605,14 @@ func (a *App) refreshTaskPullsCmd(internalTaskID string) tea.Cmd {
 			},
 		}
 		client := &http.Client{Transport: transport, Timeout: 8 * time.Second}
-		url := fmt.Sprintf("http://apiary/tasks/pulls/refresh/%s", internalTaskID)
-		resp, err := client.Post(url, "application/json", nil)
+		req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://apiary/tasks/pulls/refresh/%s", internalTaskID), nil)
+		if err != nil {
+			return nil
+		}
+		if a.socketToken != "" {
+			req.Header.Set("Authorization", "Bearer "+a.socketToken)
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			return nil
 		}
@@ -1619,8 +1633,14 @@ func (a *App) clearLogsCmd(taskID string) tea.Cmd {
 			},
 		}
 		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-		url := fmt.Sprintf("http://apiary/clearlogs/%s", taskID)
-		resp, err := client.Post(url, "application/json", nil)
+		req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://apiary/clearlogs/%s", taskID), nil)
+		if err != nil {
+			return nil
+		}
+		if a.socketToken != "" {
+			req.Header.Set("Authorization", "Bearer "+a.socketToken)
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			return nil
 		}
@@ -1639,8 +1659,14 @@ func (a *App) stopInstanceCmd(instanceID string) tea.Cmd {
 			},
 		}
 		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-		url := fmt.Sprintf("http://apiary/instances/stop/%s", instanceID)
-		resp, err := client.Post(url, "application/json", nil)
+		req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://apiary/instances/stop/%s", instanceID), nil)
+		if err != nil {
+			return nil
+		}
+		if a.socketToken != "" {
+			req.Header.Set("Authorization", "Bearer "+a.socketToken)
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			return nil
 		}
@@ -1662,6 +1688,9 @@ func (a *App) approvalResponseCmd(requestID, decision string) tea.Cmd {
 		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 		req, _ := http.NewRequest(http.MethodPost, "http://apiary/approvals/"+requestID+"/respond", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
+		if a.socketToken != "" {
+			req.Header.Set("Authorization", "Bearer "+a.socketToken)
+		}
 		resp, err := client.Do(req)
 		if err == nil {
 			resp.Body.Close()
@@ -1946,6 +1975,9 @@ func (a *App) patchAgentViaSocket(agentID, model, runner string, maxWorkers int)
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if a.socketToken != "" {
+		req.Header.Set("Authorization", "Bearer "+a.socketToken)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

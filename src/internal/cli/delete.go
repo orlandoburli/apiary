@@ -52,7 +52,8 @@ func newDeleteCmd() *cobra.Command {
 				}
 			}
 
-			socketPath := daemon.SocketPath(config.DataDir(configFile))
+			dataDir := config.DataDir(configFile)
+			socketPath := daemon.SocketPath(dataDir)
 			transport := &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 					return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
@@ -60,8 +61,14 @@ func newDeleteCmd() *cobra.Command {
 			}
 			client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 
-			url := fmt.Sprintf("http://apiary/tasks/delete/%s", taskID)
-			resp, err := client.Post(url, "application/json", nil)
+			req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://apiary/tasks/delete/%s", taskID), nil)
+			if err != nil {
+				return fmt.Errorf("building request: %w", err)
+			}
+			if token, err := daemon.ReadSocketToken(dataDir); err == nil {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			resp, err := client.Do(req)
 			if err != nil {
 				return fmt.Errorf("cannot reach daemon: %w", err)
 			}
