@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/orlandoburli/apiary/internal/redact"
 )
 
 const ExecutionEventSchemaVersion = 1
@@ -218,7 +220,7 @@ func redactEventValue(value any, configured map[string]struct{}) any {
 		}
 		return out
 	case string:
-		if looksLikeSecret(v) {
+		if redact.LooksLikeSecret(v) {
 			return "[REDACTED]"
 		}
 		return v
@@ -232,12 +234,3 @@ func normalizeSensitiveKey(key string) string {
 	return strings.NewReplacer("_", "", "-", "", ".", "").Replace(key)
 }
 
-func looksLikeSecret(value string) bool {
-	lower := strings.ToLower(value)
-	for _, marker := range []string{"ghp_", "github_pat_", "xoxb-", "xoxp-", "bearer "} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return strings.Contains(value, "AKIA")
-}

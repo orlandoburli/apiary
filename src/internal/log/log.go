@@ -7,6 +7,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/orlandoburli/apiary/internal/redact"
 )
 
 var (
@@ -55,7 +57,7 @@ func Error(format string, args ...any) {
 
 func print(level, format string, args ...any) {
 	ts := time.Now().Format("15:04:05")
-	msg := fmt.Sprintf(format, args...)
+	msg := redact.String(fmt.Sprintf(format, args...))
 	fmt.Fprintf(os.Stderr, "%s  %-5s  %s\n", ts, level, msg)
 
 	sinkMu.RLock()
