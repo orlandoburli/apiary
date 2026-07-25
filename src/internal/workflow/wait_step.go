@@ -41,6 +41,12 @@ func (e *Engine) RunWaitStep(
 	}
 }
 
+// noPRGracePeriod is how long checkCIWaitStep keeps polling before concluding
+// that no pull request will be opened and failing the step. The grace window
+// absorbs the race between a PR being created and GitHub's timeline API
+// reflecting it.
+const noPRGracePeriod = 10 * time.Minute
+
 // checkCIWaitStep performs a single CI status check. Transient errors and a
 // still-running CI both yield Pending (retry next cycle); a passed/failed CI is
 // terminal; passing the deadline is a terminal timeout failure.
@@ -136,6 +142,32 @@ func (e *Engine) checkCIWaitStep(
 				"url":       status.URL,
 			},
 		}, nil
+
+	case "no_pr":
+		// The issue's timeline was fetched but contains no PR cross-references.
+		// Allow a grace period for the timeline to catch up (a PR opened
+		// moments before implement exited may not yet appear). Past the grace
+		// window, fail fast: the implement step was a no-op (e.g. blocked by a
+		// dependency) and waiting for the full MaxDuration is wasteful.
+		//
+		// deadline is zero on the very first park (set by enterWait afterwards),
+		// so the first check always remains pending regardless of wall time.
+		if !deadline.IsZero() {
+			startAt := deadline.Add(-cfg.ParsedMaxDuration())
+			if e.now().After(startAt.Add(noPRGracePeriod)) {
+				aplog.Info("wait_for step %q: no PR found after %v grace period — implement was a no-op or blocked", step.ID, noPRGracePeriod)
+				return StepResult{
+					Success: false,
+					Err:     fmt.Errorf("no pull request opened by implement step"),
+					StructuredOutput: map[string]any{
+						"ci_status": "no_pr",
+						"reason":    fmt.Sprintf("no PR found after %v grace period", noPRGracePeriod),
+					},
+				}, nil
+			}
+		}
+		aplog.Debug("wait_for step %q: no PR in issue timeline yet (within grace period)", step.ID)
+		return StepResult{Pending: true}, nil
 
 	case "pending":
 		aplog.Debug("wait_for step %q: CI still pending", step.ID)
@@ -288,7 +320,7 @@ func checksToMap(checks []struct {
 // recorded poll always carries a meaningful, non-empty status.
 func normalizeCIStatus(s string) string {
 	switch s {
-	case "passed", "failed", "pending", "conflict":
+	case "passed", "failed", "pending", "conflict", "no_pr":
 		return s
 	default:
 		return "unknown"

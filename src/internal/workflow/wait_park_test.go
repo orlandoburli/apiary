@@ -380,6 +380,72 @@ func TestWaitFor_RecordsErrorAndTimeout(t *testing.T) {
 	}
 }
 
+// TestWaitFor_NoPRPendingWithinGrace verifies that a "no_pr" CI status keeps the
+// instance parked during the grace window: a PR may have just been opened and
+// the GitHub timeline may not reflect it yet.
+func TestWaitFor_NoPRPendingWithinGrace(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	clock := time.Unix(1000, 0)
+	ci := func() (source.CIStatus, error) { return source.CIStatus{Status: "no_pr"}, nil }
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+
+	instID, success, _ := eng.RunInstance(context.Background(), waitForWorkflow(), model.InternalTask{ID: "c1"})
+	if success {
+		t.Fatal("instance must not succeed while CI is no_pr")
+	}
+	if store.instances[instID].State != db.InstanceStateWaiting {
+		t.Fatalf("expected poll_waiting after initial no_pr, got %q", store.instances[instID].State)
+	}
+
+	// Advance within the grace window (5 min < 10 min) — must stay parked.
+	clock = clock.Add(5 * time.Minute)
+	eng.CheckParkedWaits(context.Background())
+	if store.instances[instID].State != db.InstanceStateWaiting {
+		t.Errorf("expected still poll_waiting within grace period, got %q", store.instances[instID].State)
+	}
+	if len(eng.ParkedWaits()) != 1 {
+		t.Error("instance should still be parked within grace window")
+	}
+}
+
+// TestWaitFor_NoPRFailsAfterGrace verifies that once the grace period elapses
+// the step fails fast instead of polling until MaxDuration. The workflow has
+// on_fail → implement (MaxRetries 3), so a no_pr failure loops back rather than
+// terminating outright — confirming the failure is routed through on_fail.
+func TestWaitFor_NoPRFailsAfterGrace(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	clock := time.Unix(1000, 0)
+	ci := func() (source.CIStatus, error) { return source.CIStatus{Status: "no_pr"}, nil }
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+
+	instID, _, _ := eng.RunInstance(context.Background(), waitForWorkflow(), model.InternalTask{ID: "c1"})
+	if store.instances[instID].State != db.InstanceStateWaiting {
+		t.Fatalf("expected poll_waiting after initial no_pr, got %q", store.instances[instID].State)
+	}
+
+	// Advance past the grace window — the next check must not park indefinitely.
+	clock = clock.Add(noPRGracePeriod + time.Second)
+	eng.CheckParkedWaits(context.Background())
+
+	// The step failed fast, on_fail loops back to implement, which is also a
+	// no-op — so the instance re-parks at check-ci waiting again.
+	// The key invariant: the instance is NOT indefinitely stuck; it is driving
+	// the on_fail retry loop rather than polling no_pr forever.
+	got := store.instances[instID].State
+	// Either waiting (looped back to check-ci after implement re-ran) or failed
+	// (on_fail budget exhausted) — but NOT permanently stuck on the same poll cycle.
+	if got != db.InstanceStateWaiting && got != db.InstanceStateFailed {
+		t.Errorf("after grace period elapsed, instance state = %q, want waiting (looped) or failed", got)
+	}
+	// implement must have run a second time, proving check-ci actually failed and
+	// the on_fail loop kicked in.
+	if n := countID(exec.seen, "implement"); n < 2 {
+		t.Errorf("implement ran %d time(s), want ≥2 (initial + at least one on_fail loop-back after grace)", n)
+	}
+}
+
 // priorStepsFor returns the instance's persisted step runs in creation order,
 // mirroring db.Client.ListStepRuns for the rehydration path.
 func priorStepsFor(f *fakeStore, instID string) []db.StepRun {

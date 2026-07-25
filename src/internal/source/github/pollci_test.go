@@ -220,6 +220,81 @@ func TestPollCIStatus_PrefersOpenPROverStaleClosedOne(t *testing.T) {
 	}
 }
 
+// When the issue timeline exists and is parsed successfully but contains no
+// cross-referenced PRs, PollCIStatus returns "no_pr" (not "pending") so the
+// caller can distinguish "no PR yet" from "PR exists but CI is running".
+func TestPollCIStatus_NoPRInTimeline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pulls/1958"):
+			http.NotFound(w, r)
+		case strings.HasSuffix(r.URL.Path, "/issues/1958/timeline"):
+			// Timeline has events but none are PR cross-references.
+			_, _ = w.Write([]byte(`[{"event":"labeled","label":{"name":"ai-ready"}}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	a := &Adapter{id: "gh", owner: "o", repo: "r", client: newClient(srv.URL, "")}
+
+	got, err := a.PollCIStatus(context.Background(), "1958")
+	if err != nil {
+		t.Fatalf("PollCIStatus: %v", err)
+	}
+	if got.Status != "no_pr" {
+		t.Errorf("status = %q, want no_pr (timeline has no PR cross-references)", got.Status)
+	}
+}
+
+// An empty timeline (not a timeline fetch failure) also signals no PR.
+func TestPollCIStatus_EmptyTimeline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pulls/1958"):
+			http.NotFound(w, r)
+		case strings.HasSuffix(r.URL.Path, "/issues/1958/timeline"):
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	a := &Adapter{id: "gh", owner: "o", repo: "r", client: newClient(srv.URL, "")}
+
+	got, err := a.PollCIStatus(context.Background(), "1958")
+	if err != nil {
+		t.Fatalf("PollCIStatus: %v", err)
+	}
+	if got.Status != "no_pr" {
+		t.Errorf("status = %q, want no_pr (empty timeline)", got.Status)
+	}
+}
+
+// A timeline fetch failure is a transient error, not a definitive "no PR" — keep pending.
+func TestPollCIStatus_TimelineFetchFailureRemainssPending(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pulls/1958"):
+			http.NotFound(w, r)
+		case strings.HasSuffix(r.URL.Path, "/issues/1958/timeline"):
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	a := &Adapter{id: "gh", owner: "o", repo: "r", client: newClient(srv.URL, "")}
+
+	got, err := a.PollCIStatus(context.Background(), "1958")
+	if err != nil {
+		t.Fatalf("PollCIStatus: %v", err)
+	}
+	if got.Status != "pending" {
+		t.Errorf("status = %q, want pending (timeline fetch failure is transient)", got.Status)
+	}
+}
+
 // Legacy commit statuses (non-Actions CI) still work and are aggregated with checks.
 func TestPollCIStatus_LegacyStatusesGreen(t *testing.T) {
 	a := ciServer(t,

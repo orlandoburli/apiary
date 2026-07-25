@@ -365,7 +365,10 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 		}
 
 		if len(candidates) == 0 {
-			return source.CIStatus{Status: "pending"}, nil // No PR found yet; still pending
+			// Timeline was fetched and parsed but contains no PR cross-references.
+			// Return "no_pr" rather than "pending" so callers can apply a shorter
+			// grace period instead of waiting for the full MaxDuration timeout.
+			return source.CIStatus{Status: "no_pr"}, nil
 		}
 
 		// Fetch candidate PRs until an open one is found. A fetch failure is NOT
