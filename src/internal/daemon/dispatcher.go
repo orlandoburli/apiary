@@ -357,7 +357,9 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			return nil, fmt.Errorf("agent %q: runner type %q not found", ac.ID, rc.Type)
 		}
 
-		if err := ra.Configure(runnerConfigWithMCPs(rc.Config, rc.MCPs, ac.MCPs)); err != nil {
+		agentRunConf := runnerConfigWithMCPs(rc.Config, rc.MCPs, ac.MCPs)
+		agentRunConf["allow_root"] = cfg.Settings.Security.AllowRoot
+		if err := ra.Configure(agentRunConf); err != nil {
 			return nil, fmt.Errorf("agent %q: configure runner: %w", ac.ID, err)
 		}
 
@@ -389,7 +391,9 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			if !ok {
 				return nil, fmt.Errorf("agent %q: fallback runner type %q not found", ac.ID, fAdapterName)
 			}
-			if err := fra.Configure(runnerConfigWithMCPs(frc.Config, frc.MCPs, ac.MCPs)); err != nil {
+			fbRunConf := runnerConfigWithMCPs(frc.Config, frc.MCPs, ac.MCPs)
+			fbRunConf["allow_root"] = cfg.Settings.Security.AllowRoot
+			if err := fra.Configure(fbRunConf); err != nil {
 				return nil, fmt.Errorf("agent %q: configure fallback runner %q: %w", ac.ID, fb.Runner, err)
 			}
 			if fAdapterName == "opencode" {
@@ -415,7 +419,9 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		if !ok {
 			return nil, fmt.Errorf("worker %q: unknown runner type %q", wc.ID, wc.Runner)
 		}
-		if err := ra.Configure(workerRunConfig(wc)); err != nil {
+		wrcConf := workerRunConfig(wc)
+		wrcConf["allow_root"] = cfg.Settings.Security.AllowRoot
+		if err := ra.Configure(wrcConf); err != nil {
 			return nil, fmt.Errorf("worker %q: configure runner: %w", wc.ID, err)
 		}
 		d.runners[wc.ID] = ra
@@ -1891,7 +1897,12 @@ func (d *Dispatcher) UpdateAgentConfig(ctx context.Context, agentID, newModel, n
 		if !ok {
 			return fmt.Errorf("runner type %q not registered", rc.Type)
 		}
-		if err := ra.Configure(rc.Config); err != nil {
+		hotConf := make(map[string]any, len(rc.Config)+1)
+		for k, v := range rc.Config {
+			hotConf[k] = v
+		}
+		hotConf["allow_root"] = d.cfg.Settings.Security.AllowRoot
+		if err := ra.Configure(hotConf); err != nil {
 			return fmt.Errorf("configure runner %q: %w", newRunner, err)
 		}
 

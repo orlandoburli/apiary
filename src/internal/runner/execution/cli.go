@@ -35,6 +35,9 @@ type CliRunner struct {
 	// mcpRunArgs are extra CLI args injected into every run to activate the MCP
 	// config written by setupMCP (e.g. claude's "--mcp-config <path>").
 	mcpRunArgs []string
+	// allowRoot, when true, permits launching the agent subprocess as root (uid 0).
+	// Injected from settings.security.allow_root by the dispatcher. Default false.
+	allowRoot bool
 }
 
 func (r *CliRunner) ID() string { return "cli" }
@@ -70,6 +73,9 @@ func (r *CliRunner) Configure(config map[string]any) error {
 	if v, ok := config["mcps"].([]model.MCPServer); ok {
 		r.mcps = v
 	}
+	if v, ok := config["allow_root"].(bool); ok {
+		r.allowRoot = v
+	}
 	// Materialise the provider's MCP config (and any per-run CLI args) once the
 	// servers are known. Configure runs at load time, sequentially across agents,
 	// so the global-config merges (cursor/opencode) are race-free.
@@ -101,6 +107,10 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		argv = append(argv, prompt)
 	} else if r.promptFlag != "" {
 		argv = append(argv, r.promptFlag, prompt)
+	}
+
+	if err := checkPrivilege(r.allowRoot); err != nil {
+		return model.RunResult{}, err
 	}
 
 	cmd := exec.CommandContext(ctx, r.command, argv...)

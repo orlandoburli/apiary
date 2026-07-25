@@ -287,6 +287,21 @@ type Settings struct {
 	// CreditExhaustedCooldown is how long a runner type is paused after a
 	// credit-exhausted failure. Default "24h".
 	CreditExhaustedCooldown string `yaml:"credit_exhausted_cooldown,omitempty"`
+	// Security controls privilege and execution-boundary settings.
+	Security SecuritySettings `yaml:"security,omitempty"`
+}
+
+// SecuritySettings caps the privilege at which agent subprocesses are allowed
+// to run and documents the recommended secure configuration.
+type SecuritySettings struct {
+	// AllowRoot, when true, permits Apiary to launch agent CLI subprocesses
+	// as root (uid 0). Default false: root execution is refused because a
+	// successful prompt-injection via untrusted task content (Jira/GitHub issue
+	// text, PR descriptions, etc.) would then run at full system privilege.
+	// Set APIARY_ALLOW_ROOT=1 for a one-off override without editing config.
+	// Both options are strongly discouraged — prefer running as a dedicated
+	// unprivileged service account.
+	AllowRoot bool `yaml:"allow_root,omitempty"`
 }
 
 // QueueSettings controls durable dispatch and the embedded protocol-1 worker.

@@ -335,6 +335,34 @@ shared directory — editing a script updates every repo at once. Note that
 `core.hooksPath` replaces the per-repo `.git/hooks` directory entirely for
 the configured repos.
 
+### Privilege ceiling (`security`)
+
+Apiary adds no privilege of its own — agent subprocesses inherit the OS user
+that runs the daemon. If that user is **root (uid 0)**, a successful
+prompt-injection attack via untrusted task content (a GitHub issue body, a
+Jira ticket description, a PR comment) executes with full system access.
+
+To guard against this, the daemon **refuses to launch agent subprocesses when
+running as root** unless explicitly overridden:
+
+```yaml
+settings:
+  security:
+    allow_root: false   # default — refuse root execution
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `allow_root` | `false` | Set `true` to permit agent launches as root. Strongly discouraged — prefer running Apiary as a dedicated unprivileged service account |
+
+**Recommended setup:** create a dedicated OS user (`apiary` or similar) with
+access to only the repositories the daemon manages. Do not run the daemon or
+the underlying CLI (`claude`, `opencode`, `codex`) as root.
+
+**One-off override:** set `APIARY_ALLOW_ROOT=1` in the environment to bypass
+the check for a single run without editing `apiary.yaml`. This is intended for
+troubleshooting, not production use.
+
 ### Cursor cost back-fill (`cursor_cost`)
 
 The Cursor agent CLI streams token counts but **no dollar cost** — unlike the
