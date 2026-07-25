@@ -18,6 +18,34 @@ import (
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
+// isEnvDenied reports whether the environment variable named key matches any of
+// the prefixes in the denylist. Matching is case-insensitive.
+func isEnvDenied(key string, denylist []string) bool {
+	upper := strings.ToUpper(key)
+	for _, prefix := range denylist {
+		if strings.HasPrefix(upper, strings.ToUpper(prefix)) {
+			return true
+		}
+	}
+	return false
+}
+
+// filteredEnv returns a copy of environ with variables whose names match any
+// entry in denylist removed. Each element of environ must be "KEY=VALUE".
+func filteredEnv(environ []string, denylist []string) []string {
+	if len(denylist) == 0 {
+		return environ
+	}
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if !isEnvDenied(name, denylist) {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 // CliRunner manages a CLI subprocess with stdout/stderr streaming, PID tracking,
 // and heartbeats. Used by claude, opencode-cli, and similar providers.
 type CliRunner struct {
@@ -84,6 +112,13 @@ func (r *CliRunner) Configure(config map[string]any) error {
 }
 
 func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
+	if os.Getuid() == 0 && !req.Security.AllowRoot {
+		return model.RunResult{}, fmt.Errorf(
+			"cli runner: refusing to spawn %q as root (uid 0); "+
+				"set settings.security.allow_root: true in apiary.yaml to override",
+			r.command,
+		)
+	}
 	start := time.Now()
 	prompt := buildPrompt(req)
 
@@ -105,7 +140,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 
 	cmd := exec.CommandContext(ctx, r.command, argv...)
 	cmd.Dir = req.WorkingDir
-	cmd.Env = os.Environ()
+	cmd.Env = filteredEnv(os.Environ(), req.Security.EnvDenylist)
 	for k, v := range req.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

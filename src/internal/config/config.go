@@ -84,6 +84,37 @@ func (r *RunnerConfig) AdapterName() string {
 	return r.Type
 }
 
+// AgentSecurity is the per-agent privilege ceiling. It overrides or narrows the
+// global Settings.Security for runs dispatched through this specific agent.
+type AgentSecurity struct {
+	// AllowRoot, when true, permits the agent CLI subprocess to execute as uid 0
+	// (root). Requires Settings.Security.AllowRoot to also be true — per-agent
+	// opt-in alone is not sufficient; both gates must be open.
+	AllowRoot bool `yaml:"allow_root,omitempty"`
+	// EnvDenylist is a list of environment-variable name prefixes that are stripped
+	// from the subprocess environment before the agent CLI is launched (e.g.
+	// "AWS_", "GITHUB_TOKEN"). Matching is case-insensitive against the full
+	// variable name. Use this to prevent credential leakage to agents that consume
+	// untrusted content such as Jira tickets or GitHub issue bodies.
+	EnvDenylist []string `yaml:"env_denylist,omitempty"`
+}
+
+// SecuritySettings is the global privilege ceiling for all agent CLI subprocesses.
+// Per-agent AgentSecurity overrides can narrow (or, when explicitly opted in,
+// widen) these defaults for individual agents.
+type SecuritySettings struct {
+	// AllowRoot, when true, permits agent CLI subprocesses to run as uid 0 (root).
+	// The default (false) causes the daemon to refuse to start and each runner to
+	// refuse to spawn when the effective uid is 0. Set this only when running
+	// Apiary inside a container that requires root and you understand the risk.
+	AllowRoot bool `yaml:"allow_root,omitempty"`
+	// EnvDenylist is a global list of environment-variable name prefixes stripped
+	// from every agent CLI subprocess environment (e.g. "AWS_", "GITHUB_TOKEN").
+	// Per-agent agents[].security.env_denylist entries are merged in addition to
+	// these. Matching is case-insensitive against the full variable name.
+	EnvDenylist []string `yaml:"env_denylist,omitempty"`
+}
+
 type AgentConfig struct {
 	ID          string   `yaml:"id"`
 	Description string   `yaml:"description,omitempty"`
@@ -99,6 +130,10 @@ type AgentConfig struct {
 	SourceToken string `yaml:"source_token,omitempty"`
 	SourceEmail string `yaml:"source_email,omitempty"`
 	SourceName  string `yaml:"source_name,omitempty"`
+	// Security is the per-agent privilege ceiling. Narrows (or explicitly widens,
+	// with allow_root) the privilege for this agent's CLI subprocesses independently
+	// of the sandboxing layer.
+	Security AgentSecurity `yaml:"security,omitempty"`
 	// Env is the agent-scope environment overlay applied to every step that runs
 	// this agent, in any workflow. It is the lowest-precedence explicit env scope
 	// (below workflow.env and step.env), layered on top of the identity overlay.
@@ -287,6 +322,9 @@ type Settings struct {
 	// CreditExhaustedCooldown is how long a runner type is paused after a
 	// credit-exhausted failure. Default "24h".
 	CreditExhaustedCooldown string `yaml:"credit_exhausted_cooldown,omitempty"`
+	// Security is the global privilege ceiling for all agent CLI subprocesses.
+	// Per-agent agents[].security overrides can narrow or widen these defaults.
+	Security SecuritySettings `yaml:"security,omitempty"`
 }
 
 // QueueSettings controls durable dispatch and the embedded protocol-1 worker.

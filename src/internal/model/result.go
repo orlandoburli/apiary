@@ -2,6 +2,18 @@ package model
 
 import "time"
 
+// RunSecurity carries the privilege-ceiling settings resolved for a single run.
+// It is derived from Settings.Security (global) merged with the dispatching
+// agent's AgentSecurity (per-agent override).
+type RunSecurity struct {
+	// AllowRoot, when true, allows the CLI subprocess to execute as uid 0.
+	// Both the global and per-agent gates must be open for this to take effect.
+	AllowRoot bool
+	// EnvDenylist is the merged set of env-var name prefixes to strip from the
+	// subprocess environment before the agent CLI is launched.
+	EnvDenylist []string
+}
+
 type RunRequest struct {
 	Cell          SourceItem
 	WorkerID      string
@@ -12,6 +24,9 @@ type RunRequest struct {
 	Env           map[string]string
 	Timeout       time.Duration
 	AgentMetadata map[string]any
+	// Security is the resolved privilege ceiling for this run. The CLI runner
+	// uses it to enforce the root check and apply the env denylist.
+	Security RunSecurity
 
 	// SystemPrepend is injected at the very start of the prompt, before the cell
 	// details and SystemAppend. In workflow mode it carries the formatted

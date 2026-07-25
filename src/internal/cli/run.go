@@ -43,6 +43,15 @@ func newRunCmd() *cobra.Command {
 				}
 				return fmt.Errorf("config validation failed")
 			}
+			if os.Getuid() == 0 && !cfg.Settings.Security.AllowRoot {
+				return fmt.Errorf(
+					"refusing to start: apiary is running as root (uid 0).\n" +
+						"Running the daemon as root grants every agent CLI subprocess full system access,\n" +
+						"which is unsafe when agents process untrusted content (e.g. Jira tickets, GitHub issues).\n" +
+						"Run apiary as a non-root user, or set settings.security.allow_root: true in apiary.yaml\n" +
+						"only if you understand the risk (e.g. inside an isolated container).",
+				)
+			}
 			for _, w := range cfg.WorkflowWarnings() {
 				fmt.Fprintf(os.Stderr, "  ⚠ %s\n", w)
 			}

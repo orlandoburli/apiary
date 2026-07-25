@@ -404,6 +404,10 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		WorkingDir:         "/",
 		Env:                env,
 		Timeout:            x.d.cfg.Settings.TaskTimeoutDuration(),
+		Security: model.RunSecurity{
+			AllowRoot:   x.d.cfg.Settings.Security.AllowRoot && req.Agent.Security.AllowRoot,
+			EnvDenylist: mergeEnvDenylist(x.d.cfg.Settings.Security, req.Agent.Security),
+		},
 	}
 
 	if x.d.logger != nil {
@@ -930,6 +934,20 @@ func withMemoryDir(env map[string]string, dir string) map[string]string {
 		env["APIARY_MEMORY_DIR"] = dir
 	}
 	return env
+}
+
+// mergeEnvDenylist combines the global and per-agent EnvDenylist slices,
+// deduplicating entries so the runner applies each prefix exactly once.
+func mergeEnvDenylist(global config.SecuritySettings, agent config.AgentSecurity) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, p := range append(global.EnvDenylist, agent.EnvDenylist...) {
+		if _, ok := seen[p]; !ok {
+			seen[p] = struct{}{}
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // compile-time interface checks.
