@@ -248,6 +248,10 @@ type CIStatusChecker func(ctx context.Context, sourceID, sourceItemID string) (s
 // an error if the lookup fails (transient or permanent).
 type DependencyChecker func(ctx context.Context, sourceID, sourceItemID, linkType string) ([]source.BlockerRef, error)
 
+// ReviewChecker is called by wait_for/ci steps with require_review: true to
+// check whether a PR linked to the task has at least one human approval.
+type ReviewChecker func(ctx context.Context, sourceID, sourceItemID string) (source.ReviewStatus, error)
+
 type Engine struct {
 	cfg               *config.Config
 	store             Store
@@ -259,6 +263,7 @@ type Engine struct {
 	tracker           TaskTracker
 	ciChecker         CIStatusChecker
 	depChecker        DependencyChecker
+	reviewChecker     ReviewChecker
 	approvalProviders []ApprovalProvider
 
 	now   func() time.Time
@@ -308,6 +313,12 @@ func WithCIStatusChecker(checker CIStatusChecker) Option {
 // kind "dependency".
 func WithDependencyChecker(checker DependencyChecker) Option {
 	return func(e *Engine) { e.depChecker = checker }
+}
+
+// WithReviewChecker sets the review-approval checker used by wait_for/ci steps
+// with require_review: true.
+func WithReviewChecker(checker ReviewChecker) Option {
+	return func(e *Engine) { e.reviewChecker = checker }
 }
 
 // WithApprovalProvider registers an external approval request transport.

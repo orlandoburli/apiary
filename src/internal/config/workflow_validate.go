@@ -613,6 +613,11 @@ func (c *Config) validateWaitForStep(sctx string, s StepConfig) []error {
 			errs = append(errs, fmt.Errorf("%s: wait_for blocker_link_type is only valid with kind \"dependency\"", sctx))
 		}
 	}
+
+	// ci-only fields are rejected on other kinds.
+	if cfg.Kind == WaitKindDependency && cfg.RequireReview {
+		errs = append(errs, fmt.Errorf("%s: wait_for require_review is only valid with kind \"ci\"", sctx))
+	}
 	for _, cond := range cfg.SatisfiedWhen {
 		if cond != BlockerSatisfiedMerged && cond != BlockerSatisfiedDone {
 			errs = append(errs, fmt.Errorf("%s: wait_for satisfied_when value %q not supported (valid: merged, done)", sctx, cond))

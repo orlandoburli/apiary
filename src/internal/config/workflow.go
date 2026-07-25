@@ -442,6 +442,13 @@ type WaitForConfig struct {
 	// step, "hold" keeps the instance parked for a human. Defaults to fail for
 	// kind: ci and hold for kind: dependency.
 	OnTimeout string `yaml:"on_timeout,omitempty"`
+
+	// ── kind: ci only ─────────────────────────────────────────────────
+	// RequireReview, when true, also waits for at least one human (non-bot)
+	// approval on the PR before treating the step as complete. Ensures
+	// agent-authored PRs cannot merge via auto-merge without a human sign-off,
+	// even when CI is green. Ignored for kind: dependency.
+	RequireReview bool `yaml:"require_review,omitempty"`
 }
 
 // ParsedCheckInterval returns the check interval duration, defaulting to 1 minute.

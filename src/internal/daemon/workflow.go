@@ -55,6 +55,18 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 			}
 			return lister.ListBlockers(ctx, sourceItemID, linkType)
 		}))
+		// Wire up PR review checking for wait_for/ci steps with require_review: true.
+		opts = append(opts, workflow.WithReviewChecker(func(ctx context.Context, sourceID, sourceItemID string) (source.ReviewStatus, error) {
+			adapter, ok := d.sources[sourceID]
+			if !ok {
+				return source.ReviewStatus{}, fmt.Errorf("source %q not found", sourceID)
+			}
+			poller, ok := adapter.(source.ReviewPoller)
+			if !ok {
+				return source.ReviewStatus{}, fmt.Errorf("source %q does not support PR review polling (require_review)", sourceID)
+			}
+			return poller.PollReviewStatus(ctx, sourceItemID)
+		}))
 		var store workflow.Store = d.db
 		if d.db != nil {
 			store = pluginExportStore{Client: d.db, dispatcher: d}

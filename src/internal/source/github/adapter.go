@@ -26,6 +26,7 @@ var (
 	_ source.LabelRemover    = (*Adapter)(nil)
 	_ source.TaskPoller      = (*Adapter)(nil)
 	_ source.CIStatusPoller  = (*Adapter)(nil)
+	_ source.ReviewPoller    = (*Adapter)(nil)
 	_ source.SubIssueCreator = (*Adapter)(nil)
 	_ source.BlockerLister   = (*Adapter)(nil)
 )
@@ -513,6 +514,117 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 	}
 
 	return source.CIStatus{Status: overall, URL: pr.HTMLURL, Checks: checks}, nil
+}
+
+// PollReviewStatus fetches the current review state of the PR linked to the
+// given issue. It returns Approved=true when at least one human (non-bot) user
+// has an APPROVED review with no later CHANGES_REQUESTED from the same user,
+// matching GitHub's own "changes requested" dismissal semantics. Implements
+// source.ReviewPoller.
+//
+// The PR is discovered the same way PollCIStatus does: direct lookup by issue
+// number first, then via the issue timeline. A missing or not-yet-opened PR
+// returns Approved=false with no error — the caller keeps polling.
+func (a *Adapter) PollReviewStatus(ctx context.Context, cellID string) (source.ReviewStatus, error) {
+	prNumber, prURL, err := a.resolvePRNumber(ctx, cellID)
+	if err != nil {
+		return source.ReviewStatus{}, err
+	}
+	if prNumber == 0 {
+		return source.ReviewStatus{}, nil // no PR yet
+	}
+
+	reviewsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", a.owner, a.repo, prNumber)
+	body, err := a.client.get(ctx, reviewsPath)
+	if err != nil {
+		return source.ReviewStatus{}, fmt.Errorf("github: fetching reviews for PR #%d (issue %s): %w", prNumber, cellID, err)
+	}
+
+	var reviews []prReview
+	if err := json.Unmarshal(body, &reviews); err != nil {
+		return source.ReviewStatus{}, fmt.Errorf("github: decoding reviews for PR #%d: %w", prNumber, err)
+	}
+
+	// Walk reviews in order; track each human reviewer's latest state. COMMENTED
+	// reviews are ignored — they don't express approval or rejection. Bots (type:
+	// "Bot") are excluded so only human decisions count.
+	latestByUser := make(map[string]string)
+	for _, r := range reviews {
+		if r.User.Type == "Bot" {
+			continue
+		}
+		switch r.State {
+		case "APPROVED", "CHANGES_REQUESTED", "DISMISSED":
+			latestByUser[r.User.Login] = r.State
+		}
+	}
+
+	for _, state := range latestByUser {
+		if state == "APPROVED" {
+			return source.ReviewStatus{Approved: true, URL: prURL}, nil
+		}
+	}
+	return source.ReviewStatus{URL: prURL}, nil
+}
+
+// resolvePRNumber finds the PR number associated with the given issue (which may
+// equal the PR number, or be discovered via the issue timeline). Returns (0, "",
+// nil) when no PR is linked yet.
+func (a *Adapter) resolvePRNumber(ctx context.Context, cellID string) (int, string, error) {
+	prPath := fmt.Sprintf("/repos/%s/%s/pulls/%s", a.owner, a.repo, cellID)
+	prBody, err := a.client.get(ctx, prPath)
+	if err == nil {
+		var pr pullRequest
+		if err2 := json.Unmarshal(prBody, &pr); err2 == nil && pr.Number != 0 {
+			return pr.Number, pr.HTMLURL, nil
+		}
+	}
+
+	// Fall back to the issue timeline to find a cross-referenced PR.
+	timelinePath := fmt.Sprintf("/repos/%s/%s/issues/%s/timeline", a.owner, a.repo, cellID)
+	timelineBody, err := a.client.get(ctx, timelinePath)
+	if err != nil {
+		return 0, "", nil // no timeline — no PR yet
+	}
+
+	var timeline []struct {
+		Event  string `json:"event"`
+		Source struct {
+			Type  string `json:"type"`
+			Issue struct {
+				Number      int `json:"number"`
+				PullRequest struct {
+					URL string `json:"url"`
+				} `json:"pull_request"`
+			} `json:"issue"`
+		} `json:"source"`
+	}
+	if err := json.Unmarshal(timelineBody, &timeline); err != nil {
+		return 0, "", nil
+	}
+
+	for i := len(timeline) - 1; i >= 0; i-- {
+		ev := timeline[i]
+		if ev.Event == "cross-referenced" && ev.Source.Type == "issue" && ev.Source.Issue.PullRequest.URL != "" {
+			n := ev.Source.Issue.Number
+			if n == 0 {
+				continue
+			}
+			prPath := fmt.Sprintf("/repos/%s/%s/pulls/%d", a.owner, a.repo, n)
+			body, err := a.client.get(ctx, prPath)
+			if err != nil {
+				continue
+			}
+			var pr pullRequest
+			if err := json.Unmarshal(body, &pr); err != nil {
+				continue
+			}
+			if pr.State == "open" {
+				return pr.Number, pr.HTMLURL, nil
+			}
+		}
+	}
+	return 0, "", nil
 }
 
 // ListPullRequests returns every pull request cross-referenced from the issue,

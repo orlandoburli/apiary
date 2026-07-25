@@ -98,6 +98,28 @@ func (e *Engine) checkCIWaitStep(
 
 	switch status.Status {
 	case "passed":
+		// When require_review is set, also gate on at least one human approval
+		// before declaring the step complete. This prevents agent-authored PRs
+		// from advancing (and potentially auto-merging) without a human sign-off.
+		if cfg.RequireReview {
+			if e.reviewChecker == nil {
+				return StepResult{
+					Success: false,
+					Err:     fmt.Errorf("wait_for step %q: require_review is set but no review checker is configured", step.ID),
+				}, nil
+			}
+			review, err := e.reviewChecker(ctx, sourceID, sourceItemID)
+			if err != nil {
+				aplog.Warn("wait_for step %q: review check failed (will retry next cycle): %v", step.ID, err)
+				e.recordCIPoll(ctx, instID, step.ID, "review_pending", status.URL, err.Error())
+				return StepResult{Pending: true}, nil
+			}
+			if !review.Approved {
+				aplog.Debug("wait_for step %q: CI passed but no human review approval yet", step.ID)
+				e.recordCIPoll(ctx, instID, step.ID, "review_pending", status.URL, "waiting for human approval")
+				return StepResult{Pending: true}, nil
+			}
+		}
 		return StepResult{
 			Success: true,
 			StructuredOutput: map[string]any{

@@ -103,3 +103,12 @@ type checkRunsResponse struct {
 		Status     string `json:"status"`
 	} `json:"check_runs"`
 }
+
+// prReview is one review submitted on a pull request.
+type prReview struct {
+	State string `json:"state"` // APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED
+	User  struct {
+		Login string `json:"login"`
+		Type  string `json:"type"` // "User" or "Bot"
+	} `json:"user"`
+}

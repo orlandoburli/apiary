@@ -85,6 +85,21 @@ type CIStatusPoller interface {
 	PollCIStatus(ctx context.Context, cellID string) (CIStatus, error)
 }
 
+// ReviewStatus represents the human-review state of a PR.
+type ReviewStatus struct {
+	Approved bool   // true when at least one human (non-bot) has approved
+	URL      string // PR browser URL
+}
+
+// ReviewPoller is an optional interface that sources may implement to check
+// whether a PR linked to a task has received at least one human approval. The
+// workflow engine uses it for wait_for/ci steps with require_review: true to
+// block the step until a human approves — preventing auto-merge of
+// agent-authored PRs without oversight.
+type ReviewPoller interface {
+	PollReviewStatus(ctx context.Context, cellID string) (ReviewStatus, error)
+}
+
 // PullRequestRef is one pull request linked to a source item (e.g. a PR that
 // cross-references a GitHub issue). State is best-effort and may be empty when
 // the source does not fetch it.
