@@ -324,8 +324,11 @@ func TestBuildPrompt_NoWorkflowFieldsUnchanged(t *testing.T) {
 	if strings.Contains(prompt, summaryStartMarker) {
 		t.Error("plain prompt should not contain summary markers")
 	}
-	if !strings.HasPrefix(prompt, "Task: Plain task") {
-		t.Errorf("plain prompt should start with the task line, got:\n%s", prompt)
+	if !strings.Contains(prompt, "Task: Plain task") {
+		t.Errorf("plain prompt should contain the task line, got:\n%s", prompt)
+	}
+	if !strings.HasPrefix(prompt, untrustedDelimOpen) {
+		t.Errorf("plain prompt should start with the untrusted-content open tag, got:\n%s", prompt)
 	}
 }
 
