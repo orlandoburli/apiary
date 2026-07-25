@@ -496,6 +496,10 @@
           "description": "Delete rotated backups, per-task log files, and SQLite log rows (service_logs/task_logs) older than this many days. Files are checked at startup and after each rotation; DB rows at startup and then daily. Default 30; negative disables",
           "default": 30
         },
+        "prompt_retention_days": {
+          "type": "integer",
+          "description": "NULL out input_prompt/output_text in task_executions and input_prompt in step_runs older than this many days. The rows and all token/cost counters are preserved; only the raw prompt text is erased. 0 (default) inherits log_max_age_days; negative disables scrubbing. Scrubbing runs at startup and then daily"
+        },
         "memory": {
           "type": "object",
           "description": "Persistent agent memory: per-task working notes plus daemon-wide durable facts, written via the APIARY_MEMORIZE marker and stored as markdown files under the memory root. Disabled by default",
