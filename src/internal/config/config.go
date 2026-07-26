@@ -824,6 +824,15 @@ func loadDotEnv(configPath string) {
 	if err != nil {
 		return
 	}
+	// The .env commonly holds real secrets (e.g. a Jira API key). Warn — but do
+	// NOT refuse to load — if it is group- or world-accessible, so other local
+	// accounts could read those secrets. Warn-and-load avoids breaking startup for
+	// existing setups while still surfacing the risk (SEC #293).
+	if info, statErr := os.Stat(envPath); statErr == nil {
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			aplog.Warn("%s is group/world-accessible (mode %04o) and may contain secrets; run: chmod 600 %q", envPath, perm, envPath)
+		}
+	}
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
