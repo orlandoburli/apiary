@@ -65,8 +65,8 @@ deterministic and rejects duplicate IDs rather than choosing one by path order.
 - `executable` is relative to the plugin directory. Absolute paths, traversal,
   symlinks, non-regular files, and non-executable files are rejected.
 - `checksum` (optional) pins the SHA-256 of the executable, as `sha256:<hex>` or
-  bare hex. When present it is verified before the plugin is loaded and again
-  before each invocation, so a binary replaced after installation is rejected.
+  bare hex. When present it is verified when the plugin client is created and
+  again before each invocation, so a binary replaced after installation is rejected.
   A malformed value is an error rather than being treated as unpinned, so
   `apiary validate` catches a bad pin. This is **tamper-evidence, not
   authenticity**: the digest lives beside the binary, so anyone able to rewrite
