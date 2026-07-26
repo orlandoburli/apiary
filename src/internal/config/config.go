@@ -128,6 +128,14 @@ type AgentConfig struct {
 	// WorkspaceAffinity pins retries/resumes to the first worker that claims the
 	// task, preserving a local checkout or other non-portable environment.
 	WorkspaceAffinity bool `yaml:"workspace_affinity,omitempty"`
+	// Permissions overrides the tool permissions written into the OpenCode agent
+	// file. Keys are tool names ("bash", "edit", "webfetch", "read", "glob",
+	// "grep", "task"); values are "allow" or "deny". Keys left out follow the
+	// baseline: permissive by default, or deny for edit/bash/webfetch when
+	// settings.least_privilege_agents is set. An explicit entry always wins, so a
+	// single agent can be restricted without changing the global default —
+	// e.g. permissions: {bash: deny} on a review-only agent.
+	Permissions map[string]string `yaml:"permissions,omitempty"`
 }
 
 // FallbackConfig is one entry in an agent's rate-limit failover chain. Runner
@@ -257,11 +265,23 @@ type TasksConfig struct {
 }
 
 type Settings struct {
-	Concurrency   int    `yaml:"concurrency"`
-	LogLevel      string `yaml:"log_level"`
-	StateLock     bool   `yaml:"state_lock"`
-	ResultComment bool   `yaml:"result_comment"`
-	TaskTimeout   string `yaml:"task_timeout"`
+	Concurrency int    `yaml:"concurrency"`
+	LogLevel    string `yaml:"log_level"`
+	StateLock   bool   `yaml:"state_lock"`
+	// RefuseRoot makes running as root (euid 0) a startup error instead of a
+	// warning. Agent CLIs inherit the daemon's uid, so a prompt-injected agent
+	// executes with whatever privilege the daemon has. Default false — Apiary
+	// warns but starts, so existing root service installs keep working; set true
+	// to enforce a non-root daemon.
+	RefuseRoot bool `yaml:"refuse_root,omitempty"`
+	// LeastPrivilegeAgents makes agent tool permissions deny-by-default
+	// (read/glob/grep/task allowed; edit/bash/webfetch denied) for runners that
+	// support per-agent permissions. Default false preserves the historical
+	// permissive behaviour; individual agents can always restrict themselves via
+	// agents[].permissions regardless of this setting.
+	LeastPrivilegeAgents bool   `yaml:"least_privilege_agents,omitempty"`
+	ResultComment        bool   `yaml:"result_comment"`
+	TaskTimeout          string `yaml:"task_timeout"`
 	// MaxAttempts caps how many consecutive FAILED workflow instances a single
 	// (task, workflow) pair may accumulate before the dispatcher stops
 	// re-dispatching it and applies the workflow's on_fail hook. Rate-limited
@@ -783,6 +803,7 @@ func Load(path string) (*Config, error) {
 		cfg.Settings.Memory.MaxEntryBytes = 16384
 	}
 	warnDeprecatedResultComment(&cfg)
+	warnUnenforceablePermissions(&cfg)
 	return &cfg, nil
 }
 
@@ -798,6 +819,33 @@ func warnDeprecatedResultComment(cfg *Config) {
 	for _, wf := range cfg.Workflows {
 		if wf.ResultComment != "" {
 			aplog.Warn("workflow %q: %s", wf.ID, msg)
+		}
+	}
+}
+
+// warnUnenforceablePermissions warns when per-agent tool permissions cannot be
+// enforced for an agent's runner. Only the OpenCode runner writes an agent file
+// carrying tool permissions; on other runners least_privilege_agents and
+// agents[].permissions are silently inert, which would otherwise leave an
+// operator believing a fleet is restricted when it is not.
+func warnUnenforceablePermissions(cfg *Config) {
+	adapters := map[string]string{}
+	for i := range cfg.Runners {
+		adapters[cfg.Runners[i].ID] = cfg.Runners[i].AdapterName()
+	}
+	for _, a := range cfg.Agents {
+		runnerID := a.Runner
+		if runnerID == "" {
+			runnerID = cfg.DefaultRunner
+		}
+		adapter := adapters[runnerID]
+		if adapter == "" || strings.HasPrefix(adapter, "opencode") {
+			continue // unknown (reported elsewhere) or supported
+		}
+		if len(a.Permissions) > 0 {
+			aplog.Warn("agents[%q]: permissions are ignored by runner %q (adapter %q); only the opencode runner enforces per-agent tool permissions", a.ID, runnerID, adapter)
+		} else if cfg.Settings.LeastPrivilegeAgents {
+			aplog.Warn("settings.least_privilege_agents is set but agent %q uses runner %q (adapter %q), which does not enforce per-agent tool permissions; this agent is NOT restricted", a.ID, runnerID, adapter)
 		}
 	}
 }

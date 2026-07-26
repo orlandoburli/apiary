@@ -260,6 +260,20 @@
             "description": "Worker capabilities required before a workflow can be claimed",
             "items": { "type": "string" }
           },
+          "permissions": {
+            "type": "object",
+            "description": "Per-agent tool permissions for runners that support them (OpenCode). An explicit entry always wins over the baseline set by settings.least_privilege_agents",
+            "additionalProperties": false,
+            "properties": {
+              "read": {"type": "string", "enum": ["allow", "deny"]},
+              "glob": {"type": "string", "enum": ["allow", "deny"]},
+              "grep": {"type": "string", "enum": ["allow", "deny"]},
+              "task": {"type": "string", "enum": ["allow", "deny"]},
+              "edit": {"type": "string", "enum": ["allow", "deny"]},
+              "bash": {"type": "string", "enum": ["allow", "deny"]},
+              "webfetch": {"type": "string", "enum": ["allow", "deny"]}
+            }
+          },
           "workspace_affinity": {
             "type": "boolean",
             "description": "Pin retries for this task to the worker that first claims it",
@@ -475,6 +489,16 @@
           "type": "string",
           "description": "Default task timeout (e.g., '2h'). Defaults to 120m",
           "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+        },
+        "refuse_root": {
+          "type": "boolean",
+          "description": "Make running as root (euid 0) a startup error instead of a warning. Agent CLIs inherit the daemon's uid, so a prompt-injected agent would execute as root",
+          "default": false
+        },
+        "least_privilege_agents": {
+          "type": "boolean",
+          "description": "Deny edit/bash/webfetch by default for agents on runners that support per-agent permissions (OpenCode). Individual agents override via agents[].permissions",
+          "default": false
         },
         "max_attempts": {
           "type": "integer",

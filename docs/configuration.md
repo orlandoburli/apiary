@@ -182,6 +182,7 @@ agents:
 | `skills` | no | Skill names injected into the agent's context |
 | `max_workers` | no | Per-agent concurrency cap (default 1) — see [concurrency](#concurrency) |
 | `max_turns` | no | Max agent turns per step run (default 0 = unlimited). CLI runners pass it as the provider's turns flag (e.g. claude's `--max-turns`); 0 omits the flag |
+| `permissions` | no | Per-agent tool permissions for runners that support them (OpenCode). Keys: `read`, `glob`, `grep`, `task`, `edit`, `bash`, `webfetch`; values `allow`/`deny`. An explicit entry always wins over `settings.least_privilege_agents`. Note: with the permissive default, `webfetch` is omitted from the generated `opencode.json` (preserving the historical key set) unless you set it explicitly |
 | `source_token` | no | Source API token for this agent's write operations — see [Agent identity](#agent-identity) |
 | `source_email` / `source_name` | no | Git author identity exported to the runner environment |
 | `fallbacks` | no | Ordered `{runner, model}` list for [runner failover](resilience.md#runner-failures--failover); `model` optional (empty = that runner's default) |
@@ -281,6 +282,8 @@ settings:
 | `result_comment` | `false` | Post the agent's final output back as a comment |
 | `task_timeout` | `30m` | Default per-run timeout (e.g. `2h`) |
 | `max_attempts` | 3 | Stop re-dispatching a `(task, workflow)` after this many **consecutive failed** instances; `<=0` disables — see [resilience](resilience.md#re-dispatch-failure-cap) |
+| `refuse_root` | `false` | Make running as root (euid 0) a startup **error** instead of a warning. Agent CLIs inherit the daemon's uid, so a prompt-injected agent would execute as root. Default warns so existing root service installs keep working |
+| `least_privilege_agents` | `false` | Deny `edit`/`bash`/`webfetch` by default for agents on runners that support per-agent permissions (OpenCode). Individual agents override via `agents[].permissions` |
 | `default_fallbacks` | — | Global [fallback chain](resilience.md#fallback-chains) inherited by any agent without explicit `fallbacks[]` |
 | `credit_exhausted_cooldown` | `24h` | How long a runner type is paused after a credit-exhausted failure — see [resilience](resilience.md#runner-failures--failover) |
 | `log_max_size_mb` | 50 | Rotate `apiary.log` past this size (MB); negative disables rotation |
