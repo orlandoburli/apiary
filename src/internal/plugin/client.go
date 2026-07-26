@@ -86,11 +86,7 @@ func (c *Client) Invoke(ctx context.Context, capability Capability, method strin
 	if err := c.integrity.check(c.executable, c.installed.Manifest.Checksum); err != nil {
 		return fmt.Errorf("plugin %q: %w", c.ID(), err)
 	}
-	// Apply the manifest's declared network policy where the platform can enforce
-	// it; applyNetworkIsolation warns (and runs unisolated) rather than failing on
-	// hosts without unprivileged netns support.
-	launchBin, launchArgs := applyNetworkIsolation(c.ID(), c.executable, c.installed.Manifest.Security.Network)
-	command := exec.CommandContext(callCtx, launchBin, launchArgs...)
+	command := exec.CommandContext(callCtx, c.executable)
 	command.Dir = c.installed.Root
 	command.Env = c.environment()
 	command.Stdin = bytes.NewReader(raw)

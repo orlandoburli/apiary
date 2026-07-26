@@ -3,7 +3,6 @@ package plugin
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -85,48 +84,5 @@ func TestIntegrityGuard_ReverifiesAfterSwap(t *testing.T) {
 	writeExec(t, dir, "p.sh", "#!/bin/sh\necho pwned; exit 0\n")
 	if err := g.check(bin, sum); err == nil {
 		t.Fatal("guard must detect a binary swapped after the first verification")
-	}
-}
-
-func TestApplyNetworkIsolation_NeverHardFails(t *testing.T) {
-	bin, args := applyNetworkIsolation("p", "/usr/bin/tool", true)
-	if bin != "/usr/bin/tool" || len(args) != 0 {
-		t.Errorf("network:true should pass through, got %q %v", bin, args)
-	}
-
-	bin, args = applyNetworkIsolation("p", "/usr/bin/tool", false)
-	if bin == "" {
-		t.Fatal("expected a runnable binary")
-	}
-	if bin == "/usr/bin/tool" {
-		if len(args) != 0 {
-			t.Errorf("pass-through should have no extra args, got %v", args)
-		}
-		return // platform can't isolate — acceptable, warning logged
-	}
-	if runtime.GOOS != "linux" {
-		t.Errorf("unexpected isolation wrapper on %s: %q", runtime.GOOS, bin)
-	}
-	if len(args) == 0 || args[len(args)-1] != "/usr/bin/tool" {
-		t.Errorf("wrapped command must end with the executable, got %q %v", bin, args)
-	}
-}
-
-// The wrapper must exec in place (no --fork/--pid), so the plugin's stdin/stdout
-// protocol pipes survive. Guard the argv shape that guarantees it.
-func TestNetIsolationPrefix_ExecsInPlace(t *testing.T) {
-	prefix := detectNetIsolation()
-	if len(prefix) == 0 {
-		t.Skip("no network isolation available on this host")
-	}
-	for _, bad := range []string{"--fork", "-f", "--pid"} {
-		for _, a := range prefix {
-			if a == bad {
-				t.Errorf("prefix must not contain %q (would break stdin piping): %v", bad, prefix)
-			}
-		}
-	}
-	if prefix[len(prefix)-1] != "--" {
-		t.Errorf("prefix should end with -- to terminate flag parsing: %v", prefix)
 	}
 }

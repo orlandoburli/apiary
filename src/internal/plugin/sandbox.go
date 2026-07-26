@@ -1,19 +1,14 @@
 package plugin
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
-
-	aplog "github.com/orlandoburli/apiary/internal/log"
 )
 
 // Executable integrity
@@ -86,6 +81,13 @@ func verifyChecksum(execPath, want string) error {
 // would miss exactly the post-install tampering the pin exists to detect. The
 // hash is recomputed only when the file's size or mtime changed since the last
 // successful check, keeping the steady-state cost to one stat().
+//
+// Known limits (this is tamper-evidence, not a security boundary):
+//   - An attacker who can write the executable can also preserve its size and
+//     mtime, which would defeat the cache. Anyone with that access can equally
+//     rewrite the manifest's pin, so the check targets accidental drift and
+//     unsophisticated swaps.
+//   - There is an unavoidable TOCTOU window between hashing and exec.
 type integrityGuard struct {
 	mu       sync.Mutex
 	size     int64
@@ -112,71 +114,4 @@ func (g *integrityGuard) check(execPath, want string) error {
 	}
 	g.size, g.modTime, g.verified = info.Size(), info.ModTime(), true
 	return nil
-}
-
-// Network isolation
-//
-// When a manifest declares security.network: false, we deny the plugin network
-// access where the platform supports it. Support is probed at runtime rather
-// than assumed: the first attempt (PR #255) unconditionally required unprivileged
-// user namespaces, which hard-fails on hardened kernels, on macOS, and inside
-// many container runtimes (including Apiary's own image).
-//
-// Enforcement is therefore best-effort and honestly reported: on platforms
-// without support we log a clear warning that the declared restriction is not
-// enforced, instead of silently pretending it is, or refusing to run at all.
-
-var (
-	netIsolationOnce sync.Once
-	netIsolationCmd  []string // argv prefix that runs a command without network, nil if unsupported
-)
-
-// detectNetIsolation probes once for a usable no-network launcher. It returns an
-// argv prefix (e.g. ["unshare", "-r", "-n", "--"]) or nil when the platform
-// cannot enforce network isolation for an unprivileged process.
-func detectNetIsolation() []string {
-	netIsolationOnce.Do(func() {
-		if runtime.GOOS != "linux" {
-			aplog.Debug("plugin sandbox: network isolation unavailable on %s (no unprivileged netns equivalent)", runtime.GOOS)
-			return
-		}
-		unshare, err := exec.LookPath("unshare")
-		if err != nil {
-			aplog.Debug("plugin sandbox: network isolation unavailable: %v", err)
-			return
-		}
-		// Probe for real: unprivileged userns + netns may be disabled by sysctl,
-		// seccomp, or the container runtime. Only trust an actual success. The
-		// probe is bounded so a hung/blocked unshare cannot wedge plugin
-		// invocations permanently behind sync.Once.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := exec.CommandContext(ctx, unshare, "-r", "-n", "--", "true").Run(); err != nil {
-			aplog.Debug("plugin sandbox: unprivileged netns probe failed (%v); network isolation will not be enforced", err)
-			return
-		}
-		netIsolationCmd = []string{unshare, "-r", "-n", "--"}
-	})
-	return netIsolationCmd
-}
-
-// applyNetworkIsolation returns the (binary, args) to launch execPath with the
-// plugin's declared network policy applied. When the manifest allows network, or
-// the platform cannot enforce isolation, the command is returned unchanged — in
-// the latter case with a warning naming the plugin, so an operator can see that
-// a declared restriction is not being enforced on this host.
-func applyNetworkIsolation(pluginID, execPath string, allowNetwork bool) (string, []string) {
-	if allowNetwork {
-		return execPath, nil
-	}
-	prefix := detectNetIsolation()
-	if len(prefix) == 0 {
-		aplog.Warn("plugin %q declares security.network:false but this host cannot enforce network isolation (%s, no usable unprivileged netns); the plugin WILL have network access", pluginID, runtime.GOOS)
-		return execPath, nil
-	}
-	// NOTE: "unshare -r" maps the caller to uid 0 INSIDE the new user namespace.
-	// That is namespace-local (no privilege on the host) and is what makes the
-	// unprivileged netns possible, but plugin authors should not read it as
-	// "running as root".
-	return prefix[0], append(append([]string{}, prefix[1:]...), execPath)
 }
