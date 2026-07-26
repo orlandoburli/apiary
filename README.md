@@ -229,6 +229,13 @@ the diagram shows. The extension source lives under
 > APIs may still change before `v1.0` — pin a version for anything you depend on, and
 > [file issues](https://github.com/orlandoburli/apiary/issues) for anything rough.
 
+## Support Apiary
+
+Apiary is independent, BSD-licensed, and built in the open. If it saves your team
+time, consider sponsoring its development via
+[GitHub Sponsors](https://github.com/sponsors/orlandoburli) or
+[Patreon](https://www.patreon.com/orlandoburli).
+
 ## License
 
 Licensed under the [BSD 3-Clause License](https://orlandoburli.com.br/apiary/license).
