@@ -44,20 +44,20 @@ type SecurityRequirements struct {
 }
 
 type Manifest struct {
-	SchemaVersion int                  `json:"schema_version"`
-	ID            string               `json:"id"`
-	Version       string               `json:"version"`
-	Apiary        string               `json:"apiary"`
-	Protocol      int                  `json:"protocol"`
-	Executable    string               `json:"executable"`
+	SchemaVersion int    `json:"schema_version"`
+	ID            string `json:"id"`
+	Version       string `json:"version"`
+	Apiary        string `json:"apiary"`
+	Protocol      int    `json:"protocol"`
+	Executable    string `json:"executable"`
 	// Checksum optionally pins the SHA-256 of the executable ("sha256:<hex>" or
 	// bare hex). When set it is verified before the plugin is invoked, detecting
 	// tampering or swap-out of the binary after installation. This is an
 	// integrity check, not authenticity: the digest lives beside the binary.
-	Checksum     string       `json:"checksum,omitempty"`
-	Capabilities []Capability `json:"capabilities"`
-	ConfigSchema  json.RawMessage      `json:"config_schema,omitempty"`
-	Security      SecurityRequirements `json:"security,omitempty"`
+	Checksum     string               `json:"checksum,omitempty"`
+	Capabilities []Capability         `json:"capabilities"`
+	ConfigSchema json.RawMessage      `json:"config_schema,omitempty"`
+	Security     SecurityRequirements `json:"security,omitempty"`
 }
 
 type Installed struct {
@@ -138,6 +138,11 @@ func (p *Installed) Validate(apiaryVersion string) error {
 		}
 	}
 	if err := validateSecurity(m.Security); err != nil {
+		return err
+	}
+	// Surface a malformed checksum pin at validation time (apiary validate)
+	// rather than silently behaving as if the plugin were unpinned.
+	if _, _, err := normalizeChecksum(m.Checksum); err != nil {
 		return err
 	}
 	if _, err := secureExecutable(p.Root, m.Executable); err != nil {

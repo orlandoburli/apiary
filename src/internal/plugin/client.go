@@ -38,6 +38,10 @@ type Client struct {
 	instance   InstanceConfig
 	timeout    time.Duration
 	executable string
+	// integrity re-checks the pinned executable digest before each invocation
+	// (cheap stat() unless the file changed), so a binary swapped while the
+	// daemon runs is caught rather than trusted from the boot-time check.
+	integrity integrityGuard
 }
 
 func NewClient(installed *Installed, instance InstanceConfig) (*Client, error) {
@@ -78,6 +82,10 @@ func (c *Client) Invoke(ctx context.Context, capability Capability, method strin
 
 	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	// Re-verify the pinned executable before every invocation.
+	if err := c.integrity.check(c.executable, c.installed.Manifest.Checksum); err != nil {
+		return fmt.Errorf("plugin %q: %w", c.ID(), err)
+	}
 	// Apply the manifest's declared network policy where the platform can enforce
 	// it; applyNetworkIsolation warns (and runs unisolated) rather than failing on
 	// hosts without unprivileged netns support.

