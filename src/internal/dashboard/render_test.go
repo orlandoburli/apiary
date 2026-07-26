@@ -541,11 +541,11 @@ func TestTaskDetailShowsUsageWhenZero(t *testing.T) {
 	a := newTestApp(80, 24)
 	a.model.tasksTab.View = TaskViewDetail
 	a.model.tasksTab.Detail = &TaskItem{
-		TaskID:  "T-2",
-		Number:  "PRJ-6",
-		Title:   "old task",
-		Agent:   "engineer",
-		Status:  "success",
+		TaskID: "T-2",
+		Number: "PRJ-6",
+		Title:  "old task",
+		Agent:  "engineer",
+		Status: "success",
 	}
 	out := stripANSI(a.renderTaskDetail(a.model.tasksTab, 20))
 	if !strings.Contains(out, "0 in / 0 out / 0 total") {

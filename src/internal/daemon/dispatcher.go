@@ -357,7 +357,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			return nil, fmt.Errorf("agent %q: runner type %q not found", ac.ID, rc.Type)
 		}
 
-		if err := ra.Configure(runnerConfigWithMCPs(rc.Config, rc.MCPs, ac.MCPs)); err != nil {
+		if err := ra.Configure(injectRunnerSecurity(runnerConfigWithMCPs(rc.Config, rc.MCPs, ac.MCPs), rc.Sandbox, rc.EnvPassthrough)); err != nil {
 			return nil, fmt.Errorf("agent %q: configure runner: %w", ac.ID, err)
 		}
 
@@ -389,7 +389,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			if !ok {
 				return nil, fmt.Errorf("agent %q: fallback runner type %q not found", ac.ID, fAdapterName)
 			}
-			if err := fra.Configure(runnerConfigWithMCPs(frc.Config, frc.MCPs, ac.MCPs)); err != nil {
+			if err := fra.Configure(injectRunnerSecurity(runnerConfigWithMCPs(frc.Config, frc.MCPs, ac.MCPs), frc.Sandbox, frc.EnvPassthrough)); err != nil {
 				return nil, fmt.Errorf("agent %q: configure fallback runner %q: %w", ac.ID, fb.Runner, err)
 			}
 			if fAdapterName == "opencode" {
@@ -1845,6 +1845,39 @@ func runnerConfigWithMCPs(base map[string]any, runnerMCPs, agentMCPs []model.MCP
 	return out
 }
 
+// injectRunnerSecurity folds a runner's sandbox and env-passthrough settings into
+// the config map handed to the runner's Configure. The base map is never mutated;
+// a copy is returned only when there is something to add.
+func injectRunnerSecurity(base map[string]any, sandbox *config.SandboxConfig, envPassthrough []string) map[string]any {
+	if sandbox == nil && len(envPassthrough) == 0 {
+		return base
+	}
+	out := make(map[string]any, len(base)+2)
+	for k, v := range base {
+		out[k] = v
+	}
+	if sandbox != nil {
+		extra := make([]any, len(sandbox.ExtraArgs))
+		for i, v := range sandbox.ExtraArgs {
+			extra[i] = v
+		}
+		out["sandbox"] = map[string]any{
+			"image":      sandbox.Image,
+			"user":       sandbox.User,
+			"network":    sandbox.Network,
+			"extra_args": extra,
+		}
+	}
+	if len(envPassthrough) > 0 {
+		p := make([]any, len(envPassthrough))
+		for i, v := range envPassthrough {
+			p[i] = v
+		}
+		out["env_passthrough"] = p
+	}
+	return out
+}
+
 func workerRunConfig(wc config.WorkerConfig) map[string]any {
 	m := map[string]any{}
 	if wc.RunnerConfig != nil {
@@ -1891,7 +1924,7 @@ func (d *Dispatcher) UpdateAgentConfig(ctx context.Context, agentID, newModel, n
 		if !ok {
 			return fmt.Errorf("runner type %q not registered", rc.Type)
 		}
-		if err := ra.Configure(rc.Config); err != nil {
+		if err := ra.Configure(injectRunnerSecurity(rc.Config, rc.Sandbox, rc.EnvPassthrough)); err != nil {
 			return fmt.Errorf("configure runner %q: %w", newRunner, err)
 		}
 

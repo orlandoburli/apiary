@@ -73,6 +73,39 @@ type RunnerConfig struct {
 	// format/location (see runner/execution). Agent-scope MCPs (AgentConfig.MCPs)
 	// are layered on top of these, overriding by name.
 	MCPs []model.MCPServer `yaml:"mcps,omitempty"`
+	// Sandbox, when set, wraps every agent subprocess for this runner in a Docker
+	// container that isolates it from the host filesystem (only the task working
+	// directory is mounted) and runs it as an unprivileged user. Use it for
+	// runners that process issues/comments from external or untrusted authors, to
+	// contain a successful prompt injection.
+	Sandbox *SandboxConfig `yaml:"sandbox,omitempty"`
+	// EnvPassthrough lists additional host environment variable names to forward to
+	// the agent subprocess beyond the built-in allowlist (system vars + LLM/agent
+	// provider credentials). Entries are exact names or a trailing-"*" prefix
+	// (e.g. "MYCORP_*"). Host variables not covered by the allowlist or this list
+	// are never inherited, so unrelated daemon secrets cannot leak into an agent.
+	EnvPassthrough []string `yaml:"env_passthrough,omitempty"`
+}
+
+// SandboxConfig describes Docker container isolation for a CLI runner's agent
+// subprocesses. Network is left enabled by default because coding agents must
+// reach their LLM API and git remotes; set Network to "none" only for agents
+// that need no network.
+type SandboxConfig struct {
+	// Image is the Docker image providing the agent binary (required).
+	Image string `yaml:"image"`
+	// User is passed as --user (e.g. "1000:1000"). Defaults to the daemon's own
+	// uid:gid so the bind-mounted workspace stays writable — "nobody" would make
+	// every workspace write fail with EACCES.
+	User string `yaml:"user,omitempty"`
+	// Network is the --network value (e.g. "bridge", "none"). Default "bridge".
+	Network string `yaml:"network,omitempty"`
+	// ExtraArgs are appended after the docker flags and before the image. Only
+	// resource-limit and labelling flags are permitted (e.g.
+	// ["--memory", "4g", "--pids-limit", "512"]); anything that could weaken the
+	// sandbox — extra mounts, --privileged, --cap-add, --user, --network,
+	// --read-only=false, --entrypoint — is rejected at config load.
+	ExtraArgs []string `yaml:"extra_args,omitempty"`
 }
 
 // AdapterName returns the runner adapter name as "{provider}-{type}" when both

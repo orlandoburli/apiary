@@ -52,10 +52,10 @@ func TestDAGIntegration_SequentialMemory(t *testing.T) {
 
 	exec := &fakeExecutor{results: map[string]StepResult{
 		"classify": {
-			Success:         true,
-			Output:          "classified as high-priority",
+			Success:          true,
+			Output:           "classified as high-priority",
 			StructuredOutput: map[string]any{"track": "implement"},
-			Summary:         "track decided",
+			Summary:          "track decided",
 		},
 		"implement": {Success: true, Output: "PR opened"},
 		"review":    {Success: true, Output: "LGTM"},
@@ -208,7 +208,7 @@ func TestDAGIntegration_SplitByMemoryField(t *testing.T) {
 
 	exec := &fakeExecutor{results: map[string]StepResult{
 		"plan": {
-			Success:         true,
+			Success:          true,
 			StructuredOutput: map[string]any{"complexity": "high"},
 		},
 	}}
