@@ -22,7 +22,7 @@ sources:
   - id: project-erp
     type: github
     config:
-      repo: orlandoburli-enterprise/project-erp
+      repo: orlandoburli/project-erp
       # Token permissions:
       #   Classic PAT: scope `repo`
       #   Fine-grained: `Issues` → Read & Write, `Metadata` → Read
