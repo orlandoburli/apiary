@@ -52,6 +52,10 @@ func NewClient(installed *Installed, instance InstanceConfig) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Integrity: refuse a plugin whose binary no longer matches its pinned digest.
+	if err := verifyChecksum(executable, installed.Manifest.Checksum); err != nil {
+		return nil, fmt.Errorf("plugin %q: %w", installed.Manifest.ID, err)
+	}
 	return &Client{installed: installed, instance: instance, timeout: timeout, executable: executable}, nil
 }
 
@@ -74,7 +78,11 @@ func (c *Client) Invoke(ctx context.Context, capability Capability, method strin
 
 	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	command := exec.CommandContext(callCtx, c.executable)
+	// Apply the manifest's declared network policy where the platform can enforce
+	// it; applyNetworkIsolation warns (and runs unisolated) rather than failing on
+	// hosts without unprivileged netns support.
+	launchBin, launchArgs := applyNetworkIsolation(c.ID(), c.executable, c.installed.Manifest.Security.Network)
+	command := exec.CommandContext(callCtx, launchBin, launchArgs...)
 	command.Dir = c.installed.Root
 	command.Env = c.environment()
 	command.Stdin = bytes.NewReader(raw)

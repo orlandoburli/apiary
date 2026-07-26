@@ -50,7 +50,12 @@ type Manifest struct {
 	Apiary        string               `json:"apiary"`
 	Protocol      int                  `json:"protocol"`
 	Executable    string               `json:"executable"`
-	Capabilities  []Capability         `json:"capabilities"`
+	// Checksum optionally pins the SHA-256 of the executable ("sha256:<hex>" or
+	// bare hex). When set it is verified before the plugin is invoked, detecting
+	// tampering or swap-out of the binary after installation. This is an
+	// integrity check, not authenticity: the digest lives beside the binary.
+	Checksum     string       `json:"checksum,omitempty"`
+	Capabilities []Capability `json:"capabilities"`
 	ConfigSchema  json.RawMessage      `json:"config_schema,omitempty"`
 	Security      SecurityRequirements `json:"security,omitempty"`
 }
