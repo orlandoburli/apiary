@@ -324,8 +324,13 @@ func TestBuildPrompt_NoWorkflowFieldsUnchanged(t *testing.T) {
 	if strings.Contains(prompt, summaryStartMarker) {
 		t.Error("plain prompt should not contain summary markers")
 	}
-	if !strings.HasPrefix(prompt, "Task: Plain task") {
-		t.Errorf("plain prompt should start with the task line, got:\n%s", prompt)
+	// Ticket content is now wrapped in the untrusted-content block; the task
+	// line sits inside it rather than at the very start.
+	if !strings.Contains(prompt, "Task: Plain task") {
+		t.Errorf("plain prompt should contain the task line, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "<<<"+untrustedToken) {
+		t.Errorf("plain prompt should wrap ticket content in the untrusted block, got:\n%s", prompt)
 	}
 }
 
