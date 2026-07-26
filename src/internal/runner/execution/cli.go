@@ -37,6 +37,14 @@ type CliRunner struct {
 	// mcpRunArgs are extra CLI args injected into every run to activate the MCP
 	// config written by setupMCP (e.g. claude's "--mcp-config <path>").
 	mcpRunArgs []string
+	// sandbox, when non-nil, wraps every agent subprocess in a Docker container
+	// that isolates it from the host filesystem and runs it as an unprivileged
+	// user (see sandbox.go). Use it for runners processing untrusted-author input.
+	sandbox *cliSandbox
+	// envPassthrough lists additional host environment variable names (exact, or a
+	// trailing-"*" prefix) to forward to the agent beyond the built-in system and
+	// provider-credential allowlist. Unlisted host secrets are never inherited.
+	envPassthrough []string
 }
 
 func (r *CliRunner) ID() string { return "cli" }
@@ -72,6 +80,16 @@ func (r *CliRunner) Configure(config map[string]any) error {
 	if v, ok := config["mcps"].([]model.MCPServer); ok {
 		r.mcps = v
 	}
+	// Reject sandbox+MCP BEFORE setupMCP runs: setupMCP has side effects (it
+	// writes provider config into $HOME/.cursor, ~/.config/opencode, /tmp), and
+	// those host paths are not visible inside the container — /tmp is masked by
+	// the sandbox tmpfs — so the agent would start with its MCP servers silently
+	// missing. Fail closed, and do it before anything is written.
+	_, sandboxConfigured := config["sandbox"].(map[string]any)
+	if sandboxConfigured && len(r.mcps) > 0 {
+		return fmt.Errorf("cli runner: sandbox is not compatible with MCP servers yet: the MCP config is written to host paths that are not visible inside the container, so the agent would silently lose them; remove the sandbox or the mcps for this runner")
+	}
+
 	// Materialise the provider's MCP config (and any per-run CLI args) once the
 	// servers are known. Configure runs at load time, sequentially across agents,
 	// so the global-config merges (cursor/opencode) are race-free.
@@ -81,6 +99,39 @@ func (r *CliRunner) Configure(config map[string]any) error {
 			return fmt.Errorf("cli runner: setup MCP: %w", err)
 		}
 		r.mcpRunArgs = args
+	}
+	if raw, ok := config["env_passthrough"].([]any); ok {
+		for _, a := range raw {
+			if s, ok := a.(string); ok {
+				r.envPassthrough = append(r.envPassthrough, s)
+			}
+		}
+	}
+	if raw, ok := config["sandbox"].(map[string]any); ok {
+		sc := &cliSandbox{}
+		if v, ok := raw["image"].(string); ok {
+			sc.image = v
+		}
+		if v, ok := raw["user"].(string); ok {
+			sc.user = v
+		}
+		if v, ok := raw["network"].(string); ok {
+			sc.network = v
+		}
+		if extras, ok := raw["extra_args"].([]any); ok {
+			for _, a := range extras {
+				if s, ok := a.(string); ok {
+					sc.extraArgs = append(sc.extraArgs, s)
+				}
+			}
+		}
+		if sc.image == "" {
+			return fmt.Errorf("cli runner: sandbox.image is required when sandbox is configured")
+		}
+		if err := validateExtraArgs(sc.extraArgs); err != nil {
+			return fmt.Errorf("cli runner: %w", err)
+		}
+		r.sandbox = sc
 	}
 	return nil
 }
@@ -105,11 +156,27 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		argv = append(argv, r.promptFlag, prompt)
 	}
 
-	cmd := exec.CommandContext(ctx, r.command, argv...)
-	cmd.Dir = req.WorkingDir
-	cmd.Env = os.Environ()
-	for k, v := range req.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+	var cmd *exec.Cmd
+	if r.sandbox != nil {
+		// Container isolation. Build a scoped environment (allowlisted host vars —
+		// system + provider credentials + configured passthrough — plus the
+		// per-task overlay) so unrelated host secrets never enter the container.
+		// Secrets are forwarded to the container by NAME only (see wrapCommand):
+		// their values live solely in this docker process's environment (cmd.Env),
+		// never in argv/the host process table.
+		scoped, envNames := scopedEnv(os.Environ(), req.Env, r.envPassthrough)
+		binary, sandboxArgv := r.sandbox.wrapCommand(r.command, argv, req.WorkingDir, envNames)
+		cmd = exec.CommandContext(ctx, binary, sandboxArgv...)
+		cmd.Env = scoped
+	} else {
+		// Non-sandbox path: host env is scoped separately by the env-allowlist
+		// change (SEC-07); left as-is here to avoid overlapping that work.
+		cmd = exec.CommandContext(ctx, r.command, argv...)
+		cmd.Dir = req.WorkingDir
+		cmd.Env = os.Environ()
+		for k, v := range req.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 	}
 	if r.promptFlag == "" && !r.promptPositional {
 		cmd.Stdin = strings.NewReader(prompt)

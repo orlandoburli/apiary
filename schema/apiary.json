@@ -20,6 +20,27 @@
         "additionalProperties": false,
         "required": ["id", "type"],
         "properties": {
+          "sandbox": {
+            "type": "object",
+            "description": "Run this runner's agent subprocesses inside a Docker container isolated from the host filesystem. Contains filesystem/process access; does NOT contain network egress.",
+            "additionalProperties": false,
+            "required": ["image"],
+            "properties": {
+              "image": {"type": "string", "description": "Docker image providing the agent binary"},
+              "user": {"type": "string", "description": "--user value; defaults to the daemon's uid:gid so the bind-mounted workspace stays writable"},
+              "network": {"type": "string", "description": "--network value; defaults to bridge because agents need LLM/git egress. Use \"none\" for agents needing no network"},
+              "extra_args": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Additional docker flags. Restricted to resource-limit and labelling flags (e.g. --memory, --cpus, --pids-limit, --ulimit, --label); anything that could weaken the sandbox is rejected"
+              }
+            }
+          },
+          "env_passthrough": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Extra host environment variable names to forward to agents beyond the built-in allow-list (system vars + LLM provider credentials). Exact names or a trailing-* prefix, e.g. MYCORP_*"
+          },
           "id": {
             "type": "string",
             "description": "Unique runner identifier, referenced by agents[].runner and agents[].fallbacks"

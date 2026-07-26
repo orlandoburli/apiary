@@ -185,6 +185,56 @@ pre-authenticated CLI tool exists on the host.
     capable for implementation work — prefer `cli` runners for coding agents
     and API runners for lightweight classification or as fallback capacity.
 
+## Sandboxing agent execution
+
+A CLI runner can run every agent subprocess inside a Docker container, isolating
+it from the host filesystem. Use it for runners that process issues or comments
+written by people you do not fully trust.
+
+```yaml
+runners:
+  - id: sandboxed-claude
+    type: cli
+    provider: claude
+    config:
+      command: claude
+    sandbox:
+      image: my-org/apiary-agent:latest   # must contain the agent binary
+      # user:    "1000:1000"              # default: the daemon's uid:gid
+      # network: none                     # default: bridge (agents need egress)
+      extra_args: ["--memory", "4g", "--pids-limit", "512"]   # resource limits only
+    env_passthrough: ["MYCORP_*"]         # beyond system + provider credentials
+```
+
+**What it contains:** host filesystem access (only the task working directory is
+mounted), process and capability escalation (`--read-only` rootfs, `--cap-drop
+all`, `--security-opt no-new-privileges`), and unrelated host secrets — the agent
+environment is allow-listed to system variables plus LLM provider credentials,
+with per-task credentials overlaid. Credentials are passed to the container by
+name, so their values never appear in the host process table.
+
+**What it does NOT contain: network exfiltration.** `network` defaults to
+`bridge` because coding agents must reach their LLM API and git remotes, and the
+agent legitimately holds provider keys and a source token. A prompt-injected
+agent can still send data out. Add egress controls at the network layer if your
+trust level requires it.
+
+Notes:
+
+- `extra_args` accepts only resource-limit and labelling flags (`--memory`,
+  `--cpus`, `--pids-limit`, `--ulimit`, `--label`, …). Anything that could weaken
+  the sandbox — `--privileged`, `--cap-add`, extra mounts, `--network`,
+  `--user`, `--read-only=false`, `--entrypoint` — is rejected at config load.
+- `HOME` inside the container points at a writable tmpfs (`mode=1777`, `exec`),
+  since the rootfs is read-only and a numeric `--user` has no passwd entry. Both
+  options are set explicitly because docker *merges* its tmpfs defaults
+  (`nodev,noexec,relatime`) rather than replacing them, and a tmpfs otherwise
+  inherits the mountpoint's mode from the image.
+- **MCP servers are not supported with a sandbox yet.** Their config is written to
+  host paths the container cannot see, so combining them is rejected at config
+  load rather than silently starting an agent with its MCP servers missing.
+
+
 ## MCP servers
 
 Runners (and individual agents) can expose

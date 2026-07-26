@@ -71,10 +71,10 @@ type Usage struct {
 type FailureKind int
 
 const (
-	FailureNone          FailureKind = iota // no failure; output is usable
-	FailureRateLimited                      // provider rate limit (e.g. 5h session)
-	FailureCreditExhausted                  // out of credits / over quota
-	FailureAborted                          // runner exited early with no useful output (heuristic)
+	FailureNone            FailureKind = iota // no failure; output is usable
+	FailureRateLimited                        // provider rate limit (e.g. 5h session)
+	FailureCreditExhausted                    // out of credits / over quota
+	FailureAborted                            // runner exited early with no useful output (heuristic)
 )
 
 func (k FailureKind) String() string {
