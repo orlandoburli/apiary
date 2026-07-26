@@ -32,6 +32,12 @@ var LintExpr func(expr string) error
 // skipped.
 var SourceSupportsDependencyWait func(sourceType string) bool
 
+// validAgentTools are the tool names accepted in agents[].permissions.
+var validAgentTools = map[string]bool{
+	"read": true, "glob": true, "grep": true, "task": true,
+	"edit": true, "bash": true, "webfetch": true,
+}
+
 // validFallbackStrategies are the accepted values for fallback_strategy fields.
 var validFallbackStrategies = map[string]bool{"ordered": true, "random": true, "least_cost": true, "fastest": true}
 
@@ -153,6 +159,14 @@ func (c *Config) Validate() []error {
 		}
 		if a.FallbackStrategy != "" && !validFallbackStrategies[a.FallbackStrategy] {
 			errs = append(errs, fmt.Errorf("agents[%d] %q: fallback_strategy %q: must be one of ordered, random, least_cost, fastest", i, a.ID, a.FallbackStrategy))
+		}
+		for tool, value := range a.Permissions {
+			if !validAgentTools[tool] {
+				errs = append(errs, fmt.Errorf("agents[%d] %q: permissions: unknown tool %q; supported: bash, edit, glob, grep, read, task, webfetch", i, a.ID, tool))
+			}
+			if value != "allow" && value != "deny" {
+				errs = append(errs, fmt.Errorf("agents[%d] %q: permissions.%s: %q must be \"allow\" or \"deny\"", i, a.ID, tool, value))
+			}
 		}
 		for j, fb := range a.Fallbacks {
 			if fb.Runner == "" {

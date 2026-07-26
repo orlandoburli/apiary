@@ -186,6 +186,17 @@ func (d *Dispatcher) pauseRunnerWithKind(runnerType string, until time.Time, kin
 // profileName selects a named runner profile (from cfg.Profiles) that overrides
 // per-agent runner/model/fallbacks settings. An empty string means base config.
 func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *db.Client, logger *logging.Logger, profileName ...string) (*Dispatcher, error) {
+	// Privilege ceiling: agent CLIs inherit the daemon's uid, so running as root
+	// means a prompt-injected agent executes as root. Warn by default (a hard
+	// refusal would break existing root service installs on upgrade); operators
+	// can enforce it with settings.refuse_root.
+	if os.Geteuid() == 0 {
+		if cfg.Settings.RefuseRoot {
+			return nil, fmt.Errorf("refusing to start as root (euid 0) because settings.refuse_root is set: agent CLIs would inherit root privileges — run the daemon as a dedicated non-root user")
+		}
+		aplog.Warn("running as root (euid 0): agent CLIs inherit root privileges, so a prompt injection would execute as root — run as a dedicated non-root user, or set settings.refuse_root: true to make this an error")
+	}
+
 	r, err := router.New(cfg)
 	if err != nil {
 		return nil, err
@@ -1705,6 +1716,55 @@ func (d *Dispatcher) nextRunID() string {
 	return fmt.Sprintf("run-%04d", d.runSeq)
 }
 
+// agentTools is the fixed set of tool permissions written for an agent, in a
+// stable order so generated files don't churn.
+var agentTools = []string{"read", "glob", "grep", "task", "edit", "bash", "webfetch"}
+
+// agentPermissions returns the OpenCode tool-permission map for an agent.
+//
+// The baseline is permissive (historical behaviour) unless
+// settings.least_privilege_agents is set, which flips write/shell/network tools
+// to deny. Either way an agent's explicit permissions win, so an operator can
+// restrict a single agent without flipping the global default. Keeping the
+// default permissive matters because these files are rewritten on every
+// dispatch: a silent flip would leave existing agents unable to edit code, and
+// they would fail by producing no diff rather than by erroring.
+func agentPermissions(ac config.AgentConfig, leastPrivilege bool) map[string]string {
+	perms := map[string]string{}
+	for _, tool := range agentTools {
+		perms[tool] = "allow"
+	}
+	if leastPrivilege {
+		perms["edit"], perms["bash"], perms["webfetch"] = "deny", "deny", "deny"
+	}
+	for k, v := range ac.Permissions {
+		perms[k] = v
+	}
+	return perms
+}
+
+// permissionMap converts a permission map to the any-typed form used in the JSON
+// opencode config.
+//
+// Historically this writer emitted six keys and omitted webfetch, while the
+// markdown writer emitted seven. Emitting webfetch here unconditionally would be
+// a net privilege INCREASE on the default path — the wrong direction for a
+// privilege-ceiling change — so under the permissive baseline the historical key
+// set is preserved. An explicit agents[].permissions entry is always honoured.
+func permissionMap(ac config.AgentConfig, leastPrivilege bool) map[string]any {
+	perms := agentPermissions(ac, leastPrivilege)
+	out := make(map[string]any, len(perms))
+	for k, v := range perms {
+		if k == "webfetch" && !leastPrivilege {
+			if _, set := ac.Permissions[k]; !set {
+				continue // preserve pre-existing opencode.json key set
+			}
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // writeOpencodeAgent writes a markdown agent file for opencode so it can load
 // the agent with the right skills, soul prompt, and permissions. The file is
 // written to <working_dir>/.opencode/agents/<agent-id>.md.
@@ -1738,13 +1798,10 @@ func (d *Dispatcher) writeOpencodeAgent(ctx context.Context, ac config.AgentConf
 	fmt.Fprintf(&b, "description: %s\n", ac.Description)
 	b.WriteString("mode: primary\n")
 	b.WriteString("permission:\n")
-	b.WriteString("  edit: allow\n")
-	b.WriteString("  bash: allow\n")
-	b.WriteString("  read: allow\n")
-	b.WriteString("  glob: allow\n")
-	b.WriteString("  grep: allow\n")
-	b.WriteString("  webfetch: allow\n")
-	b.WriteString("  task: allow\n")
+	perms := agentPermissions(ac, d.cfg.Settings.LeastPrivilegeAgents)
+	for _, tool := range agentTools {
+		fmt.Fprintf(&b, "  %s: %s\n", tool, perms[tool])
+	}
 	b.WriteString("---\n")
 	if promptBody != "" {
 		b.WriteString("\n")
@@ -1803,14 +1860,7 @@ func (d *Dispatcher) registerAgentInConfig(workDir string, ac config.AgentConfig
 		"mode":        "primary",
 		"prompt":      "{file:./agents/" + ac.ID + ".md}",
 		"skills":      ac.Skills,
-		"permission": map[string]any{
-			"edit": "allow",
-			"bash": "allow",
-			"read": "allow",
-			"glob": "allow",
-			"grep": "allow",
-			"task": "allow",
-		},
+		"permission":  permissionMap(ac, d.cfg.Settings.LeastPrivilegeAgents),
 	}
 
 	agents, _ := cfg["agent"].(map[string]any)
