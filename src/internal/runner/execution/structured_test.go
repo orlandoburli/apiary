@@ -329,7 +329,7 @@ func TestBuildPrompt_NoWorkflowFieldsUnchanged(t *testing.T) {
 	if !strings.Contains(prompt, "Task: Plain task") {
 		t.Errorf("plain prompt should contain the task line, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, untrustedOpen) {
+	if !strings.Contains(prompt, "<<<"+untrustedToken) {
 		t.Errorf("plain prompt should wrap ticket content in the untrusted block, got:\n%s", prompt)
 	}
 }
