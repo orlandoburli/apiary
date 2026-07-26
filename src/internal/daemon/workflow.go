@@ -215,6 +215,7 @@ func (d *Dispatcher) dispatchWorkflow(ctx context.Context, cell model.SourceItem
 	}
 
 	wf := d.resolveWorkflow(match)
+	wf = withTrustGate(wf, cell, d.cfg.Settings.TrustGate)
 	instID, success, err := d.workflowEngine().RunInstance(ctx, wf, task)
 	if err != nil {
 		aplog.Error("cell %s: workflow run failed: %v", cell.LogLabel(), err)
