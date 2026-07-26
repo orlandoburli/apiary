@@ -569,11 +569,12 @@ const (
 // defence in depth against the bypass class that sank PR #252 and the first
 // attempt at #291.
 func untrustedMarkers() (open, closing string) {
+	// crypto/rand.Read never returns an error on supported platforms (it panics
+	// internally if the OS entropy source fails), so there is no degraded
+	// predictable-marker path here by design.
 	var buf [12]byte
-	nonce := "static"
-	if _, err := rand.Read(buf[:]); err == nil {
-		nonce = hex.EncodeToString(buf[:])
-	}
+	rand.Read(buf[:]) //nolint:errcheck // documented never to fail; see above
+	nonce := hex.EncodeToString(buf[:])
 	return "<<<" + untrustedToken + "_" + nonce + ">>>",
 		"<<<END_" + untrustedToken + "_" + nonce + ">>>"
 }
