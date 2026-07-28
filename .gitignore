@@ -20,6 +20,9 @@ apiary.yaml.local
 **/.apiary/logs/
 **/.apiary/memory/
 
+# worktrees — single canonical location for all git worktrees
+/.worktrees/
+
 # editor
 .DS_Store
 .idea/
