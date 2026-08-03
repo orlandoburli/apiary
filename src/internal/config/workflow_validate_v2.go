@@ -61,6 +61,21 @@ func validateV2Steps(ctx string, steps []StepConfig, siblingsBefore []string) []
 			}
 		}
 
+		// A sequential group is dissolved into its children by the lowering pass —
+		// there is no emitted step left to carry a gate, so any gate/outcome field
+		// authored on the group itself would be silently dropped. Fail loud instead.
+		// (Parallel and for_each parents DO keep their node and support these fields;
+		// a lowered parallel node also carries SubSteps, so exclude typed IR nodes.)
+		if len(s.SubSteps) > 0 && s.ForEachExpr == "" && s.Type == "" {
+			if s.RejectWhen != "" || s.OnReject != nil || s.FailWhen != "" || s.OnFail != nil {
+				errs = append(errs, fmt.Errorf(
+					"%s: reject_when/on_reject/fail_when/on_fail on a sequential group are not supported "+
+						"(the group dissolves during lowering and the gate would be dropped) — "+
+						"move the gate to a leaf step, or make the group parallel:",
+					stepCtx))
+			}
+		}
+
 		// Recursively validate group children.
 		if len(s.SubSteps) > 0 {
 			errs = append(errs, validateV2Steps(stepCtx, s.SubSteps, nil)...)
