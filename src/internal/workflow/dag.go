@@ -349,6 +349,17 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 			for field, val := range res.StructuredOutput {
 				transientMem[field] = renderValue(val)
 			}
+			// A parallel step's own StructuredOutput is empty — its children's fresh
+			// contributions are only merged into r.contrib after this check, so
+			// overlay them here (declaration order, last-write-wins) or a gate like
+			// `memory.qa_verdict == "rejected"` would read the stale/empty value.
+			if step.StepType() == config.StepTypeParallel {
+				for _, c := range wr.parallelContribs {
+					for field, val := range c.Structured {
+						transientMem[field] = renderValue(val)
+					}
+				}
+			}
 			evalCtx := EvalContext{Cell: r.cell, Memory: transientMem, Steps: r.stepStates}
 			rejected, fwErr := e.evalExpr(step.FailWhen, evalCtx)
 			switch {

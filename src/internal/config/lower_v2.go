@@ -237,6 +237,30 @@ func (lc *lowerCtx) lowerParallelStep(s StepConfig, prevID, inheritedCondition s
 	}
 	out.Condition = composeCond(inheritedCondition, ownCond)
 
+	// Lower reject_when + on_reject → fail_when + on_fail, exactly like a leaf
+	// step. The gate lives on the parallel parent because it is evaluated after
+	// the join, over the children's merged outputs — a child-level gate could
+	// only restart_from a sibling within the group.
+	out.FailWhen = s.FailWhen
+	out.OnFail = s.OnFail
+	if s.RejectWhen != "" {
+		rewritten, err := lc.rewriteExpr(s.RejectWhen, s.ID)
+		if err != nil {
+			return StepConfig{}, fmt.Errorf("parallel step %q reject_when: %w", s.ID, err)
+		}
+		out.FailWhen = rewritten
+	}
+	if s.OnReject != nil {
+		if out.OnFail == nil {
+			out.OnFail = &StepOutcome{}
+		}
+		out.OnFail.Goto = s.OnReject.RestartFrom
+		out.OnFail.MaxRetries = s.OnReject.Max
+	}
+
+	// Auto-wire fields referenced by the gate into the emitting steps' memory.write.
+	lc.autoWireMemory(&out)
+
 	// Lower children individually (no implicit chaining — they run concurrently).
 	loweredChildren := make([]StepConfig, 0, len(s.ParallelSteps))
 	for _, child := range s.ParallelSteps {
@@ -271,6 +295,26 @@ func (lc *lowerCtx) lowerForeachStep(s StepConfig, prevID, inheritedCondition st
 		return StepConfig{}, fmt.Errorf("for_each %q if: %w", s.ID, err)
 	}
 	out.Condition = composeCond(inheritedCondition, ownCond)
+
+	// Lower reject_when + on_reject → fail_when + on_fail (same as leaf/parallel
+	// steps) — these were previously dropped silently.
+	out.FailWhen = s.FailWhen
+	out.OnFail = s.OnFail
+	if s.RejectWhen != "" {
+		rewritten, err := lc.rewriteExpr(s.RejectWhen, s.ID)
+		if err != nil {
+			return StepConfig{}, fmt.Errorf("for_each %q reject_when: %w", s.ID, err)
+		}
+		out.FailWhen = rewritten
+	}
+	if s.OnReject != nil {
+		if out.OnFail == nil {
+			out.OnFail = &StepOutcome{}
+		}
+		out.OnFail.Goto = s.OnReject.RestartFrom
+		out.OnFail.MaxRetries = s.OnReject.Max
+	}
+	lc.autoWireMemory(&out)
 
 	// Lower max: → max_items.
 	if s.Max > 0 {
