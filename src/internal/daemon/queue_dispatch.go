@@ -54,8 +54,9 @@ func (d *Dispatcher) configureDispatchQueue() error {
 	for _, adapter := range d.agentRunner {
 		capabilities = append(capabilities, "runner:"+adapter)
 	}
+	d.queueWorker = queue.Worker{ID: workerID, ProtocolVersion: queue.WorkerProtocolVersion, Pool: defaultString(d.cfg.Settings.Queue.WorkerPool, "default"), Labels: uniqueStrings(labels), Capabilities: uniqueStrings(capabilities), Capacity: d.cfg.Settings.Queue.WorkerCapacityValue(), Ready: true}
 	runtimeWorker, err := worker.New(d.dispatchQueue, worker.ExecutorFunc(d.executeQueuedJob), worker.Config{
-		Worker:        queue.Worker{ID: workerID, ProtocolVersion: queue.WorkerProtocolVersion, Pool: defaultString(d.cfg.Settings.Queue.WorkerPool, "default"), Labels: uniqueStrings(labels), Capabilities: uniqueStrings(capabilities), Capacity: d.cfg.Settings.Queue.WorkerCapacityValue(), Ready: true},
+		Worker:        d.queueWorker,
 		LeaseDuration: d.cfg.Settings.Queue.LeaseDurationValue(), HeartbeatInterval: d.cfg.Settings.Queue.HeartbeatIntervalValue(), WorkerHeartbeat: d.cfg.Settings.Queue.HeartbeatIntervalValue(), WorkerTimeout: d.cfg.Settings.Queue.WorkerTimeoutValue(), PollInterval: d.cfg.Settings.Queue.PollIntervalValue(), Policy: d.queuePolicy(),
 		OnError: func(err error) { aplog.Error("embedded worker: %v", err) },
 	})
@@ -209,6 +210,69 @@ func (d *Dispatcher) settleRemoteQueueJob(ctx context.Context, job queue.Job) er
 		taskState = model.TaskStateFailed
 	}
 	return d.db.InternalTasks().UpdateTaskState(ctx, job.TaskID, taskState)
+}
+
+// warnUnsatisfiableQueueJobs logs a warning for queued jobs whose pool, labels,
+// or required capabilities no registered worker (including the embedded one)
+// can satisfy. Without it this failure mode is completely silent: jobs sit
+// queued forever while `apiary status` shows a ready worker with free capacity.
+func (d *Dispatcher) warnUnsatisfiableQueueJobs(ctx context.Context) {
+	if d.dispatchQueue == nil {
+		return
+	}
+	jobs, err := d.dispatchQueue.ListJobs(ctx, queue.JobQueued, 1000)
+	if err != nil {
+		aplog.Error("list queued jobs for capability check: %v", err)
+		return
+	}
+	if len(jobs) == 0 {
+		return
+	}
+	workers, err := d.dispatchQueue.ListWorkers(ctx)
+	if err != nil {
+		aplog.Error("list workers for capability check: %v", err)
+		return
+	}
+	// The embedded worker registers asynchronously in Start; include its spec
+	// so its own jobs are never reported as unsatisfiable during startup.
+	if d.localWorker != nil {
+		workers = append(workers, d.queueWorker)
+	}
+	unsatisfiable := 0
+	for _, job := range jobs {
+		if !jobSatisfiableByAnyWorker(job, workers) {
+			unsatisfiable++
+			aplog.Warn("queued job %s (task %s, workflow %s) is not satisfiable by any registered worker: pool=%q required_labels=%v required_capabilities=%v", job.ID, job.TaskID, job.WorkflowID, job.Pool, job.RequiredLabels, job.RequiredCapabilities)
+		}
+	}
+	if unsatisfiable > 0 {
+		aplog.Warn("%d queued job(s) cannot be leased by any registered worker — they will stay queued until a worker advertising the required pool/labels/capabilities registers", unsatisfiable)
+	}
+}
+
+func jobSatisfiableByAnyWorker(job queue.Job, workers []queue.Worker) bool {
+	for _, w := range workers {
+		if job.Pool != "" && job.Pool != w.Pool {
+			continue
+		}
+		if hasAllStrings(w.Labels, job.RequiredLabels) && hasAllStrings(w.Capabilities, job.RequiredCapabilities) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAllStrings(have, need []string) bool {
+	set := make(map[string]bool, len(have))
+	for _, value := range have {
+		set[value] = true
+	}
+	for _, value := range need {
+		if !set[value] {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *Dispatcher) reconcileTerminalQueueJobs(ctx context.Context) {
