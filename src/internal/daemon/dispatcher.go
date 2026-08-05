@@ -110,6 +110,7 @@ type Dispatcher struct {
 	// Durable dispatch queue and optional embedded local protocol-1 worker.
 	dispatchQueue  queuepkg.Store
 	localWorker    *workerpkg.Runtime
+	queueWorker    queuepkg.Worker
 	queueProjectID string
 	queueWorkerID  string
 }
@@ -227,9 +228,6 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 	d.eventExporters, pluginErrs = plugin.EnabledClients(registry, cfg.Plugins, plugin.CapabilityEventExporter)
 	if len(pluginErrs) > 0 {
 		return nil, fmt.Errorf("plugins: %w", errors.Join(pluginErrs...))
-	}
-	if err := d.configureDispatchQueue(); err != nil {
-		return nil, err
 	}
 	if dbClient != nil {
 		dbClient.SetEventSensitiveFields(cfg.Settings.Events.SensitiveFields)
@@ -432,6 +430,14 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		d.runners[wc.ID] = ra
 	}
 
+	// Must run after the agent loop above: the embedded worker advertises one
+	// runner:<adapter> capability per entry in d.agentRunner, and enqueued jobs
+	// require them. Configuring the queue before agents are loaded registers a
+	// worker with no runner capabilities, so every job stays queued forever.
+	if err := d.configureDispatchQueue(); err != nil {
+		return nil, err
+	}
+
 	return d, nil
 }
 
@@ -485,6 +491,7 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 			aplog.Info("reconciled %d orphaned step run(s) from a previous run", n)
 		}
 		d.reconcileTerminalQueueJobs(ctx)
+		d.warnUnsatisfiableQueueJobs(ctx)
 
 		// Repair each non-terminal task's outstanding-workflow counter and settle
 		// tasks stranded 'running' with no live instance. The instances just
