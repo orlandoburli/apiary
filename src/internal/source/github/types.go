@@ -18,6 +18,9 @@ type issue struct {
 
 type user struct {
 	Login string `json:"login"`
+	// Type distinguishes human accounts ("User") from "Bot" (and
+	// "Organization"). PR event polling drops Bot-authored events.
+	Type string `json:"type"`
 }
 
 type label struct {
@@ -75,11 +78,47 @@ type pullRequest struct {
 	Number         int    `json:"number"`
 	State          string `json:"state"`
 	HTMLURL        string `json:"html_url"`
+	Body           string `json:"body"`
+	UpdatedAt      string `json:"updated_at"`
 	Mergeable      *bool  `json:"mergeable"`
 	MergeableState string `json:"mergeable_state"`
 	Head           struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
+}
+
+// issueComment is a repo-level issue comment (GET /repos/{o}/{r}/issues/comments),
+// carrying the author and URL fields PR event polling needs on top of the basic
+// comment shape. Comments on pull requests appear here too — their html_url path
+// contains /pull/ instead of /issues/.
+type issueComment struct {
+	ID                int64  `json:"id"`
+	Body              string `json:"body"`
+	CreatedAt         string `json:"created_at"`
+	HTMLURL           string `json:"html_url"`
+	AuthorAssociation string `json:"author_association"`
+	User              user   `json:"user"`
+}
+
+// reviewComment is an inline PR review comment (GET /repos/{o}/{r}/pulls/comments).
+type reviewComment struct {
+	ID                int64  `json:"id"`
+	Body              string `json:"body"`
+	CreatedAt         string `json:"created_at"`
+	HTMLURL           string `json:"html_url"`
+	PullRequestURL    string `json:"pull_request_url"`
+	AuthorAssociation string `json:"author_association"`
+	User              user   `json:"user"`
+}
+
+// review is one PR review (GET /repos/{o}/{r}/pulls/{n}/reviews).
+type review struct {
+	ID                int64  `json:"id"`
+	Body              string `json:"body"`
+	State             string `json:"state"` // APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING
+	SubmittedAt       string `json:"submitted_at"`
+	AuthorAssociation string `json:"author_association"`
+	User              user   `json:"user"`
 }
 
 // commitStatus is the combined legacy status of a commit. TotalCount is 0 when no

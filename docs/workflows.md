@@ -81,6 +81,67 @@ that:
   runs are not blocked; they stay eligible for retry up to
   `settings.max_attempts`.
 
+### PR event triggers (`on:`)
+
+By default a trigger matches **work items** (issues/tickets polled from a
+source). Setting `on:` to a pull-request event kind makes the trigger fire on
+PR activity instead, polled from sources that support PR events (currently
+`github`):
+
+```yaml
+workflows:
+  - id: react-to-pr-comment
+    trigger:
+      on: pr_comment
+      comment_matches: "(?i)@apiary"     # only comments mentioning @apiary
+    steps:
+      - id: fix
+        agent: engineer
+        prompt: |
+          A reviewer commented on PR ${{ event.pr_number }}. Address it:
+          the comment body is in $APIARY_EVENT_BODY.
+
+  - id: fix-review-feedback
+    trigger:
+      on: pr_review_changes_requested
+      match:
+        source: github
+        labels: [apiary]                 # of the PR's originating issue
+    steps:
+      - id: address
+        agent: engineer
+```
+
+| Field | Description |
+|---|---|
+| `on` | `item` (default) or `pr_comment`, `pr_review_approved`, `pr_review_changes_requested` |
+| `comment_matches` | `pr_comment` only: comment body must match this Go regexp (case-sensitive — prefix `(?i)` for case-insensitive). Validated at config load |
+| `authors` | Only fire for these author logins (case-insensitive); overrides `authors_association` |
+| `authors_association` | Only fire for authors with one of these repo associations. **Default: `[OWNER, MEMBER, COLLABORATOR]`** — drive-by comments from strangers never spawn agents |
+| `max_dispatches` | Cap dispatches per (workflow, PR) — a runaway-loop budget. `0` = unlimited |
+
+Semantics:
+
+- **Exactly once.** Each event (a comment or review) dispatches a matching
+  workflow exactly once, persisted in SQLite — a daemon restart or poll
+  overlap never re-dispatches it. First-time enablement baselines to "now":
+  historical comments are ignored.
+- **Task binding.** The instance binds to the InternalTask of the PR's
+  originating issue when one exists (resolved from the PR body's `Closes #N`
+  reference), so lineage, dashboard, and transcripts work unchanged.
+  Otherwise a standalone per-PR task is bound.
+- **Loop prevention.** Events authored by the daemon's own source token
+  identity and by bot accounts are dropped at the adapter, so an agent's own
+  PR comments can never re-trigger a workflow. `max_dispatches` is the
+  backstop for multi-account ping-pong.
+- **`match` on event triggers.** `match.source` applies to the event's
+  source; the item-shaped fields (`labels`, `states`, …) apply to the
+  originating issue's task and only match when that task exists.
+- **Event payload.** Every step of an event-triggered instance gets
+  `APIARY_EVENT_KIND`, `APIARY_EVENT_AUTHOR`, `APIARY_EVENT_BODY`,
+  `APIARY_PR_NUMBER`, and `APIARY_PR_URL` in its environment, and expressions
+  can read `event.*` (see [Accessors](#accessors)).
+
 ## Steps
 
 Steps run **sequentially in the order written**. Each step has an `id`
@@ -317,6 +378,16 @@ Precedence is `not` > `and` > `or`, and `and`/`or` short-circuit.
 | `steps.<id>.state` | string | `passed` or `failed` |
 | `steps.<id>.output` | string | the step's output text |
 | `steps.<id>.exit_code` | number | the step's exit code |
+| `event.kind` | string | PR event kind (`pr_comment`, `pr_review_approved`, `pr_review_changes_requested`) |
+| `event.body` | string | comment / review body |
+| `event.author` | string | event author's login |
+| `event.author_association` | string | author's repo association (e.g. `COLLABORATOR`) |
+| `event.pr_number` | string | pull request number |
+| `event.pr_url` | string | pull request URL |
+
+`event.*` is populated only on instances started by a [PR event
+trigger](#pr-event-triggers-on); elsewhere (and on instances rehydrated after
+a daemon restart) it resolves as missing (`""`).
 
 A `memory.<key>` that was never written — and a `steps.<id>` that has not
 run — resolves to the empty string, so `memory.flag == ""` is the idiom for

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	aplog "github.com/orlandoburli/apiary/internal/log"
@@ -28,6 +29,7 @@ var (
 	_ source.CIStatusPoller  = (*Adapter)(nil)
 	_ source.SubIssueCreator = (*Adapter)(nil)
 	_ source.BlockerLister   = (*Adapter)(nil)
+	_ source.PREventPoller   = (*Adapter)(nil)
 )
 
 type Adapter struct {
@@ -39,6 +41,11 @@ type Adapter struct {
 
 	filterStates []string
 	filterLabels []string
+
+	// self is the login of the adapter's own token identity, resolved lazily by
+	// selfLogin for PR event author exclusion.
+	selfOnce sync.Once
+	self     string
 }
 
 func (a *Adapter) ID() string { return a.id }

@@ -125,6 +125,20 @@ type BlockerLister interface {
 	ListBlockers(ctx context.Context, cellID, linkType string) ([]BlockerRef, error)
 }
 
+// PREventPoller is an optional interface a source may implement to enumerate
+// pull-request events (comments and review submissions) since a watermark. The
+// dispatcher polls it alongside Poll and routes the events through workflow
+// triggers with an `on:` event kind (pr_comment, pr_review_approved,
+// pr_review_changes_requested). Sources that do not implement it cannot host
+// event triggers (rejected at config validation).
+//
+// Adapters must exclude events authored by their own token identity (and
+// bot-typed users), so an agent commenting through the daemon's account can
+// never re-trigger a workflow — the first line of loop prevention.
+type PREventPoller interface {
+	PollPREvents(ctx context.Context, since time.Time) ([]model.SourceEvent, error)
+}
+
 // SubIssueCreator is an optional interface a source may implement to create a
 // child work item linked to a parent (a sub-issue). The workflow engine uses it
 // to materialize a spawned InternalTask as a source sub-issue under the spawning

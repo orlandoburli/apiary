@@ -151,11 +151,11 @@
           "type": {
             "type": "string",
             "description": "Source adapter type",
-            "enum": ["github", "plane"]
+            "enum": ["github", "plane", "jira"]
           },
           "config": {
             "type": "object",
-            "description": "Adapter-specific configuration. github: repo, api_key, base_url. plane: workspace, project, api_key, base_url",
+            "description": "Adapter-specific configuration. github: repo, api_key, base_url. plane: workspace, project, api_key, base_url. jira: site, project, email, api_token",
             "additionalProperties": true
           },
           "poll_interval": {
@@ -453,6 +453,36 @@
               },
               "match": {
                 "$ref": "#/definitions/RouteMatch"
+              },
+              "on": {
+                "type": "string",
+                "description": "Trigger event axis: item (default — polled work items) or a PR event kind polled from a source that supports PR events (currently github)",
+                "enum": ["item", "pr_comment", "pr_review_approved", "pr_review_changes_requested"],
+                "default": "item"
+              },
+              "comment_matches": {
+                "type": "string",
+                "description": "Only with on: pr_comment — require the comment body to match this Go regexp (case-sensitive; use (?i) for case-insensitive), e.g. \"(?i)@apiary\\\\s+(fix|update)\"",
+                "format": "regex"
+              },
+              "authors": {
+                "type": "array",
+                "description": "Event triggers only: restrict to events authored by one of these source logins (case-insensitive). Takes precedence over authors_association",
+                "items": { "type": "string" }
+              },
+              "authors_association": {
+                "type": "array",
+                "description": "Event triggers only: restrict to authors whose repository association is in this list. Default when neither authors nor authors_association is set: [OWNER, MEMBER, COLLABORATOR] (collaborators-only)",
+                "items": {
+                  "type": "string",
+                  "enum": ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN", "NONE"]
+                }
+              },
+              "max_dispatches": {
+                "type": "integer",
+                "description": "Event triggers only: cap how many times this trigger may dispatch for the same pull request (runaway-loop budget). 0 = unlimited",
+                "minimum": 0,
+                "default": 0
               }
             }
           },

@@ -126,6 +126,29 @@ workflows:
     on_fail:
       add_labels: [needs-attention]
 
+  # ── PR event trigger (trigger.on) ─────────────────────────────────────────
+  # Fires on pull-request activity instead of polled work items. Each event
+  # (comment / review) dispatches exactly once, persisted across restarts.
+  # Author gating defaults to collaborators-only; the daemon's own comments and
+  # bot comments never trigger. The step environment carries APIARY_EVENT_KIND,
+  # APIARY_EVENT_AUTHOR, APIARY_EVENT_BODY, APIARY_PR_NUMBER, APIARY_PR_URL,
+  # and expressions can read ${{ event.* }}.
+  - id: react-to-pr-comment
+    description: "Address reviewer feedback left as a PR comment mentioning @apiary"
+    trigger:
+      on: pr_comment                  # pr_comment | pr_review_approved | pr_review_changes_requested
+      comment_matches: "(?i)@apiary"  # pr_comment only; Go regexp, validated at load
+      max_dispatches: 5               # per-PR runaway-loop budget (0 = unlimited)
+      # authors: [orlandoburli]       # explicit allow-list (overrides association gate)
+      # authors_association: [OWNER, MEMBER, COLLABORATOR]   # the default gate
+    steps:
+      - id: address
+        agent: engineer
+        prompt: |
+          A reviewer commented on PR ${{ event.pr_number }} ($APIARY_PR_URL).
+          Address the request in $APIARY_EVENT_BODY, push to the PR branch, and
+          reply on the PR when done.
+
 settings:
   concurrency: 2
   state_lock: true

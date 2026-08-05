@@ -24,4 +24,12 @@ func init() {
 		_, ok = a.(source.BlockerLister)
 		return ok
 	}
+	config.SourceSupportsPREvents = func(sourceType string) bool {
+		a, ok := source.New(sourceType)
+		if !ok {
+			return false
+		}
+		_, ok = a.(source.PREventPoller)
+		return ok
+	}
 }
