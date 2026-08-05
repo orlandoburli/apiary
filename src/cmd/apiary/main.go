@@ -6,6 +6,7 @@ import (
 	_ "github.com/orlandoburli/apiary/internal/source/github"
 	_ "github.com/orlandoburli/apiary/internal/source/jira"
 	_ "github.com/orlandoburli/apiary/internal/source/plane"
+	_ "github.com/orlandoburli/apiary/internal/source/prometheus"
 
 	_ "github.com/orlandoburli/apiary/internal/runner/providers"
 )

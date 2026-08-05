@@ -24,6 +24,24 @@ var KnownAdapters func() []string
 // isolated tests — expression lint is skipped.
 var LintExpr func(expr string) error
 
+// SourceCaps reports which optional write capabilities a source type's
+// adapter implements. Read-only sources (e.g. prometheus alerts) implement
+// none of them; workflow features that need one are rejected at validation.
+type SourceCaps struct {
+	SetState     bool // source.StateSetter — on_complete/on_fail set_state
+	AddLabels    bool // source.LabelAdder — add_labels, assign_from_output
+	RemoveLabels bool // source.LabelRemover — remove_labels
+	Approvals    bool // source.TaskPoller — approval steps
+	CIWait       bool // source.CIStatusPoller — wait_for kind "ci"
+	SubIssues    bool // source.SubIssueCreator — materialize: sub_issue
+}
+
+// SourceCapabilities reports the SourceCaps of a source type's adapter. The
+// cli package injects it (config cannot import the source package without
+// inverting the dependency direction). When nil — configs built in code,
+// isolated tests — the capability checks are skipped, mirroring KnownAdapters.
+var SourceCapabilities func(sourceType string) SourceCaps
+
 // SourceSupportsDependencyWait reports whether a source type's adapter can
 // enumerate a task's upstream blockers (implements source.BlockerLister), which
 // a wait_for step with kind "dependency" requires. The cli package injects it
@@ -289,6 +307,10 @@ func (c *Config) Validate() []error {
 		errs = append(errs, err)
 	}
 	errs = append(errs, c.validateWorkflows()...)
+
+	// Capability lint: reject workflow features that need a write capability
+	// (set_state, approvals, wait_for ci, …) against sources that lack it.
+	errs = append(errs, c.validateSourceCapabilities()...)
 
 	// Removed-directive and unknown-field checks on the raw text (no-op when the
 	// config was built in code rather than loaded from a file).
