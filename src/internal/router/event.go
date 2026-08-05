@@ -58,9 +58,10 @@ func (r *Router) evaluateEvent(route config.RouteConfig, event model.SourceEvent
 	if route.Match.Source != "" && event.SourceID != route.Match.Source {
 		return false, fmt.Sprintf("source %q != required %q", event.SourceID, route.Match.Source)
 	}
-	if route.CommentContains != "" &&
-		!strings.Contains(strings.ToLower(event.Body), strings.ToLower(route.CommentContains)) {
-		return false, fmt.Sprintf("comment does not contain %q", route.CommentContains)
+	if re, ok := r.commentRegexes[route.ID]; ok {
+		if !re.MatchString(event.Body) {
+			return false, fmt.Sprintf("comment does not match /%s/", route.CommentMatches)
+		}
 	}
 	if ok, reason := authorAllowed(route, event); !ok {
 		return false, reason

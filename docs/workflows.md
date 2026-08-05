@@ -93,7 +93,7 @@ workflows:
   - id: react-to-pr-comment
     trigger:
       on: pr_comment
-      comment_contains: "@apiary"        # only comments mentioning @apiary
+      comment_matches: "(?i)@apiary"     # only comments mentioning @apiary
     steps:
       - id: fix
         agent: engineer
@@ -115,7 +115,7 @@ workflows:
 | Field | Description |
 |---|---|
 | `on` | `item` (default) or `pr_comment`, `pr_review_approved`, `pr_review_changes_requested` |
-| `comment_contains` | `pr_comment` only: comment body must contain this substring (case-insensitive) |
+| `comment_matches` | `pr_comment` only: comment body must match this Go regexp (case-sensitive — prefix `(?i)` for case-insensitive). Validated at config load |
 | `authors` | Only fire for these author logins (case-insensitive); overrides `authors_association` |
 | `authors_association` | Only fire for authors with one of these repo associations. **Default: `[OWNER, MEMBER, COLLABORATOR]`** — drive-by comments from strangers never spawn agents |
 | `max_dispatches` | Cap dispatches per (workflow, PR) — a runaway-loop budget. `0` = unlimited |

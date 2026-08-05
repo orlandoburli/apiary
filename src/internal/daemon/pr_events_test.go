@@ -46,7 +46,7 @@ func newEventDispatcher(t *testing.T) (*Dispatcher, *db.Client, *envRecordingRun
 		Agents:  []config.AgentConfig{{ID: "eng", Model: "test/model"}},
 		Workflows: []config.WorkflowConfig{{
 			ID:      "fix-feedback",
-			Trigger: &config.TriggerConfig{On: config.TriggerOnPRComment, CommentContains: "@apiary", MaxDispatches: 2},
+			Trigger: &config.TriggerConfig{On: config.TriggerOnPRComment, CommentMatches: "(?i)@apiary", MaxDispatches: 2},
 			Steps:   []config.StepConfig{{ID: "run", Agent: "eng"}},
 		}},
 	}

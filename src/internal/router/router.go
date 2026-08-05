@@ -34,7 +34,9 @@ type RouteTrace struct {
 type Router struct {
 	routes  []config.RouteConfig // sorted by priority ascending
 	workers map[string]config.WorkerConfig
-	regexes map[string]*regexp.Regexp // route ID → compiled regex
+	regexes map[string]*regexp.Regexp // route ID → compiled title_regex
+	// commentRegexes holds each event route's compiled comment_matches pattern.
+	commentRegexes map[string]*regexp.Regexp
 }
 
 // New builds a Router from the given config.
@@ -62,7 +64,7 @@ func New(cfg *config.Config) (*Router, error) {
 			Exclusive:          wf.Trigger.Exclusive,
 			Once:               wf.Trigger.Once,
 			On:                 wf.Trigger.EventKind(),
-			CommentContains:    wf.Trigger.CommentContains,
+			CommentMatches:     wf.Trigger.CommentMatches,
 			Authors:            wf.Trigger.Authors,
 			AuthorsAssociation: wf.Trigger.AuthorsAssociation,
 			MaxDispatches:      wf.Trigger.MaxDispatches,
@@ -73,6 +75,7 @@ func New(cfg *config.Config) (*Router, error) {
 	})
 
 	regexes := make(map[string]*regexp.Regexp)
+	commentRegexes := make(map[string]*regexp.Regexp)
 	for _, r := range routes {
 		if r.Match.TitleRegex != "" {
 			re, err := regexp.Compile(r.Match.TitleRegex)
@@ -81,9 +84,16 @@ func New(cfg *config.Config) (*Router, error) {
 			}
 			regexes[r.ID] = re
 		}
+		if r.CommentMatches != "" {
+			re, err := regexp.Compile(r.CommentMatches)
+			if err != nil {
+				return nil, fmt.Errorf("route %s: invalid comment_matches %q: %w", r.ID, r.CommentMatches, err)
+			}
+			commentRegexes[r.ID] = re
+		}
 	}
 
-	return &Router{routes: routes, workers: workers, regexes: regexes}, nil
+	return &Router{routes: routes, workers: workers, regexes: regexes, commentRegexes: commentRegexes}, nil
 }
 
 // firstAgentStep returns a representative agent id for a workflow's trigger

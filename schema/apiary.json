@@ -460,9 +460,10 @@
                 "enum": ["item", "pr_comment", "pr_review_approved", "pr_review_changes_requested"],
                 "default": "item"
               },
-              "comment_contains": {
+              "comment_matches": {
                 "type": "string",
-                "description": "Only with on: pr_comment — require the comment body to contain this substring (case-insensitive), e.g. \"@apiary\""
+                "description": "Only with on: pr_comment — require the comment body to match this Go regexp (case-sensitive; use (?i) for case-insensitive), e.g. \"(?i)@apiary\\\\s+(fix|update)\"",
+                "format": "regex"
               },
               "authors": {
                 "type": "array",

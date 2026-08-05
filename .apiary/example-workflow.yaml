@@ -137,7 +137,7 @@ workflows:
     description: "Address reviewer feedback left as a PR comment mentioning @apiary"
     trigger:
       on: pr_comment                  # pr_comment | pr_review_approved | pr_review_changes_requested
-      comment_contains: "@apiary"     # pr_comment only
+      comment_matches: "(?i)@apiary"  # pr_comment only; Go regexp, validated at load
       max_dispatches: 5               # per-PR runaway-loop budget (0 = unlimited)
       # authors: [orlandoburli]       # explicit allow-list (overrides association gate)
       # authors_association: [OWNER, MEMBER, COLLABORATOR]   # the default gate

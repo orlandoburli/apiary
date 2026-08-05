@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -176,8 +177,8 @@ func (c *Config) validateTriggerEvents(ctx string, t TriggerConfig) []error {
 	if !t.IsEventTrigger() {
 		// Event-only fields are a config mistake on an item trigger: they would
 		// silently never apply.
-		if t.CommentContains != "" {
-			errs = append(errs, fmt.Errorf("%s: trigger comment_contains requires on: %s", ctx, TriggerOnPRComment))
+		if t.CommentMatches != "" {
+			errs = append(errs, fmt.Errorf("%s: trigger comment_matches requires on: %s", ctx, TriggerOnPRComment))
 		}
 		if len(t.Authors) > 0 || len(t.AuthorsAssociation) > 0 {
 			errs = append(errs, fmt.Errorf("%s: trigger authors/authors_association are only valid on an event trigger (on: %s)",
@@ -189,8 +190,13 @@ func (c *Config) validateTriggerEvents(ctx string, t TriggerConfig) []error {
 		return errs
 	}
 
-	if t.CommentContains != "" && t.EventKind() != TriggerOnPRComment {
-		errs = append(errs, fmt.Errorf("%s: trigger comment_contains is only valid with on: %s", ctx, TriggerOnPRComment))
+	if t.CommentMatches != "" {
+		if t.EventKind() != TriggerOnPRComment {
+			errs = append(errs, fmt.Errorf("%s: trigger comment_matches is only valid with on: %s", ctx, TriggerOnPRComment))
+		}
+		if _, err := regexp.Compile(t.CommentMatches); err != nil {
+			errs = append(errs, fmt.Errorf("%s: trigger comment_matches %q: invalid regexp: %w", ctx, t.CommentMatches, err))
+		}
 	}
 	if t.MaxDispatches < 0 {
 		errs = append(errs, fmt.Errorf("%s: trigger max_dispatches must be >= 0", ctx))

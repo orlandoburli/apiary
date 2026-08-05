@@ -26,9 +26,9 @@ func collabEvent(kind, body string) model.SourceEvent {
 	}
 }
 
-func TestRouteEvent_KindAndCommentContains(t *testing.T) {
+func TestRouteEvent_KindAndCommentMatches(t *testing.T) {
 	r, err := New(eventRouterConfig(map[string]*config.TriggerConfig{
-		"on-comment": {On: config.TriggerOnPRComment, CommentContains: "@apiary"},
+		"on-comment": {On: config.TriggerOnPRComment, CommentMatches: `(?i)@apiary\s+(fix|update)`},
 		"on-reject":  {On: config.TriggerOnPRReviewChangesRequest},
 	}))
 	if err != nil {
@@ -41,8 +41,21 @@ func TestRouteEvent_KindAndCommentContains(t *testing.T) {
 	if m := r.RouteEvent(collabEvent("pr_comment", "no mention"), nil); len(m) != 0 {
 		t.Errorf("comment without the marker must not match, got %v", m)
 	}
+	// The regex is a full Go regexp: mention without a captured verb must miss.
+	if m := r.RouteEvent(collabEvent("pr_comment", "@apiary hello"), nil); len(m) != 0 {
+		t.Errorf("comment not matching the pattern must not match, got %v", m)
+	}
 	if m := r.RouteEvent(collabEvent("pr_review_changes_requested", "please fix"), nil); len(m) != 1 || m[0].Route.ID != "on-reject" {
 		t.Errorf("changes_requested must route to on-reject, got %v", m)
+	}
+}
+
+func TestRouterNew_RejectsInvalidCommentMatches(t *testing.T) {
+	_, err := New(eventRouterConfig(map[string]*config.TriggerConfig{
+		"bad": {On: config.TriggerOnPRComment, CommentMatches: "@apiary["},
+	}))
+	if err == nil {
+		t.Fatal("router.New must reject an invalid comment_matches pattern")
 	}
 }
 

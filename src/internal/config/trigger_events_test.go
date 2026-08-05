@@ -40,8 +40,8 @@ func TestValidateTriggerEvents_OnWhitelist(t *testing.T) {
 }
 
 func TestValidateTriggerEvents_EventOnlyFieldsOnItemTrigger(t *testing.T) {
-	if errs := eventCfg(TriggerConfig{CommentContains: "@apiary"}).Validate(); !errsContain(errs, "comment_contains requires on") {
-		t.Errorf("comment_contains on item trigger must be rejected, got %v", errs)
+	if errs := eventCfg(TriggerConfig{CommentMatches: "@apiary"}).Validate(); !errsContain(errs, "comment_matches requires on") {
+		t.Errorf("comment_matches on item trigger must be rejected, got %v", errs)
 	}
 	if errs := eventCfg(TriggerConfig{Authors: []string{"me"}}).Validate(); !errsContain(errs, "authors/authors_association are only valid") {
 		t.Errorf("authors on item trigger must be rejected, got %v", errs)
@@ -51,12 +51,16 @@ func TestValidateTriggerEvents_EventOnlyFieldsOnItemTrigger(t *testing.T) {
 	}
 }
 
-func TestValidateTriggerEvents_CommentContainsScoping(t *testing.T) {
-	if errs := eventCfg(TriggerConfig{On: TriggerOnPRReviewApproved, CommentContains: "@apiary"}).Validate(); !errsContain(errs, "comment_contains is only valid with on: pr_comment") {
-		t.Errorf("comment_contains on a review trigger must be rejected, got %v", errs)
+func TestValidateTriggerEvents_CommentMatchesScoping(t *testing.T) {
+	if errs := eventCfg(TriggerConfig{On: TriggerOnPRReviewApproved, CommentMatches: "@apiary"}).Validate(); !errsContain(errs, "comment_matches is only valid with on: pr_comment") {
+		t.Errorf("comment_matches on a review trigger must be rejected, got %v", errs)
 	}
-	if errs := eventCfg(TriggerConfig{On: TriggerOnPRComment, CommentContains: "@apiary"}).Validate(); len(errs) != 0 {
-		t.Errorf("comment_contains on pr_comment must be accepted, got %v", errs)
+	if errs := eventCfg(TriggerConfig{On: TriggerOnPRComment, CommentMatches: `(?i)@apiary\s+(fix|update)`}).Validate(); len(errs) != 0 {
+		t.Errorf("comment_matches on pr_comment must be accepted, got %v", errs)
+	}
+	// An invalid pattern fails validate, not runtime.
+	if errs := eventCfg(TriggerConfig{On: TriggerOnPRComment, CommentMatches: "@apiary["}).Validate(); !errsContain(errs, "invalid regexp") {
+		t.Errorf("invalid comment_matches regexp must be rejected, got %v", errs)
 	}
 }
 

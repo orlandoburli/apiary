@@ -153,10 +153,11 @@ type TriggerConfig struct {
 	// or a PR event kind (pr_comment, pr_review_approved,
 	// pr_review_changes_requested) polled from a PREventPoller-capable source.
 	On string `yaml:"on,omitempty"`
-	// CommentContains, valid only with on: pr_comment, requires the comment body
-	// to contain this substring (case-insensitive) — same vocabulary as
-	// ApprovalTrigger. E.g. "@apiary".
-	CommentContains string `yaml:"comment_contains,omitempty"`
+	// CommentMatches, valid only with on: pr_comment, requires the comment body
+	// to match this Go regexp — the title_regex convention (case-sensitive; use
+	// (?i) for case-insensitive). E.g. "(?i)@apiary\\s+(fix|update)". Compiled
+	// at config load; an invalid pattern fails validation.
+	CommentMatches string `yaml:"comment_matches,omitempty"`
 	// Authors, when set, restricts an event trigger to events authored by one of
 	// these source logins (case-insensitive). Takes precedence over
 	// AuthorsAssociation.
