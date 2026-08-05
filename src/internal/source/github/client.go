@@ -170,6 +170,35 @@ func (c *client) getAllIssues(ctx context.Context, path string, params url.Value
 	return all, nil
 }
 
+// decodePages fetches every page of a list endpoint (per_page=100) and decodes
+// the concatenation. It stops when a page comes back short — the standard
+// heuristic that avoids threading Link headers through the client.
+func decodePages[T any](ctx context.Context, c *client, path string, params url.Values) ([]T, error) {
+	const perPage = 100
+	var all []T
+	for page := 1; ; page++ {
+		p := url.Values{}
+		for k, v := range params {
+			p[k] = v
+		}
+		p.Set("per_page", strconv.Itoa(perPage))
+		p.Set("page", strconv.Itoa(page))
+
+		body, err := c.get(ctx, path+"?"+p.Encode())
+		if err != nil {
+			return nil, err
+		}
+		var items []T
+		if err := json.Unmarshal(body, &items); err != nil {
+			return nil, fmt.Errorf("github: decoding %s page %d: %w", path, page, err)
+		}
+		all = append(all, items...)
+		if len(items) < perPage {
+			return all, nil
+		}
+	}
+}
+
 var linkNextRe = regexp.MustCompile(`<[^>]+>;\s*rel="([^"]+)"`)
 
 func hasNextPage(link string) bool {

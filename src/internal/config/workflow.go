@@ -98,6 +98,39 @@ func (w WorkflowConfig) ResumePolicy() string {
 	return w.Resume
 }
 
+// Trigger event kinds for TriggerConfig.On. The default (empty) is "item":
+// today's behavior, where polled work items are matched against the trigger.
+// The pr_* kinds instead match pull-request events polled from sources that
+// implement PREventPoller.
+const (
+	TriggerOnItem                   = "item"
+	TriggerOnPRComment              = "pr_comment"
+	TriggerOnPRReviewApproved       = "pr_review_approved"
+	TriggerOnPRReviewChangesRequest = "pr_review_changes_requested"
+)
+
+// TriggerEventKinds lists the PR event kinds accepted in trigger.on (everything
+// except the implicit default "item").
+var TriggerEventKinds = []string{
+	TriggerOnPRComment,
+	TriggerOnPRReviewApproved,
+	TriggerOnPRReviewChangesRequest,
+}
+
+// validAuthorAssociations are the source author-association values accepted in
+// trigger.authors_association (GitHub's vocabulary; other forges map onto it).
+var validAuthorAssociations = map[string]bool{
+	"OWNER": true, "MEMBER": true, "COLLABORATOR": true,
+	"CONTRIBUTOR": true, "FIRST_TIME_CONTRIBUTOR": true, "FIRST_TIMER": true,
+	"MANNEQUIN": true, "NONE": true,
+}
+
+// DefaultEventAuthorAssociations is the default actor gate for event triggers
+// when neither authors nor authors_association is declared: collaborators-only,
+// so drive-by comments from strangers cannot spawn agents. This is a security
+// boundary, not a convenience.
+var DefaultEventAuthorAssociations = []string{"OWNER", "MEMBER", "COLLABORATOR"}
+
 // TriggerConfig selects which tasks start a workflow. It mirrors route matching:
 // priority ordering plus a RouteMatch condition.
 type TriggerConfig struct {
@@ -115,6 +148,42 @@ type TriggerConfig struct {
 	// remain eligible for retry up to settings.max_attempts).
 	Once  bool       `yaml:"once"`
 	Match RouteMatch `yaml:"match"`
+
+	// On selects the trigger's event axis: "item" (default — polled work items)
+	// or a PR event kind (pr_comment, pr_review_approved,
+	// pr_review_changes_requested) polled from a PREventPoller-capable source.
+	On string `yaml:"on,omitempty"`
+	// CommentContains, valid only with on: pr_comment, requires the comment body
+	// to contain this substring (case-insensitive) — same vocabulary as
+	// ApprovalTrigger. E.g. "@apiary".
+	CommentContains string `yaml:"comment_contains,omitempty"`
+	// Authors, when set, restricts an event trigger to events authored by one of
+	// these source logins (case-insensitive). Takes precedence over
+	// AuthorsAssociation.
+	Authors []string `yaml:"authors,omitempty"`
+	// AuthorsAssociation restricts an event trigger to authors whose repository
+	// association is in this list (e.g. OWNER, MEMBER, COLLABORATOR). When both
+	// this and Authors are empty the default is collaborators-only
+	// (DefaultEventAuthorAssociations).
+	AuthorsAssociation []string `yaml:"authors_association,omitempty"`
+	// MaxDispatches caps how many times this trigger may dispatch for the same
+	// pull request (a runaway-loop budget, analogous to on_conflict's own
+	// budget). 0 means unlimited.
+	MaxDispatches int `yaml:"max_dispatches,omitempty"`
+}
+
+// EventKind returns the trigger's event axis, defaulting to TriggerOnItem.
+func (t TriggerConfig) EventKind() string {
+	if t.On == "" {
+		return TriggerOnItem
+	}
+	return t.On
+}
+
+// IsEventTrigger reports whether this trigger fires on PR events rather than
+// polled work items.
+func (t TriggerConfig) IsEventTrigger() bool {
+	return t.EventKind() != TriggerOnItem
 }
 
 // StepConfig is one node in a workflow graph. The active fields depend on Type.

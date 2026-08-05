@@ -55,12 +55,17 @@ func New(cfg *config.Config) (*Router, error) {
 			continue
 		}
 		routes = append(routes, config.RouteConfig{
-			ID:        wf.ID,
-			Priority:  wf.Trigger.Priority,
-			Match:     wf.Trigger.Match,
-			Agent:     firstAgentStep(wf),
-			Exclusive: wf.Trigger.Exclusive,
-			Once:      wf.Trigger.Once,
+			ID:                 wf.ID,
+			Priority:           wf.Trigger.Priority,
+			Match:              wf.Trigger.Match,
+			Agent:              firstAgentStep(wf),
+			Exclusive:          wf.Trigger.Exclusive,
+			Once:               wf.Trigger.Once,
+			On:                 wf.Trigger.EventKind(),
+			CommentContains:    wf.Trigger.CommentContains,
+			Authors:            wf.Trigger.Authors,
+			AuthorsAssociation: wf.Trigger.AuthorsAssociation,
+			MaxDispatches:      wf.Trigger.MaxDispatches,
 		})
 	}
 	sort.Slice(routes, func(i, j int) bool {
@@ -106,6 +111,9 @@ func firstAgentStep(wf config.WorkflowConfig) string {
 func (r *Router) Route(item model.SourceItem) (Match, bool) {
 	t := targetFromItem(item)
 	for _, route := range r.routes {
+		if route.IsEventRoute() {
+			continue
+		}
 		if ok, _ := r.evaluateTarget(route, t); ok {
 			if m, ok := r.resolveMatch(route); ok {
 				return m, true
@@ -128,6 +136,9 @@ func (r *Router) RouteAll(task model.InternalTask) []Match {
 	t := targetFromTask(task)
 	var matches []Match
 	for _, route := range r.routes {
+		if route.IsEventRoute() {
+			continue
+		}
 		ok, _ := r.evaluateTarget(route, t)
 		if !ok {
 			continue
@@ -150,6 +161,9 @@ func (r *Router) ExplainTask(task model.InternalTask) []RouteTrace {
 	t := targetFromTask(task)
 	traces := make([]RouteTrace, 0, len(r.routes))
 	for _, route := range r.routes {
+		if route.IsEventRoute() {
+			continue
+		}
 		matched, reason := r.evaluateTarget(route, t)
 		selected := false
 		if matched {
@@ -326,6 +340,9 @@ func (r *Router) Explain(cell model.SourceItem) (Match, bool, []RouteTrace) {
 	found := false
 
 	for _, route := range r.routes {
+		if route.IsEventRoute() {
+			continue
+		}
 		t := RouteTrace{
 			RouteID:  route.ID,
 			Priority: route.Priority,

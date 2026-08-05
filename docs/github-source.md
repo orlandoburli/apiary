@@ -50,6 +50,36 @@ GitHub's `/issues` endpoint also returns pull requests, but the adapter filters
 them out during polling — only plain issues become cells (always
 `Type: "issue"`).
 
+## PR event polling (`trigger.on: pr_*`)
+
+When any workflow declares a [PR event trigger](workflows.md#pr-event-triggers-on),
+the adapter additionally polls pull-request activity every cycle:
+
+| Event | GitHub API call |
+|---|---|
+| `pr_comment` (conversation) | `GET /repos/{o}/{r}/issues/comments?sort=updated&since=<watermark>` (PRs picked out by `html_url`) |
+| `pr_comment` (inline review comment) | `GET /repos/{o}/{r}/pulls/comments?sort=updated&since=<watermark>` |
+| `pr_review_approved` / `pr_review_changes_requested` | `GET /repos/{o}/{r}/pulls/{n}/reviews` for PRs updated since the watermark |
+
+Details:
+
+- The **watermark** is persisted per source in SQLite; the first poll after
+  enabling event triggers baselines it to "now", so historical comments never
+  dispatch. Each event dispatches a matching workflow **exactly once**, even
+  across daemon restarts.
+- Events authored by the **adapter's own token identity** (`GET /user`) and by
+  **bot accounts** are dropped — an agent commenting through the daemon's
+  account can never re-trigger a workflow.
+- The **originating issue** of a PR is resolved from the PR body's closing
+  reference (`Closes #42`, `Fixes #42`, …; first plain `#N` as fallback), and
+  the workflow instance binds to that issue's task. PRs without a discoverable
+  parent issue get a standalone per-PR task.
+- Edited comments do not re-fire (events are gated on `created_at`), and
+  review states other than `APPROVED` / `CHANGES_REQUESTED` are ignored.
+
+The token needs **Pull requests: Read** for review/comment polling (already
+required for `wait_for: ci`).
+
 ## Token permissions
 
 The `api_key` is a GitHub personal access token. Without it, the adapter falls

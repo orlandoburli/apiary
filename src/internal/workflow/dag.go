@@ -43,6 +43,10 @@ type dagRun struct {
 	cell     model.SourceItem      // execution view derived from task + primary binding
 	depth    int                   // nesting depth (0 = top-level; >0 = sub-workflow child)
 	seed     []MemoryStep          // inherited memory (sub-workflow snapshot from the parent)
+	// event is the PR event payload for an event-triggered instance, exposed to
+	// condition expressions as event.*. Nil for item-triggered (and rehydrated)
+	// instances.
+	event map[string]string
 
 	byID  map[string]config.StepConfig
 	order []string // step ids in declaration order (deterministic scheduling)
@@ -157,7 +161,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 			// (routed through resultCh so on_fail applies) — silently treating it
 			// as false would skip the branch with no error signal (#180).
 			if step.Condition != "" {
-				evalCtx := EvalContext{Cell: r.cell, Memory: r.memoryValues(), Steps: r.stepStates}
+				evalCtx := EvalContext{Cell: r.cell, Memory: r.memoryValues(), Steps: r.stepStates, Event: r.event}
 				condOK, condErr := e.evalExpr(step.Condition, evalCtx)
 				if condErr != nil {
 					aplog.Error("workflow %s: step %q condition eval error %q: %v (failing step)", r.wf.ID, id, step.Condition, condErr)
@@ -360,7 +364,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 					}
 				}
 			}
-			evalCtx := EvalContext{Cell: r.cell, Memory: transientMem, Steps: r.stepStates}
+			evalCtx := EvalContext{Cell: r.cell, Memory: transientMem, Steps: r.stepStates, Event: r.event}
 			rejected, fwErr := e.evalExpr(step.FailWhen, evalCtx)
 			switch {
 			case fwErr != nil:
@@ -685,7 +689,7 @@ func (r *dagRun) markCondSkipped(id string) {
 // returns an error before any state is mutated — the caller fails the split
 // step rather than silently routing as if the branch didn't match (#180).
 func (e *Engine) runSplitStep(r *dagRun, step config.StepConfig) error {
-	ctx := EvalContext{Cell: r.cell, Memory: r.memoryValues(), Steps: r.stepStates}
+	ctx := EvalContext{Cell: r.cell, Memory: r.memoryValues(), Steps: r.stepStates, Event: r.event}
 
 	chosen := map[string]bool{}
 	for _, b := range step.Branches {

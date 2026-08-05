@@ -349,6 +349,16 @@ func (e *Engine) NewInstanceID() string { return e.newID("wf") }
 // recorded and reflected in the final instance state and the success flag, not
 // returned.
 func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, task model.InternalTask) (instanceID string, success bool, err error) {
+	return e.RunInstanceForEvent(ctx, wf, task, nil)
+}
+
+// RunInstanceForEvent is RunInstance with a PR event payload attached: the
+// event map (kind, body, author, author_association, pr_number, pr_url) is
+// exposed to the instance's condition expressions as ${{ event.* }}. A nil
+// event is the plain item-triggered path. The event scope lives in memory only:
+// an instance that parks and is rehydrated after a daemon restart resolves
+// event.* as missing.
+func (e *Engine) RunInstanceForEvent(ctx context.Context, wf config.WorkflowConfig, task model.InternalTask, event map[string]string) (instanceID string, success bool, err error) {
 	bindings := e.bindingsFor(ctx, task.ID)
 	cell := sourceItemView(task, bindings)
 
@@ -375,6 +385,7 @@ func (e *Engine) RunInstance(ctx context.Context, wf config.WorkflowConfig, task
 	}
 
 	r := e.initDAG(instID, wf, task, bindings, nil, 0)
+	r.event = event
 	outcome := e.driveDAG(ctx, r)
 	return instID, e.settle(ctx, r, outcome), nil
 }

@@ -1396,6 +1396,10 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 		}
 		d.fanOut(ctx, cell, adapter, task, persisted, matches, nil, nil)
 	}
+
+	// PR events (trigger.on: pr_*) ride the same poll cadence, after item
+	// dispatch. Capability-gated inside; a no-event config is a no-op.
+	d.pollPREvents(ctx, sc, adapter)
 }
 
 // fanOut dispatches every workflow matched for a polled cell. One InternalTask

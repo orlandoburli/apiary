@@ -32,6 +32,13 @@ var LintExpr func(expr string) error
 // skipped.
 var SourceSupportsDependencyWait func(sourceType string) bool
 
+// SourceSupportsPREvents reports whether a source type's adapter can poll
+// pull-request events (implements source.PREventPoller), which a workflow
+// trigger with an `on:` event kind requires. The cli package injects it (config
+// cannot import the source package without inverting the dependency direction).
+// When nil — configs built in code, isolated tests — the check is skipped.
+var SourceSupportsPREvents func(sourceType string) bool
+
 // validAgentTools are the tool names accepted in agents[].permissions.
 var validAgentTools = map[string]bool{
 	"read": true, "glob": true, "grep": true, "task": true,

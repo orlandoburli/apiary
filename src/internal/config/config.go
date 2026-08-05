@@ -224,6 +224,22 @@ type RouteConfig struct {
 	// once the task already has a completed instance of it, so a run-at-most-once
 	// workflow does not re-dispatch. Set by the Router from the workflow trigger.
 	Once bool `yaml:"-"`
+	// On mirrors TriggerConfig.On: the trigger's event axis ("" / "item" for
+	// polled work items, or a pr_* event kind). Set by the Router from the
+	// workflow trigger; event routes are evaluated by RouteEvent only.
+	On string `yaml:"-"`
+	// CommentContains / Authors / AuthorsAssociation / MaxDispatches mirror the
+	// same TriggerConfig fields for event routes. Set by the Router.
+	CommentContains    string   `yaml:"-"`
+	Authors            []string `yaml:"-"`
+	AuthorsAssociation []string `yaml:"-"`
+	MaxDispatches      int      `yaml:"-"`
+}
+
+// IsEventRoute reports whether this route was synthesized from an event trigger
+// (trigger.on: pr_*) rather than an item trigger.
+func (r RouteConfig) IsEventRoute() bool {
+	return r.On != "" && r.On != TriggerOnItem
 }
 
 type RouteMatch struct {

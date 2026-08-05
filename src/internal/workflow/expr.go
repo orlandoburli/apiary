@@ -14,6 +14,10 @@ type EvalContext struct {
 	Cell   model.SourceItem
 	Memory map[string]string    // workflow-memory Step Data keys → rendered values
 	Steps  map[string]StepState // step id → terminal state info
+	// Event carries the PR event payload for an event-triggered instance
+	// (kind, body, author, author_association, pr_number, pr_url). Nil for
+	// item-triggered instances — event.* accessors then resolve as missing ("").
+	Event map[string]string
 }
 
 // StepState exposes a completed step's outcome to expressions.
@@ -446,6 +450,20 @@ func resolveAccessor(path []string, ctx EvalContext) (resolvedValue, error) {
 		default:
 			return resolvedValue{}, fmt.Errorf("unknown cell field %q", path[1])
 		}
+	case "event":
+		if len(path) != 2 {
+			return resolvedValue{}, fmt.Errorf("invalid event accessor %q", strings.Join(path, "."))
+		}
+		switch path[1] {
+		case "kind", "body", "author", "author_association", "pr_number", "pr_url":
+			v, ok := ctx.Event[path[1]]
+			if !ok {
+				return resolvedValue{kind: kMissing}, nil
+			}
+			return resolvedValue{kind: kString, s: v}, nil
+		default:
+			return resolvedValue{}, fmt.Errorf("unknown event field %q", path[1])
+		}
 	case "memory":
 		if len(path) != 2 {
 			return resolvedValue{}, fmt.Errorf("invalid memory accessor %q", strings.Join(path, "."))
@@ -474,6 +492,6 @@ func resolveAccessor(path []string, ctx EvalContext) (resolvedValue, error) {
 			return resolvedValue{}, fmt.Errorf("unknown step field %q", path[2])
 		}
 	default:
-		return resolvedValue{}, fmt.Errorf("unknown accessor root %q (want cell, memory, or steps)", path[0])
+		return resolvedValue{}, fmt.Errorf("unknown accessor root %q (want cell, memory, steps, or event)", path[0])
 	}
 }

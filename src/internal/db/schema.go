@@ -218,6 +218,31 @@ CREATE TABLE IF NOT EXISTS task_pull_requests (
   UNIQUE(task_id, source_id, pr_number)
 );
 
+-- PR event polling state (trigger.on: pr_*). One watermark per source: events
+-- submitted before it have already been fetched and evaluated. A source with no
+-- row has never polled events — the first poll baselines to "now" and dispatches
+-- nothing, so enabling event triggers on an old repo does not storm over its
+-- comment history.
+CREATE TABLE IF NOT EXISTS pr_event_watermarks (
+  source_id TEXT PRIMARY KEY,
+  watermark TIMESTAMP NOT NULL
+);
+
+-- Exactly-once dispatch claims for PR events. A row is inserted (INSERT OR
+-- IGNORE) when a workflow is dispatched for an event; the primary key makes the
+-- claim atomic, so an event re-fetched inside the watermark overlap — or after a
+-- daemon restart — can never dispatch the same workflow twice. pr_number backs
+-- the per-trigger max_dispatches budget.
+CREATE TABLE IF NOT EXISTS pr_event_dispatches (
+  source_id TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  workflow_id TEXT NOT NULL,
+  pr_number INTEGER NOT NULL DEFAULT 0,
+  dispatched_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (source_id, event_id, workflow_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pr_event_dispatches_pr ON pr_event_dispatches(source_id, workflow_id, pr_number);
+
 -- Create indices
 CREATE INDEX IF NOT EXISTS idx_executions_task ON task_executions(task_id);
 CREATE INDEX IF NOT EXISTS idx_executions_retry ON task_executions(next_retry_at) WHERE status='failed';

@@ -82,6 +82,11 @@ func (c *Config) validateWorkflow(
 		errs = append(errs, fmt.Errorf("%s: trigger source %q not defined", ctx, wf.Trigger.Match.Source))
 	}
 
+	// Trigger event axis (on: pr_* / item).
+	if wf.Trigger != nil {
+		errs = append(errs, c.validateTriggerEvents(ctx, *wf.Trigger)...)
+	}
+
 	if len(wf.Steps) == 0 {
 		errs = append(errs, fmt.Errorf("%s: at least one step is required", ctx))
 		return errs
@@ -142,6 +147,82 @@ func (c *Config) validateWorkflow(
 			if s.StepType() == StepTypeAgent && !s.Idempotent {
 				errs = append(errs, fmt.Errorf("%s: resume: auto requires all steps idempotent, but step %q is not", ctx, s.ID))
 			}
+		}
+	}
+
+	return errs
+}
+
+// validateTriggerEvents validates the event axis of a trigger: the on: value
+// whitelist, event-only fields on item triggers, comment_contains scoping, and
+// that some configured source can actually poll PR events (via the injected
+// SourceSupportsPREvents capability hook — skipped when nil, mirroring
+// SourceSupportsDependencyWait).
+func (c *Config) validateTriggerEvents(ctx string, t TriggerConfig) []error {
+	var errs []error
+
+	valid := t.EventKind() == TriggerOnItem
+	for _, k := range TriggerEventKinds {
+		if t.EventKind() == k {
+			valid = true
+		}
+	}
+	if !valid {
+		errs = append(errs, fmt.Errorf("%s: trigger on %q not supported (valid: item, %s)",
+			ctx, t.On, strings.Join(TriggerEventKinds, ", ")))
+		return errs
+	}
+
+	if !t.IsEventTrigger() {
+		// Event-only fields are a config mistake on an item trigger: they would
+		// silently never apply.
+		if t.CommentContains != "" {
+			errs = append(errs, fmt.Errorf("%s: trigger comment_contains requires on: %s", ctx, TriggerOnPRComment))
+		}
+		if len(t.Authors) > 0 || len(t.AuthorsAssociation) > 0 {
+			errs = append(errs, fmt.Errorf("%s: trigger authors/authors_association are only valid on an event trigger (on: %s)",
+				ctx, strings.Join(TriggerEventKinds, "|")))
+		}
+		if t.MaxDispatches != 0 {
+			errs = append(errs, fmt.Errorf("%s: trigger max_dispatches is only valid on an event trigger", ctx))
+		}
+		return errs
+	}
+
+	if t.CommentContains != "" && t.EventKind() != TriggerOnPRComment {
+		errs = append(errs, fmt.Errorf("%s: trigger comment_contains is only valid with on: %s", ctx, TriggerOnPRComment))
+	}
+	if t.MaxDispatches < 0 {
+		errs = append(errs, fmt.Errorf("%s: trigger max_dispatches must be >= 0", ctx))
+	}
+	if t.Once {
+		errs = append(errs, fmt.Errorf("%s: trigger once is not valid on an event trigger (each event dispatches exactly once already)", ctx))
+	}
+	for _, a := range t.AuthorsAssociation {
+		if !validAuthorAssociations[strings.ToUpper(a)] {
+			errs = append(errs, fmt.Errorf("%s: trigger authors_association value %q not supported (e.g. OWNER, MEMBER, COLLABORATOR)", ctx, a))
+		}
+	}
+
+	// The trigger's source (or, when unscoped, at least one configured source)
+	// must be able to poll PR events.
+	if SourceSupportsPREvents != nil && len(c.Sources) > 0 {
+		supported := false
+		for _, src := range c.Sources {
+			if t.Match.Source != "" && src.ID != t.Match.Source {
+				continue
+			}
+			if SourceSupportsPREvents(src.Type) {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			where := "no configured source supports it"
+			if t.Match.Source != "" {
+				where = fmt.Sprintf("source %q does not support it", t.Match.Source)
+			}
+			errs = append(errs, fmt.Errorf("%s: trigger on: %s requires a source whose adapter can poll PR events, but %s", ctx, t.EventKind(), where))
 		}
 	}
 
