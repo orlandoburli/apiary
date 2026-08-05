@@ -258,6 +258,121 @@ func TestToMatcher(t *testing.T) {
 	}
 }
 
+func TestConnectRejectsInvalidConfig(t *testing.T) {
+	cases := map[string]map[string]any{
+		"non-numeric max_new_per_poll": {"max_new_per_poll": "ten"},
+		"negative max_new_per_poll":    {"max_new_per_poll": -1},
+		"unparseable min_age":          {"min_age": "soon"},
+		"negative min_age":             {"min_age": "-1m"},
+		"non-string min_age":           {"min_age": 5},
+	}
+	for name, extra := range cases {
+		cfg := map[string]any{"alertmanager_url": "http://alertmanager.internal"}
+		for k, v := range extra {
+			cfg[k] = v
+		}
+		a := &Adapter{}
+		if err := a.Connect(context.Background(), cfg); err == nil {
+			t.Errorf("%s: expected Connect error for %v", name, extra)
+		}
+	}
+}
+
+func TestPollSkipsAlertsWithoutFingerprint(t *testing.T) {
+	started := time.Now().Add(-time.Hour)
+	broken := mkAlert("", "NoFingerprint", "critical", started)
+	alerts := []map[string]any{broken, mkAlert("ok", "Fine", "critical", started)}
+	srv := newTestServer(t, &alerts, nil)
+	a := connect(t, srv.URL, nil)
+
+	items, err := a.Poll(context.Background(), time.Time{})
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if len(items) != 1 || items[0].Metadata["fingerprint"] != "ok" {
+		t.Fatalf("expected only the fingerprinted alert, got %+v", items)
+	}
+}
+
+func TestPollStormCapZeroMeansUnlimited(t *testing.T) {
+	started := time.Now().Add(-time.Hour)
+	var alerts []map[string]any
+	for i := 0; i < 25; i++ {
+		alerts = append(alerts, mkAlert(fmt.Sprintf("f%d", i), fmt.Sprintf("Alert%d", i), "critical", started))
+	}
+	srv := newTestServer(t, &alerts, nil)
+	a := connect(t, srv.URL, map[string]any{"max_new_per_poll": 0})
+
+	items, _ := a.Poll(context.Background(), time.Time{})
+	if len(items) != 25 {
+		t.Fatalf("max_new_per_poll=0 should disable the cap: got %d of 25", len(items))
+	}
+}
+
+func TestPollPrunesResolvedAlertsFromSeen(t *testing.T) {
+	started := time.Now().Add(-time.Hour)
+	alerts := []map[string]any{mkAlert("f1", "HighErrorRate", "critical", started)}
+	srv := newTestServer(t, &alerts, nil)
+	a := connect(t, srv.URL, nil)
+
+	if _, err := a.Poll(context.Background(), time.Time{}); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if len(a.seen) != 1 {
+		t.Fatalf("expected 1 tracked fire cycle, got %d", len(a.seen))
+	}
+
+	// The alert resolves (disappears from Alertmanager): its fire cycle must be
+	// pruned so the seen map cannot grow without bound.
+	alerts = []map[string]any{}
+	if _, err := a.Poll(context.Background(), time.Time{}); err != nil {
+		t.Fatalf("Poll after resolve: %v", err)
+	}
+	if len(a.seen) != 0 {
+		t.Errorf("resolved alert still tracked in seen (%d entries) — memory leak", len(a.seen))
+	}
+}
+
+func TestTitleAndDescriptionFallbacks(t *testing.T) {
+	started := time.Now().Add(-time.Hour)
+	// No alertname label, no summary/description annotations.
+	alerts := []map[string]any{{
+		"fingerprint": "cafebabe",
+		"labels":      map[string]string{"severity": "warning"},
+		"annotations": map[string]string{},
+		"startsAt":    started.UTC().Format(time.RFC3339),
+		"status":      map[string]any{"state": "active"},
+	}}
+	srv := newTestServer(t, &alerts, nil)
+	a := connect(t, srv.URL, nil)
+
+	items, err := a.Poll(context.Background(), time.Time{})
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Title != "alert cafebabe" {
+		t.Errorf("Title = %q, want fingerprint fallback", items[0].Title)
+	}
+	if !strings.Contains(items[0].Description, "`severity`: `warning`") {
+		t.Errorf("Description missing labels section:\n%s", items[0].Description)
+	}
+}
+
+func TestPollPropagatesServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+	a := connect(t, srv.URL, nil)
+
+	if _, err := a.Poll(context.Background(), time.Time{}); err == nil {
+		t.Fatal("expected Poll to surface the API error")
+	}
+}
+
 func itemStub() model.SourceItem {
 	return model.SourceItem{ID: "f1:2026-08-05T00:00:00Z", SourceID: "prod-alerts"}
 }
