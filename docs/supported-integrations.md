@@ -42,11 +42,32 @@ Polls Jira Cloud via JQL search. Supports status transitions, blocking relations
 - **Comment rendering:** ADF (Atlassian Document Format) for rich formatting
 - **Setup:** See [Jira Source configuration](jira-source.md)
 
+### Prometheus Alertmanager
+
+**Status:** ✅ Stable | **Auth:** Bearer token or Basic auth (optional)
+
+Polls firing alerts from Prometheus Alertmanager and maps them to tasks, so
+workflows can be triggered by operational signals (an alert fires → an
+investigation agent dispatches). Read-only: alerts have no state, labels, or
+comments to write back — publish findings to a ticket source instead.
+
+- **Requirements:** Reachable Alertmanager `/api/v2/alerts` endpoint
+- **Guardrails:** Alert-storm dispatch cap and flap dampening built in
+- **Write-back:** None (read-only source) — `apiary validate` rejects incompatible workflow features
+- **Setup:** See [Prometheus Source configuration](prometheus-source.md)
+
 ### Linear
 
 **Status:** 🔄 Planned | **Auth:** API token
 
 Support for Linear is in development.
+
+### Dynatrace
+
+**Status:** 🔄 Planned | **Auth:** API token
+
+Problem-based monitoring source (`/api/v2/problems`), following the same
+read-only shape as the Prometheus adapter.
 
 ---
 

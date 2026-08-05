@@ -32,4 +32,21 @@ func init() {
 		_, ok = a.(source.PREventPoller)
 		return ok
 	}
+	// Same pattern for the write-capability lint: probe a fresh instance for
+	// the optional interfaces, so read-only sources (prometheus alerts) reject
+	// set_state/add_labels/approvals/wait_for-ci workflows at validation time.
+	config.SourceCapabilities = func(sourceType string) config.SourceCaps {
+		a, ok := source.New(sourceType)
+		if !ok {
+			return config.SourceCaps{}
+		}
+		var caps config.SourceCaps
+		_, caps.SetState = a.(source.StateSetter)
+		_, caps.AddLabels = a.(source.LabelAdder)
+		_, caps.RemoveLabels = a.(source.LabelRemover)
+		_, caps.Approvals = a.(source.TaskPoller)
+		_, caps.CIWait = a.(source.CIStatusPoller)
+		_, caps.SubIssues = a.(source.SubIssueCreator)
+		return caps
+	}
 }

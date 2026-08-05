@@ -56,6 +56,7 @@ nav:
       - GitHub: github-source.md
       - Jira: jira-source.md
       - Plane: plane-source.md
+      - Prometheus: prometheus-source.md
   - Reference:
       - CLI: cli.md
       - Dashboard: dashboard.md

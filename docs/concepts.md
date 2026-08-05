@@ -15,7 +15,7 @@ Task System ──► Apiary ──► Agent ──► LLM Model
 | Term | Meaning |
 |---|---|
 | **Hive** | A configured Apiary instance — one `apiary.yaml` plus its `.apiary/` state directory |
-| **Source** | A task-system integration that polls work items and writes results back (GitHub, Plane, …) |
+| **Source** | An integration that polls work items and (where the system supports it) writes results back — ticket systems (GitHub, Jira, Plane) or monitoring signals (Prometheus alerts) |
 | **Task** | A unit of work flowing through the system — born from a source item (an issue) or spawned internally by another task |
 | **Runner** | *How* an agent executes — a CLI subprocess (`claude`, `opencode`, `cursor`) or an API call |
 | **Agent** | A named LLM persona: runner + model + optional soul file, skills, identity, and fallbacks |

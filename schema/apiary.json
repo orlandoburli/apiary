@@ -138,7 +138,7 @@
     },
     "sources": {
       "type": "array",
-      "description": "Task sources (github, plane)",
+      "description": "Task sources (github, jira, plane, prometheus)",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -151,11 +151,11 @@
           "type": {
             "type": "string",
             "description": "Source adapter type",
-            "enum": ["github", "plane", "jira"]
+            "enum": ["github", "jira", "plane", "prometheus"]
           },
           "config": {
             "type": "object",
-            "description": "Adapter-specific configuration. github: repo, api_key, base_url. plane: workspace, project, api_key, base_url. jira: site, project, email, api_token",
+            "description": "Adapter-specific configuration. github: repo, api_key, base_url. jira: base_url, email, api_token, project. plane: workspace, project, api_key, base_url. prometheus: alertmanager_url, bearer_token, basic_auth_user, basic_auth_password, max_new_per_poll, min_age",
             "additionalProperties": true
           },
           "poll_interval": {

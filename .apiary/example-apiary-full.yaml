@@ -125,6 +125,25 @@ sources:
       states: [to do, in progress]
       labels: [apiary]
 
+  - id: prod-alerts
+    type: prometheus
+    config:
+      # Alertmanager base URL — /api/v2/alerts is polled (dedup/silences/
+      # inhibitions already applied). Read-only source: alerts have no state,
+      # labels, or comments to write back; publish findings to a ticket source.
+      alertmanager_url: https://alertmanager.internal:9093
+      # bearer_token: ${ALERTMANAGER_TOKEN}   # optional auth
+      # Alert-storm cap: at most this many not-yet-seen alerts become tasks
+      # per poll (oldest first); overflow surfaces on later polls. 0 = off.
+      max_new_per_poll: 10
+      # Flap dampener: alerts must have been firing at least this long.
+      min_age: 1m
+    poll_interval: 30s
+    filters:
+      # Alertmanager matchers, ANDed server-side. key=value, key:value, or a
+      # raw matcher like env=~"prod|staging".
+      labels: ["severity=critical", "team=platform"]
+
 # ── Agents ─────────────────────────────────────────────────────────────────────
 agents:
   # === Claude-based agents (original design) ===
