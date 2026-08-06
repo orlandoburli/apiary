@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"net/http"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -40,8 +39,6 @@ func (a *approvalAdapter) Acknowledge(context.Context, model.SourceItem, model.A
 func (a *approvalAdapter) WriteResult(context.Context, model.SourceItem, model.RunResult) error {
 	return nil
 }
-func (a *approvalAdapter) WebhookHandler() http.Handler { return nil }
-
 func (a *approvalAdapter) PollTask(_ context.Context, cellID string) (model.SourceItem, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

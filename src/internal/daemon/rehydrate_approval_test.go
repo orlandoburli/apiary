@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -30,7 +29,7 @@ func (approvingPoller) Acknowledge(context.Context, model.SourceItem, model.AckA
 func (approvingPoller) WriteResult(context.Context, model.SourceItem, model.RunResult) error {
 	return nil
 }
-func (approvingPoller) WebhookHandler() http.Handler { return nil }
+
 func (approvingPoller) PollTask(_ context.Context, cellID string) (model.SourceItem, error) {
 	return model.SourceItem{ID: cellID, SourceID: "src",
 		Comments: []model.Comment{{Body: "approve please"}}}, nil

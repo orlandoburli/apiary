@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -284,8 +283,6 @@ func (a *Adapter) WriteResult(ctx context.Context, cell model.SourceItem, result
 	}
 	return nil
 }
-
-func (a *Adapter) WebhookHandler() http.Handler { return nil }
 
 // SetState implements source.StateSetter.
 func (a *Adapter) SetState(ctx context.Context, cell model.SourceItem, stateName string) error {

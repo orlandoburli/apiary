@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"net/http"
 	"testing"
 	"time"
 
@@ -69,7 +68,7 @@ func (f *fakeRestartSource) Acknowledge(context.Context, model.SourceItem, model
 func (f *fakeRestartSource) WriteResult(context.Context, model.SourceItem, model.RunResult) error {
 	return nil
 }
-func (f *fakeRestartSource) WebhookHandler() http.Handler { return nil }
+
 func (f *fakeRestartSource) PollTask(context.Context, string) (model.SourceItem, error) {
 	return f.cell, nil
 }

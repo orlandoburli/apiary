@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"errors"
-	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -31,7 +30,7 @@ func (a *prListerAdapter) Acknowledge(context.Context, model.SourceItem, model.A
 func (a *prListerAdapter) WriteResult(context.Context, model.SourceItem, model.RunResult) error {
 	return nil
 }
-func (a *prListerAdapter) WebhookHandler() http.Handler { return nil }
+
 func (a *prListerAdapter) ListPullRequests(context.Context, string) ([]source.PullRequestRef, error) {
 	return a.prs, a.err
 }
@@ -132,4 +131,3 @@ func (plainAdapterNoLister) Acknowledge(context.Context, model.SourceItem, model
 func (plainAdapterNoLister) WriteResult(context.Context, model.SourceItem, model.RunResult) error {
 	return nil
 }
-func (plainAdapterNoLister) WebhookHandler() http.Handler { return nil }

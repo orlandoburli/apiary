@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"net/http"
 	"testing"
 	"time"
 
@@ -32,7 +31,7 @@ func (f *fakeHookSource) Acknowledge(context.Context, model.SourceItem, model.Ac
 func (f *fakeHookSource) WriteResult(context.Context, model.SourceItem, model.RunResult) error {
 	return nil
 }
-func (f *fakeHookSource) WebhookHandler() http.Handler { return nil }
+
 func (f *fakeHookSource) AddLabels(_ context.Context, _ model.SourceItem, labels []string) error {
 	f.ops = append(f.ops, "add")
 	f.added = append(f.added, labels...)
@@ -63,8 +62,6 @@ func (f *fakeBareSource) Acknowledge(context.Context, model.SourceItem, model.Ac
 func (f *fakeBareSource) WriteResult(context.Context, model.SourceItem, model.RunResult) error {
 	return nil
 }
-func (f *fakeBareSource) WebhookHandler() http.Handler { return nil }
-
 func TestApplyHook_RemovesLabelsAfterAdditions(t *testing.T) {
 	fake := &fakeHookSource{}
 	d := &Dispatcher{sources: map[string]source.Adapter{"fake": fake}}
