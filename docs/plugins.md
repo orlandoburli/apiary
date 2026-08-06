@@ -85,33 +85,98 @@ Failure semantics follow the integration point: a failed `poll` is logged and
 retried on the next interval like any source poll error; a failed `export` is
 logged and dropped. A plugin can never take the dispatcher down.
 
-## Install and enable
+## Where plugins live
 
-An installed plugin is a directory containing `apiary-plugin.json` and the
-executable named by that manifest. The default search directory is
-`.apiary/plugins` beside `apiary.yaml`; `plugin_dirs` overrides it.
+An installed plugin is **one directory per plugin**, named by its id, holding
+exactly two things: the manifest and the executable it names.
+
+```
+<project>/
+├── apiary.yaml
+├── .env
+└── .apiary/
+    └── plugins/                          ← default search directory
+        ├── dev.apiary.source-file/       ← one directory per plugin id
+        │   ├── apiary-plugin.json        ← manifest
+        │   └── apiary-plugin-source-file ← executable (chmod +x)
+        └── com.example.nagios/
+            ├── apiary-plugin.json
+            └── nagios-source
+```
+
+The default search directory is `.apiary/plugins` **beside `apiary.yaml`**.
+`plugin_dirs` replaces it; list several to layer scopes:
 
 ```yaml
 plugin_dirs:
-  - .apiary/plugins
-  - ~/.local/share/apiary/plugins
-
-plugins:
-  - id: dev.apiary.event-file
-    enabled: true                 # omitted means true
-    timeout: 5s                   # default: 10s, per invocation
-    config:
-      path: .apiary/events.jsonl
+  - .apiary/plugins                  # project-local: plugins for this project only
+  - ~/.local/share/apiary/plugins   # user-global: shared across your projects
+  # - /opt/apiary/plugins           # system-wide: daemon-as-a-service installs
 ```
 
-Use `apiary plugins`, `apiary plugins inspect <id>`, and
-`apiary plugins validate` to inspect installations. `apiary validate` also
-discovers every enabled plugin and validates its configuration against the
-manifest's JSON Schema. Set `enabled: false` to keep an installed/configured
-plugin available without starting or schema-validating it.
+Relative entries resolve beside `apiary.yaml`. Discovery scans every listed
+directory; a plugin id appearing in more than one is an error — Apiary never
+picks a winner by path order. Keep the directories writable only by the
+Apiary operator or service account: plugins run with the daemon's OS
+permissions.
 
-Relative plugin directories resolve beside `apiary.yaml`. Discovery is
-deterministic and rejects duplicate IDs rather than choosing one by path order.
+## Installing a plugin
+
+Apiary has no plugin registry and never downloads plugins — installation is
+placing files, deliberately. Using the bundled `source-file` reference plugin
+as the example:
+
+**1. Obtain the executable.** Build it from source or download a release from
+the plugin's publisher, then verify the artifact out of band (checksum,
+signature):
+
+```bash
+go build -o apiary-plugin-source-file ./src/examples/plugins/source-file
+```
+
+**2. Create the plugin's directory** under a searched location, named by the
+plugin id, and copy in the manifest and executable:
+
+```bash
+mkdir -p .apiary/plugins/dev.apiary.source-file
+cp apiary-plugin.json apiary-plugin-source-file .apiary/plugins/dev.apiary.source-file/
+chmod +x .apiary/plugins/dev.apiary.source-file/apiary-plugin-source-file
+```
+
+**3. Check the installation** — discovery and manifest validation, no plugin
+code executed:
+
+```bash
+apiary plugins list                # dev.apiary.source-file  1.0.0  enabled  source
+apiary plugins inspect dev.apiary.source-file
+apiary plugins validate
+```
+
+**4. Enable it in `apiary.yaml`.** Installation makes a plugin *available*;
+only a `plugins:` entry makes it *run*:
+
+```yaml
+plugins:
+  - id: dev.apiary.source-file
+    enabled: true                 # omitted means true
+    timeout: 5s                   # default: 10s, per invocation
+    config:                       # validated against the manifest's config_schema
+      path: /path/to/project/.apiary/incoming-items.json
+```
+
+`apiary validate` now also validates this instance's `config` against the
+manifest's JSON Schema. Set `enabled: false` to keep an installed plugin
+configured but inert.
+
+**5. Restart the daemon.** Plugin clients are created at startup; a plugin
+installed or reconfigured while the daemon runs is picked up on the next
+start.
+
+To **upgrade**, verify the new artifact in a staging directory, stop Apiary,
+replace the whole plugin directory atomically, run `apiary plugins validate`,
+and restart (details under [Trust and secrets](#trust-and-secrets)). To
+**uninstall**, remove the `plugins:` entry (or set `enabled: false`) and
+delete the plugin's directory.
 
 ## Manifest version 1
 
