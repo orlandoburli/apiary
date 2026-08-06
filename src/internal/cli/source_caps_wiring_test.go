@@ -8,6 +8,7 @@ import (
 
 	// Register the real source adapters, as cmd/apiary does, so the capability
 	// probe in init() inspects actual adapter instances.
+	_ "github.com/orlandoburli/apiary/internal/source/dynatrace"
 	_ "github.com/orlandoburli/apiary/internal/source/github"
 	_ "github.com/orlandoburli/apiary/internal/source/prometheus"
 )
@@ -24,6 +25,10 @@ func TestSourceCapsWiring_RealAdapters(t *testing.T) {
 
 	if caps := config.SourceCapabilities("prometheus"); caps != (config.SourceCaps{}) {
 		t.Errorf("prometheus caps = %+v, want all-false (read-only alert source)", caps)
+	}
+
+	if caps := config.SourceCapabilities("dynatrace"); caps != (config.SourceCaps{}) {
+		t.Errorf("dynatrace caps = %+v, want all-false (read-only problem source)", caps)
 	}
 
 	want := config.SourceCaps{SetState: true, AddLabels: true, RemoveLabels: true, Approvals: true, CIWait: true, SubIssues: true}

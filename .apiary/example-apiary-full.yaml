@@ -144,6 +144,32 @@ sources:
       # raw matcher like env=~"prod|staging".
       labels: ["severity=critical", "team=platform"]
 
+  - id: prod-problems
+    type: dynatrace
+    config:
+      # Environment URL — SaaS ({env-id}.live.dynatrace.com) or Managed
+      # (https://host/e/{env-id}). /api/v2/problems is polled (Davis has
+      # already correlated root cause + impacted entities into one problem).
+      # Read-only source: problems have no state, labels, or comments to
+      # write back; publish findings to a ticket source.
+      base_url: https://abc12345.live.dynatrace.com
+      # Access token with the problems.read scope.
+      api_token: ${DYNATRACE_API_TOKEN}
+      # Problem-storm cap: at most this many not-yet-seen problems become
+      # tasks per poll (oldest first); overflow surfaces on later polls. 0 = off.
+      max_new_per_poll: 10
+      # Flap dampener: problems must have been open at least this long.
+      min_age: 1m
+      # How far back the from= window reaches (the API defaults to 2h, which
+      # would hide older still-open problems).
+      lookback: 720h
+    poll_interval: 30s
+    filters:
+      # problemSelector criteria, ANDed server-side. severity=/impact=/
+      # managementZone= map to selector functions; other key=value pairs
+      # match entity tags; raw criteria like displayId("P-123") pass through.
+      labels: ["severity=availability", "managementZone=Prod"]
+
 # ── Agents ─────────────────────────────────────────────────────────────────────
 agents:
   # === Claude-based agents (original design) ===
