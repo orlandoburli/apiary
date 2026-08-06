@@ -384,7 +384,9 @@ ticket source (`APIARY_PUBLISH` / `APIARY_SPAWN`) instead.
 Go plugin authors can import `github.com/orlandoburli/apiary/sdk/plugin` and call
 `plugin.Main(handler)`. The SDK decodes one request, rejects protocol mismatches,
 echoes the request ID, and emits the structured response envelope. Plugins in
-other languages can implement the JSON examples above directly.
+other languages implement the JSON contract directly — the
+[Plugin SDK page](plugin-sdk.md) has the full Go reference plus verified
+Python, Rust, and Bash examples.
 
 ## Trust and secrets
 

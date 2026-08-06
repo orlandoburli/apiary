@@ -104,6 +104,7 @@ See [Rate Limits & Resilience](docs/resilience.md) for details.
 | [Agent Memory](docs/memory.md) | `APIARY_MEMORIZE`, task/global memory tiers, recall, curation |
 | [Rate Limits & Resilience](docs/resilience.md) | Failover chains and unattended-dispatch safeguards |
 | [Plugins](docs/plugins.md) | Out-of-process extensions — architecture, custom sources, event exporters |
+| [Plugin SDK](docs/plugin-sdk.md) | Writing plugins in Go, Python, Rust, Bash — or any language |
 | [CLI Reference](docs/cli.md) | Every command and flag |
 | [Dashboard](docs/dashboard.md) | The terminal UI, tab by tab |
 
