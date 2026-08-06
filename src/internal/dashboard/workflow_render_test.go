@@ -226,8 +226,8 @@ func TestRenderWorkflowSteps_StepSpanAndTokens(t *testing.T) {
 	out := stripANSI(renderWorkflowSteps(inst))
 	for _, want := range []string{
 		"STARTED", "ENDED", "DURATION", "TOKENS", "STATE", // column header
-		"06-08 13:42:01", "06-08 13:50:16", "42.1k", // step row cells
-		"06-08 13:42:01 → 06-08 13:52:11", "50.3k tokens", // instance rollup
+		"06-08 13:42:01", "06-08 13:50:16", "42k", // step row cells (compact: no decimal above 10 units)
+		"06-08 13:42:01 → 06-08 13:52:11", "50k tokens", // instance rollup
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered steps missing %q:\n%s", want, out)

@@ -3,6 +3,8 @@ package dashboard
 import (
 	"fmt"
 	"strings"
+
+	"github.com/orlandoburli/apiary/internal/format"
 )
 
 type barItem struct {
@@ -88,35 +90,8 @@ func barChart(items []barItem, opts barOpts) string {
 }
 
 // formatVal renders a USD value for chart columns.
-func formatVal(v float64) string {
-	switch {
-	case v >= 1:
-		return fmt.Sprintf("$%.2f", v)
-	case v > 0:
-		return fmt.Sprintf("$%.4f", v)
-	default:
-		return "$0.00"
-	}
-}
+func formatVal(v float64) string { return format.USD(v) }
 
-// formatTokens renders a token count as an integer with thousands separators,
-// e.g. 98180082 -> "98,180,082".
-func formatTokens(v float64) string {
-	n := int64(v)
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	digits := fmt.Sprintf("%d", n)
-	var parts []string
-	for len(digits) > 3 {
-		parts = append([]string{digits[len(digits)-3:]}, parts...)
-		digits = digits[:len(digits)-3]
-	}
-	parts = append([]string{digits}, parts...)
-	out := strings.Join(parts, ",")
-	if neg {
-		out = "-" + out
-	}
-	return out
-}
+// formatTokens renders a token count for chart columns, compactly (1.5k, 65M)
+// so the value column stays narrow enough to leave room for the bar.
+func formatTokens(v float64) string { return format.Tokens(int(v)) }
