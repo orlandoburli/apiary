@@ -41,6 +41,18 @@ func New(ctx context.Context, dbPath string) (*Client, error) {
 	//   cache_size=-20000 — ~20MB page cache; task_logs rows are ~10KB of agent
 	//                   stream text, so a bigger cache cuts cold-read disk hits.
 	//   temp_store=MEMORY — sorts/temp b-trees stay in RAM.
+	//   _txlock=immediate — take the write lock at BEGIN instead of on the first
+	//                   write. Every transaction in this package reads and then
+	//                   writes; under the default deferred mode such a
+	//                   transaction starts on a read snapshot, and if another
+	//                   connection commits before it upgrades, SQLite fails it
+	//                   with SQLITE_BUSY_SNAPSHOT *immediately* — busy_timeout
+	//                   does not apply, because waiting cannot refresh a stale
+	//                   snapshot. That lost queue-job finish writes under
+	//                   concurrency (#369). Taking the lock up front means the
+	//                   contention is resolved at BEGIN, where busy_timeout does
+	//                   apply. Read-only queries run outside transactions and are
+	//                   unaffected.
 	//   _time_format=sqlite — write time.Time as "2006-01-02 15:04:05.999999999
 	//                   -07:00". modernc's default is time.Time.String(), which
 	//                   appends " MST m=±…" (monotonic clock) — a form SQLite's
@@ -54,6 +66,7 @@ func New(ctx context.Context, dbPath string) (*Client, error) {
 			"&_pragma=synchronous(NORMAL)" +
 			"&_pragma=cache_size(-20000)" +
 			"&_pragma=temp_store(MEMORY)" +
+			"&_txlock=immediate" +
 			"&_time_format=sqlite"
 	}
 	db, err := sql.Open("sqlite", dsn)
