@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "dev.apiary.source-node",
+  "version": "1.0.0",
+  "apiary": ">= 0.13.0-0",
+  "protocol": 1,
+  "executable": "apiary-plugin-source-node",
+  "capabilities": ["source"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "minLength": 1}
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  },
+  "security": {
+    "network": false,
+    "read_paths": ["configured items file"]
+  }
+}

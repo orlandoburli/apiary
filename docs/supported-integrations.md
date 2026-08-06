@@ -71,6 +71,19 @@ workflow dispatches.
 - **Write-back:** None (read-only source) — `apiary validate` rejects incompatible workflow features
 - **Setup:** See [Dynatrace Source configuration](dynatrace-source.md)
 
+### Custom sources via plugins
+
+**Status:** ✅ Stable | **Auth:** Plugin-defined
+
+Any system can become a poll source without a fork: ship an out-of-process
+`source`-capability plugin (protocol 1, any language) and bridge it with
+`type: plugin`. The daemon invokes the plugin on the source's poll interval;
+items flow through normal workflow trigger matching.
+
+- **Requirements:** Plugin installed in `plugin_dirs` and enabled under `plugins:`
+- **Write-back:** None (read-only source) — `apiary validate` rejects incompatible workflow features
+- **Setup:** See [Source plugins](plugins.md#source-plugins) and the `source-file` reference plugin
+
 ### Linear
 
 **Status:** 🔄 Planned | **Auth:** API token

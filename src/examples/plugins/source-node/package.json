@@ -1,0 +1,13 @@
+{
+  "name": "apiary-plugin-source-node",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Apiary reference source plugin in TypeScript (Node)",
+  "scripts": {
+    "build": "tsc && printf '#!/usr/bin/env node\\n' | cat - dist/main.js > apiary-plugin-source-node && chmod +x apiary-plugin-source-node"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}

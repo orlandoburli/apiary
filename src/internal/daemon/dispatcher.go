@@ -29,6 +29,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/router"
 	runnerimpl "github.com/orlandoburli/apiary/internal/runner"
 	"github.com/orlandoburli/apiary/internal/source"
+	"github.com/orlandoburli/apiary/internal/source/pluginsource"
 	"github.com/orlandoburli/apiary/internal/version"
 	workerpkg "github.com/orlandoburli/apiary/internal/worker"
 	"github.com/orlandoburli/apiary/internal/workflow"
@@ -229,6 +230,16 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 	if len(pluginErrs) > 0 {
 		return nil, fmt.Errorf("plugins: %w", errors.Join(pluginErrs...))
 	}
+	// Source-capable plugin clients, keyed by plugin id, resolved by `type:
+	// plugin` sources (pluginsource bridge) below.
+	sourceClients, pluginErrs := plugin.EnabledClients(registry, cfg.Plugins, plugin.CapabilitySource)
+	if len(pluginErrs) > 0 {
+		return nil, fmt.Errorf("plugins: %w", errors.Join(pluginErrs...))
+	}
+	sourcePlugins := make(map[string]*plugin.Client, len(sourceClients))
+	for _, client := range sourceClients {
+		sourcePlugins[client.ID()] = client
+	}
 	if dbClient != nil {
 		dbClient.SetEventSensitiveFields(cfg.Settings.Events.SensitiveFields)
 	}
@@ -276,6 +287,17 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			SetID(id string)
 		}); ok {
 			si.SetID(sc.ID)
+		}
+
+		// Plugin-bridged sources resolve their plugin client at Connect; hand
+		// them the enabled source-capable clients before connecting.
+		if pb, ok := adapter.(interface {
+			BindPluginLookup(func(pluginID string) (pluginsource.Invoker, bool))
+		}); ok {
+			pb.BindPluginLookup(func(pluginID string) (pluginsource.Invoker, bool) {
+				client, ok := sourcePlugins[pluginID]
+				return client, ok
+			})
 		}
 
 		if err := adapter.Connect(ctx, sc.Config); err != nil {

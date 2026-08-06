@@ -170,6 +170,27 @@ sources:
       # match entity tags; raw criteria like displayId("P-123") pass through.
       labels: ["severity=availability", "managementZone=Prod"]
 
+  # Plugin-bridged source: polls an out-of-process `source`-capability plugin
+  # (declared under plugins: below) on the normal poll interval. Read-only
+  # like the monitoring sources; see docs/plugins.md#source-plugins.
+  # - id: custom-items
+  #   type: plugin
+  #   poll_interval: 30s
+  #   config:
+  #     plugin: dev.apiary.source-file   # id of the enabled plugin instance
+  #   filters:
+  #     labels: ["severity=critical"]    # forwarded to the plugin's poll
+
+# Out-of-process plugins (docs/plugins.md). A `source`-capability plugin can
+# back a `type: plugin` source (see the commented custom-items source above).
+# plugins:
+#   - id: dev.apiary.source-file
+#     timeout: 5s
+#     config:
+#       # Absolute path: plugin processes run with cwd = their install dir,
+#       # so relative paths would resolve inside .apiary/plugins/<id>/.
+#       path: /path/to/project/.apiary/incoming-items.json
+
 # ── Agents ─────────────────────────────────────────────────────────────────────
 agents:
   # === Claude-based agents (original design) ===
