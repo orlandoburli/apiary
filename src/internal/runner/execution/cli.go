@@ -45,6 +45,71 @@ type CliRunner struct {
 	// trailing-"*" prefix) to forward to the agent beyond the built-in system and
 	// provider-credential allowlist. Unlisted host secrets are never inherited.
 	envPassthrough []string
+	// permissionArgs are the resolved tool-permission flags for this runner,
+	// built by Configure from permission_mode/allowed_tools and the provider's
+	// permission_flag/permission_bypass_args/allowed_tools_flag defaults.
+	// Headless agents cannot answer an interactive permission prompt, so a
+	// provider that gates tools behind one denies every call unless these are
+	// passed (see resolvePermissionArgs).
+	permissionArgs []string
+	// permissionFlag is the provider's flag for a named permission mode
+	// (claude: "--permission-mode"); empty means the provider has no such flag.
+	permissionFlag string
+	// permissionBypassArgs fully disable the provider's permission prompt
+	// (claude: "--dangerously-skip-permissions", cursor: "--force").
+	permissionBypassArgs []string
+	// allowedToolsFlag pre-approves a specific tool list (claude:
+	// "--allowedTools"); empty means the provider has no such flag.
+	allowedToolsFlag string
+	// permissionMode / allowedTools are the raw config values, kept so the
+	// resolved permissionArgs can be rebuilt when Configure runs again (provider
+	// defaults first, then the user's runner config).
+	permissionMode string
+	allowedTools   []string
+}
+
+// permissionModeBypass disables the provider's permission prompt entirely.
+// "bypassPermissions" is accepted as an alias because that is the name Claude
+// Code itself uses for the equivalent --permission-mode value.
+const permissionModeBypass = "bypass"
+
+// permissionModeDefault leaves the provider's own default in place: no
+// permission flags are emitted at all.
+const permissionModeDefault = "default"
+
+// resolvePermissionArgs maps the runner's permission_mode/allowed_tools config
+// onto the provider's permission flags.
+//
+// Non-interactive agents (the only kind apiary runs) cannot answer a permission
+// prompt, so any tool the provider gates behind one is denied outright — the run
+// still "succeeds", it just silently writes nothing. Providers therefore need an
+// explicit permission posture; see the mode semantics in the CLI runner docs.
+func resolvePermissionArgs(mode string, allowedTools []string, permissionFlag string, bypassArgs []string, allowedToolsFlag string) ([]string, error) {
+	var args []string
+	switch mode {
+	case permissionModeDefault:
+		// Provider default: emit nothing, even if the provider has flags.
+	case permissionModeBypass, "bypassPermissions":
+		if len(bypassArgs) == 0 {
+			return nil, fmt.Errorf("permission_mode %q is not supported by this provider (no permission_bypass_args configured)", mode)
+		}
+		args = append(args, bypassArgs...)
+	default:
+		// Any other value is passed through as a provider-native mode name
+		// (claude: acceptEdits, plan, …) so new upstream modes work without a
+		// code change here.
+		if permissionFlag == "" {
+			return nil, fmt.Errorf("permission_mode %q is not supported by this provider (no permission_flag configured); use %q or %q", mode, permissionModeBypass, permissionModeDefault)
+		}
+		args = append(args, permissionFlag, mode)
+	}
+	if len(allowedTools) > 0 {
+		if allowedToolsFlag == "" {
+			return nil, fmt.Errorf("allowed_tools is not supported by this provider (no allowed_tools_flag configured)")
+		}
+		args = append(args, allowedToolsFlag, strings.Join(allowedTools, ","))
+	}
+	return args, nil
 }
 
 func (r *CliRunner) ID() string { return "cli" }
@@ -77,6 +142,45 @@ func (r *CliRunner) Configure(config map[string]any) error {
 	if v, ok := config["mcp_format"].(string); ok && v != "" {
 		r.mcpFormat = v
 	}
+	if v, ok := config["permission_flag"].(string); ok {
+		r.permissionFlag = v
+	}
+	if v, ok := config["allowed_tools_flag"].(string); ok {
+		r.allowedToolsFlag = v
+	}
+	if raw, ok := config["permission_bypass_args"].([]any); ok {
+		r.permissionBypassArgs = nil
+		for _, a := range raw {
+			if s, ok := a.(string); ok {
+				r.permissionBypassArgs = append(r.permissionBypassArgs, s)
+			}
+		}
+	}
+	if v, ok := config["permission_mode"].(string); ok && strings.TrimSpace(v) != "" {
+		r.permissionMode = strings.TrimSpace(v)
+	}
+	if raw, ok := config["allowed_tools"].([]any); ok {
+		r.allowedTools = nil
+		for _, a := range raw {
+			if s, ok := a.(string); ok && strings.TrimSpace(s) != "" {
+				r.allowedTools = append(r.allowedTools, strings.TrimSpace(s))
+			}
+		}
+	}
+	// Rebuild on every Configure: providers register their defaults with one
+	// call and the user's runner config arrives in a second, so the mode and the
+	// provider flags it maps onto can be set by different calls. An unset mode
+	// means "provider default" — emit nothing — which keeps providers that never
+	// opt in behaving exactly as before.
+	mode := r.permissionMode
+	if mode == "" {
+		mode = permissionModeDefault
+	}
+	permArgs, err := resolvePermissionArgs(mode, r.allowedTools, r.permissionFlag, r.permissionBypassArgs, r.allowedToolsFlag)
+	if err != nil {
+		return fmt.Errorf("cli runner: %w", err)
+	}
+	r.permissionArgs = permArgs
 	if v, ok := config["mcps"].([]model.MCPServer); ok {
 		r.mcps = v
 	}
@@ -144,6 +248,9 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	// Inject MCP activation args (e.g. claude's "--mcp-config <path>") before the
 	// model/prompt flags; the provider config itself was written by setupMCP.
 	argv = append(argv, r.mcpRunArgs...)
+	// Tool-permission posture. Emitted after r.args so an explicit
+	// permission_mode wins over anything a user pinned in the raw args list.
+	argv = append(argv, r.permissionArgs...)
 	if r.modelFlag != "" && req.Model != "" {
 		argv = append(argv, r.modelFlag, req.Model)
 	}

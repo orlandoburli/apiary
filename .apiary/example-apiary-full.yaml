@@ -16,6 +16,14 @@ runners:
   # Claude CLI runner (local development, no API keys needed). The preset runs
   # `claude --output-format stream-json --verbose` so Apiary can parse usage,
   # results, and rate-limit events; no config needed.
+  #
+  # The preset also passes --dangerously-skip-permissions: headless agents can't
+  # answer a permission prompt, so without it every tool call is denied and the
+  # agent finishes having silently done nothing. To narrow it, set
+  #   config:
+  #     permission_mode: default          # or acceptEdits / plan
+  #     allowed_tools: ["Read", "Grep"]   # pre-approved tool names
+  # See docs/runners.md#tool-permissions.
   - id: claude-cli
     type: cli
     provider: claude
