@@ -226,12 +226,33 @@ delete the plugin's directory.
 
 ## Protocol version 1
 
-Apiary starts a fresh process for each invocation, writes one compact JSON object
-plus a newline to stdin, and expects one JSON response on stdout. Diagnostic
-output belongs on stderr. Stdout is limited to 4 MiB and captured stderr to 64
-KiB. The per-instance deadline cancels and terminates the child process.
+The transport is plain **stdin/stdout**. From the plugin's point of view, one
+invocation is:
 
-Request:
+1. Apiary starts your executable (fresh process, every time).
+2. Your **stdin** receives exactly one JSON object followed by a newline, then
+   stdin is closed. Read it to EOF and decode it — no framing, no length
+   prefix, no second request will ever arrive.
+3. Do the work.
+4. Write exactly **one** JSON object to **stdout** — the response — and exit
+   `0`. Nothing else may go to stdout: a log line, a progress dot, or a second
+   JSON object makes the whole invocation fail as a malformed response.
+5. Anything you want to say for humans (debug output, warnings) goes to
+   **stderr**. Apiary captures up to 64 KiB of it and attaches it to error
+   messages; it is ignored on success.
+
+In shell terms, Apiary is doing the equivalent of:
+
+```bash
+echo '<request JSON>' | ./your-plugin > response.json 2> diagnostics.log
+```
+
+Limits: stdout ≤ 4 MiB, captured stderr ≤ 64 KiB, wall-clock capped by the
+instance's `timeout` (default 10s) — the deadline kills the process and fails
+that invocation. Exiting non-zero also fails the invocation, even if a
+response was written.
+
+### The request you receive
 
 ```json
 {
@@ -244,12 +265,62 @@ Request:
 }
 ```
 
-Success and failure responses echo the request ID:
+| Field | What to do with it |
+|---|---|
+| `protocol` | Refuse anything other than `1` with an `error` response |
+| `request_id` | Echo it verbatim in your response — Apiary rejects a mismatch |
+| `capability` / `method` | Select the operation; unknown combinations deserve an `error` with code `unsupported_method` |
+| `config` | Your instance's `config:` block from `apiary.yaml`, passed on every call — plugins get no other configuration channel |
+| `payload` | The method's input (shape per capability, e.g. [source methods](#source-plugins)); may be absent |
+
+### The response you send
+
+Exactly one of `result` or `error`, always echoing `protocol` and
+`request_id`:
 
 ```json
-{"protocol":1,"request_id":"1784736000000000000","result":{"written":true}}
-{"protocol":1,"request_id":"1784736000000000000","error":{"code":"write_failed","message":"permission denied"}}
+{"protocol": 1, "request_id": "1784736000000000000", "result": {"written": true}}
 ```
+
+```json
+{"protocol": 1, "request_id": "1784736000000000000", "error": {"code": "write_failed", "message": "permission denied"}}
+```
+
+An `error` needs both a non-empty machine-readable `code` and a human
+`message`; a response carrying both `result` and `error`, or neither, is
+malformed.
+
+### A complete plugin in 20 lines
+
+The contract is small enough that this Python script is a valid plugin — it
+answers `source.poll` with one hard-coded item:
+
+```python
+#!/usr/bin/env python3
+import json, sys
+
+req = json.load(sys.stdin)                      # 1. read the single request
+
+def respond(result=None, error=None):           # 4. one response object, stdout
+    print(json.dumps({"protocol": 1, "request_id": req["request_id"],
+                      **({"result": result} if error is None else {"error": error})}))
+
+if req["protocol"] != 1:
+    respond(error={"code": "unsupported_protocol", "message": "expected protocol 1"})
+elif req["capability"] == "source" and req["method"] == "poll":
+    print("polling upstream...", file=sys.stderr)   # diagnostics → stderr only
+    respond({"items": [{"id": "py-1", "title": "Hello from Python",
+                        "labels": ["origin:python"], "state": "open"}]})
+elif req["capability"] == "source" and req["method"] in ("acknowledge", "write_result"):
+    respond({"ok": True})
+else:
+    respond(error={"code": "unsupported_method",
+                   "message": f"unknown {req['capability']}.{req['method']}"})
+```
+
+Make it executable, name it in a manifest with `"capabilities": ["source"]`,
+and it installs like any other plugin. Go authors get all of the envelope
+handling for free from the SDK — see below.
 
 Capability method vocabulary:
 
