@@ -122,6 +122,16 @@ func (s *QueueStore) SetWorkerDrain(ctx context.Context, workerID string, draini
 }
 
 func (s *QueueStore) Claim(ctx context.Context, request queue.ClaimRequest) (*queue.Claim, error) {
+	var claim *queue.Claim
+	err := retryOnBusy(ctx, func() error {
+		var err error
+		claim, err = s.claim(ctx, request)
+		return err
+	})
+	return claim, err
+}
+
+func (s *QueueStore) claim(ctx context.Context, request queue.ClaimRequest) (*queue.Claim, error) {
 	if request.LeaseDuration <= 0 {
 		request.LeaseDuration = 30 * time.Second
 	}
@@ -227,6 +237,16 @@ func (s *QueueStore) Claim(ctx context.Context, request queue.ClaimRequest) (*qu
 }
 
 func (s *QueueStore) Heartbeat(ctx context.Context, jobID, attemptID, token string, extension time.Duration) (*queue.HeartbeatResult, error) {
+	var res *queue.HeartbeatResult
+	err := retryOnBusy(ctx, func() error {
+		var err error
+		res, err = s.heartbeat(ctx, jobID, attemptID, token, extension)
+		return err
+	})
+	return res, err
+}
+
+func (s *QueueStore) heartbeat(ctx context.Context, jobID, attemptID, token string, extension time.Duration) (*queue.HeartbeatResult, error) {
 	if extension <= 0 {
 		extension = 30 * time.Second
 	}
@@ -257,7 +277,15 @@ func (s *QueueStore) Heartbeat(ctx context.Context, jobID, attemptID, token stri
 	return &queue.HeartbeatResult{LeaseExpiresAt: expires, CancelRequested: canceled != 0}, nil
 }
 
+// Finish is the most damaging write in the queue to lose: without it the job
+// stays leased until its lease expires and is then re-run, duplicating the
+// agent's work and any side effects it already performed. It retries on lock
+// contention rather than surfacing the error to the worker.
 func (s *QueueStore) Finish(ctx context.Context, jobID, attemptID, token string, result queue.FinishResult) error {
+	return retryOnBusy(ctx, func() error { return s.finish(ctx, jobID, attemptID, token, result) })
+}
+
+func (s *QueueStore) finish(ctx context.Context, jobID, attemptID, token string, result queue.FinishResult) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -335,6 +363,16 @@ func (s *QueueStore) ReleaseAffinity(ctx context.Context, jobID string) error {
 }
 
 func (s *QueueStore) ReclaimExpired(ctx context.Context, cutoff time.Time) (int, error) {
+	var n int
+	err := retryOnBusy(ctx, func() error {
+		var err error
+		n, err = s.reclaimExpired(ctx, cutoff)
+		return err
+	})
+	return n, err
+}
+
+func (s *QueueStore) reclaimExpired(ctx context.Context, cutoff time.Time) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
