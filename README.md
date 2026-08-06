@@ -103,6 +103,7 @@ See [Rate Limits & Resilience](docs/resilience.md) for details.
 | [Tasks & Fan-out](docs/tasks-and-fanout.md) | `APIARY_PUBLISH`, `APIARY_SPAWN`, task-level hooks |
 | [Agent Memory](docs/memory.md) | `APIARY_MEMORIZE`, task/global memory tiers, recall, curation |
 | [Rate Limits & Resilience](docs/resilience.md) | Failover chains and unattended-dispatch safeguards |
+| [Plugins](docs/plugins.md) | Out-of-process extensions — architecture, custom sources, event exporters |
 | [CLI Reference](docs/cli.md) | Every command and flag |
 | [Dashboard](docs/dashboard.md) | The terminal UI, tab by tab |
 

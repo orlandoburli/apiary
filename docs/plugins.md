@@ -5,6 +5,86 @@ loading Go binaries. A plugin crash, invalid response, or timeout terminates onl
 that invocation; it does not crash the dispatcher. Plugins are never executed
 during discovery or configuration validation.
 
+## Architecture
+
+A plugin is an **executable file** (any language) installed in a directory
+together with a manifest. The daemon never links against it and never keeps it
+running: every call spawns a fresh process, writes one JSON request to its
+stdin, reads one JSON response from its stdout, and the process exits.
+
+```mermaid
+flowchart LR
+    subgraph daemon [apiary daemon]
+        DISC[Discovery<br/>plugin_dirs → registry] --> VAL[Validation<br/>manifest + config schema]
+        VAL --> CLIENT[Plugin client<br/>one per enabled instance]
+        SRC["type: plugin source<br/>(poll interval)"] --> CLIENT
+        EVT[execution events] --> CLIENT
+    end
+    CLIENT -- "spawn per call<br/>JSON on stdin" --> PROC[plugin process]
+    PROC -- "one JSON response<br/>on stdout, then exit" --> CLIENT
+    PROC --> BACKEND[(backing system:<br/>API, file, queue…)]
+```
+
+The moving parts, in the order they run:
+
+1. **Discovery** scans `plugin_dirs` for directories containing
+   `apiary-plugin.json`, builds a registry, and rejects duplicate IDs. No
+   plugin code executes during discovery.
+2. **Validation** (`apiary validate`, `apiary plugins validate`, daemon
+   startup) checks the manifest — schema version, semver compatibility with
+   the host, protocol version, executable safety, checksum pin — and
+   validates each enabled instance's `config` against the manifest's JSON
+   Schema. Still no plugin code executes.
+3. **Client creation** happens at daemon startup for every enabled instance
+   whose manifest declares a capability the daemon integrates (see the
+   [capability table](#protocol-version-1)). The client re-verifies the
+   executable's checksum pin here and before every later invocation.
+4. **Invocation** is where plugin code finally runs — see the lifecycle below.
+
+### Invocation lifecycle
+
+Each call is single-shot and stateless:
+
+1. The client re-checks the pinned checksum (cheap `stat()` unless the file
+   changed) and spawns the executable with a deadline (the instance's
+   `timeout`, default 10s).
+2. One compact JSON request — protocol version, request ID, capability,
+   method, the instance's `config`, and the call payload — is written to the
+   child's stdin, followed by a newline.
+3. The plugin does its work (call an API, read a file …) and writes exactly
+   one JSON response to stdout, echoing the request ID. Diagnostics belong on
+   stderr.
+4. The client enforces the contract: protocol version match, request-ID echo,
+   a single response object, stdout ≤ 4 MiB, stderr capture ≤ 64 KiB. The
+   deadline kills the process; a crash, timeout, or malformed response fails
+   only that invocation.
+
+Because every call is a fresh process, **plugins hold no in-memory state
+between calls**. State lives in the backing system the plugin fronts (or a
+file it manages). This is what makes the isolation story simple — there is no
+long-running sidecar to supervise, leak, or restart.
+
+### Process environment
+
+| Aspect | Behavior |
+|---|---|
+| Working directory | The **plugin's install directory**, not the project root — relative paths in plugin `config` resolve there, so prefer absolute paths |
+| Environment | Minimal allowlist (`PATH`, `HOME`, `TMPDIR`, locale/timezone) plus only the variables named in the manifest's `security.secret_env` — daemon secrets never leak in by default |
+| Identity | `APIARY_PLUGIN_ID` and `APIARY_PLUGIN_PROTOCOL` are always set |
+| Configuration | Passed inside every request (`config` field) — never via environment or files |
+
+### How capabilities integrate
+
+| Capability | When the daemon invokes it |
+|---|---|
+| `source` | A `sources[]` entry with `type: plugin` bridges to the instance; the daemon calls `poll` on the source's `poll_interval` and forwards `acknowledge`/`write_result` after dispatch. Polling only — plugins never push into the daemon |
+| `event_exporter` | Once per persisted (redacted) execution event |
+| `runner`, `workflow_action`, `approval_provider`, `secret_provider` | Reserved: manifest and transport are stable, daemon integration not yet wired |
+
+Failure semantics follow the integration point: a failed `poll` is logged and
+retried on the next interval like any source poll error; a failed `export` is
+logged and dropped. A plugin can never take the dispatcher down.
+
 ## Install and enable
 
 An installed plugin is a directory containing `apiary-plugin.json` and the
