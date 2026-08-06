@@ -152,6 +152,14 @@ func (c *Config) Validate() []error {
 		errs = append(errs, fmt.Errorf("default_runner %q: not defined in runners", c.DefaultRunner))
 	}
 
+	// Enabled plugin instance ids, for plugin-bridged source references.
+	enabledPlugins := map[string]bool{}
+	for _, p := range c.Plugins {
+		if p.IsEnabled() {
+			enabledPlugins[p.ID] = true
+		}
+	}
+
 	sourceIDs := map[string]bool{}
 	for i, s := range c.Sources {
 		if s.ID == "" {
@@ -164,6 +172,18 @@ func (c *Config) Validate() []error {
 			errs = append(errs, fmt.Errorf("sources[%d]: duplicate id %q", i, s.ID))
 		}
 		sourceIDs[s.ID] = true
+
+		// A plugin-bridged source must name a declared, enabled plugin
+		// instance — the daemon resolves it at startup, but a broken
+		// reference should fail `apiary validate`, not the daemon.
+		if s.Type == "plugin" {
+			pluginID, _ := s.Config["plugin"].(string)
+			if strings.TrimSpace(pluginID) == "" {
+				errs = append(errs, fmt.Errorf("sources[%d] %q: config.plugin is required for type \"plugin\" (the id of an enabled plugins[] instance with the \"source\" capability)", i, s.ID))
+			} else if !enabledPlugins[pluginID] {
+				errs = append(errs, fmt.Errorf("sources[%d] %q: config.plugin %q is not an enabled plugins[] instance", i, s.ID, pluginID))
+			}
+		}
 	}
 
 	agentIDs := map[string]bool{}

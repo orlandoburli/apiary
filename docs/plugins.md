@@ -110,7 +110,7 @@ Capability method vocabulary:
 
 | Capability | Protocol methods |
 |---|---|
-| `source` | `connect`, `poll`, `acknowledge`, `write_result`, plus optional source capabilities |
+| `source` | `poll`, `acknowledge`, `write_result` (see [Source plugins](#source-plugins)) |
 | `runner` | `configure`, `run` |
 | `workflow_action` | `run` |
 | `approval_provider` | `notify`, `remind`, `escalate` |
@@ -118,9 +118,52 @@ Capability method vocabulary:
 | `event_exporter` | `export` |
 
 Protocol envelopes are stable; capability payloads use the corresponding
-versioned Apiary internal contract. The first runtime integration is
-`event_exporter`. The remaining capability names reserve the same manifest and
-transport boundary for their proxies without requiring a new installation model.
+versioned Apiary internal contract. The runtime integrations are
+`event_exporter` and `source`. The remaining capability names reserve the same
+manifest and transport boundary for their proxies without requiring a new
+installation model.
+
+## Source plugins
+
+A `source`-capable plugin is a **poll-mode work source**: the daemon bridges a
+`type: plugin` entry in `sources:` to one enabled plugin instance and invokes
+it on the source's `poll_interval` — plugins never push into the daemon.
+
+```yaml
+plugins:
+  - id: com.example.nagios
+    timeout: 10s
+    config:
+      api_url: https://nagios.internal/api
+
+sources:
+  - id: nagios-alerts
+    type: plugin
+    poll_interval: 30s
+    config:
+      plugin: com.example.nagios   # the plugin instance to bridge
+    filters:
+      labels: ["severity=critical"]
+```
+
+Methods (wire types in `sdk/plugin/source.go`):
+
+| Method | Payload → result |
+|---|---|
+| `poll` | `{since, states, labels}` → `{items: [...]}` — the current work items; `states`/`labels` are the source's `filters`, forwarded for backend-side filtering |
+| `acknowledge` | `{item, action}` → `{ok: true}` — called after dispatch; return ok if there is nothing to mark |
+| `write_result` | `{item, success, output, error}` → `{ok: true}` — the run outcome; return ok if there is no result surface |
+
+Each item's `id` is the dedup key: keep it stable per dispatch-worthy
+occurrence and re-return ongoing items on every poll — the daemon's
+task/instance dedup prevents re-dispatch, exactly as for the in-tree
+monitoring sources. Items without an `id` are dropped. Timestamps are RFC3339
+strings; `labels` use `key:value` form and drive workflow trigger matching.
+
+Plugin-backed sources are **read-only**: they cannot host approval steps, CI
+waits, `set_state`, or label write-back — `apiary validate` rejects workflows
+that require those against a `type: plugin` source. Publish findings to a
+ticket source (`APIARY_PUBLISH` / `APIARY_SPAWN`) instead.
 
 Go plugin authors can import `github.com/orlandoburli/apiary/sdk/plugin` and call
 `plugin.Main(handler)`. The SDK decodes one request, rejects protocol mismatches,
@@ -153,8 +196,9 @@ the service account's filesystem and network access. Use OS-level sandboxing,
 containers, restricted service users, and egress controls where the trust level
 requires them.
 
-## Reference plugin
+## Reference plugins
 
 `src/examples/plugins/event-file` demonstrates an `event_exporter` that appends one
-redacted event JSON object per line. Its README contains build and installation
-commands.
+redacted event JSON object per line. `src/examples/plugins/source-file`
+demonstrates a `source` plugin that polls work items from a JSON file. Each
+README contains build and installation commands.
