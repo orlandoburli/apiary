@@ -71,6 +71,23 @@ workflow dispatches.
 - **Write-back:** None (read-only source) — `apiary validate` rejects incompatible workflow features
 - **Setup:** See [Dynatrace Source configuration](dynatrace-source.md)
 
+### Webhook (generic push)
+
+**Status:** ✅ Stable | **Auth:** Shared-secret bearer or HMAC signature
+
+Push-mode source: anything that can POST JSON delivers events straight to the
+daemon's webhook listener — Alertmanager `webhook_configs`, Loki ruler,
+Elastic Watcher, CI scripts. Deliveries dispatch immediately (no poll-interval
+latency) and the Alertmanager format keeps the same dedup identity as the
+Prometheus poll source.
+
+- **Requirements:** `settings.webhook.listen` set on the daemon; TLS-terminating
+  reverse proxy recommended on untrusted networks
+- **Guardrails:** Bounded pending queue (429 on overflow), body-size cap, and
+  HMAC replay protection built in
+- **Write-back:** None (read-only source) — `apiary validate` rejects incompatible workflow features
+- **Setup:** See [Webhook Source configuration](webhook-source.md)
+
 ### Linear
 
 **Status:** 🔄 Planned | **Auth:** API token

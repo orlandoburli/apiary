@@ -58,6 +58,7 @@ nav:
       - Plane: plane-source.md
       - Prometheus: prometheus-source.md
       - Dynatrace: dynatrace-source.md
+      - Webhook: webhook-source.md
   - Reference:
       - CLI: cli.md
       - Dashboard: dashboard.md

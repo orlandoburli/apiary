@@ -350,12 +350,25 @@ type Settings struct {
 	CursorCost    CursorCostSettings `yaml:"cursor_cost"`
 	GitHooks      GitHooksSettings   `yaml:"git_hooks"`
 	Queue         QueueSettings      `yaml:"queue"`
+	Webhook       WebhookSettings    `yaml:"webhook"`
 	// DefaultFallbacks is a fallback chain applied to every agent that does not
 	// define its own fallbacks[]. Entries must reference defined runner IDs.
 	DefaultFallbacks []FallbackConfig `yaml:"default_fallbacks,omitempty"`
 	// CreditExhaustedCooldown is how long a runner type is paused after a
 	// credit-exhausted failure. Default "24h".
 	CreditExhaustedCooldown string `yaml:"credit_exhausted_cooldown,omitempty"`
+}
+
+// WebhookSettings controls the daemon's inbound webhook listener. When Listen
+// is set, every push-capable source (adapter with a non-nil WebhookHandler,
+// e.g. type "webhook") is mounted at POST /webhook/{source-id}. The listener
+// serves plain HTTP — put it behind a TLS-terminating reverse proxy when
+// senders deliver over untrusted networks; per-source authentication
+// (shared-secret bearer or HMAC) lives in the source config.
+type WebhookSettings struct {
+	// Listen is the TCP address for inbound webhooks (e.g. "127.0.0.1:8090"
+	// or ":8090"). Empty disables the listener.
+	Listen string `yaml:"listen,omitempty"`
 }
 
 // QueueSettings controls durable dispatch and the embedded protocol-1 worker.

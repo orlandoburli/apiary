@@ -151,11 +151,11 @@
           "type": {
             "type": "string",
             "description": "Source adapter type",
-            "enum": ["github", "jira", "plane", "prometheus", "dynatrace"]
+            "enum": ["github", "jira", "plane", "prometheus", "dynatrace", "webhook"]
           },
           "config": {
             "type": "object",
-            "description": "Adapter-specific configuration. github: repo, api_key, base_url. jira: base_url, email, api_token, project. plane: workspace, project, api_key, base_url. prometheus: alertmanager_url, bearer_token, basic_auth_user, basic_auth_password, max_new_per_poll, min_age. dynatrace: base_url, api_token, max_new_per_poll, min_age, lookback",
+            "description": "Adapter-specific configuration. github: repo, api_key, base_url. jira: base_url, email, api_token, project. plane: workspace, project, api_key, base_url. prometheus: alertmanager_url, bearer_token, basic_auth_user, basic_auth_password, max_new_per_poll, min_age. dynatrace: base_url, api_token, max_new_per_poll, min_age, lookback. webhook: secret, auth (bearer|hmac|none), format (generic|alertmanager), max_pending, max_body_bytes, tolerance — requires settings.webhook.listen",
             "additionalProperties": true
           },
           "poll_interval": {
@@ -671,6 +671,14 @@
               "items": { "type": "string" },
               "minItems": 1
             }
+          }
+        },
+        "webhook": {
+          "type": "object",
+          "description": "Inbound webhook listener for push-mode sources. Each push-capable source is mounted at POST /webhook/{source-id}",
+          "additionalProperties": false,
+          "properties": {
+            "listen": { "type": "string", "description": "TCP address for inbound webhooks, for example 127.0.0.1:8090. Empty disables the listener. Serve behind a TLS-terminating reverse proxy on untrusted networks" }
           }
         },
         "queue": {

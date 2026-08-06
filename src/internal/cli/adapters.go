@@ -24,6 +24,16 @@ func init() {
 		_, ok = a.(source.BlockerLister)
 		return ok
 	}
+	// Push capability: a fresh instance's WebhookHandler is non-nil for push
+	// sources even before Connect, so validation can require
+	// settings.webhook.listen at lint time.
+	config.SourcePushCapable = func(sourceType string) bool {
+		a, ok := source.New(sourceType)
+		if !ok {
+			return false
+		}
+		return a.WebhookHandler() != nil
+	}
 	config.SourceSupportsPREvents = func(sourceType string) bool {
 		a, ok := source.New(sourceType)
 		if !ok {

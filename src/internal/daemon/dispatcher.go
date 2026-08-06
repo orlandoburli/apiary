@@ -49,8 +49,15 @@ type Dispatcher struct {
 	configFile string
 	startedAt  time.Time
 
-	router      *router.Router
-	sources     map[string]source.Adapter
+	router  *router.Router
+	sources map[string]source.Adapter
+	// sourceWake holds a 1-buffered wake channel per push-capable source
+	// (adapter implementing SetWake): a webhook delivery signals it and the
+	// source's poll loop runs immediately instead of waiting out its interval.
+	sourceWake map[string]chan struct{}
+	// webhookAddr is the bound webhook listener address (string), set by
+	// startWebhookServer; empty until the listener is up.
+	webhookAddr atomic.Value
 	runners     map[string]runnerimpl.Runner
 	agentRunner map[string]string
 	// agentFallbacks holds each agent's rate-limit failover chain (primary
@@ -209,6 +216,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		startedAt:       time.Now(),
 		router:          r,
 		sources:         make(map[string]source.Adapter),
+		sourceWake:      make(map[string]chan struct{}),
 		runners:         make(map[string]runnerimpl.Runner),
 		agentRunner:     make(map[string]string),
 		agentFallbacks:  make(map[string][]runnerCandidate),
@@ -291,6 +299,21 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		}); ok {
 			js.SetJQL(sc.Filters.JQL)
 		}
+		// Push-capable adapters get a wake channel: a webhook delivery nudges
+		// the source's poll loop for immediate dispatch instead of waiting out
+		// the poll interval. Wired here, before StartServer mounts the webhook
+		// listener, so no delivery can race an unset callback.
+		if ws, ok := adapter.(interface{ SetWake(func()) }); ok {
+			ch := make(chan struct{}, 1)
+			d.sourceWake[sc.ID] = ch
+			ws.SetWake(func() {
+				select {
+				case ch <- struct{}{}:
+				default: // a wake is already pending
+				}
+			})
+		}
+
 		d.sources[sc.ID] = adapter
 		d.stats[sc.ID] = &sourceStat{}
 	}
@@ -584,7 +607,7 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			d.pollLoop(ctx, sc, adapter)
+			d.pollLoop(ctx, sc, adapter, d.sourceWake[sc.ID])
 		}()
 	}
 }
@@ -1326,12 +1349,20 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		_ = srv.Close()
 		return err
 	}
+	if err := d.startWebhookServer(ctx, wg); err != nil {
+		_ = srv.Close()
+		return err
+	}
 
 	return nil
 }
 
-// pollLoop polls a single source on its configured interval.
-func (d *Dispatcher) pollLoop(ctx context.Context, sc config.SourceConfig, adapter source.Adapter) {
+// pollLoop polls a single source on its configured interval. wake, when
+// non-nil, triggers an immediate extra poll — push sources (webhook) signal it
+// on delivery so dispatch latency is not bound to the poll interval. A nil
+// wake channel blocks forever in the select, so poll-only sources are
+// unaffected.
+func (d *Dispatcher) pollLoop(ctx context.Context, sc config.SourceConfig, adapter source.Adapter, wake <-chan struct{}) {
 	interval, err := sc.ParsedPollInterval()
 	if err != nil {
 		aplog.Error("source %s: invalid poll_interval: %v — using 60s", sc.ID, err)
@@ -1350,6 +1381,9 @@ func (d *Dispatcher) pollLoop(ctx context.Context, sc config.SourceConfig, adapt
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			d.poll(ctx, sc, adapter, lastPoll)
+			lastPoll = time.Now()
+		case <-wake:
 			d.poll(ctx, sc, adapter, lastPoll)
 			lastPoll = time.Now()
 		}

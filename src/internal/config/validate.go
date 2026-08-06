@@ -50,6 +50,14 @@ var SourceCapabilities func(sourceType string) SourceCaps
 // skipped.
 var SourceSupportsDependencyWait func(sourceType string) bool
 
+// SourcePushCapable reports whether a source type's adapter accepts pushed
+// deliveries (returns a non-nil WebhookHandler), which requires the daemon's
+// webhook listener (settings.webhook.listen). The cli package injects it
+// (config cannot import the source package without inverting the dependency
+// direction). When nil — configs built in code, isolated tests — the check is
+// skipped.
+var SourcePushCapable func(sourceType string) bool
+
 // SourceSupportsPREvents reports whether a source type's adapter can poll
 // pull-request events (implements source.PREventPoller), which a workflow
 // trigger with an `on:` event kind requires. The cli package injects it (config
@@ -164,6 +172,12 @@ func (c *Config) Validate() []error {
 			errs = append(errs, fmt.Errorf("sources[%d]: duplicate id %q", i, s.ID))
 		}
 		sourceIDs[s.ID] = true
+
+		// A push source without the daemon listener can never receive a
+		// delivery — dead config, rejected loudly.
+		if SourcePushCapable != nil && SourcePushCapable(s.Type) && strings.TrimSpace(c.Settings.Webhook.Listen) == "" {
+			errs = append(errs, fmt.Errorf("sources[%d] %q: type %q receives pushed events and requires settings.webhook.listen (e.g. \"127.0.0.1:8090\")", i, s.ID, s.Type))
+		}
 	}
 
 	agentIDs := map[string]bool{}

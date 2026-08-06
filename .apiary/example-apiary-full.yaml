@@ -170,6 +170,33 @@ sources:
       # match entity tags; raw criteria like displayId("P-123") pass through.
       labels: ["severity=availability", "managementZone=Prod"]
 
+  - id: alert-hooks
+    type: webhook
+    # Push-mode source: senders POST JSON to the daemon's webhook listener at
+    # /webhook/alert-hooks (requires settings.webhook.listen). Deliveries
+    # dispatch immediately; poll_interval is only the fallback cadence.
+    # Read-only source like prometheus/dynatrace: publish findings to a
+    # ticket source.
+    config:
+      # Shared secret for the selected auth mode (required unless auth: none).
+      secret: ${WEBHOOK_SECRET}
+      # bearer (default): Authorization: Bearer <secret> on every delivery.
+      # hmac: X-Apiary-Timestamp + X-Apiary-Signature (sha256=<hex HMAC over
+      #   "<timestamp>.<body>">), with replay protection inside `tolerance`.
+      # none: accept everything — only behind a trusted network boundary.
+      auth: bearer
+      # generic (default): one JSON object (or array / {"events": [...]}) with
+      #   optional id/title/description/labels/priority/state/url fields.
+      # alertmanager: the webhook_configs payload — firing alerts map exactly
+      #   like the prometheus poll source (fingerprint:startsAt identity).
+      format: alertmanager
+      # max_pending: 100        # pending-queue bound; overflow gets 429
+      # max_body_bytes: 1048576 # per-delivery body cap; larger gets 413
+      # tolerance: 5m           # hmac timestamp window
+    filters:
+      # Delivery-time filters: every label must be present on the event.
+      labels: ["severity=critical"]
+
 # ── Agents ─────────────────────────────────────────────────────────────────────
 agents:
   # === Claude-based agents (original design) ===
@@ -498,6 +525,12 @@ workflows:
 settings:
   concurrency: 2
   log_level: info
+  # Inbound webhook listener for push-mode sources (type: webhook). Each
+  # push-capable source mounts at POST /webhook/{source-id}; GET /healthz
+  # answers 200. Plain HTTP — put a TLS-terminating reverse proxy in front
+  # on untrusted networks. Empty/absent disables the listener.
+  webhook:
+    listen: 127.0.0.1:8090
   state_lock: true
   # Stop re-dispatching a (task, workflow) after this many consecutive failed
   # instances (rate-limited runs fail over and don't count). <=0 disables.
