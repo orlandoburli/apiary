@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Reference protocol-1 source plugin in Bash: polls Apiary work items from the
+# JSON file named by config.path — the same behavior as the Go source-file
+# plugin, to show the contract is small enough for a shell script. Requires jq.
+set -euo pipefail
+
+req=$(cat)                                   # the single request, stdin → EOF
+request_id=$(jq -r '.request_id' <<<"$req")
+protocol=$(jq -r '.protocol' <<<"$req")
+capability=$(jq -r '.capability' <<<"$req")
+method=$(jq -r '.method' <<<"$req")
+
+respond() { jq -nc --arg id "$request_id" "{protocol: 1, request_id: \$id} + $1"; }
+
+if [[ "$protocol" != "1" ]]; then
+  respond '{error: {code: "unsupported_protocol", message: "expected protocol 1"}}'
+  exit 0
+fi
+if [[ "$capability" != "source" ]]; then
+  respond '{error: {code: "unsupported_capability", message: "expected capability source"}}'
+  exit 0
+fi
+
+case "$method" in
+  poll)
+    path=$(jq -r '.config.path // empty' <<<"$req")
+    if [[ -z "$path" ]]; then
+      respond '{error: {code: "invalid_config", message: "config.path is required"}}'
+    elif [[ ! -f "$path" ]]; then
+      # An absent file simply means no work yet.
+      respond '{result: {items: []}}'
+    elif items=$(jq -ec 'if type == "array" then . else error("not an array") end' "$path" 2>/dev/null); then
+      echo "poll: $(jq 'length' <<<"$items") item(s) from $path" >&2   # diagnostics → stderr
+      respond "{result: {items: $items}}"
+    else
+      respond "{error: {code: \"invalid_items\", message: \"$path must hold a JSON array of items\"}}"
+    fi
+    ;;
+  acknowledge|write_result)
+    # Nothing to mark in a plain file; report success so the host logs stay clean.
+    respond '{result: {ok: true}}'
+    ;;
+  *)
+    respond "{error: {code: \"unsupported_method\", message: \"unknown method $method\"}}"
+    ;;
+esac

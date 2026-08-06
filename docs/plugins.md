@@ -416,7 +416,15 @@ requires them.
 
 ## Reference plugins
 
-`src/examples/plugins/event-file` demonstrates an `event_exporter` that appends one
-redacted event JSON object per line. `src/examples/plugins/source-file`
-demonstrates a `source` plugin that polls work items from a JSON file. Each
-README contains build and installation commands.
+Each directory under `src/examples/plugins/` ships a manifest, a README with
+build/install commands, and a complete plugin:
+
+| Plugin | Language | Demonstrates |
+|---|---|---|
+| `event-file` | Go (SDK) | An `event_exporter` appending one redacted event JSON object per line |
+| `source-file` | Go (SDK) | A `source` plugin polling work items from a JSON file |
+| `source-bash` | Bash + jq | The same file-backed source as a shell script — no build step at all |
+| `source-node` | TypeScript (Node) | The same file-backed source compiled with `tsc` to a shebang executable |
+
+The three source plugins are behaviorally identical on purpose: diff them to
+see the same contract expressed in each ecosystem.

@@ -132,7 +132,10 @@ no subprocess needed.
 
 There is no official SDK outside Go yet (tracked in
 [#367](https://github.com/orlandoburli/apiary/issues/367)) — but none is
-required. The protocol is small enough to implement
+required. Complete installable examples ship in `src/examples/plugins/`:
+`source-bash` (shell script, no build step) and `source-node`
+(TypeScript compiled to a shebang executable), both behaviorally identical to
+the Go `source-file` plugin. The protocol is small enough to implement
 directly; the [Python plugin in the protocol docs](plugins.md#a-complete-plugin-in-20-lines)
 is 20 lines with no dependencies.
 
@@ -174,7 +177,9 @@ esac
 
 Real-world versions swap the hard-coded item for `curl`/`jq` against whatever
 API you monitor. Mind stdout purity: every `echo` that isn't the response must
-go to stderr (`>&2`).
+go to stderr (`>&2`). A complete, installable Bash plugin (config handling,
+error responses, file-backed items) ships as
+`src/examples/plugins/source-bash`.
 
 ### Rust example
 
