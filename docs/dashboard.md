@@ -133,6 +133,29 @@ completed. A task that was retried shows its attempt count in the Details view.
 ![Task detail view](screenshots/tasks-detail.png)
 ![Task logs view](screenshots/tasks-logs.png)
 
+#### Workflow monitor
+
+Pressing `Enter` on a task whose work is driven by a workflow opens the live
+monitor: the step list on the left, and the selected step's detail — or its logs
+— on the right.
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Move between steps |
+| `Enter` / `l` | Open the selected step's logs in the right panel |
+| `-` / `+` | **Resize the split** — narrow or widen the step list, 5% at a time |
+| `[` / `]` | Switch between workflow instances, when a task fanned out to several |
+| `t` | Open the step's [transcript](#watching-the-live-conversation-debug-mode) |
+| `r` | Refresh the monitor |
+| `X` / `R` | Stop the workflow / restart the whole task (both confirm first) |
+| `Esc` / `Backspace` / `h` / `←` | Back (closes the log panel first, then the monitor) |
+
+The split defaults to 40% and is clamped between 20% and 80% so neither panel
+becomes unreadable. Widening the step list past the default reveals the `DUR`
+column, which the default width clips. `-` / `+` work while the log panel is
+open, which is usually when you want the extra room; resizing never disturbs
+the step selection or scroll position.
+
 #### Force restart and clear logs
 
 Pressing **`R`** (Shift+R) on a selected task shows a centered confirmation

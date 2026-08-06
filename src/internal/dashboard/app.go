@@ -1295,6 +1295,15 @@ func (a *App) handleWorkflowMonitorKey(key string) (tea.Model, tea.Cmd) {
 			a.selectWorkflowInstance(t, t.WorkflowInstanceIdx+1)
 		}
 
+	case "-", "_":
+		// Narrow the step list, giving the detail/log panel more room. Works in
+		// both sub-views: the split is what you adjust while reading logs.
+		adjustWorkflowSplit(t, -wfMonitorSplitStepPct)
+
+	case "+", "=":
+		// Widen the step list.
+		adjustWorkflowSplit(t, wfMonitorSplitStepPct)
+
 	case "l", "enter":
 		// Open logs for the selected step.
 		if !t.WorkflowShowLogs && t.WorkflowStepIdx < len(inst.Steps) {
@@ -4906,13 +4915,13 @@ func (a *App) footerKeys() []fkey {
 				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"end", "follow"}, {"t", label}, {"r", "reload"}, {"q", "quit"}}
 			case TaskViewWorkflow:
 				if t.WorkflowShowLogs {
-					return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"q", "quit"}}
+					return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"-/+", "split"}, {"q", "quit"}}
 				}
 				keys := []fkey{{"↑/↓", "step"}, {"enter/l", "logs"}, {"t", "transcript"}}
 				if len(t.WorkflowInstances) > 1 {
 					keys = append(keys, fkey{"[ ]", "workflow"})
 				}
-				return append(keys, fkey{"r", "refresh"}, fkey{"X", "stop"}, fkey{"R", "restart"}, fkey{"esc", "back"}, fkey{"q", "quit"})
+				return append(keys, fkey{"-/+", "split"}, fkey{"r", "refresh"}, fkey{"X", "stop"}, fkey{"R", "restart"}, fkey{"esc", "back"}, fkey{"q", "quit"})
 			}
 		}
 		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
@@ -5145,14 +5154,46 @@ func truncate(s string, max int) string {
 // panel widths of the workflow monitor. Shared with logMsgWidth so the STEP
 // LOGS panel wraps log lines to the panel it renders in instead of the full
 // terminal width (which fitLine would then clip on the right).
+// Split bounds for the monitor's two panels, as a percentage of the usable
+// width. The minimums keep both panels wide enough to stay readable: the step
+// list has a ~47-column layout and the log panel wraps its text to whatever it
+// is given.
+const (
+	wfMonitorDefaultSplitPct = 40
+	wfMonitorMinSplitPct     = 20
+	wfMonitorMaxSplitPct     = 80
+	wfMonitorSplitStepPct    = 5
+)
+
 func (a *App) wfMonitorPanelWidths() (leftW, rightW int) {
 	totalW := a.model.width - 2
-	leftW = totalW * 2 / 5
+	pct := wfMonitorDefaultSplitPct
+	if t := a.model.tasksTab; t != nil && t.WorkflowSplitPct != 0 {
+		pct = t.WorkflowSplitPct
+	}
+	leftW = totalW * pct / 100
 	rightW = totalW - leftW - 1
 	if leftW < 20 {
 		leftW = 20
 	}
 	return leftW, rightW
+}
+
+// adjustWorkflowSplit widens (delta > 0) or narrows the step-list panel,
+// clamping to the readable range. Called from the monitor's -/+ keys.
+func adjustWorkflowSplit(t *TasksTab, delta int) {
+	pct := t.WorkflowSplitPct
+	if pct == 0 {
+		pct = wfMonitorDefaultSplitPct
+	}
+	pct += delta
+	if pct < wfMonitorMinSplitPct {
+		pct = wfMonitorMinSplitPct
+	}
+	if pct > wfMonitorMaxSplitPct {
+		pct = wfMonitorMaxSplitPct
+	}
+	t.WorkflowSplitPct = pct
 }
 
 // renderWorkflowMonitor renders the live workflow instance monitor.
@@ -5183,7 +5224,9 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 	}
 
 	// Header row
-	hdr := pad("", 2) + pad("STEP", 18) + " " + pad("AGENT", 14) + " " + pad("STATE", 10) + " " + "DUR"
+	// Column widths mirror the body rows below exactly (2 glyph + 17 step + 1 +
+	// 13 agent + 3 + 10 state + 1), so every header sits over its own column.
+	hdr := pad("", 2) + pad("STEP", 17) + " " + pad("AGENT", 13) + "   " + pad("STATE", 10) + " " + "DUR"
 	left.WriteString(StyleTableHeader.Render(fitLine(hdr, leftW)) + "\n")
 	bodyRows--
 
@@ -5209,10 +5252,16 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 		state := truncate(s.State, 10)
 		dur := truncate(s.Duration, 8)
 
-		row := glyph + " " + pad(stepName, 17) + " " + pad(agent, 13) + "   " + pad(state, 10) + " " + StyleMuted.Render(dur)
+		// Columns are padded identically in both states so the selected row
+		// stays aligned with its neighbours and the header; only the leading
+		// glyph and the styling change. The selected marker is the same visual
+		// width as the glyph it replaces, so nothing shifts sideways.
+		cols := pad(stepName, 17) + " " + pad(agent, 13) + "   " + pad(state, 10) + " "
+		var row string
 		if selected {
-			row = StyleSelectedRow.Render(fitLine("  "+stepName+" "+agent+"   "+state+" "+dur, leftW))
-			row = StyleFocusedArrow.Render("▶") + " " + StyleSelectedRow.Render(fitLine(stepName+" "+agent+"   "+state+" "+dur, leftW-2))
+			row = StyleFocusedArrow.Render("▶") + " " + StyleSelectedRow.Render(fitLine(cols+dur, leftW-2))
+		} else {
+			row = glyph + " " + cols + StyleMuted.Render(dur)
 		}
 		left.WriteString(fitLine(row, leftW) + "\n")
 	}

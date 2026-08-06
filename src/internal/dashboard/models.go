@@ -102,6 +102,11 @@ type TasksTab struct {
 	WorkflowLogFollow   bool   // pin the step-log panel to the tail; cleared by scrolling up
 	WorkflowLogStepID   string // step whose logs fill the panel (scopes live-tail refreshes)
 	WorkflowShowLogs    bool   // true when the log panel is expanded
+	// WorkflowSplitPct is the step-list panel's share of the monitor width, as a
+	// percentage, adjustable with -/+ so a long log line can be given more room
+	// while watching a run. Zero means "unset" and falls back to
+	// wfMonitorDefaultSplitPct; see wfMonitorPanelWidths.
+	WorkflowSplitPct int
 
 	// Transcript sub-view (View == TaskViewTranscript): a markdown transcript
 	// file rendered in-app with glamour, live-tailed while the run continues.
