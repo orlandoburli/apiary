@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"net/http"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -30,7 +29,6 @@ func (a *fanoutAdapter) Acknowledge(context.Context, model.SourceItem, model.Ack
 func (a *fanoutAdapter) WriteResult(context.Context, model.SourceItem, model.RunResult) error {
 	return nil
 }
-func (a *fanoutAdapter) WebhookHandler() http.Handler { return nil }
 
 // countingRunner records how many times it ran; all steps succeed.
 type countingRunner struct{ n atomic.Int32 }

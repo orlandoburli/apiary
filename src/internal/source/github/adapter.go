@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -217,8 +216,6 @@ func (a *Adapter) CreateSubIssue(ctx context.Context, parent, child model.Source
 
 	return a.toSourceItem(created), nil
 }
-
-func (a *Adapter) WebhookHandler() http.Handler { return nil }
 
 // PollTask fetches the current state of a single issue plus its comments, for
 // the workflow engine to evaluate approval-step conditions. Implements

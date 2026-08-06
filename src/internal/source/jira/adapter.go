@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -277,8 +276,6 @@ func (a *Adapter) WriteResult(ctx context.Context, cell model.SourceItem, result
 	}
 	return nil
 }
-
-func (a *Adapter) WebhookHandler() http.Handler { return nil }
 
 // PollTask fetches the current state of a single issue plus its comments, for
 // the workflow engine to evaluate approval-step conditions. Implements

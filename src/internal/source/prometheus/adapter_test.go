@@ -237,9 +237,6 @@ func TestWriteOpsAreNoOps(t *testing.T) {
 	if err := a.WriteResult(context.Background(), itemStub(), resultStub()); err != nil {
 		t.Errorf("WriteResult: %v", err)
 	}
-	if a.WebhookHandler() != nil {
-		t.Error("WebhookHandler should be nil for the poll-only adapter")
-	}
 }
 
 func TestToMatcher(t *testing.T) {

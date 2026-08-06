@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"net/http"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -58,7 +57,6 @@ func (a *recordingAdapter) SetState(_ context.Context, item model.SourceItem, st
 	a.mu.Unlock()
 	return nil
 }
-func (a *recordingAdapter) WebhookHandler() http.Handler { return nil }
 
 var (
 	_ source.Adapter     = (*recordingAdapter)(nil)

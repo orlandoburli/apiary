@@ -14,7 +14,6 @@ package prometheus
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"regexp"
 	"sort"
 	"strings"
@@ -327,8 +326,6 @@ func (a *Adapter) WriteResult(_ context.Context, cell model.SourceItem, result m
 	aplog.Debug("prometheus: write result for %s (success=%v) — no-op for alerts", cell.LogLabel(), result.Success)
 	return nil
 }
-
-func (a *Adapter) WebhookHandler() http.Handler { return nil }
 
 func toInt(v any) (int, error) {
 	switch n := v.(type) {

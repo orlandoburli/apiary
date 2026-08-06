@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"net/http"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -37,8 +36,6 @@ func (a *ciAdapter) Acknowledge(context.Context, model.SourceItem, model.AckActi
 func (a *ciAdapter) WriteResult(context.Context, model.SourceItem, model.RunResult) error {
 	return nil
 }
-func (a *ciAdapter) WebhookHandler() http.Handler { return nil }
-
 func (a *ciAdapter) PollCIStatus(_ context.Context, cellID string) (source.CIStatus, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

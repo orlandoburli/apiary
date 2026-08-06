@@ -2,7 +2,6 @@ package source
 
 import (
 	"context"
-	"net/http"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/model"
@@ -31,10 +30,6 @@ type Adapter interface {
 
 	// WriteResult posts the run output back to the source task.
 	WriteResult(ctx context.Context, cell model.SourceItem, result model.RunResult) error
-
-	// WebhookHandler returns an http.Handler for push-mode sources.
-	// Returns nil for poll-only adapters.
-	WebhookHandler() http.Handler
 }
 
 // StateSetter is an optional interface that sources may implement to allow
