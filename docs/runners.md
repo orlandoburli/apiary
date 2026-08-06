@@ -87,6 +87,10 @@ Claude's structured event stream into
 - `rate_limit_event` detection, which drives
   [failover](resilience.md#runner-failures--failover).
 
+The preset also passes `--dangerously-skip-permissions`, because headless
+`claude -p` cannot display a permission prompt — see
+[Tool permissions](#tool-permissions) to narrow that.
+
 #### OpenCode (`provider: opencode`)
 
 Requires the `opencode` binary on `PATH`. The preset invokes
@@ -143,14 +147,55 @@ All `config` keys, with each provider's preset defaults:
 | Key | Description | claude | opencode | codex | cursor |
 |---|---|---|---|---|---|
 | `command` | Binary to invoke (override to use a wrapper or absolute path) | `claude` | `opencode` | `codex` | `agent` |
-| `args` | Extra argv appended after the preset's args | `--output-format stream-json --verbose` | `run` | `exec --sandbox workspace-write` | `-p --output-format stream-json --force` |
+| `args` | Extra argv appended after the preset's args | `--output-format stream-json --verbose` | `run` | `exec --sandbox workspace-write` | `-p --output-format stream-json` |
 | `model_flag` | Flag used to pass the step's model | `--model` | `--model` | `--model` | `--model` |
 | `prompt_flag` | Flag used to pass the prompt | `-p` | *(positional)* | *(positional)* | *(positional)* |
 | `prompt_positional` | Pass the prompt as the last positional argument | `false` | `true` | `true` | `true` |
 | `turns_flag` | Flag used to pass a max-turns limit | — | — | — | — |
+| `permission_mode` | Tool-permission posture (see below) | `bypass` | — | — | `bypass` |
+| `allowed_tools` | Tool names to pre-approve | — | — | — | — |
+| `permission_flag` | Provider flag for a named permission mode | `--permission-mode` | — | — | — |
+| `permission_bypass_args` | Argv that disables the permission prompt | `--dangerously-skip-permissions` | — | — | `--force` |
+| `allowed_tools_flag` | Provider flag for the allow-list | `--allowedTools` | — | — | — |
 
 Prompt delivery: via `prompt_flag` when set, as the last positional argument
 when `prompt_positional: true`, otherwise on **stdin**.
+
+### Tool permissions
+
+Apiary only ever runs agents non-interactively, so an agent cannot answer a
+permission prompt. A provider that gates tools behind one denies **every** call
+— Bash, Grep, and MCP alike — and the failure is quiet: the agent runs to
+completion, reports success, and has written nothing. Claude and Cursor both
+gate by default, so their presets ship with `permission_mode: bypass`.
+
+| `permission_mode` | Effect |
+|---|---|
+| `bypass` *(preset default for claude and cursor)* | Emits `permission_bypass_args` — the agent may use every tool without asking |
+| `default` | Emits no permission flags at all; the provider's own default applies |
+| anything else | Passed through to `permission_flag` as a provider-native mode name (claude: `acceptEdits`, `plan`, …) |
+
+A mode the provider cannot honour is rejected at config load, so the daemon
+fails loudly instead of starting agents that silently cannot act.
+
+To grant a narrow set of tools instead of a blanket bypass, combine
+`permission_mode: default` with `allowed_tools`:
+
+```yaml
+runners:
+  - id: claude-triage
+    type: cli
+    provider: claude
+    config:
+      permission_mode: default
+      allowed_tools: ["Read", "Grep", "mcp__atlassian__jira_add_comment"]
+```
+
+!!! warning "Bypass and untrusted input"
+    `bypass` lets the agent run any command in its working directory. For
+    runners that process issues or comments from untrusted authors, pair it
+    with [sandboxing](#sandboxing-agent-execution) so a successful prompt
+    injection is contained, or narrow the runner with `allowed_tools`.
 
 ## API runners
 

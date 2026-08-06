@@ -57,7 +57,7 @@
           },
           "config": {
             "type": "object",
-            "description": "Engine options. CLI engine keys: command, args, model_flag, prompt_flag, prompt_positional, turns_flag (provider presets cover them; override only when needed). API engine keys: api_key, base_url, endpoint",
+            "description": "Engine options. CLI engine keys: command, args, model_flag, prompt_flag, prompt_positional, turns_flag, permission_mode, allowed_tools, permission_flag, permission_bypass_args, allowed_tools_flag (provider presets cover them; override only when needed). permission_mode is 'bypass' (skip the provider's permission prompt — the claude/cursor preset default, required for headless tool use), 'default' (emit no permission flags), or a provider-native mode name such as acceptEdits or plan. API engine keys: api_key, base_url, endpoint",
             "additionalProperties": true,
             "properties": {
               "command": {
