@@ -22,6 +22,7 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
+	"github.com/orlandoburli/apiary/internal/format"
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
@@ -3035,11 +3036,11 @@ func (a *App) renderOverviewTab(height int) string {
 
 	costStr := "—"
 	if o.TodayCostUSD > 0 {
-		costStr = fmt.Sprintf("$%.4f", o.TodayCostUSD)
+		costStr = format.USD(o.TodayCostUSD)
 	}
 	tokensStr := "—"
 	if o.TodayTokens > 0 {
-		tokensStr = fmt.Sprintf("%d in / %d out / %d total", o.TodayInputTokens, o.TodayOutputTokens, o.TodayTokens)
+		tokensStr = fmt.Sprintf("%s in / %s out / %s total", format.Tokens(o.TodayInputTokens), format.Tokens(o.TodayOutputTokens), format.Tokens(o.TodayTokens))
 	}
 	fmt.Fprintf(&b,
 		"\nTasks (24h):\n"+
@@ -3450,12 +3451,12 @@ func (a *App) taskDetailLines(t *TasksTab) []string {
 	}
 	row(endedLabel, completed)
 	row("Duration", dur)
-	row("Tokens", fmt.Sprintf("%d in / %d out / %d total", inTok, outTok, totalTok))
+	row("Tokens", fmt.Sprintf("%s in / %s out / %s total", format.Tokens(inTok), format.Tokens(outTok), format.Tokens(totalTok)))
 	if cacheCreate > 0 || cacheRead > 0 {
 		row("Cache", fmt.Sprintf("%d write / %d read", cacheCreate, cacheRead))
 	}
 	row("Turns / Calls", fmt.Sprintf("%d / %d", d.NumTurns, d.NumToolCalls))
-	row("Cost", fmt.Sprintf("$%.4f", cost))
+	row("Cost", format.USD(cost))
 	if d.URL != "" {
 		row("URL", StyleInfo.Render(d.URL))
 	}
@@ -3721,7 +3722,7 @@ func wfInstanceSummary(inst *WorkflowInstanceItem) string {
 		parts = append(parts, fmtTokensShort(inst.CacheCreationTokens+inst.CacheReadTokens)+" cache")
 	}
 	if inst.CostUSD > 0 {
-		parts = append(parts, fmt.Sprintf("$%.4f", inst.CostUSD))
+		parts = append(parts, format.USD(inst.CostUSD))
 	}
 	return StyleMuted.Render(strings.Join(parts, "  ·  "))
 }
@@ -4286,7 +4287,7 @@ func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 		success := padLeft(successRateStyled(agent.SuccessRate), successW)
 		cost := "—"
 		if agent.TotalCostUSD > 0 {
-			cost = fmt.Sprintf("$%.2f", agent.TotalCostUSD)
+			cost = format.USD(agent.TotalCostUSD)
 		}
 		cost = padLeft(cost, costW)
 		if selected {
@@ -4397,10 +4398,10 @@ func (a *App) renderAgentDetail(ag *AgentsTab, height int) string {
 	if d.TotalTokens > 0 || d.TotalCostUSD > 0 {
 		b.WriteString("\n")
 		if d.TotalTokens > 0 {
-			row("Total tokens", fmt.Sprintf("%d", d.TotalTokens))
+			row("Total tokens", format.Tokens(d.TotalTokens))
 		}
 		if d.TotalCostUSD > 0 {
-			row("Total cost", fmt.Sprintf("$%.4f", d.TotalCostUSD))
+			row("Total cost", format.USD(d.TotalCostUSD))
 		}
 	}
 	return a.box("AGENT DETAILS — "+d.ID, b.String(), height)
@@ -5037,16 +5038,11 @@ func valueOr(s, fallback string) string {
 
 // fmtTokensShort renders a token count compactly (842, 1.2k, 3.4M); "—" for zero.
 func fmtTokensShort(n int) string {
-	switch {
-	case n <= 0:
+	if n <= 0 {
+		// Table cells read better with an em dash than a zero.
 		return "—"
-	case n < 1000:
-		return fmt.Sprintf("%d", n)
-	case n < 1_000_000:
-		return fmt.Sprintf("%.1fk", float64(n)/1000)
-	default:
-		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
 	}
+	return format.Tokens(n)
 }
 
 // tsTimeFmt is the fixed-width timestamp shown in step/instance table cells:
@@ -5322,11 +5318,11 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 		right.WriteString("\n")
 
 		if s.TotalTokens > 0 {
-			row2("Tokens", fmt.Sprintf("%d in / %d out / %d total", s.InputTokens, s.OutputTokens, s.TotalTokens))
+			row2("Tokens", fmt.Sprintf("%s in / %s out / %s total", format.Tokens(s.InputTokens), format.Tokens(s.OutputTokens), format.Tokens(s.TotalTokens)))
 			if s.CacheCreationTokens > 0 || s.CacheReadTokens > 0 {
-				row2("Cache", fmt.Sprintf("%d write / %d read", s.CacheCreationTokens, s.CacheReadTokens))
+				row2("Cache", fmt.Sprintf("%s write / %s read", format.Tokens(s.CacheCreationTokens), format.Tokens(s.CacheReadTokens)))
 			}
-			row2("Cost", fmt.Sprintf("$%.5f", s.CostUSD))
+			row2("Cost", format.USD(s.CostUSD))
 			row2("Turns", fmt.Sprintf("%d turns / %d calls", s.NumTurns, s.NumToolCalls))
 			right.WriteString("\n")
 		}

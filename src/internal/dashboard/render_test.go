@@ -526,7 +526,7 @@ func TestTaskDetailShowsUsageWhenPresent(t *testing.T) {
 		CostUSD:      0.0425,
 	}
 	out := stripANSI(a.renderTaskDetail(a.model.tasksTab, 20))
-	if !strings.Contains(out, "1500 in / 420 out / 1920 total") {
+	if !strings.Contains(out, "1.5k in / 420 out / 1.9k total") {
 		t.Errorf("should show token breakdown; got:\n%s", out)
 	}
 	if !strings.Contains(out, "8 / 23") {
@@ -554,7 +554,7 @@ func TestTaskDetailShowsUsageWhenZero(t *testing.T) {
 	if !strings.Contains(out, "0 / 0") {
 		t.Errorf("should show turns/calls even when zero; got:\n%s", out)
 	}
-	if !strings.Contains(out, "$0.0000") {
+	if !strings.Contains(out, "$0.00") {
 		t.Errorf("should show cost even when zero; got:\n%s", out)
 	}
 }

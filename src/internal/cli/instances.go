@@ -16,6 +16,7 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/daemon"
+	"github.com/orlandoburli/apiary/internal/format"
 )
 
 var (
@@ -96,7 +97,7 @@ func compareInstances(beforeID, afterID string, asJSON bool) error {
 		if row.OutputChanged {
 			output = "changed"
 		}
-		usage := fmt.Sprintf("%+d / %+.5f", row.TokenDelta, row.CostDeltaUSD)
+		usage := fmt.Sprintf("%s / %s", format.TokensDelta(row.TokenDelta), format.USDDelta(row.CostDeltaUSD))
 		timing := fmt.Sprintf("%+dms", row.DurationDeltaMS)
 		fmt.Printf("%-18s %-13s %-13s %-10s %-10s %-12s %-10s\n", truncate(row.StepID, 18), before, after, input, output, usage, timing)
 		if row.BeforeModel != row.AfterModel || row.BeforeRunner != row.AfterRunner {
@@ -192,12 +193,12 @@ func showInstance(id string, asJSON bool) error {
 				stateColor(s.State).Render(state),
 			)
 			if s.TotalTokens > 0 {
-				usage := fmt.Sprintf("%d in / %d out / %d total", s.InputTokens, s.OutputTokens, s.TotalTokens)
+				usage := fmt.Sprintf("%s in / %s out / %s total", format.Tokens(s.InputTokens), format.Tokens(s.OutputTokens), format.Tokens(s.TotalTokens))
 				if s.CacheCreationTokens > 0 || s.CacheReadTokens > 0 {
-					usage += fmt.Sprintf("  ·  cache %d write / %d read", s.CacheCreationTokens, s.CacheReadTokens)
+					usage += fmt.Sprintf("  ·  cache %s write / %s read", format.Tokens(s.CacheCreationTokens), format.Tokens(s.CacheReadTokens))
 				}
 				if s.CostUSD > 0 {
-					usage += fmt.Sprintf("  ·  $%.5f", s.CostUSD)
+					usage += "  ·  " + format.USD(s.CostUSD)
 				}
 				fmt.Printf("       %s\n", instMuted.Render(usage))
 			}
