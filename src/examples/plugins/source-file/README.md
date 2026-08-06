@@ -22,7 +22,7 @@ plugins:
   - id: dev.apiary.source-file
     timeout: 5s
     config:
-      path: .apiary/incoming-items.json
+      path: /path/to/project/.apiary/incoming-items.json
 
 sources:
   - id: file-items
@@ -31,6 +31,12 @@ sources:
     config:
       plugin: dev.apiary.source-file
 ```
+
+!!! note
+    Use an absolute `path`. Plugin processes run with their working directory
+    set to the plugin's install directory (not the project root), so a
+    relative path would resolve inside `.apiary/plugins/dev.apiary.source-file/`
+    — and an absent file there reads as "no work yet".
 
 The items file holds a JSON array in the SDK wire shape
 (`sdk/plugin/source.go`); IDs are the dedup key, so keep them stable:

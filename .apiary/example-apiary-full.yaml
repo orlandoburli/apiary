@@ -187,7 +187,9 @@ sources:
 #   - id: dev.apiary.source-file
 #     timeout: 5s
 #     config:
-#       path: .apiary/incoming-items.json
+#       # Absolute path: plugin processes run with cwd = their install dir,
+#       # so relative paths would resolve inside .apiary/plugins/<id>/.
+#       path: /path/to/project/.apiary/incoming-items.json
 
 # ── Agents ─────────────────────────────────────────────────────────────────────
 agents:
