@@ -138,7 +138,7 @@
     },
     "sources": {
       "type": "array",
-      "description": "Task sources (github, jira, plane, prometheus)",
+      "description": "Task sources (github, jira, plane, prometheus, dynatrace)",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -151,11 +151,11 @@
           "type": {
             "type": "string",
             "description": "Source adapter type",
-            "enum": ["github", "jira", "plane", "prometheus"]
+            "enum": ["github", "jira", "plane", "prometheus", "dynatrace"]
           },
           "config": {
             "type": "object",
-            "description": "Adapter-specific configuration. github: repo, api_key, base_url. jira: base_url, email, api_token, project. plane: workspace, project, api_key, base_url. prometheus: alertmanager_url, bearer_token, basic_auth_user, basic_auth_password, max_new_per_poll, min_age",
+            "description": "Adapter-specific configuration. github: repo, api_key, base_url. jira: base_url, email, api_token, project. plane: workspace, project, api_key, base_url. prometheus: alertmanager_url, bearer_token, basic_auth_user, basic_auth_password, max_new_per_poll, min_age. dynatrace: base_url, api_token, max_new_per_poll, min_age, lookback",
             "additionalProperties": true
           },
           "poll_interval": {

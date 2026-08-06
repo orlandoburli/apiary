@@ -57,6 +57,7 @@ nav:
       - Jira: jira-source.md
       - Plane: plane-source.md
       - Prometheus: prometheus-source.md
+      - Dynatrace: dynatrace-source.md
   - Reference:
       - CLI: cli.md
       - Dashboard: dashboard.md

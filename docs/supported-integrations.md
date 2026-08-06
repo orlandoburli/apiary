@@ -56,18 +56,26 @@ comments to write back — publish findings to a ticket source instead.
 - **Write-back:** None (read-only source) — `apiary validate` rejects incompatible workflow features
 - **Setup:** See [Prometheus Source configuration](prometheus-source.md)
 
+### Dynatrace
+
+**Status:** ✅ Stable | **Auth:** API token (`problems.read` scope)
+
+Polls open problems from the Dynatrace problems API (`/api/v2/problems`) and
+maps them to tasks, following the same read-only monitoring-source shape as
+the Prometheus adapter: an AI-detected problem opens → an investigation
+workflow dispatches.
+
+- **Requirements:** Dynatrace SaaS or Managed environment with an access token
+  holding the `problems.read` scope
+- **Guardrails:** Problem-storm dispatch cap and flap dampening built in
+- **Write-back:** None (read-only source) — `apiary validate` rejects incompatible workflow features
+- **Setup:** See [Dynatrace Source configuration](dynatrace-source.md)
+
 ### Linear
 
 **Status:** 🔄 Planned | **Auth:** API token
 
 Support for Linear is in development.
-
-### Dynatrace
-
-**Status:** 🔄 Planned | **Auth:** API token
-
-Problem-based monitoring source (`/api/v2/problems`), following the same
-read-only shape as the Prometheus adapter.
 
 ---
 
