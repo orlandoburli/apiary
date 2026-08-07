@@ -666,7 +666,11 @@ apiary resume <instance-id> --definition original
 ```
 
 The workflow's `resume` policy controls eligibility: `allowed` (default),
-`forbidden`, or `auto`. A manual resume creates a new workflow instance whose
+`forbidden`, or `auto`. With `auto` (which requires every step to be
+`idempotent: true`) the daemon also resumes by itself: instances orphaned by a
+restart are continued at startup instead of being re-dispatched from step 1 —
+see [Surviving restarts](resilience.md#surviving-restarts).
+A manual resume creates a new workflow instance whose
 `resumed_from` field points to the source attempt. Completed step rows selected
 for reuse are copied into that descendant and marked cached; the original
 attempt remains immutable. Their outputs and memory are restored without

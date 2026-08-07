@@ -171,6 +171,22 @@ func TestWorkflowInstance_ReconcileOrphans(t *testing.T) {
 	}
 }
 
+func TestHasResumeDescendant(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "a", WorkflowID: "w", CellID: "c", State: InstanceStateInterrupted})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "b", WorkflowID: "w", CellID: "c", State: InstanceStateInterrupted})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "a2", WorkflowID: "w", CellID: "c", State: InstanceStateRunning, ResumedFrom: "a"})
+
+	if got, err := c.HasResumeDescendant(ctx, "a"); err != nil || !got {
+		t.Errorf("HasResumeDescendant(a) = %v, %v; want true", got, err)
+	}
+	if got, err := c.HasResumeDescendant(ctx, "b"); err != nil || got {
+		t.Errorf("HasResumeDescendant(b) = %v, %v; want false", got, err)
+	}
+}
+
 func TestHasActiveInstanceForRoute(t *testing.T) {
 	ctx := context.Background()
 	c := newTestClient(t)

@@ -145,6 +145,13 @@ func (d *Dispatcher) ResumePreview(ctx context.Context, id string, opts ResumeOp
 // (daemon-lifetime) context. It returns promptly; the engine replays cached
 // steps and continues the run in the background. ctx must outlive the request.
 func (d *Dispatcher) StartResume(ctx context.Context, id string, opts ResumeOptions) (string, error) {
+	return d.startResume(ctx, id, opts, nil)
+}
+
+// startResume is StartResume with an optional onDone callback, invoked from the
+// resume goroutine once the replay has finished (successfully or not). Startup
+// auto-resume uses it to release its (task, workflow) dispatch guard.
+func (d *Dispatcher) startResume(ctx context.Context, id string, opts ResumeOptions, onDone func()) (string, error) {
 	if d.db == nil {
 		return "", ErrInstanceNotFound
 	}
@@ -190,6 +197,9 @@ func (d *Dispatcher) StartResume(ctx context.Context, id string, opts ResumeOpti
 	newID := d.workflowEngine().NewInstanceID()
 
 	go func() {
+		if onDone != nil {
+			defer onDone()
+		}
 		_, success, rerr := d.workflowEngine().ResumeInstance(ctx, inst, wf, task, steps, opts.FromStep, newID)
 		if rerr != nil {
 			if task.ID != "" {
