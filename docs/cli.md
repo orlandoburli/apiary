@@ -152,13 +152,43 @@ apiary dispatch --cell <source-id>/<task-id> --worker <worker-id>
 
 ### `apiary restart`
 
-Force-restart a stale task: cancel its running dispatch, interrupt its
-non-terminal instances, and reset it for re-dispatch on the next cycle. Same
+Force-restart a stale task: cancel its running dispatch, cancel its queued jobs,
+interrupt its non-terminal instances, strip its control labels — then re-route the
+item and dispatch it **immediately**, without waiting for the next poll. Same
 action as `R` in the dashboard.
 
 ```sh
-apiary restart <task-id>
+apiary restart CDT-123     # Jira key
+apiary restart '#1953'     # GitHub issue number (quote it — # starts a comment)
+apiary restart 1953        # the cell id also works
 ```
+
+The argument is the item's **human reference** (a Jira key, a GitHub issue number)
+or its **cell id** (the raw source item id). The reference is usually what you
+want: on Jira the cell id is the opaque numeric issue id, which appears in no
+interface — the key is the only thing you can see.
+
+Matching ignores case and a leading `#`. An exact cell id always wins over a
+number. A reference that matches items in **two different sources** is rejected
+rather than guessed at, and names both candidates so you can restart the cell id
+directly. An argument that resolves to nothing fails and touches nothing; if it is
+an internal task id, the error names the item to use instead.
+
+Restart overrides the `once` and failure-cap (`settings.max_attempts`) guards,
+since a task wedged behind either is what restart exists for; any override is
+printed. It does not override the in-flight guard, so a live workflow is never run
+twice. The command reports what it dispatched:
+
+```
+✓ Restarted CDT-123 (10042) (control labels cleared)
+  ! overrode guard: implement (failure cap)
+  → dispatched 1 workflow(s): implement
+```
+
+The item is echoed as `reference (cell id)` when the two differ, so it is always
+clear which item was acted on. `dispatched 0` means the cleanup ran but no
+workflow matches the item in its current state — usually a label the triggers
+don't match.
 
 ### `apiary delete`
 

@@ -160,9 +160,25 @@ the step selection or scroll position.
 
 Pressing **`R`** (Shift+R) on a selected task shows a centered confirmation
 modal with a rounded border. Press `y` / `Y` to confirm or any other key to
-cancel. This sends a restart request to the daemon via Unix socket —
-the task's running dispatch is cancelled and its state is reset to `todo` for
-re-dispatch on the next cycle.
+cancel. This sends a restart request to the daemon via Unix socket: the task's
+running dispatch and queued jobs are cancelled, its non-terminal instances are
+interrupted, its control labels are stripped, and the item is re-routed and
+dispatched **immediately** — it does not wait for the next poll.
+
+The result appears as a one-line banner above the footer, and the list refreshes
+straight away so the new run is visible:
+
+- `✓ Restarted CDT-123 (10042) — dispatched 1 workflow(s): implement`
+- `✗ Restarted CDT-123 (10042) — but no workflow matches it right now, so nothing was dispatched`
+
+The banner names the item the way you know it — the Jira key, the GitHub issue
+number — with the raw cell id in parentheses when the two differ.
+- `✗ Restart failed: …` — the daemon's own message, e.g. an id that is an internal
+  task id rather than a cell id.
+
+Restart deliberately overrides the `once` and failure-cap guards (the banner names
+what it overrode); it never overrides the in-flight guard, so a workflow that is
+genuinely running is not started a second time.
 
 Pressing **`C`** on a selected task works the same way — confirm with `y` / `Y`
 to delete the task's logs and execution records, or any other key to cancel.

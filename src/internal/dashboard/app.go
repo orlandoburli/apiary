@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +23,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/orlandoburli/apiary/internal/config"
+	"github.com/orlandoburli/apiary/internal/daemon"
 	"github.com/orlandoburli/apiary/internal/db"
 	"github.com/orlandoburli/apiary/internal/format"
 	"github.com/orlandoburli/apiary/internal/model"
@@ -31,6 +34,11 @@ const refreshInterval = 2 * time.Second
 
 // queryTimeout bounds each database query so a locked DB never blocks the UI.
 const queryTimeout = 2 * time.Second
+
+// noticeTTL is how long an action-result banner stays on screen. Long enough to
+// read a dispatched-workflow list without hunting for it, short enough that it
+// does not linger over the view it covers.
+const noticeTTL = 8 * time.Second
 
 // taskLogTailLimit caps how many of a task's most recent log lines are loaded
 // when the logs view opens. task_logs rows are large (~10KB of agent stream), so
@@ -181,6 +189,14 @@ type mdWarmedMsg struct {
 	rendered map[string][]string
 }
 
+// noticeMsg carries a one-line result banner for an action the user triggered
+// (restart, clear, stop). Those actions run against the daemon over IPC and used
+// to report nothing at all, success or failure alike.
+type noticeMsg struct {
+	text  string
+	isErr bool
+}
+
 // ── lifecycle ───────────────────────────────────────────────────────────────
 
 // Init initializes the app: enter alt-screen, fetch the first tab, start timer.
@@ -223,6 +239,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.logMDCache[m] = lines
 			}
 		}
+
+	case noticeMsg:
+		// Show the banner and refresh straight away: a restart that dispatched
+		// work has already created the instance the user is looking for.
+		a.model.notice = msg.text
+		a.model.noticeIsErr = msg.isErr
+		a.model.noticeUntil = time.Now().Add(noticeTTL)
+		return a, a.fetchActiveTab()
 
 	case tickMsg:
 		// Re-query the active tab and schedule the next tick.
@@ -1570,7 +1594,14 @@ func (a *App) focusedTaskID() (string, bool) {
 	return "", false
 }
 
-// restartTaskCmd sends a force-restart request to the daemon via the IPC socket.
+// restartTaskCmd sends a force-restart request to the daemon via the IPC socket
+// and reports the outcome as a noticeMsg.
+//
+// Every failure here used to be discarded — transport errors returned nil and the
+// status code was never read — so a 404 ("that id is an internal task id, not a
+// cell id") and a successful restart were indistinguishable on screen: the modal
+// closed and nothing happened. The daemon's message is the whole diagnosis, so it
+// goes to the user verbatim.
 func (a *App) restartTaskCmd(taskID string) tea.Cmd {
 	return func() tea.Msg {
 		socketPath := a.socketPath
@@ -1580,13 +1611,40 @@ func (a *App) restartTaskCmd(taskID string) tea.Cmd {
 			},
 		}
 		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-		url := fmt.Sprintf("http://apiary/restart/%s", taskID)
-		resp, err := client.Post(url, "application/json", nil)
+		// PathEscape: the reference may be a GitHub "#1953", and a raw '#' would be
+		// read as a URL fragment, leaving the daemon with an empty id.
+		resp, err := client.Post("http://apiary/restart/"+neturl.PathEscape(taskID), "application/json", nil)
 		if err != nil {
-			return nil
+			return noticeMsg{text: fmt.Sprintf("Restart failed: cannot reach daemon: %v", err), isErr: true}
 		}
-		resp.Body.Close()
-		return nil
+		defer resp.Body.Close()
+
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if resp.StatusCode != http.StatusOK {
+			msg := strings.TrimSpace(string(body))
+			if msg == "" {
+				msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			}
+			return noticeMsg{text: "Restart failed: " + msg, isErr: true}
+		}
+
+		var res daemon.RestartResult
+		if err := json.Unmarshal(body, &res); err != nil {
+			return noticeMsg{text: fmt.Sprintf("Restarted %s", taskID)}
+		}
+		// res.Label() prefers the item's own reference (CDT-123, #1953) over the
+		// cell id, which on sources like Jira is an opaque number the user has
+		// never seen.
+		switch {
+		case res.Dispatched == 0:
+			return noticeMsg{text: fmt.Sprintf("Restarted %s — but no workflow matches it right now, so nothing was dispatched", res.Label()), isErr: true}
+		default:
+			text := fmt.Sprintf("Restarted %s — dispatched %d workflow(s): %s", res.Label(), res.Dispatched, strings.Join(res.Workflows, ", "))
+			if len(res.Overridden) > 0 {
+				text += " (overrode " + strings.Join(res.Overridden, ", ") + ")"
+			}
+			return noticeMsg{text: text}
+		}
 	}
 }
 
@@ -1632,11 +1690,29 @@ func (a *App) clearLogsCmd(taskID string) tea.Cmd {
 		url := fmt.Sprintf("http://apiary/clearlogs/%s", taskID)
 		resp, err := client.Post(url, "application/json", nil)
 		if err != nil {
-			return nil
+			return noticeMsg{text: fmt.Sprintf("Clear logs failed: cannot reach daemon: %v", err), isErr: true}
 		}
-		resp.Body.Close()
-		return nil
+		defer resp.Body.Close()
+		if msg, ok := ipcFailure(resp, "Clear logs"); !ok {
+			return msg
+		}
+		return noticeMsg{text: fmt.Sprintf("Cleared logs for %s", taskID)}
 	}
+}
+
+// ipcFailure turns a non-2xx IPC response into a noticeMsg carrying the daemon's
+// own message. ok is true when the response was a success and the caller should
+// build its own notice.
+func ipcFailure(resp *http.Response, action string) (noticeMsg, bool) {
+	if resp.StatusCode < 400 {
+		return noticeMsg{}, true
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+	}
+	return noticeMsg{text: action + " failed: " + msg, isErr: true}, false
 }
 
 // stopInstanceCmd sends a POST /instances/stop/{id} request to stop a workflow
@@ -1652,10 +1728,13 @@ func (a *App) stopInstanceCmd(instanceID string) tea.Cmd {
 		url := fmt.Sprintf("http://apiary/instances/stop/%s", instanceID)
 		resp, err := client.Post(url, "application/json", nil)
 		if err != nil {
-			return nil
+			return noticeMsg{text: fmt.Sprintf("Stop failed: cannot reach daemon: %v", err), isErr: true}
 		}
-		resp.Body.Close()
-		return nil
+		defer resp.Body.Close()
+		if msg, ok := ipcFailure(resp, "Stop"); !ok {
+			return msg
+		}
+		return noticeMsg{text: fmt.Sprintf("Stopped workflow instance %s", instanceID)}
 	}
 }
 
@@ -2860,6 +2939,9 @@ func (a *App) View() string {
 	tabsHeight := lipgloss.Height(tabs)
 
 	footer := a.renderFooter()
+	if banner := a.renderNotice(); banner != "" {
+		footer = lipgloss.JoinVertical(lipgloss.Left, banner, footer)
+	}
 	footerHeight := lipgloss.Height(footer)
 
 	contentHeight := a.model.height - tabsHeight - footerHeight - 1
@@ -2890,6 +2972,26 @@ func (a *App) View() string {
 		view = a.renderConfirmModal(view)
 	}
 	return view
+}
+
+// renderNotice draws the action-result banner above the footer, or "" once it has
+// expired. It is the only feedback surface for IPC actions, so it renders errors
+// in full rather than truncating to a status word.
+func (a *App) renderNotice() string {
+	if a.model.notice == "" || time.Now().After(a.model.noticeUntil) {
+		return ""
+	}
+	style := StyleSuccess
+	prefix := "✓ "
+	if a.model.noticeIsErr {
+		style = StyleError
+		prefix = "✗ "
+	}
+	text := prefix + a.model.notice
+	if w := a.model.width - 2; w > 8 && lipgloss.Width(text) > w {
+		text = ansi.Truncate(text, w, "…")
+	}
+	return style.Render(" " + text)
 }
 
 func (a *App) renderConfirmModal(view string) string {

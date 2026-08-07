@@ -216,9 +216,12 @@ Daemon restarts (crash, upgrade, reboot) don't lose in-flight work:
   long pipeline that must not restart from scratch should opt into
   `resume: auto`.
 - **Force restart.** From the [dashboard](dashboard.md) (`R` on a task) or
-  `apiary restart <task>`, a stale task's running dispatch is
-  cancelled, its non-terminal instances are interrupted, and it is reset for
-  re-dispatch on the next cycle.
+  `apiary restart <task>`, a stale task's running dispatch and queued jobs are
+  cancelled, its non-terminal instances are interrupted, its control labels are
+  stripped, and it is re-routed and dispatched immediately. Restart overrides the
+  `once` and failure-cap guards — a task parked behind either is exactly what it
+  is for — but never the in-flight guard, so a live workflow is not run twice.
+  Both surfaces report what was dispatched, including "nothing matched".
 
 ## Timeouts
 
