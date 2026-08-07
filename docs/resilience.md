@@ -225,9 +225,40 @@ Daemon restarts (crash, upgrade, reboot) don't lose in-flight work:
 
 ## Timeouts
 
-Every run is bounded by `settings.task_timeout` (default 30m) so a hung
-subprocess cannot hold an agent slot forever. Approval steps and CI waits
-carry their own explicit `timeout` / `max_duration` budgets.
+Every run is bounded by `settings.task_timeout` (default **2h**) so a hung
+subprocess cannot hold an agent slot forever. Approval steps and CI waits carry
+their own explicit `timeout` / `max_duration` budgets.
+
+Two hours is deliberately generous: an implementation step routinely runs for an
+hour or more, and a short total bound kills real work rather than runaway work.
+That makes `task_timeout` a poor instrument for catching a *hung* process, which
+is what `settings.stall_timeout` is for:
+
+```yaml
+settings:
+  task_timeout: 2h      # total bound — the backstop
+  stall_timeout: 20m    # no output at all for this long — the hang detector
+```
+
+A step streaming tool calls for ninety minutes is working. A step that has
+emitted nothing for twenty is usually wedged. Only the second is worth killing
+early, and only `stall_timeout` can tell them apart.
+
+`stall_timeout` is **off by default**. It measures silence, so a runner that
+buffers its output until exit instead of streaming would look permanently
+stalled — enabling it globally would kill those runs on upgrade. Turn it on for
+the streaming CLI runners (`claude`, `codex`, `cursor`, `opencode`).
+
+Both bounds are logged at step start, so the log answers "is this step bounded
+at all?" without reading the config:
+
+```
+step implement: timeout 2h0m0s, stall timeout 20m0s
+```
+
+When either fires, the run is recorded as timed out with the bound that fired
+and how long it ran — not as a bare `signal: killed`, which is indistinguishable
+from a crash.
 
 ## What to monitor
 

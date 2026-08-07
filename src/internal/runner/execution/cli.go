@@ -339,7 +339,50 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	if req.SetPID != nil {
 		req.SetPID(cmd.Process.Pid)
 	}
+	// lastOutput is the wall-clock of the most recent line on either stream. The
+	// stall watchdog reads it to tell a working step from a wedged one: a step
+	// streaming tool calls for ninety minutes is fine, one silent for twenty is
+	// usually dead.
+	var lastOutputMu sync.Mutex
+	lastOutput := time.Now()
+	noteOutput := func() {
+		lastOutputMu.Lock()
+		lastOutput = time.Now()
+		lastOutputMu.Unlock()
+	}
+
+	// done is closed once the process is reaped, stopping both the heartbeat
+	// ticker and the stall watchdog.
 	heartbeatDone := make(chan struct{})
+
+	// stalled is closed by the watchdog when it kills the process, so the result
+	// can say "stalled" rather than reporting a bare "signal: killed".
+	stalled := make(chan struct{})
+	var stalledOnce sync.Once
+	if req.StallTimeout > 0 {
+		go func() {
+			ticker := time.NewTicker(min(req.StallTimeout/4, 30*time.Second))
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					lastOutputMu.Lock()
+					idle := time.Since(lastOutput)
+					lastOutputMu.Unlock()
+					if idle >= req.StallTimeout {
+						stalledOnce.Do(func() { close(stalled) })
+						if cmd.Process != nil {
+							_ = cmd.Process.Kill()
+						}
+						return
+					}
+				case <-heartbeatDone:
+					return
+				}
+			}
+		}()
+	}
+
 	if req.Heartbeat != nil {
 		go func() {
 			ticker := time.NewTicker(15 * time.Second)
@@ -364,6 +407,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
+			noteOutput()
 			mu.Lock()
 			outBuf.WriteString(line + "\n")
 			mu.Unlock()
@@ -398,6 +442,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
 			line := scanner.Text()
+			noteOutput()
 			mu.Lock()
 			errBuf.WriteString(line + "\n")
 			mu.Unlock()
@@ -432,7 +477,30 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	if rateLimited && rateLimitResetsAt > 0 {
 		result.RateLimitResetsAt = time.Unix(rateLimitResetsAt, 0)
 	}
+	// A killed process reports "signal: killed" and nothing else, so a timeout
+	// and a stall and a crash all look identical in the run history. Name the
+	// cause while it is still known — this is the difference between "the step
+	// failed" and "the step was cut off at its bound", which call for opposite
+	// responses.
 	if runErr != nil {
+		select {
+		case <-stalled:
+			result.TimedOut = true
+			result.Error = fmt.Errorf("killed after producing no output for %s (settings.stall_timeout); "+
+				"ran for %s in total", req.StallTimeout, result.Duration.Round(time.Second))
+			result.FailureKind = model.FailureAborted
+			return result, nil
+		default:
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			result.TimedOut = true
+			bound := req.Timeout
+			result.Error = fmt.Errorf("killed at the %s run timeout (settings.task_timeout) after %s",
+				bound, result.Duration.Round(time.Second))
+			result.FailureKind = model.FailureAborted
+			return result, nil
+		}
+
 		// claude often exits non-zero with an empty stderr, leaving a bare
 		// "exit status 1" with no clue why. Fall back to the most meaningful
 		// stdout (final result / last assistant text) so the recorded error is

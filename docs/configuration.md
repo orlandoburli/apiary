@@ -267,7 +267,8 @@ settings:
   log_level: info
   state_lock: true
   result_comment: true
-  task_timeout: 30m
+  task_timeout: 2h
+  stall_timeout: 20m
   max_attempts: 3
   log_max_size_mb: 50
   log_max_backups: 5
@@ -280,7 +281,8 @@ settings:
 | `log_level` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `state_lock` | `false` | Add an `in-progress` label on the source item when work starts |
 | `result_comment` | `false` | Post the agent's final output back as a comment |
-| `task_timeout` | `30m` | Default per-run timeout (e.g. `2h`) |
+| `task_timeout` | `2h` | Total bound on one runner invocation. A runaway backstop, not a service-level target — an implementation step legitimately runs for an hour, so a short value kills real work |
+| `stall_timeout` | — (off) | Kill a run that has produced **no output at all** for this long, independent of `task_timeout`. Off by default because a runner that buffers rather than streams would look permanently stalled; enable it for the streaming CLI runners |
 | `max_attempts` | 3 | Stop re-dispatching a `(task, workflow)` after this many **consecutive failed** instances; `<=0` disables — see [resilience](resilience.md#re-dispatch-failure-cap) |
 | `refuse_root` | `false` | Make running as root (euid 0) a startup **error** instead of a warning. Agent CLIs inherit the daemon's uid, so a prompt-injected agent would execute as root. Default warns so existing root service installs keep working |
 | `least_privilege_agents` | `false` | Deny `edit`/`bash`/`webfetch` by default for agents on runners that support per-agent permissions (OpenCode). Individual agents override via `agents[].permissions` |
