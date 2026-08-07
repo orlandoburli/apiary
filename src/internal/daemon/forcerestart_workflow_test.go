@@ -24,7 +24,7 @@ func TestForceRestart_InterruptsWorkflowInstance(t *testing.T) {
 	// Sanity: the running instance shadows its workflow before the restart.
 	match := router.Match{Route: config.RouteConfig{ID: "wf"}}
 	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
-	if kept := d.dropActiveMatches(ctx, taskID, []router.Match{match}); len(kept) != 0 {
+	if kept, _ := d.dropActiveMatches(ctx, taskID, []router.Match{match}); len(kept) != 0 {
 		t.Fatalf("precondition: running instance should shadow the workflow, got %d kept", len(kept))
 	}
 
@@ -42,7 +42,7 @@ func TestForceRestart_InterruptsWorkflowInstance(t *testing.T) {
 	}
 
 	// dropActiveMatches no longer shadows the workflow, so the next poll re-dispatches.
-	if kept := d.dropActiveMatches(ctx, taskID, []router.Match{match}); len(kept) != 1 {
+	if kept, _ := d.dropActiveMatches(ctx, taskID, []router.Match{match}); len(kept) != 1 {
 		t.Fatalf("after restart the workflow should re-dispatch, got %d kept", len(kept))
 	}
 }

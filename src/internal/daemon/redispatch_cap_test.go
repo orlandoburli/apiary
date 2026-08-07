@@ -38,14 +38,14 @@ func TestDropCappedMatches(t *testing.T) {
 		{Route: config.RouteConfig{ID: "hatch"}},
 	}
 
-	out := d.dropCappedMatches(ctx, task, matches)
+	out, _ := d.dropCappedMatches(ctx, task, matches)
 	if len(out) != 1 || out[0].Route.ID != "hatch" {
 		t.Fatalf("expected only 'hatch' kept, got %+v", out)
 	}
 
 	// max_attempts <= 0 disables the cap entirely.
 	d.cfg.Settings.MaxAttempts = 0
-	if got := d.dropCappedMatches(ctx, task, matches); len(got) != 2 {
+	if got, _ := d.dropCappedMatches(ctx, task, matches); len(got) != 2 {
 		t.Errorf("disabled cap should keep all, got %d", len(got))
 	}
 }

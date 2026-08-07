@@ -72,6 +72,14 @@ func (s *QueueStore) Enqueue(ctx context.Context, job *queue.Job) (bool, error) 
 	return true, nil
 }
 
+// RegisterWorker inserts or refreshes a worker registration. active_jobs is
+// reset to zero on re-registration: a worker process registers once at startup
+// and by definition owns no leases at that moment, so a count left behind by a
+// previously-killed process is stale. Leaving it stale is silently harmful —
+// Claim refuses every job while active_jobs >= capacity, and the default
+// embedded-worker capacity is 1, so one orphaned lease means the restarted
+// daemon leases nothing at all until the old lease times out (issue #375).
+// The orphaned attempts themselves are still settled by ReclaimExpired.
 func (s *QueueStore) RegisterWorker(ctx context.Context, worker *queue.Worker) error {
 	if worker == nil || strings.TrimSpace(worker.ID) == "" {
 		return fmt.Errorf("worker id is required")
@@ -91,7 +99,8 @@ func (s *QueueStore) RegisterWorker(ctx context.Context, worker *queue.Worker) e
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET protocol_version=excluded.protocol_version, pool=excluded.pool,
 		  labels=excluded.labels, capabilities=excluded.capabilities, capacity=excluded.capacity,
-		  ready=excluded.ready, draining=excluded.draining, last_heartbeat=excluded.last_heartbeat, updated_at=excluded.updated_at
+		  ready=excluded.ready, draining=excluded.draining, active_jobs=0,
+		  last_heartbeat=excluded.last_heartbeat, updated_at=excluded.updated_at
 	`, worker.ID, worker.ProtocolVersion, nullStr(worker.Pool), string(labels), string(capabilities), worker.Capacity,
 		boolToInt(worker.Ready), boolToInt(worker.Draining), now, now, now)
 	if err != nil {
@@ -313,7 +322,14 @@ func (s *QueueStore) finish(ctx context.Context, jobID, attemptID, token string,
 			available = result.RetryAt.UTC()
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE dispatch_attempts SET state=?, finished_at=?, error_message=? WHERE id=? AND claim_token=? AND state='active'`, attemptState, now, nullStr(result.Error), attemptID, token); err != nil {
+	// error_message doubles as the attempt's explanation column: a failure records
+	// the error, a no-op success records its Note ("skipped: …"), so a job that
+	// succeeded without doing anything is distinguishable in the DB (issue #380).
+	explanation := result.Error
+	if explanation == "" {
+		explanation = result.Note
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE dispatch_attempts SET state=?, finished_at=?, error_message=? WHERE id=? AND claim_token=? AND state='active'`, attemptState, now, nullStr(explanation), attemptID, token); err != nil {
 		return err
 	}
 	terminal := any(nil)

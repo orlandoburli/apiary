@@ -234,11 +234,11 @@ func TestDropAutoResumingMatches(t *testing.T) {
 		{Route: config.RouteConfig{ID: "impl"}},
 		{Route: config.RouteConfig{ID: "triage"}},
 	}
-	got := d.dropAutoResumingMatches("T1", matches)
+	got, _ := d.dropAutoResumingMatches("T1", matches)
 	if len(got) != 1 || got[0].Route.ID != "triage" {
 		t.Errorf("kept %+v, want only triage (impl is auto-resuming)", got)
 	}
-	if got := d.dropAutoResumingMatches("T2", matches); len(got) != 2 {
+	if got, _ := d.dropAutoResumingMatches("T2", matches); len(got) != 2 {
 		t.Errorf("another task must be unaffected, kept %d of 2", len(got))
 	}
 }

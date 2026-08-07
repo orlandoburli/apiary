@@ -122,14 +122,16 @@ func (d *Dispatcher) taskSettled(ctx context.Context, taskID string) bool {
 // it, the first poll after a restart could dispatch a fresh step-1 instance in
 // parallel with the resume. Once the descendant row exists it is 'running' and
 // dropActiveMatches keeps guarding it.
-func (d *Dispatcher) dropAutoResumingMatches(taskID string, matches []router.Match) []router.Match {
+func (d *Dispatcher) dropAutoResumingMatches(taskID string, matches []router.Match) ([]router.Match, []droppedMatch) {
 	out := make([]router.Match, 0, len(matches))
+	var dropped []droppedMatch
 	for _, m := range matches {
 		if _, resuming := d.autoResuming.Load(autoResumeKey(taskID, m.Route.ID)); resuming {
 			aplog.Debug("task %s: workflow %s is being auto-resumed, skipping re-dispatch", taskID, m.Route.ID)
+			dropped = append(dropped, droppedMatch{WorkflowID: m.Route.ID, Reason: "auto-resuming"})
 			continue
 		}
 		out = append(out, m)
 	}
-	return out
+	return out, dropped
 }
