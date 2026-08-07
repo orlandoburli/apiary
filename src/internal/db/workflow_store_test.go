@@ -369,6 +369,54 @@ func TestStepRun_CRUD(t *testing.T) {
 	}
 }
 
+// TestUpdateStepRunState covers the post-gate state correction used when a
+// fail_when / on_missing_output gate fails a step whose runner exited 0 (#390):
+// the row flips to failed, keeps its other fields, and emits a step.failed event.
+func TestUpdateStepRunState(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "wf_g", WorkflowID: "w", CellID: "c", State: InstanceStateRunning})
+	sr := &StepRun{ID: "sr_g", WorkflowInstanceID: "wf_g", StepID: "review", AgentID: "reviewer",
+		State: StepStatePassed, Output: "ok", Summary: "- reviewed", TotalTokens: 42}
+	if err := c.CreateStepRun(ctx, sr); err != nil {
+		t.Fatalf("create step run: %v", err)
+	}
+
+	if err := c.UpdateStepRunState(ctx, "sr_g", StepStateFailed, "gate unevaluable"); err != nil {
+		t.Fatalf("update step run state: %v", err)
+	}
+
+	runs, err := c.ListStepRuns(ctx, "wf_g")
+	if err != nil {
+		t.Fatalf("list step runs: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 step run, got %d", len(runs))
+	}
+	if runs[0].State != StepStateFailed || runs[0].Output != "gate unevaluable" {
+		t.Errorf("state/output not updated: %+v", runs[0])
+	}
+	if runs[0].Summary != "- reviewed" || runs[0].TotalTokens != 42 {
+		t.Errorf("unrelated fields clobbered: %+v", runs[0])
+	}
+
+	events, err := c.ListExecutionEvents(ctx, ExecutionEventFilter{WorkflowInstanceID: "wf_g", Type: "step.failed"})
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("step.failed events = %d, want 1", len(events))
+	}
+	if events[0].StepID != "review" {
+		t.Errorf("event step_id = %q, want review", events[0].StepID)
+	}
+
+	if err := c.UpdateStepRunState(ctx, "missing", StepStateFailed, ""); err == nil {
+		t.Error("expected an error updating an unknown step run")
+	}
+}
+
 func TestStepRun_OrderedByInsertion(t *testing.T) {
 	ctx := context.Background()
 	c := newTestClient(t)

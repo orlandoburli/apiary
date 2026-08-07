@@ -615,6 +615,29 @@ func (c *Client) recordStepEvent(ctx context.Context, sr *StepRun, eventType str
 	_ = c.RecordExecutionEvent(ctx, event)
 }
 
+// UpdateStepRunState rewrites only the state (and output) of an existing step
+// run. The workflow scheduler calls it when a post-execution gate — fail_when
+// (reject_when) or on_missing_output — fails a step whose runner exited 0, so
+// the persisted row matches the decision the workflow actually took (#390). A
+// state change emits the usual step.* execution event.
+func (c *Client) UpdateStepRunState(ctx context.Context, id, state, output string) error {
+	var previous, stepID, instanceID string
+	if err := c.db.QueryRowContext(ctx,
+		`SELECT state, step_id, workflow_instance_id FROM step_runs WHERE id = ?`, id).
+		Scan(&previous, &stepID, &instanceID); err != nil {
+		return err
+	}
+	if _, err := c.db.ExecContext(ctx,
+		`UPDATE step_runs SET state = ?, output = ? WHERE id = ?`, state, nullStr(output), id); err != nil {
+		return err
+	}
+	if previous != state {
+		c.recordStepEvent(ctx, &StepRun{ID: id, WorkflowInstanceID: instanceID, StepID: stepID, State: state},
+			stepStateEventType(state))
+	}
+	return nil
+}
+
 // ListStepRuns returns all step runs for an instance, in insertion order.
 func (c *Client) ListStepRuns(ctx context.Context, instanceID string) ([]StepRun, error) {
 	rows, err := c.db.QueryContext(ctx, `

@@ -38,6 +38,7 @@ type fakeStore struct {
 	stepOrder []string
 	bindings  map[string][]model.SourceBinding // task id → bindings (for bindingLister)
 	ciPolls   []db.CIPollCheck                 // recorded wait_for CI polls (for ciPollRecorder)
+	events    []db.ExecutionEvent              // recorded lifecycle events (for executionEventRecorder)
 	ancestors map[string][]model.InternalTask  // task id → lineage (for ancestorLister)
 }
 
@@ -115,6 +116,55 @@ func (f *fakeStore) UpdateStepRun(_ context.Context, sr *db.StepRun) error {
 	f.stepRuns[sr.ID] = &cp
 	f.mu.Unlock()
 	return nil
+}
+
+// UpdateStepRunState satisfies stepRunStateUpdater so the engine can correct a
+// step run's state after a post-execution gate, as *db.Client does.
+func (f *fakeStore) UpdateStepRunState(_ context.Context, id, state, output string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	sr, ok := f.stepRuns[id]
+	if !ok {
+		return errTest
+	}
+	sr.State, sr.Output = state, output
+	return nil
+}
+
+// RecordExecutionEvent satisfies executionEventRecorder so tests can assert on
+// the lifecycle events the engine emits.
+func (f *fakeStore) RecordExecutionEvent(_ context.Context, ev *db.ExecutionEvent) error {
+	cp := *ev
+	f.mu.Lock()
+	f.events = append(f.events, cp)
+	f.mu.Unlock()
+	return nil
+}
+
+// eventsOfType returns the recorded events with the given type.
+func (f *fakeStore) eventsOfType(t string) []db.ExecutionEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []db.ExecutionEvent
+	for _, ev := range f.events {
+		if ev.Type == t {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// stepRunStates returns the persisted state of every step run for a step id.
+func (f *fakeStore) stepRunStates(stepID string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, id := range f.stepOrder {
+		if sr := f.stepRuns[id]; sr != nil && sr.StepID == stepID {
+			out = append(out, sr.State)
+		}
+	}
+	return out
 }
 
 // fakeExecutor returns scripted results keyed by step ID and records requests.

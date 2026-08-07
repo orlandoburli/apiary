@@ -165,6 +165,8 @@ steps:
         approach:   {type: string}
       required: [complexity, approach]
     on_missing_output: warn       # warn (default) | fail | ignore
+                                  # warn still fails a reject_when gate that
+                                  # reads this step's own memory.write keys
     memory:
       write: [complexity, approach]
 ```
@@ -176,7 +178,7 @@ steps:
 | `prompt` | Step instruction, appended to the task context (title, description, labels) and the agent's soul file |
 | `summary_prompt` | Asks the agent for a short summary, stored on the step and shown in the dashboard |
 | `output` | JSON Schema for structured output (alias: `output_schema`) — see below |
-| `on_missing_output` | What to do when `output` is declared but not satisfied: `warn` (default), `fail`, `ignore` |
+| `on_missing_output` | What to do when `output` is declared but not satisfied: `warn` (default), `fail`, `ignore`. Under `warn` the step still passes, but a `reject_when` gate reading one of this step's own `memory.write` keys fails closed — see [review loops](#reject_when--on_reject--review-loops). `ignore` opts out of both |
 | `memory` | Which output fields to persist, and whether to inject memory — see [Workflow memory](#workflow-memory) |
 | `publish` / `spawn` | Control agent-emitted write-backs and child tasks — see [Tasks & fan-out](tasks-and-fanout.md) |
 | `env` | Step-scope environment variables (highest precedence) |
@@ -258,6 +260,23 @@ loop back on rejection:
 When `reject_when` evaluates true the step is treated as failed and the
 engine restarts from `restart_from`, up to `max` times. The reviewer's
 `feedback` is in memory, so the implementer sees *why* it was rejected.
+
+**Gates fail closed.** A gate that cannot be evaluated is never a pass. If the
+gate reads a memory key the step itself declared in `memory.write` and the
+agent did not emit a value for it — typically because it skipped its
+`APIARY_OUTPUT:` line, or emitted it without that field — the step **fails**
+instead of quietly reading `""` and deciding "not rejected". In the example
+above, a reviewer that rejects the work in prose but forgets the output line
+fails the `review` step and takes the `on_reject` loop back to `implement`,
+rather than passing the work along as approved.
+
+This is scoped to keys the gating step owns: a gate reading a key written by
+some *earlier* step is unchanged, and so are `if:` conditions and split
+branches. Opt out for a single step with `on_missing_output: ignore`.
+
+The condition is recorded as a `step.gate_unevaluable` execution event (visible
+in the dashboard and the event stream) and the step run is persisted as
+`failed`, not only logged.
 
 #### `parallel:` — concurrent steps
 

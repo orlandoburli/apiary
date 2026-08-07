@@ -3,6 +3,7 @@ package workflow
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -67,6 +68,38 @@ func LintExpr(src string) error {
 
 // String returns the original source.
 func (e *Expr) String() string { return e.src }
+
+// MemoryRefs returns the sorted, de-duplicated set of `memory.<key>` keys the
+// expression reads. The scheduler uses it to detect a gate it cannot actually
+// evaluate — a `reject_when` reading a key its own step declared in
+// `memory.write` but never emitted (#390).
+func (e *Expr) MemoryRefs() []string {
+	seen := map[string]struct{}{}
+	collectMemoryRefs(e.root, seen)
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func collectMemoryRefs(n exprNode, seen map[string]struct{}) {
+	switch t := n.(type) {
+	case orNode:
+		collectMemoryRefs(t.l, seen)
+		collectMemoryRefs(t.r, seen)
+	case andNode:
+		collectMemoryRefs(t.l, seen)
+		collectMemoryRefs(t.r, seen)
+	case notNode:
+		collectMemoryRefs(t.x, seen)
+	case cmpNode:
+		if len(t.path) == 2 && t.path[0] == "memory" {
+			seen[t.path[1]] = struct{}{}
+		}
+	}
+}
 
 // ── lexer ───────────────────────────────────────────────────────────────────
 
