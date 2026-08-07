@@ -96,9 +96,13 @@ func (r *Runtime) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			_ = r.store.SetWorkerDrain(context.Background(), r.config.Worker.ID, true)
 			active.Wait()
-			_ = r.store.HeartbeatWorker(context.Background(), r.config.Worker.ID, false)
+			// Stop the heartbeat loop *before* marking the worker unready: it
+			// writes ready=true on every tick, so a tick landing after the final
+			// heartbeat would resurrect a drained worker as ready — leaving a row
+			// that Claim accepts but no process is listening on.
 			stopHeartbeat()
 			heartbeatWG.Wait()
+			_ = r.store.HeartbeatWorker(context.Background(), r.config.Worker.ID, false)
 			return nil
 		case <-poll.C:
 			if _, err := r.store.ReclaimExpired(ctx, time.Now().UTC()); err != nil {
