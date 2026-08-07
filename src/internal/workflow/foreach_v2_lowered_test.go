@@ -63,17 +63,17 @@ func TestForeach_V2LoweredRunsOnePerItem(t *testing.T) {
 
 			_, success, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
 			if !success {
-				t.Fatalf("instance failed; the for_each step could not resolve its items (seen=%v)", exec.seen)
+				t.Fatalf("instance failed; the for_each step could not resolve its items (seen=%v)", exec.seenIDs())
 			}
 
 			subRuns := 0
-			for _, r := range exec.seen {
+			for _, r := range exec.seenIDs() {
 				if strings.HasPrefix(r, "fix-each[") {
 					subRuns++
 				}
 			}
 			if subRuns != 3 {
-				t.Fatalf("expected 3 sub-runs (one per item), got %d (seen=%v)", subRuns, exec.seen)
+				t.Fatalf("expected 3 sub-runs (one per item), got %d (seen=%v)", subRuns, exec.seenIDs())
 			}
 		})
 	}

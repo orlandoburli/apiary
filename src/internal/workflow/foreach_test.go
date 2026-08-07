@@ -74,13 +74,13 @@ func TestForeach_RunsOnePerItem(t *testing.T) {
 
 	// Three sub-runs, one per item, with rendered prompts.
 	subRuns := 0
-	for _, r := range exec.seen {
+	for _, r := range exec.seenIDs() {
 		if strings.HasPrefix(r, "fix-each[") {
 			subRuns++
 		}
 	}
 	if subRuns != 3 {
-		t.Fatalf("expected 3 sub-runs, got %d (seen=%v)", subRuns, exec.seen)
+		t.Fatalf("expected 3 sub-runs, got %d (seen=%v)", subRuns, exec.seenIDs())
 	}
 }
 
@@ -155,7 +155,7 @@ func TestForeach_FailFast(t *testing.T) {
 	}
 	// fail_fast: stop after the first failing item → only 1 sub-run.
 	subRuns := 0
-	for _, id := range exec.seen {
+	for _, id := range exec.seenIDs() {
 		if strings.HasPrefix(id, "fix-each[") {
 			subRuns++
 		}
