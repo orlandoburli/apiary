@@ -218,13 +218,24 @@ func (d *Dispatcher) settleRemoteQueueJob(ctx context.Context, job queue.Job) er
 	} else if existing != nil {
 		return nil
 	}
-	// An embedded worker persists its real instance and settles the task itself.
+	// An embedded worker persists its real instance and settles the task itself,
+	// so a real instance of this job's workflow that is at least as new as the job
+	// means the local engine owns this run — whatever state it is in. Requiring a
+	// *terminal* state here was wrong for a run that parks: a workflow waiting at
+	// an approval or a wait_for step reports a non-success to the queue, so its job
+	// settles `failed` while the instance is very much alive. The reconcile then
+	// wrote a `queue-<jobid>` instance in state `failed` for a route that had not
+	// finished, decremented the outstanding counter the parked instance decrements
+	// again when it resolves, and marked the whole task failed. The phantom failure
+	// also counts toward the consecutive-failure cap, so a few restarts while
+	// parked are enough for dropCappedMatches to stop dispatching the route
+	// altogether (issue #375).
 	instances, err := d.db.ListWorkflowInstancesByTask(ctx, job.TaskID)
 	if err != nil {
 		return err
 	}
 	for _, instance := range instances {
-		if instance.WorkflowID == job.WorkflowID && !instance.CreatedAt.Before(job.CreatedAt) && (instance.State == db.InstanceStateDone || instance.State == db.InstanceStateFailed || instance.State == db.InstanceStateInterrupted) {
+		if instance.WorkflowID == job.WorkflowID && !instance.CreatedAt.Before(job.CreatedAt) {
 			return nil
 		}
 	}
