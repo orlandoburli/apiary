@@ -163,6 +163,10 @@
             "description": "Polling interval (e.g., '30s', '2m'). Defaults to 60s",
             "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
           },
+          "interrupt_on_resolve": {
+            "type": "boolean",
+            "description": "Stop still-running workflow instances when their source item is no longer active (e.g. an alert stopped firing). Off by default; only monitoring sources that can report a resolved item support it"
+          },
           "filters": {
             "type": "object",
             "description": "Task filtering rules",

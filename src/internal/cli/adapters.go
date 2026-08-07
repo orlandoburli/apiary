@@ -47,6 +47,7 @@ func init() {
 		_, caps.Approvals = a.(source.TaskPoller)
 		_, caps.CIWait = a.(source.CIStatusPoller)
 		_, caps.SubIssues = a.(source.SubIssueCreator)
+		_, caps.Resolvable = a.(source.ItemResolver)
 		return caps
 	}
 }

@@ -94,8 +94,9 @@ workflows:
   optional write capabilities. `apiary validate` rejects workflows that pin
   this source and use `on_complete.set_state` / `add_labels`, approval
   steps, `wait_for` CI steps, or `materialize: sub_issue`.
-- **Resolved while running.** A running investigation is not interrupted
-  when its alert resolves; the workflow finishes normally.
+- **Resolved while running.** By default a running investigation is not
+  interrupted when its alert resolves; the workflow finishes normally. Set
+  `interrupt_on_resolve` on the source to opt into stopping it instead.
 
 ## Acknowledge via silence
 
@@ -133,6 +134,56 @@ config:
 - **Requires write access.** The configured token needs permission to POST
   silences. If Alertmanager rejects the request the error is logged and the
   run continues — a silence failure never fails the investigation.
+
+## Interrupting a run when the alert resolves
+
+Sometimes the alert clears on its own — a node came back, a deploy rolled
+back — and the investigation still running against it is now pointless work
+holding an agent slot. `interrupt_on_resolve` stops those runs.
+
+It is a **source-level** field, a sibling of `poll_interval`, not part of
+`config`:
+
+```yaml
+sources:
+  - id: prod-alerts
+    type: prometheus
+    interrupt_on_resolve: true
+    config:
+      alertmanager_url: https://alertmanager.internal:9093
+```
+
+Off by default, and deliberately so: an investigation's findings usually
+outlive the alert that prompted them, and a flapping alert would otherwise
+kill a run that was nearly done.
+
+When enabled, every poll cycle checks the alerts behind all in-flight
+instances of that source and stops the ones whose alert is gone. The check
+is conservative by design:
+
+- **Suppressed is not resolved.** The check queries Alertmanager for *every*
+  alert, including silenced and inhibited ones. This matters most with
+  `ack_via_silence`: the silence Apiary creates on dispatch would otherwise
+  make the alert look resolved and interrupt the very investigation that
+  created it.
+- **Two confirmations.** An alert must look gone on two consecutive checks
+  before anything is stopped, so one transient empty response — an
+  Alertmanager that just restarted and has not been re-fed by Prometheus yet
+  — cannot interrupt every running investigation at once. The cost is one
+  poll interval of latency.
+- **Fails closed.** If Alertmanager cannot be reached the error is logged and
+  nothing is stopped. "Could not tell" is never treated as "resolved".
+- **Parked runs count too.** Instances waiting at an approval or a `wait_for`
+  step are stopped as well — they are as pointless to keep alive as a
+  running one.
+
+A stopped instance is marked `interrupted`, exactly like `apiary stop`. It is
+not a failure, and it can be replayed later with `apiary resume` if the alert
+turns out to matter after all.
+
+Only sources whose adapter can distinguish a resolved item from an invisible
+one accept the flag; `apiary validate` rejects it on any other source type
+rather than letting it sit there doing nothing.
 
 ## Where results go
 

@@ -50,6 +50,11 @@ const (
 	// if the agent dies or the daemon is killed the silence must expire on its
 	// own, or a still-firing alert would stay invisible forever.
 	defaultSilenceDuration = 2 * time.Hour
+
+	// resolveConfirmations is how many consecutive checks must agree that an
+	// alert is gone before ResolvedItems reports it. Two is the smallest value
+	// that survives a single transient empty listing.
+	resolveConfirmations = 2
 )
 
 // Adapter implements source.Adapter for Prometheus Alertmanager.
@@ -84,6 +89,15 @@ type Adapter struct {
 	// handed is reconstructed from a source binding and carries no Metadata,
 	// so the raw label map is not otherwise reachable. Pruned with seen.
 	labels map[string]map[string]string
+
+	// resolveStreak counts consecutive resolution checks in which an item
+	// looked resolved. Reporting on the first check would make a single
+	// unlucky moment — an Alertmanager that just restarted and has not been
+	// re-fed by Prometheus yet — read as "everything resolved" and interrupt
+	// every running investigation at once. Requiring two consecutive checks
+	// costs one poll interval of latency and removes that whole class of
+	// false positive. Reset the moment the item is seen live again.
+	resolveStreak map[string]int
 
 	// silenced records the silence created for an item ID and when it expires,
 	// so a second Acknowledge for the same fire cycle (re-dispatch, retried
@@ -149,6 +163,7 @@ func (a *Adapter) Connect(_ context.Context, cfg map[string]any) error {
 	a.seen = map[string]struct{}{}
 	a.labels = map[string]map[string]string{}
 	a.silenced = map[string]silenceRecord{}
+	a.resolveStreak = map[string]int{}
 
 	aplog.Info("prometheus: configured  alertmanager=%s  max_new_per_poll=%d  min_age=%s  ack_via_silence=%v  silence_duration=%s",
 		baseURL, a.maxNewPerPoll, a.minAge, a.ackViaSilence, a.silenceDuration)
@@ -403,6 +418,73 @@ func (a *Adapter) Acknowledge(ctx context.Context, cell model.SourceItem, action
 	aplog.Info("prometheus: silenced %s until %s (silence=%s, %d matcher(s))",
 		cell.LogLabel(), endsAt.UTC().Format(time.RFC3339), id, len(matchers))
 	return nil
+}
+
+// ResolvedItems reports which of the given item IDs correspond to alerts that
+// are no longer firing. It backs the source's interrupt_on_resolve policy, so a
+// false positive kills a live investigation — the implementation is
+// deliberately conservative in three ways:
+//
+//   - it queries Alertmanager for *every* alert, including silenced and
+//     inhibited ones, so a suppressed alert is never mistaken for a resolved
+//     one (an ack_via_silence silence would otherwise resolve its own alert);
+//   - an API error is returned, never interpreted as "everything resolved";
+//   - an item must look resolved on two consecutive checks before it is
+//     reported, so one bad moment (an Alertmanager that just restarted with an
+//     empty alert set) cannot interrupt every running investigation at once.
+//
+// An alert counts as gone when it is absent from the listing entirely, or is
+// present with endsAt in the past — how a resolved alert lingers until
+// Alertmanager's resolve_timeout drops it.
+func (a *Adapter) ResolvedItems(ctx context.Context, itemIDs []string) ([]string, error) {
+	if len(itemIDs) == 0 {
+		return nil, nil
+	}
+
+	alerts, err := a.client.allAlerts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("prometheus: checking resolved alerts: %w", err)
+	}
+
+	now := time.Now()
+	live := make(map[string]struct{}, len(alerts))
+	for _, al := range alerts {
+		if al.Fingerprint == "" {
+			continue
+		}
+		if !al.EndsAt.IsZero() && al.EndsAt.Before(now) {
+			continue // resolved, still within resolve_timeout
+		}
+		live[itemID(al)] = struct{}{}
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Only the ids we were asked about are tracked, so the streak map cannot
+	// outgrow the set of in-flight investigations.
+	asked := make(map[string]struct{}, len(itemIDs))
+	var resolved []string
+	for _, id := range itemIDs {
+		asked[id] = struct{}{}
+		if _, ok := live[id]; ok {
+			delete(a.resolveStreak, id)
+			continue
+		}
+		a.resolveStreak[id]++
+		if a.resolveStreak[id] < resolveConfirmations {
+			aplog.Debug("prometheus: %s looks resolved (%d/%d confirmations) — waiting for the next check",
+				id, a.resolveStreak[id], resolveConfirmations)
+			continue
+		}
+		resolved = append(resolved, id)
+	}
+	for id := range a.resolveStreak {
+		if _, ok := asked[id]; !ok {
+			delete(a.resolveStreak, id)
+		}
+	}
+	return resolved, nil
 }
 
 // silenceMatchers builds the exact-equality matchers for one alert and reports

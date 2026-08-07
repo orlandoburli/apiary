@@ -90,6 +90,30 @@ func (c *client) createSilence(ctx context.Context, s silence) (string, error) {
 	return resp.SilenceID, nil
 }
 
+// allAlerts fetches every alert Alertmanager currently holds, including the
+// silenced and inhibited ones the normal poll deliberately excludes. Resolution
+// checks need this wider view: a silenced alert (notably one Apiary silenced
+// itself via ack_via_silence) is still firing, and treating it as resolved
+// would interrupt the very investigation that silenced it.
+func (c *client) allAlerts(ctx context.Context) ([]alert, error) {
+	params := url.Values{
+		"active":      {"true"},
+		"silenced":    {"true"},
+		"inhibited":   {"true"},
+		"unprocessed": {"true"},
+	}
+
+	data, err := c.get(ctx, "/api/v2/alerts", params)
+	if err != nil {
+		return nil, err
+	}
+	var alerts []alert
+	if err := json.Unmarshal(data, &alerts); err != nil {
+		return nil, fmt.Errorf("prometheus: decoding alerts response: %w", err)
+	}
+	return alerts, nil
+}
+
 // get executes a GET, retrying on 429/5xx with exponential backoff
 // (honouring Retry-After when present).
 func (c *client) get(ctx context.Context, path string, params url.Values) ([]byte, error) {

@@ -13,6 +13,15 @@ import (
 	_ "github.com/orlandoburli/apiary/internal/source/prometheus"
 )
 
+// writeCaps strips the read-only capabilities, leaving only the write ones the
+// read-only-source lint is about. Resolvable (source.ItemResolver, backing
+// interrupt_on_resolve) is a read capability: a monitoring source having it
+// does not make it writable.
+func writeCaps(c config.SourceCaps) config.SourceCaps {
+	c.Resolvable = false
+	return c
+}
+
 // TestSourceCapsWiring_RealAdapters verifies the #357 capability probe against
 // the real registry: the prometheus alert adapter must present as fully
 // read-only, while github supports every write capability. If a write method
@@ -23,8 +32,14 @@ func TestSourceCapsWiring_RealAdapters(t *testing.T) {
 		t.Fatal("config.SourceCapabilities not wired by cli init()")
 	}
 
-	if caps := config.SourceCapabilities("prometheus"); caps != (config.SourceCaps{}) {
-		t.Errorf("prometheus caps = %+v, want all-false (read-only alert source)", caps)
+	promCaps := config.SourceCapabilities("prometheus")
+	if writeCaps(promCaps) != (config.SourceCaps{}) {
+		t.Errorf("prometheus write caps = %+v, want all-false (read-only alert source)", writeCaps(promCaps))
+	}
+	// Alerts resolve, and the adapter can say so — this is what
+	// interrupt_on_resolve is validated against.
+	if !promCaps.Resolvable {
+		t.Error("prometheus caps.Resolvable = false, want true (adapter implements source.ItemResolver)")
 	}
 
 	if caps := config.SourceCapabilities("dynatrace"); caps != (config.SourceCaps{}) {
