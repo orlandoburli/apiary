@@ -97,15 +97,17 @@ type Timing struct {
 
 // ToolTiming is one entry in Timing.SlowTools: how long a single call took, and
 // enough of a handle to recognise which call it was.
+// The JSON tags are a storage and wire format: entries are persisted as a blob on
+// the step row and served over the daemon's IPC API, so the names are stable.
 type ToolTiming struct {
-	Name  string
-	Label string
+	Name  string `json:"name"`
+	Label string `json:"label,omitempty"`
 	// DurationMS is the call's own wall clock. For background tasks it is the
 	// task's self-reported duration when it provides one.
-	DurationMS int64
+	DurationMS int64 `json:"duration_ms"`
 	// Background marks a task the agent launched in the background rather than a
 	// foreground tool call it blocked on.
-	Background bool
+	Background bool `json:"background,omitempty"`
 }
 
 // FailureKind classifies why a runner invocation failed to produce useful work.

@@ -86,8 +86,11 @@ type StepRun struct {
 	NumTurns            int
 	NumToolCalls        int
 	CostUSD             float64
-	StartedAt           *time.Time
-	FinishedAt          *time.Time
+	// StepTiming is the wall-clock attribution rollup, summed across the step's
+	// failover attempts alongside the token columns above (issue #399).
+	StepTiming
+	StartedAt  *time.Time
+	FinishedAt *time.Time
 }
 
 // CreateWorkflowInstance inserts a new workflow instance. The caller supplies
@@ -529,14 +532,17 @@ func (c *Client) CreateStepRun(ctx context.Context, sr *StepRun) error {
 		   summary, exit_code, skipped_cached, publish_payload, publish_state, spawned_task_id,
 		   input_prompt, input_tokens, output_tokens, total_tokens,
 		   cache_creation_tokens, cache_read_tokens, num_turns, num_tool_calls, cost_usd,
+		   time_thinking_ms, time_writing_ms, time_model_ms, time_tool_wait_ms,
+		   time_other_ms, time_background_ms, slow_tools,
 		   started_at, finished_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, sr.ID, sr.WorkflowInstanceID, sr.StepID, nullStr(sr.AgentID), sr.State,
 		nullStr(sr.Output), nullStr(sr.StructuredOutput), nullStr(sr.Summary),
 		sr.ExitCode, sr.SkippedCached, nullStr(sr.PublishPayload), nullStr(sr.PublishState),
 		nullStr(sr.SpawnedTaskID), nullStr(sr.InputPrompt), sr.InputTokens, sr.OutputTokens,
 		sr.TotalTokens, sr.CacheCreationTokens, sr.CacheReadTokens, sr.NumTurns, sr.NumToolCalls,
-		sr.CostUSD, sr.StartedAt, sr.FinishedAt)
+		sr.CostUSD, sr.ThinkingMS, sr.WritingMS, sr.ModelMS, sr.ToolWaitMS, sr.OtherMS,
+		sr.BackgroundMS, nullStr(sr.SlowTools), sr.StartedAt, sr.FinishedAt)
 	if err == nil {
 		c.recordStepEvent(ctx, sr, stepStateEventType(sr.State))
 	}
@@ -555,13 +561,16 @@ func (c *Client) UpdateStepRun(ctx context.Context, sr *StepRun) error {
 		    spawned_task_id = ?, input_prompt = ?, input_tokens = ?, output_tokens = ?,
 		    total_tokens = ?, cache_creation_tokens = ?, cache_read_tokens = ?,
 		    num_turns = ?, num_tool_calls = ?, cost_usd = ?,
+		    time_thinking_ms = ?, time_writing_ms = ?, time_model_ms = ?,
+		    time_tool_wait_ms = ?, time_other_ms = ?, time_background_ms = ?, slow_tools = ?,
 		    started_at = ?, finished_at = ?
 		WHERE id = ?
 	`, sr.State, nullStr(sr.Output), nullStr(sr.StructuredOutput), nullStr(sr.Summary),
 		sr.ExitCode, sr.SkippedCached, nullStr(sr.PublishPayload), nullStr(sr.PublishState),
 		nullStr(sr.SpawnedTaskID), nullStr(sr.InputPrompt), sr.InputTokens, sr.OutputTokens,
 		sr.TotalTokens, sr.CacheCreationTokens, sr.CacheReadTokens, sr.NumTurns, sr.NumToolCalls,
-		sr.CostUSD, sr.StartedAt, sr.FinishedAt, sr.ID)
+		sr.CostUSD, sr.ThinkingMS, sr.WritingMS, sr.ModelMS, sr.ToolWaitMS, sr.OtherMS,
+		sr.BackgroundMS, nullStr(sr.SlowTools), sr.StartedAt, sr.FinishedAt, sr.ID)
 	if err == nil && previous != sr.State {
 		c.recordStepEvent(ctx, sr, stepStateEventType(sr.State))
 	}
@@ -649,6 +658,9 @@ func (c *Client) ListStepRuns(ctx context.Context, instanceID string) ([]StepRun
 		       COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(total_tokens,0),
 		       COALESCE(cache_creation_tokens,0), COALESCE(cache_read_tokens,0),
 		       COALESCE(num_turns,0), COALESCE(num_tool_calls,0), COALESCE(cost_usd,0.0),
+		       COALESCE(time_thinking_ms,0), COALESCE(time_writing_ms,0), COALESCE(time_model_ms,0),
+		       COALESCE(time_tool_wait_ms,0), COALESCE(time_other_ms,0),
+		       COALESCE(time_background_ms,0), COALESCE(slow_tools,''),
 		       started_at, finished_at
 		FROM step_runs WHERE workflow_instance_id = ? ORDER BY rowid ASC
 	`, instanceID)
@@ -665,7 +677,9 @@ func (c *Client) ListStepRuns(ctx context.Context, instanceID string) ([]StepRun
 			&sr.PublishPayload, &sr.PublishState, &sr.SpawnedTaskID, &sr.InputPrompt,
 			&sr.InputTokens, &sr.OutputTokens, &sr.TotalTokens,
 			&sr.CacheCreationTokens, &sr.CacheReadTokens, &sr.NumTurns, &sr.NumToolCalls,
-			&sr.CostUSD, &sr.StartedAt, &sr.FinishedAt); err != nil {
+			&sr.CostUSD, &sr.ThinkingMS, &sr.WritingMS, &sr.ModelMS, &sr.ToolWaitMS,
+			&sr.OtherMS, &sr.BackgroundMS, &sr.SlowTools,
+			&sr.StartedAt, &sr.FinishedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, sr)
