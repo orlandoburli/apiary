@@ -1,5 +1,15 @@
 # Apiary Agents and Skills
 
+> **Historical.** This describes the eight-agent roster used when `.apiary/`
+> held the operator config for **project-erp** (investigator, po, staff,
+> engineer, backend, frontend, reviewer, qa). That config was replaced by the
+> self-hosting setup — apiary working on apiary — whose roster is investigator,
+> staff, engineer, docs, reviewer, qa. The `po`, `backend` and `frontend` soul
+> files no longer exist.
+>
+> For the current setup see [`apiary.yaml`](apiary.yaml) and the souls in
+> [`souls/`](souls/). The skills sections below are still broadly accurate.
+
 This document describes the agents and skills available for the Apiary automation pipeline.
 
 ## Agents (`.apiary/souls/`)
