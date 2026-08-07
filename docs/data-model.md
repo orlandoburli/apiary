@@ -261,10 +261,18 @@ Two consequences worth knowing:
   leave every bucket at zero. `apiary profile` reports those steps as *not
   measured* rather than as a breakdown of zeros.
 
-The thinking/writing split comes from the CLI's `system:thinking_tokens` events.
-Those are emitted for some thinking and not all, and not at all by some
-providers; when the signal is missing the latency is reported as `time_model_ms`
-rather than being guessed into one bucket or the other.
+The thinking/writing split comes from the CLI's `system:thinking_tokens` events
+and from the separate `assistant` message a turn's thinking arrives in, ahead of
+the message carrying the answer. Those signals are emitted for some thinking and
+not all, and not at all by some providers; when they are missing the latency is
+reported as `time_model_ms` rather than being guessed into one bucket or the
+other.
+
+A background task the agent launched through a tool — a `Task` subagent, a
+backgrounded shell — is reported twice by the provider: once as the foreground
+tool call and once as a background bookend. The two are correlated by tool-use id
+and collapse into a single entry in `slow_tools`, so one piece of work does not
+read as two separate problems.
 
 ### CI poll history (wait_for steps)
 

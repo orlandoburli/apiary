@@ -67,14 +67,22 @@ type timingTracker struct {
 	// last is the timestamp of the most recently observed event; the gap between
 	// it and the next event is what gets attributed.
 	last time.Time
-	// lastWasThinking records whether the event that closed the previous gap was a
-	// thinking_tokens frame, which is what lets the next gap count as writing.
-	lastWasThinking bool
+	// thinkingSeen records that a thinking frame has arrived during the current
+	// turn. It stays set until the turn ends, because the events between the last
+	// thinking frame and the model's message are not all thinking frames —
+	// post_turn_summary, hook bookends and status frames all interleave. Treating
+	// this as a one-shot flag consumed by the next event attributed a 20-second
+	// write as un-attributed latency, because one unrelated system frame landed in
+	// the middle of it.
+	thinkingSeen bool
 
 	thinking, writing, model, toolWait, other time.Duration
 
 	openTools map[string]*openCall
 	openTasks map[string]*openCall
+	// byToolUse indexes finished entries by tool_use id, so the two reports of one
+	// backgrounded call collapse into a single entry.
+	byToolUse map[string]int
 	// bg holds the closed intervals during which at least one background task was
 	// live, in arrival order; overlapping entries are merged when reported.
 	bg []interval
@@ -90,6 +98,11 @@ type openCall struct {
 	// background distinguishes a task_started bookend from a foreground tool call,
 	// so the slowest-N list can say which of the two a long entry was.
 	background bool
+	// toolUses is the tool_use id this call belongs to. A background task the agent
+	// launched through a tool (the Task tool, a backgrounded Bash) is reported
+	// BOTH as a foreground tool call and as a background bookend carrying the same
+	// id; it correlates the two so one piece of work produces one entry.
+	toolUses string
 }
 
 type interval struct{ start, end time.Time }
@@ -117,6 +130,7 @@ func newTimingTracker(start time.Time, now func() time.Time) *timingTracker {
 		last:      start,
 		openTools: map[string]*openCall{},
 		openTasks: map[string]*openCall{},
+		byToolUse: map[string]int{},
 	}
 }
 
@@ -141,7 +155,10 @@ type timingEvent struct {
 	// Background-task bookends. The CLI emits system:task_started when the agent
 	// launches background work (a Task-tool subagent, a workflow) and
 	// system:task_notification when it settles, correlated by task_id.
-	TaskID       string `json:"task_id"`
+	TaskID string `json:"task_id"`
+	// ToolUseID correlates a bookend with the tool call that launched the task, so
+	// the two reports of one wait can be collapsed into one entry.
+	ToolUseID    string `json:"tool_use_id"`
 	Description  string `json:"description"`
 	TaskType     string `json:"task_type"`
 	SubagentType string `json:"subagent_type"`
@@ -171,22 +188,35 @@ func (t *timingTracker) Feed(line string) {
 	defer t.mu.Unlock()
 
 	at := t.now()
-	isThinking := ev.Type == "system" && ev.Subtype == "thinking_tokens"
-	t.attribute(at, isThinking)
+	// A turn's thinking is delivered as its own `assistant` message, separate from
+	// and earlier than the message carrying the visible output — so a thinking-only
+	// message closes a stretch of thinking, exactly like a thinking_tokens frame,
+	// and must not be mistaken for the model having produced its answer.
+	thinkingOnly, hasOutput := assistantShape(ev)
+	t.attribute(at, (ev.Type == "system" && ev.Subtype == "thinking_tokens") || thinkingOnly)
 
 	switch ev.Type {
 	case "assistant":
+		// Only a message carrying real output ends the turn. Ending it on the
+		// thinking message instead left the whole write — 2.3 seconds of a
+		// 10-second run — attributed to nothing.
+		if hasOutput {
+			t.endTurn()
+		}
 		for _, c := range ev.Message.Content {
 			if c.Type != "tool_use" || c.ID == "" {
 				continue
 			}
 			t.openTools[c.ID] = &openCall{
-				name:    c.Name,
-				label:   toolLabel(truncateInput(c.Input)),
-				started: at,
+				name:     c.Name,
+				label:    toolLabel(truncateInput(c.Input)),
+				started:  at,
+				toolUses: c.ID,
 			}
 		}
 	case "user":
+		// Tool results feed the model a new turn.
+		t.endTurn()
 		for _, c := range ev.Message.Content {
 			if c.Type != "tool_result" || c.ToolUseID == "" {
 				continue
@@ -207,6 +237,7 @@ func (t *timingTracker) Feed(line string) {
 				label:      toolLabel(ev.Description),
 				started:    at,
 				background: true,
+				toolUses:   ev.ToolUseID,
 			}
 		case "task_notification":
 			call, ok := t.openTasks[ev.TaskID]
@@ -236,8 +267,9 @@ func (t *timingTracker) Feed(line string) {
 func (t *timingTracker) attribute(at time.Time, endsThinking bool) {
 	gap := at.Sub(t.last)
 	t.last = at
-	wasThinking := t.lastWasThinking
-	t.lastWasThinking = endsThinking
+	if endsThinking {
+		t.thinkingSeen = true
+	}
 	if gap <= 0 {
 		return
 	}
@@ -249,19 +281,70 @@ func (t *timingTracker) attribute(at time.Time, endsThinking bool) {
 		// The gap ended with the model reporting thinking-token progress, so it was
 		// spent thinking.
 		t.thinking += gap
-	case wasThinking:
-		// Thinking was streaming and has now stopped: the model is producing its
-		// visible output.
+	case t.thinkingSeen:
+		// Thinking streamed earlier in this turn and has stopped, so the model is
+		// now producing its visible output. This holds for the whole rest of the
+		// turn, not just until the next frame of any kind arrives.
 		t.writing += gap
 	default:
-		// No thinking signal either side of the gap — model latency we cannot split.
+		// No thinking signal anywhere in this turn — model latency we cannot split.
 		t.model += gap
 	}
 }
 
+// endTurn closes the current model turn, so thinking observed in it does not leak
+// into the attribution of the next one.
+func (t *timingTracker) endTurn() { t.thinkingSeen = false }
+
+// assistantShape classifies an `assistant` message by what it delivers.
+// thinkingOnly marks a message that carries nothing but thinking blocks — the
+// model reporting its reasoning, not its answer. hasOutput marks one carrying
+// visible text or a tool call, which is what actually ends a turn. Both are false
+// for every other event type.
+func assistantShape(ev timingEvent) (thinkingOnly, hasOutput bool) {
+	if ev.Type != "assistant" || len(ev.Message.Content) == 0 {
+		return false, false
+	}
+	sawThinking := false
+	for _, c := range ev.Message.Content {
+		switch c.Type {
+		case "thinking", "redacted_thinking":
+			sawThinking = true
+		default:
+			hasOutput = true
+		}
+	}
+	return sawThinking && !hasOutput, hasOutput
+}
+
+// record adds a completed call to the slowest-N candidates, merging it with the
+// other half of the same work when one piece of work was reported twice.
+//
+// Launching a subagent produces a foreground `Agent` tool call AND a background
+// task bookend for the same wait, correlated by tool_use id. Listing both spends
+// two of five slots on one thing and reads as two separate problems, so they
+// collapse into a single entry: the background half names it far better
+// ("agent:general-purpose · explore the auth code" against a blob of tool-call
+// JSON), while the foreground half spans the full wait including dispatch, so the
+// merged entry takes the better name and the longer duration.
 func (t *timingTracker) record(call *openCall, d time.Duration) {
 	if d < slowToolMinDuration {
 		return
+	}
+	if call.toolUses != "" {
+		if i, ok := t.byToolUse[call.toolUses]; ok {
+			existing := &t.finished[i]
+			if d.Milliseconds() > existing.DurationMS {
+				existing.DurationMS = d.Milliseconds()
+			}
+			if call.background {
+				existing.Name = call.name
+				existing.Label = call.label
+				existing.Background = true
+			}
+			return
+		}
+		t.byToolUse[call.toolUses] = len(t.finished)
 	}
 	t.finished = append(t.finished, model.ToolTiming{
 		Name:       call.name,

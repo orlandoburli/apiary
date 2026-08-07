@@ -47,6 +47,9 @@ func toolResult(id string) string {
 const (
 	assistantText  = `{"type":"assistant","message":{"content":[{"type":"text","text":"working on it"}]}}`
 	thinkingTokens = `{"type":"system","subtype":"thinking_tokens","estimated_tokens":120,"estimated_tokens_delta":40}`
+	// The model delivers a turn's thinking as its own assistant message, ahead of
+	// the one carrying the answer.
+	thinkingMessage = `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"let me work through it"}]}}`
 )
 
 func TestTimingAttributesToolWaitToTheOpenCall(t *testing.T) {
@@ -128,6 +131,95 @@ func TestTimingSplitsThinkingFromWriting(t *testing.T) {
 	}
 	if got.ModelMS != 0 {
 		t.Errorf("ModelMS = %d, want 0 when the thinking signal is present", got.ModelMS)
+	}
+}
+
+// A turn's thinking arrives as its own `assistant` message, ahead of the message
+// carrying the answer. Treating that first message as "the model has answered"
+// attributed the entire write to nothing: in a live 10-second run it put 2.3s of
+// writing into the un-attributed bucket and left WritingMS at 6ms.
+func TestTimingCountsWritingAfterTheThinkingMessage(t *testing.T) {
+	tr, c := newTestTracker()
+	feed(t, tr, c,
+		[]time.Duration{4 * time.Second, 100 * time.Millisecond, 2500 * time.Millisecond},
+		[]string{thinkingTokens, thinkingMessage, assistantText},
+	)
+	got := tr.Finish(c.at)
+
+	// The thinking-only message closes a stretch of thinking, exactly as a
+	// thinking_tokens frame does.
+	if got.ThinkingMS != 4_100 {
+		t.Errorf("ThinkingMS = %d, want 4100", got.ThinkingMS)
+	}
+	if got.WritingMS != 2_500 {
+		t.Errorf("WritingMS = %d, want 2500 — the gap to the message carrying the answer", got.WritingMS)
+	}
+	if got.ModelMS != 0 {
+		t.Errorf("ModelMS = %d, want 0: this turn had a thinking signal throughout", got.ModelMS)
+	}
+}
+
+// Unrelated system frames interleave freely between the last thinking frame and
+// the model's output; none of them means thinking has stopped.
+func TestTimingKeepsWritingAttributionAcrossUnrelatedFrames(t *testing.T) {
+	tr, c := newTestTracker()
+	const postTurn = `{"type":"system","subtype":"post_turn_summary"}`
+	feed(t, tr, c,
+		[]time.Duration{time.Second, time.Second, 3 * time.Second},
+		[]string{thinkingTokens, postTurn, assistantText},
+	)
+	got := tr.Finish(c.at)
+
+	if got.WritingMS != 4_000 {
+		t.Errorf("WritingMS = %d, want 4000 across the intervening frame", got.WritingMS)
+	}
+	if got.ModelMS != 0 {
+		t.Errorf("ModelMS = %d, want 0", got.ModelMS)
+	}
+}
+
+// Thinking from one turn must not colour the next one: after the model delivers
+// an answer, a later gap with no thinking signal is un-attributed again.
+func TestTimingDoesNotLeakThinkingAcrossTurns(t *testing.T) {
+	tr, c := newTestTracker()
+	feed(t, tr, c,
+		[]time.Duration{time.Second, time.Second, 0, 5 * time.Second},
+		[]string{thinkingTokens, assistantText, toolResult("none"), assistantText},
+	)
+	got := tr.Finish(c.at)
+
+	if got.ModelMS != 5_000 {
+		t.Errorf("ModelMS = %d, want 5000: the second turn had no thinking signal", got.ModelMS)
+	}
+}
+
+// Launching a subagent is reported twice — once as the foreground tool call, once
+// as the background bookend — for the same wait. Listing both spends two of five
+// slots on one thing and reads as two separate problems.
+func TestTimingMergesATaskWithTheToolCallThatLaunchedIt(t *testing.T) {
+	tr, c := newTestTracker()
+	started := `{"type":"system","subtype":"task_started","task_id":"bg1","tool_use_id":"t1","description":"count the lines","subagent_type":"general-purpose"}`
+	notified := `{"type":"system","subtype":"task_notification","task_id":"bg1","tool_use_id":"t1","status":"completed","output_file":"","summary":""}`
+	feed(t, tr, c,
+		[]time.Duration{0, time.Second, 25 * time.Second, 2 * time.Second},
+		[]string{toolUse("t1", "Agent", `{"prompt":"count the lines in notes.txt"}`), started, notified, toolResult("t1")},
+	)
+	got := tr.Finish(c.at)
+
+	if len(got.SlowTools) != 1 {
+		t.Fatalf("SlowTools = %+v, want the two reports collapsed into one", got.SlowTools)
+	}
+	entry := got.SlowTools[0]
+	// The background half names it far better than the foreground call's raw input.
+	if entry.Name != "agent:general-purpose" || entry.Label != "count the lines" {
+		t.Errorf("merged entry = %+v, want the background naming", entry)
+	}
+	if !entry.Background {
+		t.Error("merged entry should be marked background")
+	}
+	// The foreground call spans the full wait including dispatch, so it wins.
+	if entry.DurationMS != 28_000 {
+		t.Errorf("DurationMS = %d, want 28000 (the longer of the two spans)", entry.DurationMS)
 	}
 }
 
