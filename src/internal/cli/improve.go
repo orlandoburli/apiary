@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -29,6 +30,8 @@ func newImproveCmd() *cobra.Command {
 		outDir        string
 		dumpEvidence  bool
 		dumpPrompt    bool
+		apply         bool
+		assumeYes     bool
 		excerptBudget int
 	)
 
@@ -189,6 +192,10 @@ ad-hoc --runner/--model pair, settings.improve.agent, or an agent named
 
 			fmt.Fprintln(os.Stderr, improve.DiffSummary(verdicts))
 
+			if apply {
+				return applyChanges(cmd, ws, verdicts, diff, assumeYes)
+			}
+
 			switch output {
 			case "json":
 				enc := json.NewEncoder(cmd.OutOrStdout())
@@ -218,6 +225,8 @@ ad-hoc --runner/--model pair, settings.improve.agent, or an agent named
 	cmd.Flags().StringVar(&outDir, "out", "", "also write report, analysis and evidence to this directory")
 	cmd.Flags().BoolVar(&dumpEvidence, "dump-evidence", false, "print the evidence pack as JSON and exit (runs no model)")
 	cmd.Flags().BoolVar(&dumpPrompt, "dump-prompt", false, "print the composed advisor prompt and exit (runs no model)")
+	cmd.Flags().BoolVar(&apply, "apply", false, "write the accepted changes to disk (workspace is assumed to be under version control)")
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "skip the confirmation prompt when applying")
 	cmd.Flags().IntVar(&excerptBudget, "transcript-bytes", 0, "override the per-transcript character budget")
 
 	return cmd
@@ -278,4 +287,40 @@ func writeArtifacts(dir string, pack *improve.EvidencePack, outcome *improve.Run
 		return err
 	}
 	return write("analysis.json", outcome.Analysis)
+}
+
+// applyChanges shows the diff, asks once, and writes. The diff is printed in
+// full first: a confirmation prompt for changes the operator has not seen is
+// not consent, it is a formality.
+func applyChanges(cmd *cobra.Command, ws *improve.Workspace, verdicts []improve.Verdict, diff string, assumeYes bool) error {
+	prompt := improve.ConfirmationPrompt(verdicts)
+	if prompt == "" {
+		fmt.Fprintln(os.Stderr, "nothing to apply — no proposal survived validation")
+		return nil
+	}
+
+	fmt.Fprint(cmd.OutOrStdout(), diff)
+
+	if !assumeYes {
+		if !improve.IsGitRepo(ws.Root) {
+			fmt.Fprintln(os.Stderr, "\n⚠ This workspace is not a git repository. These edits are written in place")
+			fmt.Fprintln(os.Stderr, "  and there will be no automatic way back.")
+		}
+		fmt.Fprint(os.Stderr, "\n"+prompt)
+		var answer string
+		_, _ = fmt.Fscanln(cmd.InOrStdin(), &answer)
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "y", "yes":
+		default:
+			fmt.Fprintln(os.Stderr, "aborted; nothing written")
+			return nil
+		}
+	}
+
+	res, err := improve.Apply(verdicts, ws.Root)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(os.Stderr, "\n"+res.Summary())
+	return nil
 }
