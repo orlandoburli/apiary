@@ -3,9 +3,12 @@
 ## Ativas
 
 - **step-wallclock-attribution** — Atribuição de wall-clock por step (thinking / writing / esperas de tool / tarefas em background) gravada em `task_executions` e `step_runs` ao lado das colunas de token, lista das chamadas mais lentas, payload do evento `system:task_started` no log, e comando `apiary profile <instance-id> [--json]`. GitHub issue #399.
-- **self-improvement-advisor** — `apiary improve`: standalone command that mines the execution history (step/instance/execution metrics, failure clusters, sampled transcripts), has an agent reason over it at a configurable effort level, and emits an evidence-backed report plus a validated unified diff over the whole config workspace (`apiary.yaml`, workflow files, soul files, skill definitions) — or applies it with `--apply`, leaving undo to git. Ledger tables record what was proposed and applied so `apiary improve effect` measures the before/after delta.
 
 ## Arquivadas
+
+### 2026-08-07
+
+- **self-improvement-advisor** — `apiary improve`: standalone command that mines Apiary's own execution history and proposes configuration changes. Deterministic evidence pack computed in Go (step/workflow/agent metrics, rework loops, wait polling, normalised failure clusters, dead paths, wall-clock split, sampled transcripts) exposed via `--dump-evidence`; advisor resolved as an ordinary agent (`--advisor`, ad-hoc `--runner`/`--model`, `settings.improve.agent`, or an agent named `improver`) with profiles, fallbacks and per-effort models; config workspace discovery over `apiary.yaml`, workflow files, souls and skills with secrets redacted; five-stage validation gate (path → apply → `cfg.Validate` → expr lint → new warnings) with strict patch parsing and no fuzzy matching; critic pass at deep effort; `--apply` writing in place with git as the undo story; and an improvement ledger with `improve history|show|effect` measuring the before/after delta of applied changes. Six phases, GitHub issues #401-#407 (PRs #408, #412, #413, #414, #416, #417).
 
 ### 2026-07-22
 
