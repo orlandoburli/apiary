@@ -118,6 +118,13 @@ erDiagram
         INTEGER num_turns
         INTEGER num_tool_calls
         REAL cost_usd
+        INTEGER time_thinking_ms "wall-clock attribution, summed"
+        INTEGER time_writing_ms
+        INTEGER time_model_ms "latency with no thinking signal"
+        INTEGER time_tool_wait_ms
+        INTEGER time_other_ms
+        INTEGER time_background_ms "overlaps the buckets above"
+        TEXT slow_tools "JSON: slowest calls"
         TIMESTAMP started_at
         TIMESTAMP finished_at
     }
@@ -219,6 +226,45 @@ Per-step cost/usage detail is recorded in **both** layers:
 
 The cost figure originates from the harness: the CLI runner parses the model's
 streamed `total_cost_usd` and token counts — it is reported, not estimated.
+
+### Wall-clock attribution
+
+Alongside the token columns, both layers record **where a step's minutes went**.
+Agent steps routinely run 45–90 minutes, and tokens alone cannot tell you whether
+that time was thinking, writing, or waiting on a subprocess the agent launched —
+three problems with three completely different fixes.
+
+| Column | Meaning |
+|---|---|
+| `time_thinking_ms` | Model producing thinking tokens |
+| `time_writing_ms` | Model producing its visible output |
+| `time_model_ms` | Model latency with no thinking signal to split on — **un-attributed**, not a third kind of model work |
+| `time_tool_wait_ms` | Blocked on a tool call the agent made |
+| `time_other_ms` | Process spawn, prompt upload, teardown |
+| `time_background_ms` | At least one background task outstanding |
+| `slow_tools` | JSON list of the slowest individual calls |
+
+The first five are **exclusive**: every instant of wall clock is counted in
+exactly one of them, and they sum to the run's total. `time_background_ms` is
+**not** one of them — it is the union of the intervals with background work
+outstanding, and it overlaps the others by design (the model writes while a test
+suite runs), so it must never be added in.
+
+Two consequences worth knowing:
+
+- **Per-call durations in `slow_tools` overlap freely.** Parallel tool calls and
+  concurrent background tasks are each measured in full, so those durations can
+  add up to more than the step took. That is correct: the list answers "which
+  call should I go and fix", not "how was the wall clock divided".
+- **Zeros are ambiguous without checking.** Rows written before these columns
+  existed, and runners with no event stream to attribute (the API-based ones),
+  leave every bucket at zero. `apiary profile` reports those steps as *not
+  measured* rather than as a breakdown of zeros.
+
+The thinking/writing split comes from the CLI's `system:thinking_tokens` events.
+Those are emitted for some thinking and not all, and not at all by some
+providers; when the signal is missing the latency is reported as `time_model_ms`
+rather than being guessed into one bucket or the other.
 
 ### CI poll history (wait_for steps)
 

@@ -202,6 +202,9 @@ func showInstance(id string, asJSON bool) error {
 				}
 				fmt.Printf("       %s\n", instMuted.Render(usage))
 			}
+			if line := timingSummary(s.Timing); line != "" {
+				fmt.Printf("       %s\n", instMuted.Render(line))
+			}
 		}
 	}
 	printCIPolls(detail.CIPolls)

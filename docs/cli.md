@@ -101,6 +101,38 @@ apiary instances <instance-id>
 States: `pending`, `running`, `approval_waiting`, `interrupted`, `done`,
 `failed`.
 
+### `apiary profile`
+
+Show where a run's wall clock actually went — per step, plus the slowest
+individual calls across the whole run:
+
+```sh
+apiary profile <instance-id> [--json]
+```
+
+```
+STEP               TOTAL     THINK     WRITE     TOOLS     OTHER
+plan               3m0s      67%       33%       —         —
+implement          1h22m42s  6%        24%       63%       7%
+  63% with background work outstanding (overlaps the above)
+
+Slowest calls
+  9m54s      background  implement       workflow:verify  ·  run the full test suite
+  8m0s       tool        implement       Bash  ·  ./gradlew test
+```
+
+Use it before tuning a slow step: the fix for a thinking-heavy step (model or
+effort), a writing-heavy one (a tighter prompt) and a wait-heavy one (fix the
+thing being waited on) have nothing in common, and guessing wrong costs another
+full-length run to disprove.
+
+Steps recorded before this data existed, and runners that stream no events,
+report as `not measured` rather than as a breakdown of zeros. See
+[Wall-clock attribution](data-model.md#wall-clock-attribution) for what each
+bucket covers and why the background figure overlaps the others.
+
+`--json` emits the full breakdown, for the analysis this table does not do.
+
 ### `apiary task`
 
 Show a task's full workflow history — all instances, steps, and scoped logs.
