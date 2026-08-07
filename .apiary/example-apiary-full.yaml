@@ -301,6 +301,16 @@ agents:
     model: opencode-go/deepseek-v4-pro
     skills: [git-workflow, gitnexus-codebase]
 
+  # The self-improvement advisor. No workflow triggers it and no label routes to
+  # it — it runs on demand via `apiary improve`, outside the daemon, so it never
+  # takes a dispatch slot. It reads the local database and config and does not
+  # talk to the source, so it needs no source_token.
+  - id: improver
+    description: "Analyses execution metrics and proposes configuration improvements"
+    soul_file: .apiary/souls/improver.md
+    model: claude-sonnet-4-6
+    max_workers: 1
+
 # ── Workflows ──────────────────────────────────────────────────────────────────
 # Single-agent workflows (formerly `routes:`) — each matches on the agent: label.
 workflows:
@@ -564,6 +574,19 @@ settings:
     # max_inject_chars: 4000         # prompt budget for the recall sections
     # max_entry_bytes: 16384         # cap on a single memorized fact
     # task_retention: 720h           # prune task notes this long after the task ends
+  # Self-improvement advisor (`apiary improve`): which agent analyses the
+  # execution history and proposes configuration changes. Optional in full —
+  # the advisor can also be named on the command line, and `--dump-evidence`
+  # needs none of it because it runs no model. Without any of these, the
+  # command errors rather than guessing a model you never chose.
+  improve:
+    agent: improver
+    # Effort can pick a cheaper model: reading aggregate tables at "quick" and
+    # reasoning over transcripts and prose at "deep" are different jobs.
+    # effort_models:
+    #   quick:    claude-haiku-4-5
+    #   standard: claude-sonnet-4-6
+    #   deep:     claude-opus-4-1
   # Cursor cost back-fill (opt-in): the Cursor agent CLI streams token counts
   # but no dollar cost, so cursor-cli runs record $0.00. On usage-based Cursor
   # plans the daemon can recover real billed amounts from the cursor.com

@@ -144,6 +144,36 @@ apiary task --source github --item 1948
 apiary task <id> --json
 ```
 
+### `apiary improve`
+
+Analyse the execution history and propose configuration changes. Standalone —
+it opens the database read-only, works with the daemon stopped, and takes no
+dispatch slot when it is running.
+
+```sh
+apiary improve                          # analyse; print findings and a diff
+apiary improve --effort deep --since 30d
+apiary improve --apply                  # write the accepted changes
+apiary improve --dump-evidence          # just the metrics, as JSON, no model
+apiary improve --dump-prompt            # the composed prompt, no model
+```
+
+The evidence is computed entirely in Go, so `--dump-evidence` needs no advisor
+and costs nothing. Everything else needs an agent to reason with: `--advisor`,
+an ad-hoc `--runner`/`--model` pair, `settings.improve.agent`, or an agent named
+`improver`.
+
+Past runs are recorded so their effect can be measured later:
+
+```sh
+apiary improve history
+apiary improve show <run-id>
+apiary improve effect <run-id>
+```
+
+See [Self-Improvement](improve.md) for the evidence pack, effort levels, the
+validation gate and what applying does.
+
 ## Intervening
 
 ### `apiary resume`

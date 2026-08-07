@@ -659,6 +659,27 @@
             }
           }
         },
+        "improve": {
+          "type": "object",
+          "description": "Configuration for `apiary improve`, the self-improvement advisor. Optional in full: the advisor can also be named on the command line, and --dump-evidence needs none of it because it runs no model",
+          "additionalProperties": false,
+          "properties": {
+            "agent": {
+              "type": "string",
+              "description": "Id of the agent that performs the analysis. Resolved like any other agent (runner, model, fallbacks, MCPs), so the advisor is not a special case. Empty falls back to an agent literally named \"improver\"; failing that the command errors rather than guessing, because model is required per agent and there is no global default to fall back to"
+            },
+            "effort_models": {
+              "type": "object",
+              "description": "Optional per-effort model override, replacing the advisor agent's own model for that run. Reading aggregate tables at \"quick\" and reasoning over transcripts and prose at \"deep\" are different jobs, so paying deep prices for a quick run is waste. Unset levels fall through to the agent's model",
+              "additionalProperties": false,
+              "properties": {
+                "quick": { "type": "string" },
+                "standard": { "type": "string" },
+                "deep": { "type": "string" }
+              }
+            }
+          }
+        },
         "git_hooks": {
           "type": "object",
           "description": "Enforce a shared git hooks directory on the agents' repo checkouts. At startup the daemon sets core.hooksPath of every repo matched by 'repos' to 'dir' (and marks the scripts executable), so hooks like a pre-push running local lint/tests mechanically gate agent pushes — prompt rules alone are advisory. Both keys are required together",
