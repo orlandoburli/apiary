@@ -81,6 +81,25 @@ that:
   runs are not blocked; they stay eligible for retry up to
   `settings.max_attempts`.
 
+An exclusive claim is **not** re-evaluated if the exclusive workflow is
+afterwards held back before dispatch — because it already has a live instance,
+because it is a spent `once` route, or because it hit the consecutive-failure
+cap. The task simply runs nothing that cycle: falling through to the triggers
+the exclusive one suppressed would start exactly the work it exists to prevent,
+alongside a run that may still be active. The daemon reports the situation at
+`INFO` and names the suppressed workflows, e.g.:
+
+```text
+cell ISSUE-9 ("Ship it"): task 019f… matched 1 workflow(s) but every one was
+dropped before dispatch — decompose (once: already completed); exclusive
+workflow decompose had already suppressed 1 lower-priority match(es) (review),
+which are not reconsidered; nothing will run for this task until the reason clears
+```
+
+If you want the lower-priority workflow to take over in that state, make the
+handover explicit — narrow the exclusive trigger's `match` so it stops matching
+once its work is done (e.g. on a label the workflow itself sets).
+
 ### PR event triggers (`on:`)
 
 By default a trigger matches **work items** (issues/tickets polled from a

@@ -138,6 +138,11 @@ type TriggerConfig struct {
 	// Exclusive, when true, stops trigger evaluation after this trigger matches:
 	// no lower-priority trigger is considered. Use it for a terminal classifier or
 	// catch-all that must own a task alone rather than fan out alongside others.
+	//
+	// The claim holds even when a pre-dispatch guard later drops this workflow
+	// (live instance, spent `once`, failure cap): the suppressed triggers are not
+	// reconsidered, since running them then would duplicate the work this trigger
+	// exists to own. The daemon names them in its fully-dropped INFO report.
 	Exclusive bool `yaml:"exclusive"`
 	// Once, when true, makes the workflow run at most once per task: once it has a
 	// completed (done) instance for the task, later polls do not re-dispatch it even
