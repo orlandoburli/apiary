@@ -38,7 +38,6 @@ func newEventDispatcher(t *testing.T) (*Dispatcher, *db.Client, *envRecordingRun
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = dbc.Close() })
 
 	cfg := &config.Config{
 		Version: "1",
@@ -65,6 +64,17 @@ func newEventDispatcher(t *testing.T) (*Dispatcher, *db.Client, *envRecordingRun
 		agentSem:    map[string]chan struct{}{},
 		stats:       map[string]*sourceStat{},
 	}
+	// Teardown order matters: a dispatch runs on its own goroutine and keeps
+	// writing (execution events, outstanding counters) after routePREvent
+	// returns. Closing the store first leaves those writes failing with
+	// "sql: database is closed" and lets the goroutine race the next test, so
+	// wait for the dispatcher to go idle before closing.
+	t.Cleanup(func() {
+		if !d.WaitBackground(10 * time.Second) {
+			t.Error("dispatcher goroutines still running 10s after the test finished")
+		}
+		_ = dbc.Close()
+	})
 	d.binder = source.NewSourceBinder(dbc)
 	return d, dbc, runner
 }
@@ -75,6 +85,18 @@ func testEvent(id string) model.SourceEvent {
 		PRNumber: 7, PRURL: "https://github.com/o/r/pull/7",
 		Author: "alice", AuthorAssociation: "COLLABORATOR",
 		Body: "@apiary fix the lint errors", SubmittedAt: time.Now(),
+	}
+}
+
+// waitIdle blocks until every dispatch the test kicked off has finished, so
+// assertions observe the completed run rather than a half-written one. Waiting
+// on the dispatcher's own goroutines is deterministic: polling the DB for the
+// instance row only proves the run *started*, and under load the agent step can
+// still be pending when the row appears.
+func waitIdle(t *testing.T, d *Dispatcher) {
+	t.Helper()
+	if !d.WaitBackground(10 * time.Second) {
+		t.Fatal("dispatch did not finish within 10s")
 	}
 }
 
@@ -110,6 +132,7 @@ func TestRoutePREvent_ExactlyOnceAndEnvPayload(t *testing.T) {
 	d.routePREvent(ctx, ev)
 	d.routePREvent(ctx, ev) // duplicate delivery must be a no-op
 
+	waitIdle(t, d)
 	insts := waitForInstances(t, dbc, 1)
 	if insts[0].WorkflowID != "fix-feedback" {
 		t.Errorf("instance workflow = %q", insts[0].WorkflowID)
@@ -150,13 +173,15 @@ func TestRoutePREvent_MaxDispatchesBudget(t *testing.T) {
 	d, dbc, _ := newEventDispatcher(t)
 
 	d.routePREvent(ctx, testEvent("comment-1"))
+	waitIdle(t, d)
 	waitForInstances(t, dbc, 1)
 	d.routePREvent(ctx, testEvent("comment-2"))
+	waitIdle(t, d)
 	waitForInstances(t, dbc, 2)
 
 	// Budget is 2: the third event on the same PR must not dispatch.
 	d.routePREvent(ctx, testEvent("comment-3"))
-	time.Sleep(150 * time.Millisecond)
+	waitIdle(t, d)
 	waitForInstances(t, dbc, 2)
 }
 
@@ -178,6 +203,7 @@ func TestRoutePREvent_BindsRelatedTask(t *testing.T) {
 	ev.RelatedItemID = "42"
 	d.routePREvent(ctx, ev)
 
+	waitIdle(t, d)
 	insts := waitForInstances(t, dbc, 1)
 	if insts[0].TaskID != issueTask.ID {
 		t.Errorf("instance task = %q, want the originating issue's task %q", insts[0].TaskID, issueTask.ID)

@@ -278,7 +278,7 @@ func (d *Dispatcher) checkApprovals(ctx context.Context) {
 			continue
 		}
 		agentCh := d.agentSem[p.AgentID]
-		go func() {
+		d.goBackground(func() {
 			defer d.approvalAdvancing.Delete(p.InstanceID)
 
 			// Cheap re-evaluation, ungated. Still waiting → leave it parked.
@@ -313,7 +313,7 @@ func (d *Dispatcher) checkApprovals(ctx context.Context) {
 			} else {
 				_, _ = d.engine.ResolveApproval(ctx, p.InstanceID, decision)
 			}
-		}()
+		})
 	}
 }
 
@@ -345,7 +345,7 @@ func (d *Dispatcher) checkWaits(ctx context.Context) {
 			continue
 		}
 		agentCh := d.agentSem[w.AgentID]
-		go func() {
+		d.goBackground(func() {
 			defer d.waitAdvancing.Delete(w.InstanceID)
 
 			// Cheap CI re-check, ungated. Still pending → leave it parked.
@@ -365,7 +365,7 @@ func (d *Dispatcher) checkWaits(ctx context.Context) {
 				defer func() { <-agentCh }()
 			}
 			d.engine.WakeWait(ctx, w.InstanceID)
-		}()
+		})
 	}
 }
 

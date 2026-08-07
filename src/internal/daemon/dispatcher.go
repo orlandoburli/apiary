@@ -80,6 +80,12 @@ type Dispatcher struct {
 
 	sem        chan struct{}            // poll concurrency (size 1)
 	agentSem   map[string]chan struct{} // per-agent dispatch concurrency
+	// bg tracks every goroutine the dispatcher spawns to carry a dispatch
+	// forward off the poll loop (fan-out runs, PR-event runs, parked
+	// approval/wait advances, resumes). Waiting on it gives callers — chiefly
+	// tests, which own the DB's lifetime — a deterministic point at which no
+	// dispatch work is still touching the store.
+	bg         sync.WaitGroup
 	active     atomic.Int32
 	inFlight   sync.Map
 	activeRuns sync.Map
@@ -1867,6 +1873,36 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 // semaphore and tracked as an active run. The cell's in-flight marker is cleared
 // only after every dispatch finishes. When wg is non-nil each dispatch joins it
 // (so RunOnce can wait); onFail, if set, is called with the cell ID per failure.
+// goBackground runs fn on its own goroutine, tracked by d.bg so WaitBackground
+// can tell when all in-flight dispatch work has finished. Every dispatcher
+// goroutine that outlives the call that started it — and touches the DB — must
+// go through here; otherwise it can still be running when the store closes.
+func (d *Dispatcher) goBackground(fn func()) {
+	d.bg.Add(1)
+	go func() {
+		defer d.bg.Done()
+		fn()
+	}()
+}
+
+// WaitBackground blocks until every goroutine started through goBackground has
+// returned, or timeout elapses; it reports whether they all finished. Callers
+// that own the dispatcher's DB (tests, one-shot runs) use it to close the store
+// only once no dispatch is still writing to it.
+func (d *Dispatcher) WaitBackground(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		d.bg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 func (d *Dispatcher) fanOut(ctx context.Context, cell model.SourceItem, adapter source.Adapter, task model.InternalTask, persisted bool, matches []router.Match, wg *sync.WaitGroup, onFail func(cellID string)) {
 	if len(matches) == 0 {
 		d.inFlight.Delete(cell.ID)
@@ -1895,7 +1931,9 @@ func (d *Dispatcher) fanOut(ctx context.Context, cell model.SourceItem, adapter 
 		}
 		runID := d.nextRunID()
 
+		d.bg.Add(1)
 		go func(runID string, match router.Match, agentCh chan struct{}) {
+			defer d.bg.Done()
 			if wg != nil {
 				defer wg.Done()
 			}
@@ -1938,10 +1976,10 @@ func (d *Dispatcher) fanOut(ctx context.Context, cell model.SourceItem, adapter 
 
 	// Release the in-flight marker once all of this cell's dispatches finish, so
 	// the cell can be re-polled (and re-routed against its refreshed task).
-	go func() {
+	d.goBackground(func() {
 		inner.Wait()
 		d.inFlight.Delete(cell.ID)
-	}()
+	})
 }
 
 // transientTask builds an unpersisted InternalTask from a source item, mapping

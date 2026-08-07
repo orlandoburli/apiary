@@ -163,7 +163,7 @@ func (d *Dispatcher) dispatchPREvent(ctx context.Context, ev model.SourceEvent, 
 		cell.ID = fmt.Sprintf("pr-%d", ev.PRNumber)
 	}
 
-	go func() {
+	d.goBackground(func() {
 		if agentCh != nil {
 			select {
 			case agentCh <- struct{}{}:
@@ -198,7 +198,7 @@ func (d *Dispatcher) dispatchPREvent(ctx context.Context, ev model.SourceEvent, 
 			return
 		}
 		aplog.Info("event %s: workflow instance %s started (success=%v)", ev.ID, instID, success)
-	}()
+	})
 }
 
 // prEventEnv is the environment payload exported to every step of an
