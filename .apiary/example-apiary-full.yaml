@@ -519,13 +519,18 @@ workflows:
   # no inline workflow runs. The created sub-issues carry agent:* labels, so the
   # normal poll→route loop dispatches the right implementer on the next cycle — the
   # same path a human-filed issue takes.
+  #
+  # The trigger pins the github source: `materialize: sub_issue` needs an adapter
+  # that implements source.SubIssueCreator, and github is the only one that does —
+  # `apiary validate` rejects the workflow when it is pinned to a source without
+  # that capability (plane, jira, and the read-only alert sources).
   - id: spec-decompose
     description: "Turn a spec issue into a deduplicated set of implementer sub-issues."
     trigger:
       priority: 15
       once: true
       match:
-        source: project-erp
+        source: my-repo
         labels: [agent:po]
     steps:
       - id: spec
