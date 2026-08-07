@@ -77,7 +77,7 @@ func TestForceRestart_UnknownIDIsRejected(t *testing.T) {
 	fake := &countingSource{cell: model.SourceItem{ID: "297869", Labels: []string{"in-progress"}}}
 	d := restartUnknownDispatcher(dbc, fake)
 
-	err := d.ForceRestart(ctx, "019fd9312ac74556ae907abbbd17e3be")
+	_, err := d.ForceRestart(ctx, "019fd9312ac74556ae907abbbd17e3be")
 	if err == nil {
 		t.Fatalf("ForceRestart with an unknown id must fail, got nil")
 	}
@@ -114,7 +114,7 @@ func TestForceRestart_InternalTaskIDPointsAtItsCell(t *testing.T) {
 	fake := &countingSource{}
 	d := restartUnknownDispatcher(dbc, fake)
 
-	err := d.ForceRestart(ctx, taskID)
+	_, err := d.ForceRestart(ctx, taskID)
 	if err == nil || !errors.Is(err, ErrUnknownCell) {
 		t.Fatalf("ForceRestart(task id) = %v, want an ErrUnknownCell failure", err)
 	}
@@ -134,7 +134,7 @@ func TestForceRestart_KnownCellStillRestarts(t *testing.T) {
 	fake := &countingSource{cell: model.SourceItem{ID: "295651", Labels: []string{"in-progress", "bug"}}}
 	d := restartUnknownDispatcher(dbc, fake)
 
-	if err := d.ForceRestart(ctx, "295651"); err != nil {
+	if _, err := d.ForceRestart(ctx, "295651"); err != nil {
 		t.Fatalf("ForceRestart(known cell): %v", err)
 	}
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -936,16 +937,118 @@ func (d *Dispatcher) Status() StatusResponse {
 // side effects with an id from some other id space (#377).
 var ErrUnknownCell = errors.New("unknown cell")
 
-// ForceRestart cancels a running dispatch for the given cell, removes it from
-// tracking maps, marks the execution as interrupted in the DB, and resets the
-// source state so the cell can be picked up on the next poll.
+// RestartResult reports what a force-restart actually did. Restart used to return
+// nothing but an error, so "the cleanup ran" and "a new run started" were
+// indistinguishable to every caller — which is why the dashboard's R looked like a
+// no-op even when it worked. Dispatched/Workflows say whether new work exists now;
+// Overridden names the pre-dispatch guards an explicit restart deliberately
+// ignored, so a bypass is never silent.
+type RestartResult struct {
+	CellID     string   `json:"cell_id"`
+	Ref        string   `json:"ref,omitempty"` // human reference (CDT-123, #1953) if the item has one
+	Dispatched int      `json:"dispatched"`
+	Workflows  []string `json:"workflows,omitempty"`
+	Overridden []string `json:"overridden,omitempty"`
+}
+
+// Label returns the reference to show a human: the item's own number when it has
+// one, else the raw cell id. Reporting a bare cell id is close to useless on
+// sources whose id is not what people see — a Jira restart would echo "10042" for
+// what the user knows as CDT-123.
+func (r RestartResult) Label() string {
+	if r.Ref != "" && r.Ref != r.CellID {
+		return fmt.Sprintf("%s (%s)", r.Ref, r.CellID)
+	}
+	return r.CellID
+}
+
+// ErrAmbiguousRef is returned when a human item reference matches items in more
+// than one source. Restart is destructive, so a reference that could mean two
+// different items must be disambiguated by the caller rather than guessed at.
+var ErrAmbiguousRef = errors.New("ambiguous item reference")
+
+// resolveCellRef maps whatever the caller passed to a cell id. A cell id is
+// returned unchanged; anything else is looked up as a human item reference (Jira
+// key, GitHub issue number, Dynatrace display id) against the source bindings.
 //
-// The id must be a cell id (the source item id: a GitHub issue number, a Jira
-// issue id, …) — not an internal task id. Anything else returns ErrUnknownCell
-// and nothing is touched.
-func (d *Dispatcher) ForceRestart(ctx context.Context, cellID string) error {
+// This exists because for several sources the cell id is not a thing any human
+// ever sees: the Jira adapter binds on the opaque numeric issue id, so `apiary
+// restart CDT-123` — the only form a user could reasonably type — failed as an
+// unknown cell while the id that did work appeared nowhere in the UI.
+func (d *Dispatcher) resolveCellRef(ctx context.Context, ref string) (cellID, number string, err error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || d.db == nil {
+		return ref, "", nil
+	}
+
+	// An exact cell id always wins: it is unambiguous, and a source whose ids and
+	// numbers overlap (GitHub, where both derive from the issue number) must not
+	// take the slower path.
+	if b, err := d.db.SourceBindings().GetBindingBySourceItemID(ctx, ref); err == nil && b != nil {
+		return b.SourceItemID, b.SourceItemNumber, nil
+	}
+
+	bindings, err := d.db.SourceBindings().ListBindingsBySourceItemNumber(ctx, ref)
+	if err != nil {
+		return ref, "", fmt.Errorf("restart %s: looking up item reference: %w", ref, err)
+	}
+	if len(bindings) == 0 {
+		return ref, "", nil // not a known reference; assertKnownCell decides
+	}
+
+	// Several bindings are fine when they are the same item (one item can be bound
+	// more than once over its life); distinct items are not.
+	distinct := map[string]model.SourceBinding{}
+	for _, b := range bindings {
+		distinct[b.SourceID+":"+b.SourceItemID] = b
+	}
+	if len(distinct) > 1 {
+		var opts []string
+		for _, b := range distinct {
+			opts = append(opts, fmt.Sprintf("%s:%s", b.SourceID, b.SourceItemID))
+		}
+		sort.Strings(opts)
+		return ref, "", fmt.Errorf("%w: %q matches %d items (%s) — restart the cell id directly",
+			ErrAmbiguousRef, ref, len(distinct), strings.Join(opts, ", "))
+	}
+
+	b := bindings[0]
+	aplog.Info("restart: resolved item reference %q to cell %s (source %s)", ref, b.SourceItemID, b.SourceID)
+	return b.SourceItemID, b.SourceItemNumber, nil
+}
+
+// ForceRestart cancels a running dispatch for the given cell, removes it from
+// tracking maps, marks the execution as interrupted in the DB, resets the source
+// state, strips the cell's control labels — and then re-routes and dispatches the
+// cell immediately rather than leaving it for the next poll.
+//
+// The immediate dispatch is the point: waiting for the poll tick meant a restart
+// produced no observable effect for up to a full poll_interval, and on the queue
+// path it usually produced none at all (the dispatch generation never moved, so
+// every re-enqueue collided with the restarted round's own idempotency keys).
+// Restart now bumps the generation and dispatches inline; the poll remains a
+// fallback for anything this path cannot resolve (e.g. a source with no
+// TaskPoller).
+//
+// An explicit restart also overrides the `once` and failure-cap guards: those
+// describe what automatic re-polling may do on its own, and a task wedged behind
+// either is exactly the task a human reaches for restart to unwedge. The
+// in-flight guard is NOT overridden — restart never runs a workflow twice
+// concurrently.
+//
+// The argument may be a cell id (the source item id) or the item's human
+// reference (a Jira key like CDT-123, a GitHub issue number like #1953) — the
+// latter is resolved through the source bindings. It may NOT be an internal task
+// id; that, and anything else that resolves to nothing, returns ErrUnknownCell
+// and touches nothing.
+func (d *Dispatcher) ForceRestart(ctx context.Context, ref string) (RestartResult, error) {
+	cellID, number, err := d.resolveCellRef(ctx, ref)
+	if err != nil {
+		return RestartResult{CellID: ref}, err
+	}
+	res := RestartResult{CellID: cellID, Ref: number}
 	if err := d.assertKnownCell(ctx, cellID); err != nil {
-		return err
+		return res, err
 	}
 
 	// Cancel the running dispatch, if any
@@ -1017,14 +1120,16 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, cellID string) error {
 
 	// Strip control labels so the cell re-enters routing from the start instead
 	// of being shadowed by a stale lock (e.g. "in-progress") or a stage marker
-	// (e.g. "agent:engineer"). Needs the source's current labels (TaskPoller) and
-	// label removal (LabelRemover); sources missing either are skipped.
+	// (e.g. "agent:engineer"). Needs the source's current labels (TaskPoller);
+	// removal additionally needs LabelRemover. The fetched item is also what the
+	// inline re-dispatch below routes on, so a source that can only be read still
+	// yields a restart — it just cannot clear labels.
+	var (
+		restartCell    model.SourceItem
+		restartAdapter source.Adapter
+	)
 	for _, sc := range d.cfg.Sources {
 		adapter, ok := d.sources[sc.ID]
-		if !ok {
-			continue
-		}
-		remover, ok := adapter.(source.LabelRemover)
 		if !ok {
 			continue
 		}
@@ -1044,17 +1149,146 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, cellID string) error {
 			aplog.Error("force-restart %s: %s returned item %s — refusing to touch it", cellID, sc.ID, cell.ID)
 			continue
 		}
-		if labels := d.controlLabels(cell); len(labels) > 0 {
+		labels := d.controlLabels(cell)
+		if remover, ok := adapter.(source.LabelRemover); ok && len(labels) > 0 {
 			if err := remover.RemoveLabels(ctx, cell, labels); err != nil {
 				aplog.Error("force-restart %s: removing control labels %v: %v", cellID, labels, err)
 			} else {
 				aplog.Info("force-restart %s: removed control labels %v", cellID, labels)
 			}
 		}
+		if restartAdapter == nil {
+			// Route on the post-strip label set. Re-reading it from the source
+			// would race the removal we just issued (forges apply label writes
+			// asynchronously), and a stale read puts the lock label straight back
+			// into routing — the cell would be dropped by the very exclusion the
+			// strip exists to clear.
+			cell.ID = cellID
+			cell.Labels = withoutLabels(cell.Labels, labels)
+			restartCell, restartAdapter = cell, adapter
+		}
 	}
 
 	aplog.Info("force-restarted cell %s", cellID)
-	return nil
+
+	// Dispatch now instead of deferring to the next poll tick.
+	if restartAdapter != nil {
+		res.Dispatched, res.Workflows, res.Overridden = d.redispatchCell(ctx, restartCell, restartAdapter)
+	} else {
+		aplog.Warn("force-restart %s: no source could fetch the item — falling back to the next poll for re-dispatch", cellID)
+	}
+	return res, nil
+}
+
+// withoutLabels returns labels minus remove, compared case-insensitively to match
+// controlLabels' own comparison.
+func withoutLabels(labels, remove []string) []string {
+	if len(remove) == 0 {
+		return labels
+	}
+	drop := make(map[string]bool, len(remove))
+	for _, l := range remove {
+		drop[strings.ToLower(l)] = true
+	}
+	out := make([]string, 0, len(labels))
+	for _, l := range labels {
+		if !drop[strings.ToLower(l)] {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// redispatchCell re-routes a just-restarted cell and dispatches every workflow
+// that matches, returning the count, the workflow ids, and the guards it
+// overrode. It is the poll loop's per-cell body minus the guards an explicit
+// restart is meant to defeat: `once` and the consecutive-failure cap are skipped
+// (and reported), while the in-flight guard still applies so a restart can never
+// double-run a live workflow.
+//
+// The dispatch generation is bumped before fan-out: the queue keys jobs on
+// taskID:generation:routeID, so without a bump every re-enqueue would be
+// swallowed as a duplicate of the round that was just interrupted.
+func (d *Dispatcher) redispatchCell(ctx context.Context, cell model.SourceItem, adapter source.Adapter) (int, []string, []string) {
+	if d.router == nil {
+		// Reachable from the IPC path in harnesses that wire a dispatcher without
+		// a router; the poll loop always has one. Cleanup already ran, so the
+		// restart itself stands — there is just nothing to route with.
+		return 0, nil, nil
+	}
+	if _, loaded := d.inFlight.LoadOrStore(cell.ID, time.Now()); loaded {
+		aplog.Warn("force-restart %s: cell went in-flight again before re-dispatch — leaving it to the poll", cell.LogLabel())
+		return 0, nil, nil
+	}
+
+	task, persisted := d.bindItem(ctx, cell)
+	d.recordRouteEvents(ctx, task)
+	matches := d.router.RouteAll(task)
+
+	var overridden []string
+	if persisted && d.db != nil {
+		var dropped []droppedMatch
+		matches, dropped = d.dropAutoResumingMatches(task.ID, matches)
+		var batch []droppedMatch
+		matches, batch = d.dropActiveMatches(ctx, task.ID, matches)
+		dropped = append(dropped, batch...)
+
+		// Report what a normal poll would additionally have dropped, then keep
+		// those matches anyway. Restart is the documented escape hatch for both.
+		if _, once := d.dropOnceMatches(ctx, task.ID, matches); len(once) > 0 {
+			for _, m := range once {
+				aplog.Info("force-restart %s: overriding `once` guard for workflow %s (%s)", cell.LogLabel(), m.WorkflowID, m.Detail)
+				overridden = append(overridden, m.WorkflowID+" (once)")
+			}
+		}
+		if _, capped := d.dropCappedMatches(ctx, task, matches); len(capped) > 0 {
+			for _, m := range capped {
+				aplog.Info("force-restart %s: overriding failure cap for workflow %s (%s)", cell.LogLabel(), m.WorkflowID, m.Detail)
+				overridden = append(overridden, m.WorkflowID+" (failure cap)")
+			}
+		}
+		for _, m := range dropped {
+			aplog.Info("force-restart %s: workflow %s not re-dispatched (%s)", cell.LogLabel(), m.WorkflowID, m.Reason)
+		}
+	}
+
+	if len(matches) == 0 {
+		aplog.Warn("force-restart %s: nothing to dispatch — no workflow matches the cell in its current state", cell.LogLabel())
+		d.inFlight.Delete(cell.ID)
+		return 0, nil, overridden
+	}
+
+	// Cancel the interrupted round's queue jobs. Cancelling the run context only
+	// reaches an inline dispatch; a queued or leased job survives it and would be
+	// claimed later, running the round restart just tore down alongside the fresh
+	// one. Queued jobs go terminal immediately, leased ones are flagged so their
+	// worker stops at the next heartbeat.
+	if persisted && d.dispatchQueue != nil {
+		for _, m := range matches {
+			if n, err := d.dispatchQueue.RequestCancelFor(ctx, task.ID, m.Route.ID); err != nil {
+				aplog.Error("force-restart %s: cancel queued jobs for workflow %s: %v", cell.LogLabel(), m.Route.ID, err)
+			} else if n > 0 {
+				aplog.Info("force-restart %s: cancelled %d queued/leased job(s) for workflow %s", cell.LogLabel(), n, m.Route.ID)
+			}
+		}
+	}
+
+	if persisted && d.db != nil {
+		if gen, err := d.db.InternalTasks().BumpGeneration(ctx, task.ID); err != nil {
+			aplog.Error("force-restart %s: bump dispatch generation: %v — re-dispatch may be deduplicated away", cell.LogLabel(), err)
+		} else {
+			aplog.Debug("force-restart %s: dispatch generation now %d", cell.LogLabel(), gen)
+		}
+	}
+
+	ids := make([]string, 0, len(matches))
+	for _, m := range matches {
+		ids = append(ids, m.Route.ID)
+	}
+	d.dropNotified.Delete(task.ID)
+	aplog.Info("force-restart %s: dispatching %d workflow(s): %v", cell.LogLabel(), len(ids), ids)
+	d.fanOut(ctx, cell, adapter, task, persisted, matches, nil, nil)
+	return len(ids), ids, overridden
 }
 
 // assertKnownCell fails closed (ErrUnknownCell) unless cellID names a cell this
@@ -1101,11 +1335,16 @@ func (d *Dispatcher) assertKnownCell(ctx context.Context, cellID string) error {
 	}
 
 	// Nothing matched. If the caller passed an internal task id, point at the
-	// cell id that would have worked instead of a bare "unknown".
+	// reference that would have worked instead of a bare "unknown" — the item's
+	// own number when it has one, since that is what the user can actually see.
 	if t, err := d.db.InternalTasks().GetTask(ctx, cellID); err == nil && t != nil {
 		if cell := d.cellIDForTask(ctx, t.ID); cell != "" && cell != cellID {
-			return fmt.Errorf("%w: %s is an internal task id, not a cell id — its cell is %s (try: apiary restart %s)",
-				ErrUnknownCell, cellID, cell, cell)
+			suggest := cell
+			if bs, err := d.db.ListBindingsByTask(ctx, t.ID); err == nil && len(bs) > 0 && bs[0].SourceItemNumber != "" {
+				suggest = bs[0].SourceItemNumber
+			}
+			return fmt.Errorf("%w: %s is an internal task id, not a cell id — its item is %s (try: apiary restart %s)",
+				ErrUnknownCell, cellID, cell, suggest)
 		}
 	}
 	return fmt.Errorf("%w: %s", ErrUnknownCell, cellID)
@@ -1179,20 +1418,35 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 	mux.HandleFunc("/approvals", d.handleApprovals)
 	mux.HandleFunc("/approvals/", d.handleApprovalResponse)
 	mux.HandleFunc("/restart/", func(w http.ResponseWriter, r *http.Request) {
-		cellID := strings.TrimPrefix(r.URL.Path, "/restart/")
+		// Human references reach this route too (CDT-123, #1953), and '#' must be
+		// percent-encoded by the caller or it would be read as a URL fragment and
+		// never arrive. Decode it back before resolving.
+		cellID := strings.TrimPrefix(r.URL.EscapedPath(), "/restart/")
+		if decoded, err := url.PathUnescape(cellID); err == nil {
+			cellID = decoded
+		}
 		if cellID == "" {
-			http.Error(w, "missing cell id", http.StatusBadRequest)
+			http.Error(w, "missing cell id or item reference", http.StatusBadRequest)
 			return
 		}
-		if err := d.ForceRestart(ctx, cellID); err != nil {
+		res, err := d.ForceRestart(ctx, cellID)
+		if err != nil {
 			status := http.StatusInternalServerError
-			if errors.Is(err, ErrUnknownCell) {
+			switch {
+			case errors.Is(err, ErrUnknownCell):
 				status = http.StatusNotFound
+			case errors.Is(err, ErrAmbiguousRef):
+				status = http.StatusConflict
 			}
 			http.Error(w, err.Error(), status)
 			return
 		}
+		// Report what was dispatched, not just that the call succeeded: callers
+		// need to distinguish "restarted and N workflows are running" from
+		// "restarted and nothing matched".
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(res)
 	})
 	mux.HandleFunc("/api/config/agent/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPatch {
