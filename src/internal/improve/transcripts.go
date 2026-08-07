@@ -143,7 +143,7 @@ func transcriptRefs(ctx context.Context, db source, logDir string, w Window, h H
 		if state == "passed" && successes >= 1 {
 			continue
 		}
-		file := latestTranscriptFile(filepath.Join(logDir, "transcripts", taskID))
+		file := transcriptForStep(filepath.Join(logDir, "transcripts", taskID), h.StepID)
 		if file == "" {
 			continue
 		}
@@ -160,29 +160,42 @@ func transcriptRefs(ctx context.Context, db source, logDir string, w Window, h H
 	return refs, rows.Err()
 }
 
-// latestTranscriptFile returns the most recently modified .md transcript in a
-// task's transcript directory, or "" when there is none. Transcripts are written
-// per step run, and the newest is the one that matches the run being sampled.
-func latestTranscriptFile(dir string) string {
+// transcriptForStep returns the transcript belonging to a specific step of a
+// task, or "" when there is none.
+//
+// A task's transcript directory holds one file per step run, named
+// "<instance>_<n>-<stepID>.md". Selecting by modification time instead returns
+// whichever step ran LAST — almost always the final step of the workflow — so
+// every hotspot receives the same terminal transcript regardless of which step
+// was being sampled. That silently replaces the evidence the analysis depends
+// on: an "implement" hotspot gets handed the "merge" session, and the whole
+// point of reading transcripts is lost.
+//
+// When several runs of the same step exist (a rework loop — precisely the case
+// worth reading), the most recent is returned, since that is the attempt whose
+// outcome the metrics describe.
+func transcriptForStep(dir, stepID string) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""
 	}
-	var newest string
-	var newestMod int64
+	suffix := "-" + stepID + ".md"
+
+	var best string
+	var bestMod int64
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), suffix) {
 			continue
 		}
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
-		if mod := info.ModTime().UnixNano(); mod > newestMod {
-			newestMod, newest = mod, e.Name()
+		if mod := info.ModTime().UnixNano(); mod > bestMod {
+			bestMod, best = mod, e.Name()
 		}
 	}
-	return newest
+	return best
 }
 
 // elide truncates a transcript to a byte budget, keeping the head and the tail.
