@@ -59,7 +59,20 @@ func ComposePrompt(pack *EvidencePack, ws *Workspace, files []WorkspaceFile, k K
 	b.WriteString("3. Correlation is not causation. A step may be expensive because its work is genuinely hard. Where the same agent runs in more than one workflow, compare them before blaming configuration.\n")
 	b.WriteString("4. Never propose a change to a secret: tokens, env values, credentials. They are redacted below and must stay that way.\n")
 	b.WriteString("5. Prefer fewer, better findings. Three solid ones beat twelve guesses. If the window is too thin to conclude anything, say exactly that and stop.\n")
-	b.WriteString("6. Patches must be unified diffs against a file listed under \"Configuration\". Anything else is dropped.\n\n")
+	b.WriteString("6. Patches must be real unified diffs against a file listed under \"Configuration\". See the patch rules below — a patch that does not parse is discarded, and the finding behind it loses its fix.\n\n")
+
+	// The patch format has to be spelled out. Left implicit, an advisor will
+	// write a header that names the section in prose — `@@ implementation/merge
+	// step @@` — which is not a unified diff and cannot be applied. Observed on
+	// the first real run: two of three patches were unusable for this reason.
+	b.WriteString("# Patch rules\n\n")
+	b.WriteString("- Start with `--- a/<path>` and `+++ b/<path>`, using a path exactly as it appears under \"Configuration\".\n")
+	b.WriteString("- Every hunk header must carry line numbers: `@@ -<start>,<count> +<start>,<count> @@`. A header naming a section in words is not a diff and will be discarded.\n")
+	b.WriteString("- Line numbers and context must match the file content shown below. Count the lines; do not estimate.\n")
+	b.WriteString("- Every body line begins with a space (context), `-` (removal) or `+` (addition). Include at least three lines of surrounding context where they exist.\n")
+	b.WriteString("- Hunks must appear in ascending line order and must not overlap.\n")
+	b.WriteString("- One file per patch. A change spanning two files is two recommendations.\n")
+	b.WriteString("- Do not propose a patch that depends on a file that does not exist yet. If a change needs a new file, say so in the rationale and omit the patch.\n\n")
 
 	b.WriteString("# What tends to be worth looking at\n\n")
 	b.WriteString("- **Rework loops** — a step running repeatedly inside one instance is an on_fail/goto cycle. The repeat runs are pure waste; the transcripts show why the step does not pass first time.\n")
