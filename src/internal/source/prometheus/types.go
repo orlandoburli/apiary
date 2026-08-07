@@ -20,3 +20,28 @@ type alertStatus struct {
 	SilencedBy  []string `json:"silencedBy"`
 	InhibitedBy []string `json:"inhibitedBy"`
 }
+
+// silence is the POST /api/v2/silences request body (openapi PostableSilence).
+// Every matcher must hold for an alert to be suppressed.
+type silence struct {
+	Matchers  []matcher `json:"matchers"`
+	StartsAt  time.Time `json:"startsAt"`
+	EndsAt    time.Time `json:"endsAt"`
+	CreatedBy string    `json:"createdBy"`
+	Comment   string    `json:"comment"`
+}
+
+// matcher is one label condition of a silence. The adapter only ever emits
+// exact equality on the alert's own labels (IsRegex and IsEqual defaults),
+// which pins the silence to a single alert.
+type matcher struct {
+	Name    string `json:"name"`
+	Value   string `json:"value"`
+	IsRegex bool   `json:"isRegex"`
+	IsEqual bool   `json:"isEqual"`
+}
+
+// silenceResponse is the POST /api/v2/silences response body.
+type silenceResponse struct {
+	SilenceID string `json:"silenceID"`
+}

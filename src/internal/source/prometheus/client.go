@@ -1,6 +1,7 @@
 package prometheus
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -62,9 +63,42 @@ func (c *client) alerts(ctx context.Context, filters []string) ([]alert, error) 
 	return alerts, nil
 }
 
-// get executes the request, retrying on 429/5xx with exponential backoff
+// createSilence posts a silence to POST /api/v2/silences and returns the
+// silence ID Alertmanager assigned. Callers build the matchers from the exact
+// label set of the alert being silenced, so the silence suppresses that one
+// alert and nothing else.
+//
+// A retried POST can in principle create a second identical silence (if the
+// first attempt succeeded but its response was lost). Two silences with the
+// same matchers and window are harmless — they suppress the same alert for the
+// same period — and the adapter records the first returned ID so one
+// Acknowledge never silences twice.
+func (c *client) createSilence(ctx context.Context, s silence) (string, error) {
+	payload, err := json.Marshal(s)
+	if err != nil {
+		return "", fmt.Errorf("prometheus: encoding silence: %w", err)
+	}
+
+	data, err := c.do(ctx, http.MethodPost, "/api/v2/silences", nil, payload)
+	if err != nil {
+		return "", err
+	}
+	var resp silenceResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return "", fmt.Errorf("prometheus: decoding silence response: %w", err)
+	}
+	return resp.SilenceID, nil
+}
+
+// get executes a GET, retrying on 429/5xx with exponential backoff
 // (honouring Retry-After when present).
 func (c *client) get(ctx context.Context, path string, params url.Values) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, path, params, nil)
+}
+
+// do executes the request, retrying on 429/5xx with exponential backoff
+// (honouring Retry-After when present). A nil body sends no request payload.
+func (c *client) do(ctx context.Context, method, path string, params url.Values, body []byte) ([]byte, error) {
 	fullPath := path
 	if len(params) > 0 {
 		fullPath += "?" + params.Encode()
@@ -72,11 +106,18 @@ func (c *client) get(ctx context.Context, path string, params url.Values) ([]byt
 
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+fullPath, nil)
+		var payload io.Reader
+		if body != nil {
+			payload = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+fullPath, payload)
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Accept", "application/json")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 		if c.bearerToken != "" {
 			req.Header.Set("Authorization", "Bearer "+c.bearerToken)
 		} else if c.basicUser != "" {
@@ -86,34 +127,34 @@ func (c *client) get(ctx context.Context, path string, params url.Values) ([]byt
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = err
-			aplog.Debug("prometheus: GET %s failed (attempt %d/%d): %v", path, attempt+1, maxRetries, err)
+			aplog.Debug("prometheus: %s %s failed (attempt %d/%d): %v", method, path, attempt+1, maxRetries, err)
 			if !backoffWait(ctx, nil, attempt) {
 				return nil, ctx.Err()
 			}
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			return nil, err
 		}
 
-		aplog.Debug("prometheus: GET %s → %d", path, resp.StatusCode)
+		aplog.Debug("prometheus: %s %s → %d", method, path, resp.StatusCode)
 
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			lastErr = fmt.Errorf("alertmanager API GET %s: status %d: %s", path, resp.StatusCode, truncateBody(body))
+			lastErr = fmt.Errorf("alertmanager API %s %s: status %d: %s", method, path, resp.StatusCode, truncateBody(respBody))
 			if !backoffWait(ctx, resp, attempt) {
 				return nil, ctx.Err()
 			}
 			continue
 		}
 		if resp.StatusCode >= 400 {
-			return nil, fmt.Errorf("alertmanager API GET %s: status %d: %s", path, resp.StatusCode, truncateBody(body))
+			return nil, fmt.Errorf("alertmanager API %s %s: status %d: %s", method, path, resp.StatusCode, truncateBody(respBody))
 		}
-		return body, nil
+		return respBody, nil
 	}
-	return nil, fmt.Errorf("alertmanager API GET %s: exceeded %d retries: %w", path, maxRetries, lastErr)
+	return nil, fmt.Errorf("alertmanager API %s %s: exceeded %d retries: %w", method, path, maxRetries, lastErr)
 }
 
 // backoffWait sleeps for the retry delay (Retry-After header if present,
