@@ -47,6 +47,7 @@ workflows:
 | `basic_auth_user` / `basic_auth_password` | no | HTTP Basic auth (ignored when `bearer_token` is set) |
 | `max_new_per_poll` | no | Alert-storm cap: at most this many *not-yet-seen* alerts become tasks per poll; the overflow is logged and surfaces on later polls. `0` disables the cap. Default `10` |
 | `min_age` | no | Flap dampener: an alert must have been firing at least this long before it is ingested (complements the alerting rule's own `for:`). Default `1m` |
+| `dispatch_by` | no | `alert` (default) dispatches one task per firing alert; `group` dispatches one task per Alertmanager group, so one incident that fans out into many alerts becomes a single investigation |
 | `ack_via_silence` | no | When `true`, acknowledging a dispatched alert creates an Alertmanager silence for it, so it stops paging while an agent investigates. Default `false` (acknowledge is a no-op) |
 | `silence_duration` | no | How long an `ack_via_silence` silence lasts. Default `2h` |
 
@@ -83,7 +84,8 @@ workflows:
 - **Storm cap.** One bad deploy can fire 50 alerts in a single poll; each
   would become a task and an agent run. `max_new_per_poll` bounds how many
   new alerts are admitted per poll (oldest first); the rest are deferred to
-  subsequent polls and a warning names the deferred count.
+  subsequent polls and a warning names the deferred count. See also
+  `dispatch_by: group`, which collapses one incident into one task.
 - **Flap dampening.** `min_age` skips alerts younger than the threshold, so
   firing→resolved→firing blips never dispatch. Combined with the
   fingerprint+startsAt identity this also means a *resolved-and-refired*
@@ -134,6 +136,82 @@ config:
 - **Requires write access.** The configured token needs permission to POST
   silences. If Alertmanager rejects the request the error is logged and the
   run continues — a silence failure never fails the investigation.
+
+## Dispatching per group instead of per alert
+
+One bad deploy fires `HighErrorRate` on twelve pods. By default that is twelve
+tasks and twelve agent runs investigating the same incident. Alertmanager
+already groups those alerts — its `group_by` is exactly "what the on-call
+should be paged about once" — and `dispatch_by: group` follows that grouping:
+
+```yaml
+sources:
+  - id: prod-alerts
+    type: prometheus
+    config:
+      alertmanager_url: https://alertmanager.internal:9093
+      dispatch_by: group        # default is "alert"
+```
+
+The source then polls `GET /api/v2/alerts/groups` and emits one task per
+non-empty group, with every member alert rendered into the task body.
+
+### Group → task mapping
+
+| Task field | Group value |
+|---|---|
+| ID | `<group key>:<epoch>` — see below |
+| Number | 7-char hash of the group key |
+| Title | group's `alertname` + member count (`HighErrorRate (12 alerts)`) |
+| Description | group key, receiver, group labels, then each member alert in full |
+| Labels | the group-by labels, **plus** any label every member shares with the same value |
+| Type | `alert_group` |
+| Priority | the worst `severity` among the members |
+| URL | the first member's `generatorURL` |
+| Metadata | group key, epoch, receiver, group labels, member count, member fingerprints |
+
+The label rule is what makes trigger matching work: `severity` is usually not
+a `group_by` label, but if every member is `critical` then
+`labels: [severity:critical]` matches the group. If members disagree, the
+label is not group-wide and is left off.
+
+### Group identity and the fire cycle
+
+A single alert has a natural per-cycle identity (`fingerprint:startsAt`). A
+group does not: its membership churns constantly while an incident unfolds, so
+there is no timestamp on it that stays put.
+
+Apiary pins one. When a group first becomes non-empty, its **epoch** is set to
+the earliest `startsAt` among its members and then held for the whole cycle:
+
+```
+14:02  alert A fires    -> group non-empty, epoch := 14:02, dispatch
+14:09  alert B joins    -> same id, no re-dispatch
+14:20  alert A resolves -> same id, no re-dispatch   <- churn absorbed
+14:44  group empties    -> cycle ends, pin dropped
+15:10  alert C fires    -> epoch := 15:10, new dispatch
+```
+
+Deriving the epoch from the current members on every poll instead would make
+the id jump the moment the oldest alert resolved — re-dispatching an incident
+that was still being investigated. Pinning avoids that.
+
+The pin is in-memory. After a daemon restart the epoch is re-seeded from the
+current members' earliest `startsAt`, which reproduces the previous value
+whenever the oldest member is still firing — the usual case for an ongoing
+incident, so the investigation is not duplicated. It differs only if that
+oldest member resolved during the restart, which produces one new task for the
+ongoing group.
+
+### Interaction with the other options
+
+- **`max_new_per_poll`** counts *groups*, not member alerts.
+- **`min_age`** is measured against the group's epoch, so a just-formed group
+  is deferred. Maturing does not change its id.
+- **`ack_via_silence`** silences on the group-wide labels, so acknowledging
+  suppresses the whole group rather than one member.
+- **`interrupt_on_resolve`** treats a group as resolved when it is empty or
+  gone; the same two-confirmation debounce and fail-closed rules apply.
 
 ## Interrupting a run when the alert resolves
 

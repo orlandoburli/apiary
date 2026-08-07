@@ -21,6 +21,23 @@ type alertStatus struct {
 	InhibitedBy []string `json:"inhibitedBy"`
 }
 
+// alertGroup is one entry of GET /api/v2/alerts/groups (openapi AlertGroup):
+// the alerts Alertmanager has grouped together by the routing tree's group_by
+// labels, which is the unit an on-call actually gets paged about.
+type alertGroup struct {
+	Labels   map[string]string `json:"labels"`
+	Receiver groupReceiver     `json:"receiver"`
+	Alerts   []alert           `json:"alerts"`
+
+	// alerts holds the members left after resolved ones are filtered out. It
+	// is set by the adapter, never decoded from the API.
+	alerts []alert
+}
+
+type groupReceiver struct {
+	Name string `json:"name"`
+}
+
 // silence is the POST /api/v2/silences request body (openapi PostableSilence).
 // Every matcher must hold for an alert to be suppressed.
 type silence struct {

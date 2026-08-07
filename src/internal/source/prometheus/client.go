@@ -90,6 +90,50 @@ func (c *client) createSilence(ctx context.Context, s silence) (string, error) {
 	return resp.SilenceID, nil
 }
 
+// alertGroups fetches the currently visible alerts already grouped by
+// Alertmanager's routing tree from GET /api/v2/alerts/groups. Same visibility
+// rules as alerts(): only active, unsilenced, uninhibited members.
+func (c *client) alertGroups(ctx context.Context, filters []string) ([]alertGroup, error) {
+	params := url.Values{
+		"active":    {"true"},
+		"silenced":  {"false"},
+		"inhibited": {"false"},
+	}
+	for _, f := range filters {
+		params.Add("filter", f)
+	}
+
+	data, err := c.get(ctx, "/api/v2/alerts/groups", params)
+	if err != nil {
+		return nil, err
+	}
+	var groups []alertGroup
+	if err := json.Unmarshal(data, &groups); err != nil {
+		return nil, fmt.Errorf("prometheus: decoding alert groups response: %w", err)
+	}
+	return groups, nil
+}
+
+// allAlertGroups is alertGroups with suppressed members included, for the
+// resolution check — a silenced group is still firing.
+func (c *client) allAlertGroups(ctx context.Context) ([]alertGroup, error) {
+	params := url.Values{
+		"active":    {"true"},
+		"silenced":  {"true"},
+		"inhibited": {"true"},
+	}
+
+	data, err := c.get(ctx, "/api/v2/alerts/groups", params)
+	if err != nil {
+		return nil, err
+	}
+	var groups []alertGroup
+	if err := json.Unmarshal(data, &groups); err != nil {
+		return nil, fmt.Errorf("prometheus: decoding alert groups response: %w", err)
+	}
+	return groups, nil
+}
+
 // allAlerts fetches every alert Alertmanager currently holds, including the
 // silenced and inhibited ones the normal poll deliberately excludes. Resolution
 // checks need this wider view: a silenced alert (notably one Apiary silenced
