@@ -1,5 +1,17 @@
 version: "1"
 
+# Apiary working on Apiary.
+#
+# This is the operator config for dogfooding: the daemon polls this repo's own
+# issues and dispatches agents to implement them. Run it from the repo root:
+#
+#   apiary daemon --config .apiary/apiary.yaml
+#
+# Opt-in by design. Apiary is a public repo, so nothing is picked up until you
+# add the `apiary:auto` label to an issue — an outside issue can never drive an
+# agent (or spend tokens) on its own. Add the label to opt a specific issue in;
+# `agent:<id>` labels bypass triage and go straight to that agent.
+
 # ── Runners ────────────────────────────────────────────────────────────────────
 runners:
   - id: codex
@@ -7,9 +19,22 @@ runners:
     provider: codex
     models:
       - gpt-5.5
-    # Uses the same checked-in skills through .agents/skills -> ../.claude/skills.
-    # GitNexus is exposed to Codex through ~/.codex/config.toml when this runner
-    # is configured by Apiary.
+    # Codex reads repository skills from .agents/skills, symlinked to
+    # ../.claude/skills, so agents get the same checked-in skills a local
+    # session has (git-workflow, gitnexus-codebase, e2e-before-pr, …).
+    mcps:
+      - name: gitnexus
+        command: npx
+        args: ["-y", "gitnexus@latest", "mcp"]
+
+  # Available as a fallback / alternative. Since v0.13.0 the claude-cli preset
+  # bypasses the permission prompt by default (#370); narrow it here with
+  # permission_mode/allowed_tools if you want a tighter posture.
+  - id: claude
+    type: cli
+    provider: claude
+    models:
+      - claude-opus-5
     mcps:
       - name: gitnexus
         command: npx
@@ -19,204 +44,171 @@ default_runner: codex
 
 # ── Sources ────────────────────────────────────────────────────────────────────
 sources:
-  - id: project-erp
+  - id: apiary
     type: github
     config:
-      repo: orlandoburli/project-erp
+      repo: orlandoburli/apiary
       # Token permissions:
       #   Classic PAT: scope `repo`
-      #   Fine-grained: `Issues` → Read & Write, `Metadata` → Read
+      #   Fine-grained: `Issues` → Read & Write, `Contents` → Read & Write,
+      #                 `Pull requests` → Read & Write, `Metadata` → Read
       api_key: ${GITHUB_TOKEN}
     poll_interval: 60s
     filters:
       states: [open]
 
 # ── Agents ─────────────────────────────────────────────────────────────────────
+# Roster is deliberately Go-shaped: no backend/frontend split, because this repo
+# is a Go CLI + TUI plus a mkdocs site and a VS Code extension.
 agents:
   - id: investigator
-    description: "Analyzes and classifies new issues by complexity"
+    description: "Classifies an apiary issue and picks the agent that should own it"
     soul_file: .apiary/souls/investigator.md
     model: gpt-5.5
-    max_workers: 2
-
-  - id: po
-    description: "Transforms business demands into specifications"
-    soul_file: .apiary/souls/po.md
-    model: gpt-5.5
-    max_workers: 2
+    max_workers: 1
 
   - id: staff
-    description: "Designs complex solutions and decomposes tasks"
+    description: "Designs non-trivial changes and decomposes them into sub-issues"
     soul_file: .apiary/souls/staff.md
     model: gpt-5.5
-    max_workers: 2
+    max_workers: 1
 
   - id: engineer
-    description: "Implements tasks following project conventions"
+    description: "Implements Go changes in src/ following the repo's conventions"
     soul_file: .apiary/souls/engineer.md
     model: gpt-5.5
     max_workers: 2
 
-  - id: backend
-    description: "Implements backend tasks"
-    soul_file: .apiary/souls/backend.md
+  - id: docs
+    description: "Writes and fixes the mkdocs site under docs/"
+    soul_file: .apiary/souls/docs.md
     model: gpt-5.5
-    max_workers: 2
-
-  - id: frontend
-    description: "Implements frontend tasks"
-    soul_file: .apiary/souls/frontend.md
-    model: gpt-5.5
-    max_workers: 2
+    max_workers: 1
 
   - id: reviewer
-    description: "Performs code review and quality checks"
+    description: "Reviews an open PR for correctness and repo conventions"
     soul_file: .apiary/souls/reviewer.md
     model: gpt-5.5
-    max_workers: 2
+    max_workers: 1
 
   - id: qa
-    description: "Validates implementation against acceptance criteria"
+    description: "Validates a change against its acceptance criteria"
     soul_file: .apiary/souls/qa.md
     model: gpt-5.5
-    max_workers: 2
+    max_workers: 1
 
 # ── Workflows ──────────────────────────────────────────────────────────────────
-# Single-agent workflows (formerly `routes:`) — each matches on the agent: label.
 workflows:
+  # Direct assignment: `agent:<id>` sends an issue straight to that agent,
+  # skipping triage. The label is removed on completion so a re-opened issue
+  # does not loop.
   - id: staff-design
     trigger:
       priority: 10
       match:
-        source: project-erp
+        source: apiary
         labels: [agent:staff]
     steps:
       - id: run
         agent: staff
-    on_complete:
-      set_state: closed
-
-  - id: po-spec
-    trigger:
-      priority: 15
-      # once: the PO decomposition runs at most once per issue. After it has a
-      # completed instance, later polls do not re-dispatch it — so a spec issue that
-      # lingers in the trigger set (e.g. before on_complete closes it) never fans out
-      # a second set of sub-issues. The spawn dedup key + the materialize binding
-      # check already make sub-issue creation idempotent (issue #119); once: also
-      # avoids re-running the (expensive) PO agent.
-      once: true
-      match:
-        source: project-erp
-        labels: [agent:po]
-    steps:
-      - id: run
-        agent: po
-        # materialize: each sub-task the PO emits via APIARY_SPAWN is published as a
-        # GitHub sub-issue under this issue, exactly once. The new sub-issues carry
-        # agent:* labels, so the normal poll→route loop dispatches the right
-        # implementer. Re-running the PO resolves to the same children (by spawn key)
-        # and never duplicates them.
+        # Sub-tasks emitted via APIARY_SPAWN become GitHub sub-issues exactly
+        # once (deduped by spawn key, #119). They carry agent:* labels, so the
+        # normal poll→route loop dispatches the right implementer.
         materialize: sub_issue
     on_complete:
-      set_state: closed
-
-  - id: backend-implement
-    trigger:
-      priority: 20
-      match:
-        source: project-erp
-        labels: [agent:backend]
-    steps:
-      - id: run
-        agent: backend
-    on_complete:
-      set_state: closed
-
-  - id: frontend-implement
-    trigger:
-      priority: 21
-      match:
-        source: project-erp
-        labels: [agent:frontend]
-    steps:
-      - id: run
-        agent: frontend
-    on_complete:
-      set_state: closed
+      remove_labels: [agent:staff]
 
   - id: engineer-implement
     trigger:
-      priority: 22
+      priority: 20
       match:
-        source: project-erp
+        source: apiary
         labels: [agent:engineer]
     steps:
       - id: run
         agent: engineer
     on_complete:
-      set_state: closed
+      remove_labels: [agent:engineer]
+
+  - id: docs-write
+    trigger:
+      priority: 21
+      match:
+        source: apiary
+        labels: [agent:docs]
+    steps:
+      - id: run
+        agent: docs
+    on_complete:
+      remove_labels: [agent:docs]
 
   - id: code-review
     trigger:
       priority: 25
       match:
-        source: project-erp
+        source: apiary
         labels: [agent:reviewer]
     steps:
       - id: run
         agent: reviewer
     on_complete:
-      set_state: closed
+      remove_labels: [agent:reviewer]
 
   - id: qa-validate
     trigger:
       priority: 30
       match:
-        source: project-erp
+        source: apiary
         labels: [agent:qa]
     steps:
       - id: run
         agent: qa
     on_complete:
-      set_state: closed
+      remove_labels: [agent:qa]
 
-  # Triage — classify a new issue and route it to the right agent in one instance.
+  # Triage — classify an opted-in issue and route it in a single instance.
+  #
+  # The `apiary:auto` label is the opt-in gate: this is a public repo, so
+  # triage must never fire on an issue just because a stranger opened it.
+  # `once: true` plus removing the label on completion keeps a long-lived issue
+  # from being re-triaged on every poll.
   - id: triage
-    description: "Classify a new issue and route it to the right agent in one instance."
+    description: "Classify an opted-in issue and route it to the right agent."
     resume: allowed
     trigger:
       priority: 100
+      once: true
       match:
-        source: project-erp
+        source: apiary
+        labels: [apiary:auto]
+        # An issue already assigned to an agent skips triage.
         exclude_label_prefix: "agent:"
-        # Skip work-in-progress issues. Add the `draft` label to keep apiary from
-        # auto-triaging an issue; remove it when the issue is ready to be picked up.
+        # `draft` parks an issue: apiary leaves it alone until you remove it.
         exclude_labels: [draft]
 
     steps:
-      # 1) Classify. The investigator emits a structured `agent` decision, which
-      #    we persist into workflow memory for the split to read.
+      # 1) Classify. The investigator emits a structured `agent` decision,
+      #    persisted into workflow memory for the split to read.
       - id: classify
         agent: investigator
         summary_prompt: "One line: which agent you chose and the key reason."
         output_schema:
           type: object
           properties:
-            agent: {type: string, enum: [po, staff, engineer, reviewer, qa]}
+            agent: {type: string, enum: [staff, engineer, docs, reviewer, qa]}
           required: [agent]
         memory:
           write: [agent]
 
-      # 2) Route on the classified agent. `engineer` is the fallback (the common
-      #    case, and a safe default if classification is missing/unparseable).
+      # 2) Route on the classified agent. `engineer` is the fallback — the
+      #    common case, and a safe default if classification is unparseable.
       - id: route
         type: split
         branches:
-          - if: 'memory.agent == "po"'
-            goto: spec
           - if: 'memory.agent == "staff"'
             goto: design
+          - if: 'memory.agent == "docs"'
+            goto: document
           - if: 'memory.agent == "reviewer"'
             goto: review
           - if: 'memory.agent == "qa"'
@@ -225,39 +217,40 @@ workflows:
             goto: implement
 
       # 3) Exactly one of these runs — whichever the split activates.
-      - id: spec
-        agent: po
-        prompt: "Produce the spec / acceptance criteria for this issue."
-        # Same as po-spec: sub-tasks the PO emits via APIARY_SPAWN are published as
-        # GitHub sub-issues exactly once, deduped by spawn key. The whole triage
-        # workflow runs once per issue (on_complete closes it), so the decomposition
-        # is not repeated.
-        materialize: sub_issue
-
       - id: design
         agent: staff
-        prompt: "Design the solution and decompose it into smaller tasks."
+        prompt: "Design the change and decompose it into smaller sub-issues."
+        materialize: sub_issue
 
       - id: implement
         agent: engineer
-        prompt: "Implement the change following project conventions."
+        prompt: "Implement the change following the repo's conventions, and open a PR."
+
+      - id: document
+        agent: docs
+        prompt: "Write or correct the documentation this issue asks for, and open a PR."
 
       - id: review
         agent: reviewer
-        prompt: "Review the change for correctness and conventions."
+        prompt: "Review the referenced PR for correctness and repo conventions."
 
       - id: validate
         agent: qa
         prompt: "Validate the implementation against its acceptance criteria."
 
+    # The issue is NOT auto-closed: on this repo a change lands through a PR, and
+    # the PR merge closes its issue. Triage only drops the opt-in label so the
+    # issue stops matching, and flags failures for a human.
     on_complete:
-      set_state: closed
+      remove_labels: [apiary:auto]
     on_fail:
       add_labels: [needs-attention]
+      remove_labels: [apiary:auto]
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 settings:
+  # Deliberately small. Agents here push branches and open PRs against a public
+  # repo; a low ceiling keeps a misbehaving run from producing a pile of them.
   concurrency: 2
   log_level: info
   state_lock: true
-  result_comment: true
