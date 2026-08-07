@@ -329,52 +329,29 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 			r.waitDeadline = time.Time{}
 		}
 
-		// on_missing_output: fail — declared output schema required structured output.
-		if res.Success && step.OutputSchema != nil &&
-			step.OnMissingOutput == config.OnMissingOutputFail &&
-			len(res.StructuredOutput) == 0 {
-			res.Success = false
-			aplog.Info("workflow %s: step %q failed: on_missing_output=fail and no structured output", r.wf.ID, step.ID)
-		}
-		// Default warn policy: the step still passes, but say so loudly — every
-		// condition keyed on the missing fields will now evaluate against "".
-		if res.Success && step.OutputSchema != nil &&
-			step.OnMissingOutput != config.OnMissingOutputIgnore &&
-			len(res.StructuredOutput) == 0 {
+		// Missing structured output for a step that declared an output schema.
+		if res.Success && step.OutputSchema != nil && len(res.StructuredOutput) == 0 &&
+			step.OnMissingOutput != config.OnMissingOutputIgnore {
 			aplog.Error("workflow %s: step %q declared output_schema but emitted no APIARY_OUTPUT — conditions reading its fields will see empty values", r.wf.ID, step.ID)
+			// Beyond the log line: record it on the instance so it is visible in
+			// the dashboard / event stream, not only in the daemon log (#390).
+			e.recordStepExecutionEvent(ctx, r, step.ID, "step.missing_output", map[string]any{
+				"policy":       missingOutputPolicy(step),
+				"memory_write": step.MemoryWriteFields(),
+			})
+			// on_missing_output: fail — declared output schema required structured output.
+			if step.OnMissingOutput == config.OnMissingOutputFail {
+				res.Success = false
+				res.Output = fmt.Sprintf("on_missing_output=fail: step %q declared an output schema but emitted no APIARY_OUTPUT", step.ID)
+				aplog.Info("workflow %s: step %q failed: on_missing_output=fail and no structured output", r.wf.ID, step.ID)
+				e.markStepRunFailed(ctx, res.StepRunID, res.Output)
+			}
 		}
 
-		// fail_when — evaluate on the scheduler goroutine after the agent runs.
-		// An expression that cannot be parsed or evaluated fails the step —
-		// silently treating it as "not rejected" would pass a result the gate
-		// was supposed to inspect (#180).
+		// fail_when (authored as reject_when) — evaluate on the scheduler
+		// goroutine after the agent runs.
 		if res.Success && step.FailWhen != "" {
-			transientMem := r.memoryValues()
-			for field, val := range res.StructuredOutput {
-				transientMem[field] = renderValue(val)
-			}
-			// A parallel step's own StructuredOutput is empty — its children's fresh
-			// contributions are only merged into r.contrib after this check, so
-			// overlay them here (declaration order, last-write-wins) or a gate like
-			// `memory.qa_verdict == "rejected"` would read the stale/empty value.
-			if step.StepType() == config.StepTypeParallel {
-				for _, c := range wr.parallelContribs {
-					for field, val := range c.Structured {
-						transientMem[field] = renderValue(val)
-					}
-				}
-			}
-			evalCtx := EvalContext{Cell: r.cell, Memory: transientMem, Steps: r.stepStates, Event: r.event}
-			rejected, fwErr := e.evalExpr(step.FailWhen, evalCtx)
-			switch {
-			case fwErr != nil:
-				res.Success = false
-				res.Output = fmt.Sprintf("fail_when eval error %q: %v", step.FailWhen, fwErr)
-				aplog.Error("workflow %s: step %q fail_when eval error %q: %v (failing step)", r.wf.ID, step.ID, step.FailWhen, fwErr)
-			case rejected:
-				res.Success = false
-				aplog.Info("workflow %s: step %q rejected (fail_when matched)", r.wf.ID, step.ID)
-			}
+			res = e.applyFailWhen(ctx, r, step, res, wr.parallelContribs)
 		}
 
 		ss := StepState{State: passFail(res.Success), Output: res.Output}
@@ -857,6 +834,127 @@ func passFail(success bool) string {
 		return stPassed
 	}
 	return stFailed
+}
+
+// applyFailWhen evaluates a step's fail_when (reject_when) gate and returns the
+// possibly-failed result.
+//
+// Three ways the gate can fail the step:
+//
+//  1. The expression cannot be parsed or evaluated — silently treating it as
+//     "not rejected" would pass a result the gate was supposed to inspect (#180).
+//  2. The gate reads memory keys THIS step declared in `memory.write` but never
+//     emitted (typically: the agent omitted its APIARY_OUTPUT line). The gate is
+//     unevaluable, so it fails closed — a rejected review must never be recorded
+//     as passed just because the verdict went missing (#390).
+//  3. The gate matched: the agent rejected the work.
+func (e *Engine) applyFailWhen(ctx context.Context, r *dagRun, step config.StepConfig, res StepResult, parallelContribs []MemoryStep) StepResult {
+	transientMem := r.memoryValues()
+	for field, val := range res.StructuredOutput {
+		transientMem[field] = renderValue(val)
+	}
+	// A parallel step's own StructuredOutput is empty — its children's fresh
+	// contributions are only merged into r.contrib after this check, so
+	// overlay them here (declaration order, last-write-wins) or a gate like
+	// `memory.qa_verdict == "rejected"` would read the stale/empty value.
+	if step.StepType() == config.StepTypeParallel {
+		for _, c := range parallelContribs {
+			for field, val := range c.Structured {
+				transientMem[field] = renderValue(val)
+			}
+		}
+	}
+	evalCtx := EvalContext{Cell: r.cell, Memory: transientMem, Steps: r.stepStates, Event: r.event}
+
+	gate, parseErr := ParseExpr(stripExprDelimiters(step.FailWhen))
+	if parseErr != nil {
+		res.Success = false
+		res.Output = fmt.Sprintf("fail_when eval error %q: %v", step.FailWhen, parseErr)
+		aplog.Error("workflow %s: step %q fail_when eval error %q: %v (failing step)", r.wf.ID, step.ID, step.FailWhen, parseErr)
+		e.markStepRunFailed(ctx, res.StepRunID, res.Output)
+		return res
+	}
+
+	// Fail closed on an unevaluable gate, unless the step opted out with
+	// on_missing_output: ignore.
+	if step.OnMissingOutput != config.OnMissingOutputIgnore {
+		if unset := unevaluableGateKeys(gate, step, res, parallelContribs); len(unset) > 0 {
+			res.Success = false
+			res.Output = fmt.Sprintf("gate %q cannot be evaluated: step declared memory.write key(s) %s but emitted no value for them "+
+				"(missing or incomplete APIARY_OUTPUT) — failing closed", step.FailWhen, strings.Join(unset, ", "))
+			aplog.Error("workflow %s: step %q gate %q is unevaluable — no value for memory key(s) %s that the step declares in memory.write; failing the step (fail closed, #390)",
+				r.wf.ID, step.ID, step.FailWhen, strings.Join(unset, ", "))
+			e.recordStepExecutionEvent(ctx, r, step.ID, "step.gate_unevaluable", map[string]any{
+				"gate":       step.FailWhen,
+				"unset_keys": unset,
+			})
+			e.markStepRunFailed(ctx, res.StepRunID, res.Output)
+			return res
+		}
+	}
+
+	rejected, evalErr := gate.Eval(evalCtx)
+	switch {
+	case evalErr != nil:
+		res.Success = false
+		res.Output = fmt.Sprintf("fail_when eval error %q: %v", step.FailWhen, evalErr)
+		aplog.Error("workflow %s: step %q fail_when eval error %q: %v (failing step)", r.wf.ID, step.ID, step.FailWhen, evalErr)
+		e.markStepRunFailed(ctx, res.StepRunID, res.Output)
+	case rejected:
+		res.Success = false
+		aplog.Info("workflow %s: step %q rejected (fail_when matched)", r.wf.ID, step.ID)
+		e.markStepRunFailed(ctx, res.StepRunID, res.Output)
+	}
+	return res
+}
+
+// unevaluableGateKeys returns the sorted memory keys the gate reads that this
+// step promised to write (`memory.write`) but did not emit in its structured
+// output. A non-empty result means the gate is reading values the step was
+// responsible for producing and did not — the gate cannot decide anything.
+//
+// Only keys the step itself owns are considered: a gate reading a key written
+// by some earlier step is that step's responsibility, and keys that were never
+// declared anywhere are an authoring error caught by `apiary validate`.
+func unevaluableGateKeys(gate *Expr, step config.StepConfig, res StepResult, parallelContribs []MemoryStep) []string {
+	declared := map[string]struct{}{}
+	produced := map[string]struct{}{}
+	add := func(fields []string, structured map[string]any) {
+		for _, f := range fields {
+			declared[f] = struct{}{}
+		}
+		for k := range structured {
+			produced[k] = struct{}{}
+		}
+	}
+	if step.StepType() == config.StepTypeParallel {
+		// The parallel step emits nothing itself; its children own the keys.
+		for _, c := range parallelContribs {
+			add(c.WriteFields, c.Structured)
+		}
+	} else {
+		add(step.MemoryWriteFields(), res.StructuredOutput)
+	}
+
+	var unset []string
+	for _, key := range gate.MemoryRefs() {
+		if _, isDeclared := declared[key]; !isDeclared {
+			continue
+		}
+		if _, ok := produced[key]; !ok {
+			unset = append(unset, key)
+		}
+	}
+	return unset
+}
+
+// missingOutputPolicy returns the effective on_missing_output policy of a step
+// (the empty authored value means the `warn` default).
+func missingOutputPolicy(step config.StepConfig) string {
+	if step.OnMissingOutput == "" {
+		return config.OnMissingOutputWarn
+	}
+	return step.OnMissingOutput
 }
 
 // evalExpr parses and evaluates a condition expression. Strips optional ${{ }}

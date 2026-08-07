@@ -46,6 +46,14 @@ type ciPollRecorder interface {
 	RecordCIPollCheck(ctx context.Context, p *db.CIPollCheck) error
 }
 
+// stepRunStateUpdater is the optional capability the engine uses to correct a
+// step run's recorded state after the scheduler's post-execution gates ran.
+// *db.Client satisfies it; fake stores in tests that omit it simply keep the
+// state the runner wrote.
+type stepRunStateUpdater interface {
+	UpdateStepRunState(ctx context.Context, id, state, output string) error
+}
+
 type executionEventRecorder interface {
 	RecordExecutionEvent(context.Context, *db.ExecutionEvent) error
 }
@@ -168,7 +176,13 @@ type StepResult struct {
 	// InputPrompt is the composed prompt of the final (winning) attempt, persisted
 	// onto the step run for cost auditing and replay.
 	InputPrompt string
-	Err         error
+	// StepRunID is the id of the step_runs row this result was persisted to.
+	// The scheduler uses it to correct the recorded state when a post-execution
+	// gate (fail_when / on_missing_output) fails a step whose agent exited 0 —
+	// otherwise the row would read `passed` for a step the workflow failed (#390).
+	// Empty for step kinds that persist no step run (parallel, foreach, split).
+	StepRunID string
+	Err       error
 }
 
 // StepExecutor performs the actual runner invocation for a single agent step.
@@ -633,7 +647,37 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 	e.memorizeStep(instID, task, step, res)
 	e.publishStep(ctx, task, bindings, res, sr)
 	_ = e.store.UpdateStepRun(ctx, sr)
+	res.StepRunID = sr.ID
 	return res
+}
+
+// markStepRunFailed flips a persisted step run to failed after the scheduler's
+// post-execution gates rejected a step whose agent itself exited 0. Without it
+// the step_runs row keeps the `passed` the runner produced while the workflow
+// treats the step as failed — the exact mismatch reported in #390. Best-effort:
+// a store that cannot update state (or a step kind with no row) changes nothing.
+func (e *Engine) markStepRunFailed(ctx context.Context, stepRunID, output string) {
+	if stepRunID == "" {
+		return
+	}
+	updater, ok := e.store.(stepRunStateUpdater)
+	if !ok {
+		return
+	}
+	if err := updater.UpdateStepRunState(ctx, stepRunID, db.StepStateFailed, output); err != nil {
+		aplog.Error("step run %s: mark failed: %v", stepRunID, err)
+	}
+}
+
+// recordStepExecutionEvent records a lifecycle event attributed to a specific
+// step (recordExecutionEvent attributes to the run's waiting step instead).
+func (e *Engine) recordStepExecutionEvent(ctx context.Context, r *dagRun, stepID, eventType string, metadata map[string]any) {
+	recorder, ok := e.store.(executionEventRecorder)
+	if !ok || r == nil {
+		return
+	}
+	_ = recorder.RecordExecutionEvent(ctx, &db.ExecutionEvent{Type: eventType, TaskID: r.task.ID, WorkflowID: r.wf.ID,
+		WorkflowInstanceID: r.instID, StepID: stepID, Metadata: metadata})
 }
 
 // secretPattern returns the name of the first common credential pattern found

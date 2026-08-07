@@ -957,7 +957,7 @@
         },
         "on_missing_output": {
           "type": "string",
-          "description": "Behavior when output_schema is declared but not satisfied",
+          "description": "Behavior when output_schema is declared but not satisfied: warn (default) logs and records a step.missing_output event but still passes the step; fail fails the step; ignore silences both. Independent of this setting (except under ignore), a reject_when/fail_when gate reading one of this step's own memory.write keys fails the step when the agent emitted no value for that key — an unevaluable gate never reads as a pass",
           "enum": ["warn", "fail", "ignore"],
           "default": "warn"
         },
