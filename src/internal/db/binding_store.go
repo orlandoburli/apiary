@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/model"
@@ -83,6 +84,43 @@ func (s *SourceBindingStore) GetBindingBySourceItemID(ctx context.Context, sourc
 		return nil, nil
 	}
 	return b, err
+}
+
+// ListBindingsBySourceItemNumber returns every binding whose human-facing item
+// reference matches, compared case-insensitively and ignoring a leading '#'.
+//
+// The reference is what people actually have: a Jira key (CDT-123) or a GitHub
+// issue number (#1953). For several sources it is nothing like the item id — Jira
+// binds on the opaque numeric issue id, so the only id a user could see in the UI
+// was useless as a restart argument. All matches are returned rather than the
+// first, because acting on a reference that resolves to two different items in
+// two sources is exactly the mis-targeting #377 was about; the caller decides.
+func (s *SourceBindingStore) ListBindingsBySourceItemNumber(ctx context.Context, number string) ([]model.SourceBinding, error) {
+	number = strings.TrimPrefix(strings.TrimSpace(number), "#")
+	if number == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, task_id, source_id, source_item_id, COALESCE(source_item_url,''),
+		       COALESCE(source_item_number,''), created_at
+		FROM source_bindings
+		WHERE TRIM(COALESCE(source_item_number,''), '#') = ? COLLATE NOCASE
+		ORDER BY created_at ASC
+	`, number)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []model.SourceBinding
+	for rows.Next() {
+		b, err := scanBinding(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *b)
+	}
+	return out, rows.Err()
 }
 
 // DeleteBindingsByTask removes all source bindings for a task. Used when a task is
