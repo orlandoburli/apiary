@@ -75,7 +75,7 @@ func TestReportFullyDroppedIsVisible(t *testing.T) {
 
 	cell := model.SourceItem{ID: "295651", SourceID: "rl-jira", Title: "PSP-199"}
 	task := model.InternalTask{ID: "T1"}
-	d.reportFullyDropped(ctx, cell, task, dropped)
+	d.reportFullyDropped(ctx, cell, task, dropped, suppressedRoutes{})
 
 	var info string
 	for _, line := range logs() {
@@ -119,9 +119,9 @@ func TestReportFullyDroppedSuppressesUnchangedRepeats(t *testing.T) {
 	task := model.InternalTask{ID: "T1"}
 
 	active := []droppedMatch{{WorkflowID: "jira-implement", Reason: "active instance"}}
-	d.reportFullyDropped(ctx, cell, task, active)
-	d.reportFullyDropped(ctx, cell, task, active)
-	d.reportFullyDropped(ctx, cell, task, active)
+	d.reportFullyDropped(ctx, cell, task, active, suppressedRoutes{})
+	d.reportFullyDropped(ctx, cell, task, active, suppressedRoutes{})
+	d.reportFullyDropped(ctx, cell, task, active, suppressedRoutes{})
 
 	count := func() int {
 		n := 0
@@ -137,14 +137,14 @@ func TestReportFullyDroppedSuppressesUnchangedRepeats(t *testing.T) {
 	}
 
 	// A different reason is new information and must be reported.
-	d.reportFullyDropped(ctx, cell, task, []droppedMatch{{WorkflowID: "jira-implement", Reason: "capped"}})
+	d.reportFullyDropped(ctx, cell, task, []droppedMatch{{WorkflowID: "jira-implement", Reason: "capped"}}, suppressedRoutes{})
 	if got := count(); got != 2 {
 		t.Fatalf("a changed reason must be reported again, got %d lines", got)
 	}
 
 	// After a successful dispatch clears the marker, the same reason is news again.
 	d.dropNotified.Delete("T1")
-	d.reportFullyDropped(ctx, cell, task, active)
+	d.reportFullyDropped(ctx, cell, task, active, suppressedRoutes{})
 	if got := count(); got != 3 {
 		t.Fatalf("a re-wedge after a dispatch must be reported, got %d lines", got)
 	}

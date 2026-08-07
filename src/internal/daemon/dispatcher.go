@@ -1549,7 +1549,19 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 		}
 		task, persisted := d.bindItem(ctx, cell)
 		d.recordRouteEvents(ctx, task)
-		matches := d.router.RouteAll(task)
+		matches, suppressedMatches := d.router.RouteAllWithSuppressed(task)
+		// An exclusive trigger stops routing at itself, so the routes below it were
+		// never considered. If a guard now removes that winner the task is left with
+		// nothing, and the suppressed routes are not reconsidered — deliberately, as
+		// falling through would duplicate the run the guard is protecting. Carry them
+		// so the fully-dropped report can name what the exclusive claim cost.
+		suppressed := suppressedRoutes{}
+		if len(suppressedMatches) > 0 && len(matches) > 0 {
+			suppressed.ExclusiveWorkflowID = matches[len(matches)-1].Route.ID
+			for _, m := range suppressedMatches {
+				suppressed.WorkflowIDs = append(suppressed.WorkflowIDs, m.Route.ID)
+			}
+		}
 		// Source-agnostic in-flight guard: drop any matched workflow that already
 		// has a non-terminal instance for this task, so a re-poll does not dispatch
 		// a duplicate while it runs or waits at an approval step. Replaces the
@@ -1575,7 +1587,7 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 				// nothing will run for this cell, and until #380 that was entirely
 				// silent. Report it (once per distinct reason set) so a wedged task
 				// is distinguishable from an idle one.
-				d.reportFullyDropped(ctx, cell, task, dropped)
+				d.reportFullyDropped(ctx, cell, task, dropped, suppressed)
 			}
 			d.inFlight.Delete(cell.ID)
 			continue
@@ -1839,13 +1851,30 @@ func (d *Dispatcher) reportStaleInFlight(ctx context.Context, cell model.SourceI
 		Metadata: map[string]any{"reason": "stale in-flight marker", "detail": time.Since(since).Truncate(time.Second).String(), "source_item_id": cell.ID}})
 }
 
+// suppressedRoutes names the lower-priority workflows an exclusive trigger stopped
+// the router from considering, and the exclusive workflow that did it. It is empty
+// unless an exclusive route matched. The dispatcher never dispatches these: see
+// router.RouteAllWithSuppressed for why re-routing to them would duplicate work.
+// It carries them only so a fully-dropped report can say what the exclusive claim
+// suppressed — otherwise a task whose exclusive winner is dropped by a guard looks
+// like a task with no viable workflow at all.
+type suppressedRoutes struct {
+	ExclusiveWorkflowID string
+	WorkflowIDs         []string
+}
+
 // dropSignature is the stable identity of a "fully dropped" outcome: the set of
-// (workflow, reason) pairs, order-independent. Two consecutive polls that drop
-// the same workflows for the same reasons share a signature and are reported once.
-func dropSignature(dropped []droppedMatch) string {
-	parts := make([]string, 0, len(dropped))
+// (workflow, reason) pairs plus any suppressed routes, order-independent. Two
+// consecutive polls that drop the same workflows for the same reasons share a
+// signature and are reported once; a config change that adds or removes a
+// suppressed fallback changes it, so the new picture is reported.
+func dropSignature(dropped []droppedMatch, suppressed suppressedRoutes) string {
+	parts := make([]string, 0, len(dropped)+len(suppressed.WorkflowIDs))
 	for _, drop := range dropped {
 		parts = append(parts, drop.WorkflowID+"="+drop.Reason)
+	}
+	for _, id := range suppressed.WorkflowIDs {
+		parts = append(parts, id+"=suppressed")
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ",")
@@ -1863,8 +1892,14 @@ func dropSignature(dropped []droppedMatch) string {
 // per task. Repeats are suppressed while the reason set is unchanged: an
 // "active instance" drop is the normal state of a task whose workflow is still
 // running, and re-logging it every poll interval would bury the signal.
-func (d *Dispatcher) reportFullyDropped(ctx context.Context, cell model.SourceItem, task model.InternalTask, dropped []droppedMatch) {
-	signature := dropSignature(dropped)
+//
+// When the dropped set includes an exclusive winner, the line also names the
+// lower-priority workflows that winner stopped the router from considering. Those
+// are NOT re-routed to (that would duplicate the run the guard is protecting), so
+// without naming them the operator sees "nothing will run" with no hint that a
+// viable fallback exists one priority down.
+func (d *Dispatcher) reportFullyDropped(ctx context.Context, cell model.SourceItem, task model.InternalTask, dropped []droppedMatch, suppressed suppressedRoutes) {
+	signature := dropSignature(dropped, suppressed)
 	if previous, seen := d.dropNotified.Load(task.ID); seen && previous == signature {
 		return
 	}
@@ -1874,12 +1909,21 @@ func (d *Dispatcher) reportFullyDropped(ctx context.Context, cell model.SourceIt
 	for _, drop := range dropped {
 		reasons = append(reasons, drop.String())
 	}
-	aplog.Info("cell %s (%q): task %s matched %d workflow(s) but every one was dropped before dispatch — %s; nothing will run for this task until the reason clears",
-		cell.LogLabel(), cell.Title, task.ID, len(dropped), strings.Join(reasons, ", "))
+	suppressedNote := ""
+	if len(suppressed.WorkflowIDs) > 0 {
+		suppressedNote = fmt.Sprintf("; exclusive workflow %s had already suppressed %d lower-priority match(es) (%s), which are not reconsidered",
+			suppressed.ExclusiveWorkflowID, len(suppressed.WorkflowIDs), strings.Join(suppressed.WorkflowIDs, ", "))
+	}
+	aplog.Info("cell %s (%q): task %s matched %d workflow(s) but every one was dropped before dispatch — %s%s; nothing will run for this task until the reason clears",
+		cell.LogLabel(), cell.Title, task.ID, len(dropped), strings.Join(reasons, ", "), suppressedNote)
 
 	for _, drop := range dropped {
+		metadata := map[string]any{"reason": drop.Reason, "detail": drop.Detail, "source_item_id": cell.ID}
+		if drop.WorkflowID == suppressed.ExclusiveWorkflowID && len(suppressed.WorkflowIDs) > 0 {
+			metadata["suppressed"] = strings.Join(suppressed.WorkflowIDs, ",")
+		}
 		d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "dispatch.dropped", TaskID: task.ID, WorkflowID: drop.WorkflowID,
-			Metadata: map[string]any{"reason": drop.Reason, "detail": drop.Detail, "source_item_id": cell.ID}})
+			Metadata: metadata})
 	}
 }
 

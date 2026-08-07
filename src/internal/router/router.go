@@ -143,8 +143,28 @@ func (r *Router) Route(item model.SourceItem) (Match, bool) {
 // attributes (labels, state, source, type, priority) are kept live by the
 // SourceBinder on each poll, so RouteAll observes the same data Route would.
 func (r *Router) RouteAll(task model.InternalTask) []Match {
+	matches, _ := r.RouteAllWithSuppressed(task)
+	return matches
+}
+
+// RouteAllWithSuppressed returns RouteAll's fan-out together with the lower-priority
+// routes an exclusive winner claimed the task away from — restricted to those that
+// would themselves have matched and resolved, i.e. exactly the workflows that would
+// have run had the exclusive trigger not been there. It is nil whenever no exclusive
+// route matched, and evaluating it costs nothing extra in that case (RouteAll already
+// scans every route when it does not break early).
+//
+// The suppressed set is DIAGNOSTIC ONLY and must never be dispatched. A pre-dispatch
+// guard may later remove the exclusive winner — it already has a live instance, it is
+// a spent `once` route, it hit the consecutive-failure cap — which leaves the task
+// with zero matches even though these routes matched. Falling through to them there
+// would run work the exclusive trigger exists to prevent: alongside the instance that
+// is still active, or on every poll forever once the winner is permanently spent.
+// The dispatcher names them in its fully-dropped report instead, so the operator can
+// see the suppression and decide.
+func (r *Router) RouteAllWithSuppressed(task model.InternalTask) (matches, suppressed []Match) {
 	t := targetFromTask(task)
-	var matches []Match
+	claimed := false
 	for _, route := range r.routes {
 		if route.IsEventRoute() {
 			continue
@@ -157,19 +177,26 @@ func (r *Router) RouteAll(task model.InternalTask) []Match {
 		if !ok {
 			continue
 		}
+		if claimed {
+			suppressed = append(suppressed, m)
+			continue
+		}
 		matches = append(matches, m)
 		if route.Exclusive {
-			break
+			claimed = true
 		}
 	}
-	return matches
+	return matches, suppressed
 }
 
 // ExplainTask returns the same fan-out decision as RouteAll together with a
-// stable reason for every route evaluated before an exclusive match.
+// stable reason for every route. Routes below an exclusive winner are reported
+// too — not selected, but with a reason naming the route that claimed the task,
+// so a trigger that silently lost to an exclusive one is still visible.
 func (r *Router) ExplainTask(task model.InternalTask) []RouteTrace {
 	t := targetFromTask(task)
 	traces := make([]RouteTrace, 0, len(r.routes))
+	claimedBy := ""
 	for _, route := range r.routes {
 		if route.IsEventRoute() {
 			continue
@@ -182,10 +209,16 @@ func (r *Router) ExplainTask(task model.InternalTask) []RouteTrace {
 				reason = "matched conditions but route has no resolvable agent or worker"
 			}
 		}
+		if claimedBy != "" {
+			if selected {
+				reason = fmt.Sprintf("suppressed: exclusive route %q claimed this task", claimedBy)
+			}
+			selected = false
+		}
 		traces = append(traces, RouteTrace{RouteID: route.ID, Priority: route.Priority, Agent: route.Agent,
 			Worker: route.Worker, Matched: matched, Selected: selected, Reason: reason})
 		if selected && route.Exclusive {
-			break
+			claimedBy = route.ID
 		}
 	}
 	return traces
