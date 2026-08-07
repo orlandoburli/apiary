@@ -6,9 +6,13 @@
 //
 // Alerts are read-only work items: the adapter deliberately implements none of
 // the optional write capabilities (StateSetter, LabelAdder, TaskPoller,
-// CIStatusPoller, SubIssueCreator…). Acknowledge and WriteResult are no-ops;
-// config validation rejects workflows that need write capabilities against a
-// source that lacks them (config.SourceCapabilities).
+// CIStatusPoller, SubIssueCreator…). WriteResult is a no-op and Acknowledge is
+// one too by default; config validation rejects workflows that need write
+// capabilities against a source that lacks them (config.SourceCapabilities).
+//
+// The one opt-in write is ack_via_silence: with it enabled, acknowledging a
+// dispatched alert creates a time-boxed Alertmanager silence for that alert, so
+// it stops paging while an agent investigates.
 package prometheus
 
 import (
@@ -40,6 +44,12 @@ const (
 	// least this long before it is surfaced. Complements the alerting rule's
 	// own `for:` clause; 0 would dispatch on the very first evaluation.
 	defaultMinAge = time.Minute
+
+	// defaultSilenceDuration bounds an ack_via_silence silence. It is a
+	// deliberate ceiling, not an estimate of how long an investigation runs:
+	// if the agent dies or the daemon is killed the silence must expire on its
+	// own, or a still-firing alert would stay invisible forever.
+	defaultSilenceDuration = 2 * time.Hour
 )
 
 // Adapter implements source.Adapter for Prometheus Alertmanager.
@@ -49,6 +59,12 @@ type Adapter struct {
 
 	maxNewPerPoll int
 	minAge        time.Duration
+
+	// ackViaSilence turns Acknowledge from a no-op into "create an
+	// Alertmanager silence for this alert", so a dispatched alert stops
+	// re-notifying the on-call while an agent investigates it.
+	ackViaSilence   bool
+	silenceDuration time.Duration
 
 	// filters are Alertmanager matcher strings sent as filter= params,
 	// built from SourceFilters.Labels.
@@ -62,6 +78,24 @@ type Adapter struct {
 	// is still prevented downstream by the persisted task/instance dedup.
 	mu   sync.Mutex
 	seen map[string]struct{}
+
+	// labels caches the exact label set of every surfaced alert, keyed by item
+	// ID. Acknowledge needs it to build silence matchers: the SourceItem it is
+	// handed is reconstructed from a source binding and carries no Metadata,
+	// so the raw label map is not otherwise reachable. Pruned with seen.
+	labels map[string]map[string]string
+
+	// silenced records the silence created for an item ID and when it expires,
+	// so a second Acknowledge for the same fire cycle (re-dispatch, retried
+	// step) does not stack a second silence. Entries are dropped once expired,
+	// which also bounds the map.
+	silenced map[string]silenceRecord
+}
+
+// silenceRecord is one live silence the adapter created.
+type silenceRecord struct {
+	id     string
+	expiry time.Time
 }
 
 func (a *Adapter) ID() string { return a.id }
@@ -100,10 +134,24 @@ func (a *Adapter) Connect(_ context.Context, cfg map[string]any) error {
 		a.minAge = d
 	}
 
-	a.seen = map[string]struct{}{}
+	a.ackViaSilence, _ = cfg["ack_via_silence"].(bool)
 
-	aplog.Info("prometheus: configured  alertmanager=%s  max_new_per_poll=%d  min_age=%s",
-		baseURL, a.maxNewPerPoll, a.minAge)
+	a.silenceDuration = defaultSilenceDuration
+	if v, ok := cfg["silence_duration"]; ok {
+		s, _ := v.(string)
+		d, err := time.ParseDuration(s)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("prometheus: config.silence_duration must be a positive duration (e.g. \"2h\"), got %v", v)
+		}
+		a.silenceDuration = d
+	}
+
+	a.seen = map[string]struct{}{}
+	a.labels = map[string]map[string]string{}
+	a.silenced = map[string]silenceRecord{}
+
+	aplog.Info("prometheus: configured  alertmanager=%s  max_new_per_poll=%d  min_age=%s  ack_via_silence=%v  silence_duration=%s",
+		baseURL, a.maxNewPerPoll, a.minAge, a.ackViaSilence, a.silenceDuration)
 	return nil
 }
 
@@ -192,6 +240,7 @@ func (a *Adapter) Poll(ctx context.Context, _ time.Time) ([]model.SourceItem, er
 			newCount++
 			a.seen[id] = struct{}{}
 		}
+		a.labels[id] = al.Labels
 		items = append(items, a.toSourceItem(al))
 	}
 	if dropped > 0 {
@@ -199,9 +248,13 @@ func (a *Adapter) Poll(ctx context.Context, _ time.Time) ([]model.SourceItem, er
 	}
 
 	// Prune fire cycles that ended so a re-fire (new startsAt) counts as new.
+	// An alert silenced by ack_via_silence also drops out here (silenced
+	// alerts are excluded from the poll); its persisted task identity, not
+	// this map, is what keeps it from re-dispatching when the silence lapses.
 	for id := range a.seen {
 		if _, ok := current[id]; !ok {
 			delete(a.seen, id)
+			delete(a.labels, id)
 		}
 	}
 
@@ -312,11 +365,89 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// Acknowledge is a no-op: an alert has no assignable/in-progress state to set.
-// Silencing on dispatch (ack_via_silence) is a possible future opt-in.
-func (a *Adapter) Acknowledge(_ context.Context, cell model.SourceItem, action model.AckAction) error {
-	aplog.Debug("prometheus: acknowledge %s (%s) — no-op for alerts", cell.LogLabel(), action)
+// Acknowledge is a no-op by default: an alert has no assignable/in-progress
+// state to set. With ack_via_silence enabled it instead creates an Alertmanager
+// silence pinned to the dispatched alert's exact label set, so the alert stops
+// paging the on-call for as long as an agent is investigating it.
+//
+// Only the in_progress action silences. A skip means the item was never
+// dispatched, and suppressing an alert nobody is looking at would hide it.
+func (a *Adapter) Acknowledge(ctx context.Context, cell model.SourceItem, action model.AckAction) error {
+	if !a.ackViaSilence || action != model.AckActionInProgress {
+		aplog.Debug("prometheus: acknowledge %s (%s) — no-op for alerts", cell.LogLabel(), action)
+		return nil
+	}
+
+	now := time.Now()
+	matchers, ok := a.silenceMatchers(cell, now)
+	if !ok {
+		return nil // already silenced, or nothing safe to match on
+	}
+
+	endsAt := now.Add(a.silenceDuration)
+	id, err := a.client.createSilence(ctx, silence{
+		Matchers:  matchers,
+		StartsAt:  now,
+		EndsAt:    endsAt,
+		CreatedBy: "apiary",
+		Comment:   fmt.Sprintf("Apiary is investigating this alert (task %s). Expires automatically.", cell.ID),
+	})
+	if err != nil {
+		return fmt.Errorf("prometheus: silencing %s: %w", cell.LogLabel(), err)
+	}
+
+	a.mu.Lock()
+	a.silenced[cell.ID] = silenceRecord{id: id, expiry: endsAt}
+	a.mu.Unlock()
+
+	aplog.Info("prometheus: silenced %s until %s (silence=%s, %d matcher(s))",
+		cell.LogLabel(), endsAt.UTC().Format(time.RFC3339), id, len(matchers))
 	return nil
+}
+
+// silenceMatchers builds the exact-equality matchers for one alert and reports
+// whether a silence should be created at all (false when this fire cycle is
+// already silenced, or when no label set could be recovered).
+//
+// The label set comes from the poll-time cache, which holds the alert's raw
+// labels. When the daemon restarted between the poll and this call the cache is
+// cold, so it falls back to the item's "key:value" labels — lossless here
+// because a Prometheus label name can never contain a colon, so splitting on
+// the first one reproduces the original pair.
+func (a *Adapter) silenceMatchers(cell model.SourceItem, now time.Time) ([]matcher, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	for id, rec := range a.silenced {
+		if !rec.expiry.After(now) {
+			delete(a.silenced, id)
+		}
+	}
+	if rec, ok := a.silenced[cell.ID]; ok {
+		aplog.Debug("prometheus: %s already silenced until %s (silence=%s) — skipping",
+			cell.LogLabel(), rec.expiry.UTC().Format(time.RFC3339), rec.id)
+		return nil, false
+	}
+
+	labels := a.labels[cell.ID]
+	if len(labels) == 0 {
+		labels = map[string]string{}
+		for _, l := range cell.Labels {
+			if k, v, found := strings.Cut(l, ":"); found {
+				labels[k] = v
+			}
+		}
+	}
+	if len(labels) == 0 {
+		aplog.Warn("prometheus: cannot silence %s — no label set available; leaving the alert unsilenced", cell.LogLabel())
+		return nil, false
+	}
+
+	matchers := make([]matcher, 0, len(labels))
+	for _, k := range sortedKeys(labels) {
+		matchers = append(matchers, matcher{Name: k, Value: labels[k], IsEqual: true})
+	}
+	return matchers, true
 }
 
 // WriteResult is a no-op: Alertmanager has no per-alert comment surface. The

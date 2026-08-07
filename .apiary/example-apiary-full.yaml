@@ -146,6 +146,12 @@ sources:
       max_new_per_poll: 10
       # Flap dampener: alerts must have been firing at least this long.
       min_age: 1m
+      # Opt-in: silence a dispatched alert in Alertmanager while an agent
+      # investigates it, so it stops paging the on-call. Off by default.
+      # ack_via_silence: true
+      # How long that silence lasts. It is a ceiling, not an estimate: if the
+      # run dies the silence must still expire on its own. Default 2h.
+      # silence_duration: 2h
     poll_interval: 30s
     filters:
       # Alertmanager matchers, ANDed server-side. key=value, key:value, or a

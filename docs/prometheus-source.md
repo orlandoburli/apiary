@@ -23,6 +23,8 @@ sources:
       bearer_token: ${ALERTMANAGER_TOKEN}   # optional
       max_new_per_poll: 10                  # optional, storm cap
       min_age: 1m                           # optional, flap dampener
+      ack_via_silence: true                 # optional, silence while investigating
+      silence_duration: 2h                  # optional, how long that silence lasts
     filters:
       labels: ["severity=critical", "team=platform"]
 
@@ -45,6 +47,8 @@ workflows:
 | `basic_auth_user` / `basic_auth_password` | no | HTTP Basic auth (ignored when `bearer_token` is set) |
 | `max_new_per_poll` | no | Alert-storm cap: at most this many *not-yet-seen* alerts become tasks per poll; the overflow is logged and surfaces on later polls. `0` disables the cap. Default `10` |
 | `min_age` | no | Flap dampener: an alert must have been firing at least this long before it is ingested (complements the alerting rule's own `for:`). Default `1m` |
+| `ack_via_silence` | no | When `true`, acknowledging a dispatched alert creates an Alertmanager silence for it, so it stops paging while an agent investigates. Default `false` (acknowledge is a no-op) |
+| `silence_duration` | no | How long an `ack_via_silence` silence lasts. Default `2h` |
 
 ### `filters`
 
@@ -85,13 +89,50 @@ workflows:
   fingerprint+startsAt identity this also means a *resolved-and-refired*
   alert within the window is a fresh item only once it has stayed firing.
 - **Read-only.** Alerts have no assignable state, labels, or comments to
-  write back to: `Acknowledge` and result write-back are no-ops, and the
-  adapter implements none of the optional write capabilities.
-  `apiary validate` rejects workflows that pin this source and use
-  `on_complete.set_state` / `add_labels`, approval steps, `wait_for` CI
-  steps, or `materialize: sub_issue`.
+  write back to: result write-back is a no-op, `Acknowledge` is one too
+  unless `ack_via_silence` is set, and the adapter implements none of the
+  optional write capabilities. `apiary validate` rejects workflows that pin
+  this source and use `on_complete.set_state` / `add_labels`, approval
+  steps, `wait_for` CI steps, or `materialize: sub_issue`.
 - **Resolved while running.** A running investigation is not interrupted
   when its alert resolves; the workflow finishes normally.
+
+## Acknowledge via silence
+
+By default a dispatched alert keeps notifying: Apiary picking it up is
+invisible to Alertmanager, so the on-call is still paged for something an
+agent is already working on. Setting `ack_via_silence: true` closes that gap
+— when the workflow acknowledges the alert, the adapter creates a silence
+for it:
+
+```yaml
+config:
+  alertmanager_url: https://alertmanager.internal:9093
+  ack_via_silence: true
+  silence_duration: 2h
+```
+
+- **Pinned to one alert.** The silence carries an exact-equality matcher for
+  every label of the alert that was dispatched, so it suppresses that alert
+  and nothing else. It is never a regex or a partial match.
+- **Always time-boxed.** `silence_duration` is a ceiling, not an estimate of
+  how long the investigation takes. If the agent crashes or the daemon is
+  killed, the silence still expires on its own and a genuinely unresolved
+  alert comes back — Apiary never suppresses an alert indefinitely.
+- **Only on dispatch.** A skipped item is never silenced: it was not picked
+  up, so hiding it would be hiding an alert nobody is looking at.
+- **At most one per fire cycle.** Re-acknowledging the same alert (a retried
+  step, a re-dispatch) does not stack a second silence. A silence that
+  Alertmanager *rejected* is not recorded as done, so a later acknowledge
+  retries it.
+- **The alert leaves the poll.** Silenced alerts are excluded from
+  `GET /api/v2/alerts`, so a silenced alert stops being returned until the
+  silence lapses. It does not re-dispatch when it comes back: the task ID is
+  still `fingerprint:startsAt` for that same fire cycle, and the persisted
+  task identity dedups it.
+- **Requires write access.** The configured token needs permission to POST
+  silences. If Alertmanager rejects the request the error is logged and the
+  run continues — a silence failure never fails the investigation.
 
 ## Where results go
 
