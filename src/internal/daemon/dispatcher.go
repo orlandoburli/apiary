@@ -889,10 +889,24 @@ func (d *Dispatcher) Status() StatusResponse {
 	return resp
 }
 
+// ErrUnknownCell is returned by ForceRestart when the id names no cell this
+// daemon knows about. Restart is destructive — it cancels in-flight work — so an
+// id that resolves to nothing must fail closed instead of running the restart
+// side effects with an id from some other id space (#377).
+var ErrUnknownCell = errors.New("unknown cell")
+
 // ForceRestart cancels a running dispatch for the given cell, removes it from
 // tracking maps, marks the execution as interrupted in the DB, and resets the
 // source state so the cell can be picked up on the next poll.
+//
+// The id must be a cell id (the source item id: a GitHub issue number, a Jira
+// issue id, …) — not an internal task id. Anything else returns ErrUnknownCell
+// and nothing is touched.
 func (d *Dispatcher) ForceRestart(ctx context.Context, cellID string) error {
+	if err := d.assertKnownCell(ctx, cellID); err != nil {
+		return err
+	}
+
 	// Cancel the running dispatch, if any
 	if val, ok := d.runCancel.LoadAndDelete(cellID); ok {
 		cancel := val.(context.CancelFunc)
@@ -982,6 +996,13 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, cellID string) error {
 			aplog.Debug("force-restart %s: cannot fetch labels from %s: %v", cellID, sc.ID, err)
 			continue
 		}
+		// Never write to an item the adapter substituted for the one asked for:
+		// stripping labels off an unrelated cell is exactly the mis-targeting
+		// #377 reported. An empty id means the adapter does not report one.
+		if cell.ID != "" && cell.ID != cellID {
+			aplog.Error("force-restart %s: %s returned item %s — refusing to touch it", cellID, sc.ID, cell.ID)
+			continue
+		}
 		if labels := d.controlLabels(cell); len(labels) > 0 {
 			if err := remover.RemoveLabels(ctx, cell, labels); err != nil {
 				aplog.Error("force-restart %s: removing control labels %v: %v", cellID, labels, err)
@@ -993,6 +1014,60 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, cellID string) error {
 
 	aplog.Info("force-restarted cell %s", cellID)
 	return nil
+}
+
+// assertKnownCell fails closed (ErrUnknownCell) unless cellID names a cell this
+// daemon actually knows: an in-flight run, a source binding, a workflow instance,
+// or a legacy execution row. Restart is destructive, and every step of it — the DB
+// updates, the source SetState, the label stripping — used to run unconditionally
+// on whatever raw id arrived, so an id from another id space (an internal task id,
+// or an item id that only exists in a different source) was applied blindly while
+// the CLI reported success. See #377.
+//
+// When the id is an internal task id, the error names the cell to use instead;
+// accepting the task id as an alias is deliberately left out of scope.
+func (d *Dispatcher) assertKnownCell(ctx context.Context, cellID string) error {
+	if cellID == "" {
+		return fmt.Errorf("%w: (empty id)", ErrUnknownCell)
+	}
+	// In-flight work is authoritative even before anything is persisted.
+	if _, ok := d.inFlight.Load(cellID); ok {
+		return nil
+	}
+	if _, ok := d.runCancel.Load(cellID); ok {
+		return nil
+	}
+	if d.db == nil {
+		// No store to validate against (unit harnesses); tracking maps are all
+		// there is, and the daemon always has a DB.
+		return nil
+	}
+
+	if b, err := d.db.SourceBindings().GetBindingBySourceItemID(ctx, cellID); err != nil {
+		return fmt.Errorf("restart %s: looking up binding: %w", cellID, err)
+	} else if b != nil {
+		return nil
+	}
+	if insts, err := d.db.ListWorkflowInstancesByCell(ctx, cellID); err != nil {
+		return fmt.Errorf("restart %s: listing workflow instances: %w", cellID, err)
+	} else if len(insts) > 0 {
+		return nil
+	}
+	if exec, err := d.db.GetLastExecution(ctx, cellID); err != nil {
+		return fmt.Errorf("restart %s: looking up executions: %w", cellID, err)
+	} else if exec != nil {
+		return nil
+	}
+
+	// Nothing matched. If the caller passed an internal task id, point at the
+	// cell id that would have worked instead of a bare "unknown".
+	if t, err := d.db.InternalTasks().GetTask(ctx, cellID); err == nil && t != nil {
+		if cell := d.cellIDForTask(ctx, t.ID); cell != "" && cell != cellID {
+			return fmt.Errorf("%w: %s is an internal task id, not a cell id — its cell is %s (try: apiary restart %s)",
+				ErrUnknownCell, cellID, cell, cell)
+		}
+	}
+	return fmt.Errorf("%w: %s", ErrUnknownCell, cellID)
 }
 
 // controlLabels returns the labels on the cell that act as routing guards: any
@@ -1069,7 +1144,11 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 			return
 		}
 		if err := d.ForceRestart(ctx, cellID); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			status := http.StatusInternalServerError
+			if errors.Is(err, ErrUnknownCell) {
+				status = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), status)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
