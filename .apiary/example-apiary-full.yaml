@@ -212,7 +212,9 @@ agents:
 
   - id: po
     description: "Product Owner — transforms business demands into specifications"
-    soul_file: .apiary/souls/po.md
+    # Example soul files are illustrative — point these at your own. This one
+    # reuses a shipped soul so the example validates as-is.
+    soul_file: .apiary/souls/staff.md
     runner: claude-cli
     model: claude-opus-4-8
     skills: [gitnexus-codebase, changelog-contexto, delegate-to-agent]
