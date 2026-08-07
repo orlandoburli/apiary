@@ -183,6 +183,31 @@ func queueDiagnostics(t *testing.T, dbc *db.Client) string {
 	return out
 }
 
+// Issue #375, the reporter's actual label shape: the triage agent *adds* the
+// hand-off label and leaves its own trigger label in place, so the incremental
+// poll matches BOTH workflows. The fan-out enqueues two jobs onto a worker whose
+// capacity is the production default of 1, and the first of them is a re-dispatch
+// of a workflow that has already completed for this task — the exact combination
+// that used to short-circuit inside ExecuteQueuedJob. The hand-off must still run.
+func TestQueueWorker_HandoffWithBothLabelsRetained(t *testing.T) {
+	ctx := context.Background()
+	adapter := &lockedAdapter{items: []model.SourceItem{{ID: "c1", SourceID: "src", Title: "Do it", Labels: []string{"ai-ready"}}}}
+	d, dbc := newWorkerDispatcher(t, filepath.Join(t.TempDir(), "queue.db"), adapter)
+	stop := runWorker(t, d)
+	defer stop()
+
+	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	if !waitForInstance(t, dbc, "c1", "triage", 15*time.Second) {
+		t.Fatalf("triage never completed:%s", queueDiagnostics(t, dbc))
+	}
+
+	adapter.setLabels("ai-ready", "ai-implement")
+	d.poll(ctx, d.cfg.Sources[0], adapter, time.Now())
+	if !waitForInstance(t, dbc, "c1", "impl", 15*time.Second) {
+		t.Fatalf("hand-off never ran when the triage label stayed on the item:%s", queueDiagnostics(t, dbc))
+	}
+}
+
 // Issue #375, first hand-off, end to end through the real embedded worker: the
 // triage workflow runs, the agent swaps the labels, and the very next
 // incremental poll must enqueue AND the worker must lease and run `impl` — with
