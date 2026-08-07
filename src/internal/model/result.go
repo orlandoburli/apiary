@@ -67,6 +67,47 @@ type Usage struct {
 	CostUSD             float64
 }
 
+// Timing is the wall-clock attribution for one runner invocation: where the step's
+// minutes actually went, alongside the tokens Usage already records. Populated by
+// runners that stream provider events (the CLI runners); nil elsewhere.
+//
+// ThinkingMS, WritingMS, ModelMS, ToolWaitMS and OtherMS are exclusive — each
+// instant of wall clock is counted in exactly one of them, and they sum to
+// TotalMS. BackgroundMS is NOT part of that sum: it is the union of the intervals
+// during which at least one background task was live, which overlaps the others by
+// design (the model may be writing while a test suite runs).
+//
+// ModelMS is model latency that carried no thinking signal and so could not be
+// split into thinking vs writing — it is un-attributed time, not a third kind of
+// model work. Callers should show it as such rather than folding it into either.
+type Timing struct {
+	ThinkingMS   int64
+	WritingMS    int64
+	ModelMS      int64
+	ToolWaitMS   int64
+	OtherMS      int64
+	BackgroundMS int64
+	TotalMS      int64
+	// SlowTools is the handful of slowest individual calls — foreground tool calls
+	// and background tasks alike — ordered slowest first. Durations here overlap
+	// each other freely: parallel tool calls and concurrent background tasks are
+	// each measured in full.
+	SlowTools []ToolTiming
+}
+
+// ToolTiming is one entry in Timing.SlowTools: how long a single call took, and
+// enough of a handle to recognise which call it was.
+type ToolTiming struct {
+	Name  string
+	Label string
+	// DurationMS is the call's own wall clock. For background tasks it is the
+	// task's self-reported duration when it provides one.
+	DurationMS int64
+	// Background marks a task the agent launched in the background rather than a
+	// foreground tool call it blocked on.
+	Background bool
+}
+
 // FailureKind classifies why a runner invocation failed to produce useful work.
 type FailureKind int
 
@@ -99,7 +140,8 @@ type RunResult struct {
 	Logs     []LogEntry
 	Duration time.Duration
 	Error    error
-	Usage    *Usage // populated by runners that support usage reporting
+	Usage    *Usage  // populated by runners that support usage reporting
+	Timing   *Timing // wall-clock attribution; nil for runners that don't stream events
 
 	// InputPrompt is the full composed prompt the runner sent to the agent (system
 	// prepend + cell details + system append, exactly as buildPrompt assembled it).
