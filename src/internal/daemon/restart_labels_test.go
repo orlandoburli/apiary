@@ -91,7 +91,7 @@ func TestForceRestart_StripsControlLabels(t *testing.T) {
 		sources: map[string]source.Adapter{"fake": fake},
 	}
 
-	if err := d.ForceRestart(context.Background(), "42"); err != nil {
+	if _, err := d.ForceRestart(context.Background(), "42"); err != nil {
 		t.Fatalf("ForceRestart: %v", err)
 	}
 

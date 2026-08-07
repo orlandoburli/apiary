@@ -28,7 +28,7 @@ func TestForceRestart_InterruptsWorkflowInstance(t *testing.T) {
 		t.Fatalf("precondition: running instance should shadow the workflow, got %d kept", len(kept))
 	}
 
-	if err := d.ForceRestart(ctx, "1956"); err != nil {
+	if _, err := d.ForceRestart(ctx, "1956"); err != nil {
 		t.Fatalf("ForceRestart: %v", err)
 	}
 

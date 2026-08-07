@@ -229,6 +229,27 @@ func (s *InternalTaskStore) Generation(ctx context.Context, id string) (int, err
 	return generation, err
 }
 
+// BumpGeneration advances a task's dispatch generation by one and returns the new
+// value. IncrementOutstanding bumps the generation implicitly, but only for a task
+// sitting in done/failed — which a force-restarted task is not: it is typically
+// still running, so its generation never moved and the queue's
+// taskID:generation:routeID idempotency key stayed pinned to the terminal jobs of
+// the round being restarted. Every re-dispatch then collapsed into "key already
+// belongs to a terminal job" and no new run was ever created. An explicit restart
+// is a new round by definition, so it bumps the generation unconditionally.
+func (s *InternalTaskStore) BumpGeneration(ctx context.Context, id string) (int, error) {
+	var generation int
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE internal_tasks SET generation = COALESCE(generation,0) + 1, updated_at = ?
+		WHERE id = ?
+		RETURNING generation
+	`, time.Now(), id).Scan(&generation)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return generation, err
+}
+
 // DeleteTask removes a task row by ID. Workflow instances, bindings, and logs are
 // removed by their own stores; this only drops the internal_tasks row. Deleting a
 // non-existent id is a no-op (no error), so it is safe to call for orphaned cells.
