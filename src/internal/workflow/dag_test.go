@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/orlandoburli/apiary/internal/config"
@@ -11,7 +12,15 @@ import (
 
 // seqExecutor returns a different scripted result per call to the same step,
 // for testing retry loops. Falls back to the last scripted result, then to ok.
+//
+// mu guards calls/seen: parallel and for_each steps run their children on
+// separate goroutines, so ExecuteStep is called concurrently and the bookkeeping
+// races without it. Without the lock `go test -race` fails on this package —
+// which is the one package whose concurrency most needs the race detector.
+// scripts is written only during test setup, before the run starts, so reads of
+// it are safe under the same lock.
 type seqExecutor struct {
+	mu      sync.Mutex
 	scripts map[string][]StepResult
 	calls   map[string]int
 	seen    []string
@@ -22,6 +31,8 @@ func newSeqExecutor() *seqExecutor {
 }
 
 func (s *seqExecutor) ExecuteStep(_ context.Context, req StepRequest) StepResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.seen = append(s.seen, req.Step.ID)
 	i := s.calls[req.Step.ID]
 	s.calls[req.Step.ID]++
@@ -36,7 +47,20 @@ func (s *seqExecutor) ExecuteStep(_ context.Context, req StepRequest) StepResult
 	}
 }
 
-func (s *seqExecutor) ran(stepID string) int { return s.calls[stepID] }
+func (s *seqExecutor) ran(stepID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls[stepID]
+}
+
+// seenIDs returns a copy of the executed step ids. Assertions must go through
+// this rather than reading the field, so a test that inspects progress while
+// goroutines are still running does not race.
+func (s *seqExecutor) seenIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.seen...)
+}
 
 func countSeen(seen []StepRequest, id string) int {
 	n := 0
