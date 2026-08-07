@@ -404,6 +404,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		WorkingDir:         "/",
 		Env:                env,
 		Timeout:            x.d.cfg.Settings.TaskTimeoutDuration(),
+		StallTimeout:       x.d.cfg.Settings.StallTimeoutDuration(),
 	}
 
 	if x.d.logger != nil {
@@ -485,6 +486,15 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 			execID := exec.ID
 			rr.SetPID = func(pid int) { _ = x.d.db.SetPID(ctx, execID, pid) }
 			rr.Heartbeat = func() { _ = x.d.db.SendHeartbeat(ctx, execID) }
+		}
+
+		// Say what bound is in force before the step runs. Without this there is
+		// no way to tell from the log whether a step is bounded at all, which is
+		// exactly the question asked when one has been running for an hour.
+		if rr.StallTimeout > 0 {
+			aplog.Info("step %s: timeout %s, stall timeout %s", req.Step.ID, rr.Timeout, rr.StallTimeout)
+		} else {
+			aplog.Info("step %s: timeout %s (no stall timeout; set settings.stall_timeout to bound silence)", req.Step.ID, rr.Timeout)
 		}
 
 		runCtx, cancel := context.WithTimeout(ctx, rr.Timeout)

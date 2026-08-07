@@ -10,7 +10,14 @@ type RunRequest struct {
 	SystemAppend  string
 	WorkingDir    string
 	Env           map[string]string
-	Timeout       time.Duration
+	// Timeout bounds the whole invocation. The caller enforces it by cancelling
+	// the context it passes to Run; runners need not check it themselves.
+	Timeout time.Duration
+	// StallTimeout kills the run when it has produced no output at all for this
+	// long, independent of Timeout. Zero disables it. Only meaningful for runners
+	// that stream output as they work — a runner that buffers everything until
+	// exit would look permanently stalled.
+	StallTimeout time.Duration
 	AgentMetadata map[string]any
 
 	// SystemPrepend is injected at the very start of the prompt, before the cell
@@ -174,6 +181,11 @@ type RunResult struct {
 	// engine treats SpawnRequest and SpawnRequests uniformly: each request becomes
 	// one deduped child.
 	SpawnRequests []SpawnRequest
+	// TimedOut marks a run the caller cut off — either at Timeout or at
+	// StallTimeout — rather than one that failed on its own. A killed process
+	// reports only "signal: killed", so without this a bound firing is
+	// indistinguishable from a crash in the run history.
+	TimedOut bool
 	// SpawnError is set when an APIARY_SPAWN block was present but its body was
 	// not valid JSON. The workflow executor turns this into a failed step.
 	SpawnError error

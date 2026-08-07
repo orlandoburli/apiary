@@ -542,7 +542,12 @@
         },
         "task_timeout": {
           "type": "string",
-          "description": "Default task timeout (e.g., '2h'). Defaults to 120m",
+          "description": "Total bound on one runner invocation (e.g. '2h'). Defaults to 120m. This is a runaway backstop, not a service-level target: an implementation step legitimately runs for an hour or more, so a short value kills real work rather than runaway work. To catch a genuinely hung process, use stall_timeout, which measures silence instead of duration",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+        },
+        "stall_timeout": {
+          "type": "string",
+          "description": "Kill a run that has produced no output at all for this long (e.g. '20m'), independent of task_timeout. A step streaming tool calls for ninety minutes is working; one silent for twenty is usually wedged. Off by default — it measures silence, so a runner that buffers its output until exit rather than streaming would look permanently stalled. Enable it for the streaming CLI runners",
           "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
         },
         "refuse_root": {

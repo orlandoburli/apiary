@@ -337,7 +337,22 @@ type Settings struct {
 	// agents[].permissions regardless of this setting.
 	LeastPrivilegeAgents bool   `yaml:"least_privilege_agents,omitempty"`
 	ResultComment        bool   `yaml:"result_comment"`
-	TaskTimeout          string `yaml:"task_timeout"`
+	// TaskTimeout bounds a single runner invocation end to end. Default 2h.
+	// It is a runaway backstop, not a service-level target: an implementation
+	// step legitimately runs for an hour or more, so a short total bound kills
+	// real work. For catching a genuinely hung process, StallTimeout is the
+	// better instrument — it measures silence rather than duration.
+	TaskTimeout string `yaml:"task_timeout"`
+	// StallTimeout kills a run that has produced no output at all for this long,
+	// independent of TaskTimeout. A step streaming tool calls for ninety minutes
+	// is working; one that has emitted nothing for twenty is usually wedged, and
+	// only the second is worth killing early.
+	//
+	// Disabled by default (empty or "0"). It stays opt-in because a runner that
+	// buffers its output instead of streaming would look permanently stalled,
+	// and silently killing those on upgrade would be worse than the problem it
+	// solves. Enable it for the streaming CLI runners.
+	StallTimeout string `yaml:"stall_timeout,omitempty"`
 	// MaxAttempts caps how many consecutive FAILED workflow instances a single
 	// (task, workflow) pair may accumulate before the dispatcher stops
 	// re-dispatching it and applies the workflow's on_fail hook. Rate-limited
@@ -598,13 +613,30 @@ func (s *Settings) CreditExhaustedCooldownDuration() time.Duration {
 	return d
 }
 
+// DefaultTaskTimeout is the total per-run bound applied when task_timeout is
+// unset. Two hours: long enough that a real implementation step is never cut
+// off, short enough that a wedged process cannot hold an agent slot forever.
+const DefaultTaskTimeout = 120 * time.Minute
+
 func (s *Settings) TaskTimeoutDuration() time.Duration {
 	if s.TaskTimeout == "" {
-		return 120 * time.Minute
+		return DefaultTaskTimeout
 	}
 	d, err := time.ParseDuration(s.TaskTimeout)
 	if err != nil {
-		return 120 * time.Minute
+		return DefaultTaskTimeout
+	}
+	return d
+}
+
+// StallTimeoutDuration returns the no-output bound, or 0 when disabled.
+func (s *Settings) StallTimeoutDuration() time.Duration {
+	if s.StallTimeout == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s.StallTimeout)
+	if err != nil || d <= 0 {
+		return 0
 	}
 	return d
 }
