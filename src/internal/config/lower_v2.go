@@ -579,15 +579,31 @@ func memoryWrites(m *MemoryConfig, field string) bool {
 
 // parseForEachExpr parses a for_each expression like `${{ design.tasks }}`
 // and returns the dot-path (for Items), the step id, and the field name.
-// For expressions that are already dot-paths, returns the path as-is.
+//
+// The emitted path must use the singular `output` segment: that is the items
+// contract both consumers enforce — workflow.resolveItemsFromContrib at runtime
+// and foreachItemsResolveToArray during graph validation. The plural `outputs`
+// belongs to the v2 *expression* surface (`${{ steps.x.outputs.y }}`, rewritten
+// to `memory.y`), which is a different thing; emitting it here produced an items
+// path no consumer accepts, so every v2-authored for_each failed with
+// "invalid items path".
+//
+// A caller who writes the full path themselves may spell it either way — the
+// plural is what the v2 docs show for expressions — so both are normalised, and
+// the step/field are reported either way so the caller can wire memory.write.
 func parseForEachExpr(expr string) (dotPath, stepID, field string) {
 	s := lowerExpr(expr)
-	// s is now e.g. "design.tasks" or "steps.design.outputs.tasks"
+	// s is now e.g. "design.tasks", "steps.design.output.tasks", or
+	// "steps.design.outputs.tasks".
 	parts := strings.SplitN(s, ".", 2)
 	if len(parts) == 2 && !strings.HasPrefix(s, "steps.") && !strings.HasPrefix(s, "memory.") {
-		return "steps." + parts[0] + ".outputs." + parts[1], parts[0], parts[1]
+		return "steps." + parts[0] + ".output." + parts[1], parts[0], parts[1]
 	}
-	// Already a full path.
+	if full := strings.SplitN(s, ".", 4); len(full) == 4 && full[0] == "steps" &&
+		(full[2] == "output" || full[2] == "outputs") {
+		return "steps." + full[1] + ".output." + full[3], full[1], full[3]
+	}
+	// Some other full path (e.g. memory.*) — pass through untouched.
 	return s, "", ""
 }
 
