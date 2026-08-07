@@ -230,6 +230,22 @@ func (c *Client) HasCompletedInstanceForRoute(ctx context.Context, taskID, workf
 	return n > 0, err
 }
 
+// HasResumeDescendant reports whether some instance was already created as a
+// resume of the given instance (its resumed_from points at it). Startup
+// auto-resume (resume: auto) uses it so an interrupted instance is replayed at
+// most once: a later restart must not fork a second descendant from an ancestor
+// that has already been continued.
+func (c *Client) HasResumeDescendant(ctx context.Context, instanceID string) (bool, error) {
+	var n int
+	err := c.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM workflow_instances WHERE resumed_from = ?
+	`, instanceID).Scan(&n)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return n > 0, err
+}
+
 // ListWorkflowInstancesByState returns all instances in the given state, oldest first.
 func (c *Client) ListWorkflowInstancesByState(ctx context.Context, state string) ([]WorkflowInstance, error) {
 	rows, err := c.db.QueryContext(ctx, `

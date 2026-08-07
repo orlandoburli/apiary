@@ -201,6 +201,20 @@ Daemon restarts (crash, upgrade, reboot) don't lose in-flight work:
   instances instead of leaving tasks stuck behind a ghost. Interrupted
   instances of resumable workflows can be continued with
   [`apiary resume`](cli.md#apiary-resume).
+- **Auto-resume (`resume: auto`).** A workflow that declares `resume: auto`
+  (which requires every step to be `idempotent: true`) does not wait for a
+  human: right after orphan reconciliation, the daemon continues each
+  interrupted instance itself — passed steps are replayed from cache and only
+  the step that was in flight re-runs. The continuation is a normal resume
+  descendant (`resumed_from` points at the orphan), and while it is starting,
+  a poll of the same task cannot dispatch a competing fresh run of that
+  workflow. Each orphan is continued at most once: an instance that already
+  has a descendant (from an earlier auto-resume or a manual `apiary resume`)
+  is left alone. Workflows on the default `resume: allowed` — and on
+  `resume: forbidden` — keep the older behavior: the interrupted instance
+  stays put and the next poll dispatches a fresh run from step 1, so a
+  long pipeline that must not restart from scratch should opt into
+  `resume: auto`.
 - **Force restart.** From the [dashboard](dashboard.md) (`R` on a task) or
   `apiary restart <task>`, a stale task's running dispatch is
   cancelled, its non-terminal instances are interrupted, and it is reset for

@@ -91,6 +91,11 @@ type Dispatcher struct {
 	// approval instance while its cheap re-evaluation (and any follow-on resume/abort
 	// advance) is in flight, so overlapping poll cycles don't double-advance it.
 	approvalAdvancing sync.Map
+	// autoResuming holds the (task, workflow) pairs whose interrupted instance is
+	// being replayed by the startup auto-resume pass (resume: auto). It blocks a
+	// concurrent poll from dispatching a fresh step-1 instance for the same pair
+	// before the resume descendant exists in the DB (issue #376).
+	autoResuming sync.Map
 
 	stats  map[string]*sourceStat
 	statMu sync.RWMutex
@@ -562,6 +567,13 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 	// in-memory parked set is empty after a restart, so without this a poll-waiting
 	// instance would never be re-checked and its task would be stranded.
 	d.rehydrateParkedWaits(ctx)
+
+	// Continue instances the reconcile above just marked interrupted when their
+	// workflow declared `resume: auto`: replay the passed steps from cache and
+	// re-run only what was in flight, instead of letting the first poll dispatch
+	// a fresh run from step 1 and discard the completed work (issue #376). Must
+	// run before the poll loops start so the dispatch guard is already claimed.
+	d.resumeAutoInterrupted(ctx)
 
 	// Prune old service_logs/task_logs rows once at startup and then daily,
 	// mirroring the file-side retention (settings.log_max_age_days). Without
@@ -1493,6 +1505,7 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 		// a duplicate while it runs or waits at an approval step. Replaces the
 		// label-based lock (state_lock / "in-progress"), which is source-specific.
 		if persisted && d.db != nil {
+			matches = d.dropAutoResumingMatches(task.ID, matches)
 			matches = d.dropActiveMatches(ctx, task.ID, matches)
 			matches = d.dropOnceMatches(ctx, task.ID, matches)
 			matches = d.dropCappedMatches(ctx, task, matches)
