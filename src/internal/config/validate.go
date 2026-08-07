@@ -153,6 +153,8 @@ func (c *Config) Validate() []error {
 		errs = append(errs, fmt.Errorf("default_runner %q: not defined in runners", c.DefaultRunner))
 	}
 
+	errs = append(errs, validateImprove(c)...)
+
 	// Enabled plugin instance ids, for plugin-bridged source references.
 	enabledPlugins := map[string]bool{}
 	for _, p := range c.Plugins {
@@ -423,6 +425,40 @@ func (c *Config) validateNotifications() []error {
 			}
 		default:
 			errs = append(errs, fmt.Errorf("notifications.channels[%d]: unknown type %q (only \"command\" is supported)", i, ch.Type))
+		}
+	}
+	return errs
+}
+
+// validateImprove checks settings.improve. The advisor agent must exist, and an
+// effort key must be one the command actually accepts — a typo like
+// `effort_models.stanadrd` would otherwise be silently ignored, leaving the
+// operator believing they had pinned a cheaper model while paying for the
+// agent's default.
+func validateImprove(c *Config) []error {
+	var errs []error
+	im := c.Settings.Improve
+
+	if im.Agent != "" {
+		found := false
+		for _, a := range c.Agents {
+			if a.ID == im.Agent {
+				found = true
+				break
+			}
+		}
+		if !found {
+			errs = append(errs, fmt.Errorf("settings.improve.agent %q: not defined in agents", im.Agent))
+		}
+	}
+
+	valid := map[string]bool{"quick": true, "standard": true, "deep": true}
+	for effort, model := range im.EffortModels {
+		if !valid[effort] {
+			errs = append(errs, fmt.Errorf("settings.improve.effort_models: unknown effort %q (want quick, standard or deep)", effort))
+		}
+		if model == "" {
+			errs = append(errs, fmt.Errorf("settings.improve.effort_models.%s: model is empty", effort))
 		}
 	}
 	return errs

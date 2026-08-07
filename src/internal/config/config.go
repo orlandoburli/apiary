@@ -355,6 +355,7 @@ type Settings struct {
 	Approvals     ApprovalSettings   `yaml:"approvals"`
 	Telemetry     Telemetry          `yaml:"telemetry"`
 	CursorCost    CursorCostSettings `yaml:"cursor_cost"`
+	Improve       ImproveSettings    `yaml:"improve"`
 	GitHooks      GitHooksSettings   `yaml:"git_hooks"`
 	Queue         QueueSettings      `yaml:"queue"`
 	// DefaultFallbacks is a fallback chain applied to every agent that does not
@@ -491,6 +492,24 @@ func (g GitHooksSettings) Enabled() bool {
 // matching usage events to run time windows. Best-effort: the endpoint is
 // undocumented, and overlapping concurrent cursor runs leave ambiguous events
 // unattributed (cost becomes a lower bound). Disabled by default.
+// ImproveSettings configures `apiary improve`, the self-improvement advisor.
+// Everything here is optional: the command also accepts an advisor on the
+// command line, and needs none at all for --dump-evidence.
+type ImproveSettings struct {
+	// Agent is the id of the agent that performs the analysis. It is resolved
+	// like any other agent (runner, model, fallbacks, MCPs), so the advisor is
+	// not a special case in the config. Empty falls back to an agent literally
+	// named "improver", and failing that the command errors rather than guessing
+	// — there is no default model to fall back to.
+	Agent string `yaml:"agent,omitempty"`
+	// EffortModels optionally maps an effort level (quick|standard|deep) to a
+	// model, overriding the advisor agent's own model for that run. Reading
+	// aggregate tables at "quick" and reasoning over transcripts and prose at
+	// "deep" are different jobs; paying deep prices for a quick run is waste.
+	// Unset levels fall through to the agent's model.
+	EffortModels map[string]string `yaml:"effort_models,omitempty"`
+}
+
 type CursorCostSettings struct {
 	Enabled bool `yaml:"enabled"`
 	// SessionToken is the WorkosCursorSessionToken cookie from a logged-in
