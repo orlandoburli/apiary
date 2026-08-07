@@ -196,7 +196,7 @@ func (d *Dispatcher) startResume(ctx context.Context, id string, opts ResumeOpti
 	}
 	newID := d.workflowEngine().NewInstanceID()
 
-	go func() {
+	d.goBackground(func() {
 		if onDone != nil {
 			defer onDone()
 		}
@@ -209,7 +209,7 @@ func (d *Dispatcher) startResume(ctx context.Context, id string, opts ResumeOpti
 			return
 		}
 		aplog.Info("resume %s: descendant %s finished (success=%v; may be awaiting approval)", id, newID, success)
-	}()
+	})
 	return newID, nil
 }
 
