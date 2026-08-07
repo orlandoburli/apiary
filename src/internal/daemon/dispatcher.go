@@ -102,6 +102,10 @@ type Dispatcher struct {
 	// once per poll interval for as long as a workflow runs. Cleared as soon as
 	// the task dispatches something again.
 	dropNotified sync.Map
+	// staleInFlightWarned holds the cell ids already reported as holding a leaked
+	// in-flight marker, so the warning is emitted once per cell rather than once
+	// per poll interval for as long as the daemon runs.
+	staleInFlightWarned sync.Map
 
 	stats  map[string]*sourceStat
 	statMu sync.RWMutex
@@ -125,6 +129,9 @@ type Dispatcher struct {
 	// unleasable, so the periodic watchdog warns once per job instead of once per
 	// tick. An id is forgotten as soon as the job becomes satisfiable again.
 	warnedUnsatisfiable sync.Map
+	// warnedStalled holds the ids of queued jobs already reported as satisfiable
+	// but unleased, so the stall warning is emitted once per job.
+	warnedStalled sync.Map
 	localWorker         *workerpkg.Runtime
 	queueWorker    queuepkg.Worker
 	queueProjectID string
@@ -826,7 +833,7 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 
 		for _, cell := range cells {
 			cell := cell
-			if _, loaded := d.inFlight.LoadOrStore(cell.ID, struct{}{}); loaded {
+			if _, loaded := d.inFlight.LoadOrStore(cell.ID, time.Now()); loaded {
 				continue
 			}
 			task, persisted := d.bindItem(ctx, cell)
@@ -1476,22 +1483,36 @@ func (d *Dispatcher) pollLoop(ctx context.Context, sc config.SourceConfig, adapt
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// The incremental watermark only advances after a poll that actually reached
+	// the source. A failed poll that advanced it anyway made every item updated
+	// inside that window invisible forever: the next poll asks for changes since a
+	// moment it never observed, so a label hand-off performed during the outage is
+	// never seen again and the task stalls until a restart's full rescan (#375).
 	var lastPoll time.Time
-	d.poll(ctx, sc, adapter, lastPoll)
-	lastPoll = time.Now()
+	if err := d.poll(ctx, sc, adapter, lastPoll); err == nil {
+		lastPoll = time.Now()
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			d.poll(ctx, sc, adapter, lastPoll)
-			lastPoll = time.Now()
+			started := time.Now()
+			if err := d.poll(ctx, sc, adapter, lastPoll); err == nil {
+				lastPoll = started
+			} else {
+				aplog.Warn("source %s: keeping incremental watermark at %s after a failed poll so updates in that window are not skipped", sc.ID, lastPoll.Format(time.RFC3339))
+			}
 		}
 	}
 }
 
-func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter source.Adapter, since time.Time) {
+// poll runs one source cycle: re-check parked work, fetch items changed since
+// the watermark, route each one, and dispatch what survives the pre-dispatch
+// guards. It returns the source's fetch error (nil on success) so the caller can
+// decide whether the incremental watermark may advance.
+func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter source.Adapter, since time.Time) error {
 	// Re-evaluate any workflows parked at approval steps against their live tasks
 	// on each poll cycle (resume/abort/timeout) before fetching new work.
 	d.checkApprovals(ctx)
@@ -1504,7 +1525,7 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 	cells, err := adapter.Poll(ctx, since)
 	if err != nil {
 		aplog.Error("source %s: poll error: %v", sc.ID, err)
-		return
+		return err
 	}
 	aplog.Info("source %s: found %d cell(s)", sc.ID, len(cells))
 	d.recordPoll(sc.ID, len(cells))
@@ -1515,7 +1536,14 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 
 	for _, cell := range cells {
 		cell := cell
-		if _, loaded := d.inFlight.LoadOrStore(cell.ID, struct{}{}); loaded {
+		if since, loaded := d.inFlight.LoadOrStore(cell.ID, time.Now()); loaded {
+			// The originally-suspected cause of #375 was an in-flight marker that
+			// was never released, which permanently poisoned the cell — invisibly,
+			// because this is the only line that mentions it and it is DEBUG. The
+			// marker is legitimately held only for as long as a dispatch takes to
+			// start, so a cell still marked after inFlightStaleAfter is a defect,
+			// not a busy cell: say so once, loudly, with the age.
+			d.reportStaleInFlight(ctx, cell, since)
 			aplog.Debug("cell %s: already in-flight, skipping", cell.LogLabel())
 			continue
 		}
@@ -1559,6 +1587,7 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 	// PR events (trigger.on: pr_*) ride the same poll cadence, after item
 	// dispatch. Capability-gated inside; a no-event config is a no-op.
 	d.pollPREvents(ctx, sc, adapter)
+	return nil
 }
 
 // fanOut dispatches every workflow matched for a polled cell. One InternalTask
@@ -1783,6 +1812,31 @@ func (d *Dispatcher) dropActiveMatches(ctx context.Context, taskID string, match
 		out = append(out, m)
 	}
 	return out, dropped
+}
+
+// inFlightStaleAfter is how long a polled cell may stay marked in-flight before
+// the marker is treated as leaked rather than busy. The marker guards only the
+// window between routing a cell and handing its dispatches off (synchronously on
+// the queue path; until the last dispatch goroutine starts otherwise), so any
+// cell still marked after this long is a bug, not a long agent run.
+const inFlightStaleAfter = 15 * time.Minute
+
+// reportStaleInFlight warns once per cell when its in-flight marker has been held
+// implausibly long. #375 was first diagnosed as exactly this leak, and the only
+// evidence would have been a DEBUG line that says nothing about how long the
+// marker has been held — so a recurrence was undiagnosable from an INFO log.
+func (d *Dispatcher) reportStaleInFlight(ctx context.Context, cell model.SourceItem, stored any) {
+	since, ok := stored.(time.Time)
+	if !ok || time.Since(since) < inFlightStaleAfter {
+		return
+	}
+	if _, warned := d.staleInFlightWarned.LoadOrStore(cell.ID, struct{}{}); warned {
+		return
+	}
+	aplog.Warn("cell %s: in-flight marker held since %s (%s) — every poll has skipped this cell since then and no workflow can be dispatched for it until the daemon restarts; please report this on issue #375 with the log around that timestamp",
+		cell.LogLabel(), since.Format(time.RFC3339), time.Since(since).Truncate(time.Second))
+	d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "dispatch.dropped", WorkflowID: "",
+		Metadata: map[string]any{"reason": "stale in-flight marker", "detail": time.Since(since).Truncate(time.Second).String(), "source_item_id": cell.ID}})
 }
 
 // dropSignature is the stable identity of a "fully dropped" outcome: the set of

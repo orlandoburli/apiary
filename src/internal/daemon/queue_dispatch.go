@@ -308,8 +308,10 @@ func (d *Dispatcher) warnUnsatisfiableQueueJobs(ctx context.Context) {
 		return
 	}
 	// The embedded worker registers asynchronously in Start; include its spec
-	// so its own jobs are never reported as unsatisfiable during startup.
-	if d.localWorker != nil {
+	// so its own jobs are never reported as unsatisfiable during startup. Once it
+	// has a registration row that row is authoritative — appending the spec too
+	// would double-count it and make the stall diagnosis contradict itself.
+	if d.localWorker != nil && !hasWorkerID(workers, d.queueWorker.ID) {
 		workers = append(workers, d.queueWorker)
 	}
 	unsatisfiable, fresh := 0, 0
@@ -326,10 +328,67 @@ func (d *Dispatcher) warnUnsatisfiableQueueJobs(ctx context.Context) {
 			continue
 		}
 		d.warnedUnsatisfiable.Delete(job.ID)
+		d.warnStalledQueueJob(ctx, job, workers)
 	}
 	if fresh > 0 {
 		aplog.Warn("%d queued job(s) cannot be leased by any registered worker — they will stay queued until a worker advertising the required pool/labels/capabilities registers", unsatisfiable)
 	}
+}
+
+// queueStallThreshold is how long a job that *is* satisfiable may sit queued
+// before the watchdog explains why nothing has leased it.
+const queueStallThreshold = 5 * time.Minute
+
+// warnStalledQueueJob reports a job that no worker refuses on pool/labels/
+// capabilities yet nobody has leased. That is the second, previously invisible
+// half of "enqueued but never leased" (#375): the capability check passes, so
+// the job looks perfectly healthy, while every compatible worker is saturated
+// (active_jobs >= capacity, e.g. an orphaned lease against the default capacity
+// of 1), unready/draining, or has stopped heartbeating. `apiary status` shows a
+// worker and the poll keeps reporting the cell, so without this line there is
+// nothing in the logs to distinguish a stalled queue from an idle one.
+//
+// Warned once per job, with the exact worker counters an operator would
+// otherwise have to read out of the database by hand.
+func (d *Dispatcher) warnStalledQueueJob(ctx context.Context, job queue.Job, workers []queue.Worker) {
+	if time.Since(job.CreatedAt) < queueStallThreshold {
+		return
+	}
+	if _, warned := d.warnedStalled.LoadOrStore(job.ID, struct{}{}); warned {
+		return
+	}
+	timeout := d.cfg.Settings.Queue.WorkerTimeoutValue()
+	var reasons []string
+	for _, w := range workers {
+		if !jobSatisfiableByAnyWorker(job, []queue.Worker{w}) {
+			continue
+		}
+		switch {
+		case w.Draining || !w.Ready:
+			reasons = append(reasons, fmt.Sprintf("%s draining/not ready", w.ID))
+		case !w.LastHeartbeat.IsZero() && time.Since(w.LastHeartbeat) > timeout:
+			reasons = append(reasons, fmt.Sprintf("%s heartbeat stale by %s", w.ID, time.Since(w.LastHeartbeat).Truncate(time.Second)))
+		case w.ActiveJobs >= w.Capacity:
+			reasons = append(reasons, fmt.Sprintf("%s at capacity (active_jobs=%d capacity=%d)", w.ID, w.ActiveJobs, w.Capacity))
+		default:
+			reasons = append(reasons, fmt.Sprintf("%s idle (active_jobs=%d capacity=%d) — a concurrency limit is the remaining explanation", w.ID, w.ActiveJobs, w.Capacity))
+		}
+	}
+	detail := strings.Join(reasons, "; ")
+	aplog.Warn("queued job %s (task %s, workflow %s) has been queued for %s and no worker has leased it: %s",
+		job.ID, job.TaskID, job.WorkflowID, time.Since(job.CreatedAt).Truncate(time.Second), detail)
+	d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "dispatch.dropped", TaskID: job.TaskID, WorkflowID: job.WorkflowID,
+		Metadata: map[string]any{"reason": "queued but never leased", "detail": detail, "job_id": job.ID,
+			"queued_for": time.Since(job.CreatedAt).Truncate(time.Second).String()}})
+}
+
+func hasWorkerID(workers []queue.Worker, id string) bool {
+	for _, w := range workers {
+		if w.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func jobSatisfiableByAnyWorker(job queue.Job, workers []queue.Worker) bool {

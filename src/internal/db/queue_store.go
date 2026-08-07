@@ -414,7 +414,7 @@ func (s *QueueStore) reclaimExpired(ctx context.Context, cutoff time.Time) (int,
 	if err := rows.Close(); err != nil {
 		return 0, err
 	}
-	now := time.Now().UTC()
+	now, reclaimed := time.Now().UTC(), 0
 	for _, item := range jobs {
 		if _, err := tx.ExecContext(ctx, `UPDATE dispatch_attempts SET state='expired', finished_at=?, error_message='lease expired' WHERE id=? AND state='active'`, now, item.attemptID); err != nil {
 			return 0, err
@@ -426,17 +426,28 @@ func (s *QueueStore) reclaimExpired(ctx context.Context, cutoff time.Time) (int,
 		} else if item.attempts >= item.max {
 			state, terminal = queue.JobFailed, now
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE dispatch_jobs SET state=?, available_at=?, lease_attempt_id=NULL, lease_token=NULL, lease_worker_id=NULL, lease_expires_at=NULL, terminal_at=?, updated_at=? WHERE id=? AND state='leased' AND lease_attempt_id=?`, state, now, terminal, now, item.jobID, item.attemptID); err != nil {
+		result, err := tx.ExecContext(ctx, `UPDATE dispatch_jobs SET state=?, available_at=?, lease_attempt_id=NULL, lease_token=NULL, lease_worker_id=NULL, lease_expires_at=NULL, terminal_at=?, updated_at=? WHERE id=? AND state='leased' AND lease_attempt_id=?`, state, now, terminal, now, item.jobID, item.attemptID)
+		if err != nil {
 			return 0, err
+		}
+		// Only release the worker's slot for a lease this pass actually broke. The
+		// rows were read before this transaction took its write lock, so a Finish
+		// on another connection can land in between and settle the job itself —
+		// and Finish already decremented. Decrementing again would undercount the
+		// worker's active leases and let it claim past its capacity, which on the
+		// default capacity of 1 means two agent runs at once.
+		if affected, _ := result.RowsAffected(); affected == 0 {
+			continue
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE worker_registrations SET active_jobs=CASE WHEN active_jobs>0 THEN active_jobs-1 ELSE 0 END, updated_at=? WHERE id=?`, now, item.workerID); err != nil {
 			return 0, err
 		}
+		reclaimed++
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	return len(jobs), nil
+	return reclaimed, nil
 }
 
 func (s *QueueStore) GetJob(ctx context.Context, id string) (*queue.Job, error) {
