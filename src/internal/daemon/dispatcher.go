@@ -132,8 +132,8 @@ type Dispatcher struct {
 	warnedUnsatisfiable sync.Map
 	// warnedStalled holds the ids of queued jobs already reported as satisfiable
 	// but unleased, so the stall warning is emitted once per job.
-	warnedStalled sync.Map
-	localWorker         *workerpkg.Runtime
+	warnedStalled  sync.Map
+	localWorker    *workerpkg.Runtime
 	queueWorker    queuepkg.Worker
 	queueProjectID string
 	queueWorkerID  string
@@ -1774,6 +1774,9 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 	// Re-check any workflows parked at wait_for steps (e.g. waiting for CI) so they
 	// advance, fail, or keep waiting based on live status.
 	d.checkWaits(ctx)
+
+	// Stop investigations whose alert resolved while they ran (opt-in).
+	d.checkResolved(ctx, sc, adapter)
 
 	aplog.Debug("polling source %s (since %s)", sc.ID, since.Format(time.RFC3339))
 	cells, err := adapter.Poll(ctx, since)

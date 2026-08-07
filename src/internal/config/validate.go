@@ -34,6 +34,7 @@ type SourceCaps struct {
 	Approvals    bool // source.TaskPoller — approval steps
 	CIWait       bool // source.CIStatusPoller — wait_for kind "ci"
 	SubIssues    bool // source.SubIssueCreator — materialize: sub_issue
+	Resolvable   bool // source.ItemResolver — interrupt_on_resolve
 }
 
 // SourceCapabilities reports the SourceCaps of a source type's adapter. The
@@ -182,6 +183,15 @@ func (c *Config) Validate() []error {
 				errs = append(errs, fmt.Errorf("sources[%d] %q: config.plugin is required for type \"plugin\" (the id of an enabled plugins[] instance with the \"source\" capability)", i, s.ID))
 			} else if !enabledPlugins[pluginID] {
 				errs = append(errs, fmt.Errorf("sources[%d] %q: config.plugin %q is not an enabled plugins[] instance", i, s.ID, pluginID))
+			}
+		}
+
+		// interrupt_on_resolve needs an adapter that can tell a resolved item
+		// from a merely invisible one. Silently ignoring the flag on a source
+		// that cannot would look like a policy that is on but never fires.
+		if s.InterruptOnResolve && SourceCapabilities != nil && s.Type != "" {
+			if !SourceCapabilities(s.Type).Resolvable {
+				errs = append(errs, fmt.Errorf("sources[%d] %q: interrupt_on_resolve is not supported by source type %q — only monitoring sources that can report a resolved item support it", i, s.ID, s.Type))
 			}
 		}
 	}

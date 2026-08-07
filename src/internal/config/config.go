@@ -47,6 +47,13 @@ type SourceConfig struct {
 	Config       map[string]any `yaml:"config"`
 	PollInterval string         `yaml:"poll_interval"`
 	Filters      SourceFilters  `yaml:"filters"`
+
+	// InterruptOnResolve stops a still-running workflow instance when the
+	// source item that triggered it is no longer active (an alert that stopped
+	// firing). Off by default: the standing behaviour is to let an
+	// investigation finish, because its findings usually outlive the alert.
+	// Requires an adapter implementing source.ItemResolver.
+	InterruptOnResolve bool `yaml:"interrupt_on_resolve"`
 }
 
 func (s SourceConfig) ParsedPollInterval() (time.Duration, error) {

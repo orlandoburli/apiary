@@ -153,6 +153,11 @@ sources:
       # run dies the silence must still expire on its own. Default 2h.
       # silence_duration: 2h
     poll_interval: 30s
+    # Opt-in: stop a still-running investigation when its alert stops firing.
+    # Default is to let the run finish — its findings usually outlive the
+    # alert. Suppressed alerts do not count as resolved, and an unreachable
+    # Alertmanager never stops anything.
+    # interrupt_on_resolve: true
     filters:
       # Alertmanager matchers, ANDed server-side. key=value, key:value, or a
       # raw matcher like env=~"prod|staging".

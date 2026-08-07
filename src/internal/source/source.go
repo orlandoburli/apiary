@@ -120,6 +120,22 @@ type BlockerLister interface {
 	ListBlockers(ctx context.Context, cellID, linkType string) ([]BlockerRef, error)
 }
 
+// ItemResolver is an optional interface a monitoring source may implement to
+// report which of its previously dispatched items are no longer active — an
+// alert that stopped firing, a problem that closed. The dispatcher uses it for
+// sources configured with interrupt_on_resolve, to stop investigations whose
+// signal went away while they were still running.
+//
+// Implementations must distinguish "resolved" from "not currently visible":
+// suppressed items (silenced, inhibited, filtered) are still live and must not
+// be reported. Reporting one interrupts real work.
+//
+// A non-nil error means "could not tell" and is never treated as resolution —
+// the dispatcher fails closed and leaves every instance running.
+type ItemResolver interface {
+	ResolvedItems(ctx context.Context, itemIDs []string) ([]string, error)
+}
+
 // PREventPoller is an optional interface a source may implement to enumerate
 // pull-request events (comments and review submissions) since a watermark. The
 // dispatcher polls it alongside Poll and routes the events through workflow
