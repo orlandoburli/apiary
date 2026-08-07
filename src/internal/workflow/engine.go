@@ -173,6 +173,10 @@ type StepResult struct {
 	// failover attempts (each attempt is also its own task_executions row). Nil
 	// when the runner reported no usage. The engine persists it onto the step run.
 	Usage *model.Usage
+	// Timing is the wall-clock attribution for the step, accumulated across the
+	// same failover attempts as Usage (issue #399). Nil when no attempt reported
+	// any — runners without an event stream to attribute.
+	Timing *model.Timing
 	// InputPrompt is the composed prompt of the final (winning) attempt, persisted
 	// onto the step run for cost auditing and replay.
 	InputPrompt string
@@ -619,6 +623,9 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 	sr.Output = res.Output
 	sr.Summary = res.Summary
 	sr.InputPrompt = res.InputPrompt
+	if res.Timing != nil {
+		sr.StepTiming = db.TimingFrom(res.Timing)
+	}
 	if res.Usage != nil {
 		sr.InputTokens = res.Usage.InputTokens
 		sr.OutputTokens = res.Usage.OutputTokens

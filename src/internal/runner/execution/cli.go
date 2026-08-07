@@ -302,6 +302,11 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		// goroutine).
 		rateLimited       bool
 		rateLimitResetsAt int64
+		// timing attributes the run's wall clock across thinking/writing/tool waits
+		// from the same stream events the usage accumulator reads (issue #399). Its
+		// timeline opens at `start` so process spawn and prompt upload — the gap
+		// before the first event — are accounted for instead of vanishing.
+		timing = newTimingTracker(start, time.Now)
 	)
 
 	emit := func(level, msg string) {
@@ -379,6 +384,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 				mu.Unlock()
 			}
 			accumulateStreamUsage(line, &usage)
+			timing.Feed(line)
 			if pretty, ok := formatStreamLine(line); ok {
 				emit("debug", pretty)
 			} else {
@@ -419,6 +425,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		Logs:        logs,
 		Duration:    time.Since(start),
 		Usage:       usagePtr,
+		Timing:      timing.Finish(time.Now()),
 		InputPrompt: prompt,
 		RateLimited: rateLimited,
 	}
@@ -630,6 +637,9 @@ func formatStreamLine(line string) (string, bool) {
 		if label == "" {
 			label = "system"
 		}
+		if detail := systemDetail(trimmed); detail != "" {
+			return fmt.Sprintf("[system:%s] %s", label, detail), true
+		}
 		if ev.Model != "" {
 			return fmt.Sprintf("[system:%s] model=%s", label, ev.Model), true
 		}
@@ -692,6 +702,49 @@ func formatStreamLine(line string) (string, bool) {
 		return out, true
 	}
 	return "", false
+}
+
+// systemDetail renders the payload of a background-task bookend into the log line,
+// returning "" for system events that carry nothing worth naming.
+//
+// Background tasks are the single largest wall-clock sink in a long agent step
+// (issue #399), and until now `[system:task_started]` was logged with no payload at
+// all — so the most expensive thing in a run was the one thing you could not
+// identify from the log. Working out what those waits had been meant correlating
+// their durations against build logs the agent happened to leave in /tmp.
+//
+// Only the identifying fields are rendered. The event also carries the subagent's
+// full `prompt`, which is a whole task description and would bury the log; it stays
+// in the transcript, where there is room for it.
+func systemDetail(line string) string {
+	var ev timingEvent
+	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		return ""
+	}
+	var parts []string
+	switch ev.Subtype {
+	case "task_started":
+		parts = append(parts, backgroundName(ev))
+		if d := toolLabel(ev.Description); d != "" {
+			parts = append(parts, d)
+		}
+	case "task_notification":
+		status := ev.Status
+		if status == "" {
+			status = "settled"
+		}
+		parts = append(parts, status)
+		if ev.Usage != nil && ev.Usage.DurationMs > 0 {
+			parts = append(parts, "duration="+
+				(time.Duration(ev.Usage.DurationMs)*time.Millisecond).Round(time.Second).String())
+		}
+	default:
+		return ""
+	}
+	if ev.TaskID != "" {
+		parts = append(parts, "task="+ev.TaskID)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func finalResultText(line string) (string, bool) {

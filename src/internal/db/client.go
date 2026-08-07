@@ -204,6 +204,9 @@ type Execution struct {
 	// failures. Persisted for diagnostic and budget-tracking use.
 	CreditExhausted bool
 	FailureKind     string
+	// StepTiming is this attempt's wall-clock attribution (issue #399). Zero for
+	// runners that report none.
+	StepTiming
 }
 
 func (c *Client) CreateExecution(ctx context.Context, taskID, agentID, title, number, taskURL, model, runner string, attempt int) (*Execution, error) {
@@ -244,13 +247,17 @@ func (c *Client) UpdateExecution(ctx context.Context, exec *Execution) error {
 		    input_tokens = ?, output_tokens = ?, total_tokens = ?, cache_creation_tokens = ?, cache_read_tokens = ?,
 		    num_turns = ?, num_tool_calls = ?, cost_usd = ?,
 		    input_prompt = ?, output_text = ?,
-		    credit_exhausted = ?, failure_kind = ?
+		    credit_exhausted = ?, failure_kind = ?,
+		    time_thinking_ms = ?, time_writing_ms = ?, time_model_ms = ?,
+		    time_tool_wait_ms = ?, time_other_ms = ?, time_background_ms = ?, slow_tools = ?
 		WHERE id = ?
 	`, exec.Status, exec.CompletedAt, exec.DurationMs, exec.ErrorMsg, exec.CanRetry, exec.NextRetryAt,
 		exec.InputTokens, exec.OutputTokens, exec.TotalTokens, exec.CacheCreationTokens, exec.CacheReadTokens,
 		exec.NumTurns, exec.NumToolCalls, exec.CostUSD,
 		nullStr(exec.InputPrompt), nullStr(exec.OutputText),
 		boolToInt(exec.CreditExhausted), nullStr(exec.FailureKind),
+		exec.ThinkingMS, exec.WritingMS, exec.ModelMS, exec.ToolWaitMS, exec.OtherMS,
+		exec.BackgroundMS, nullStr(exec.SlowTools),
 		exec.ID)
 	return err
 }

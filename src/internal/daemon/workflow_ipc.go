@@ -32,24 +32,28 @@ type InstanceSummary struct {
 
 // StepRunView is one step row in an instance detail.
 type StepRunView struct {
-	StepID              string     `json:"step_id"`
-	AgentID             string     `json:"agent_id"`
-	State               string     `json:"state"`
-	Duration            string     `json:"duration"`
-	Cached              bool       `json:"cached"`
-	Output              string     `json:"output"`
-	Summary             string     `json:"summary"`
-	InputPrompt         string     `json:"input_prompt,omitempty"`
-	InputTokens         int        `json:"input_tokens"`
-	OutputTokens        int        `json:"output_tokens"`
-	TotalTokens         int        `json:"total_tokens"`
-	CacheCreationTokens int        `json:"cache_creation_tokens"`
-	CacheReadTokens     int        `json:"cache_read_tokens"`
-	CostUSD             float64    `json:"cost_usd"`
-	NumTurns            int        `json:"num_turns"`
-	NumToolCalls        int        `json:"num_tool_calls"`
-	StartedAt           *time.Time `json:"started_at"`
-	FinishedAt          *time.Time `json:"finished_at"`
+	StepID              string  `json:"step_id"`
+	AgentID             string  `json:"agent_id"`
+	State               string  `json:"state"`
+	Duration            string  `json:"duration"`
+	Cached              bool    `json:"cached"`
+	Output              string  `json:"output"`
+	Summary             string  `json:"summary"`
+	InputPrompt         string  `json:"input_prompt,omitempty"`
+	InputTokens         int     `json:"input_tokens"`
+	OutputTokens        int     `json:"output_tokens"`
+	TotalTokens         int     `json:"total_tokens"`
+	CacheCreationTokens int     `json:"cache_creation_tokens"`
+	CacheReadTokens     int     `json:"cache_read_tokens"`
+	CostUSD             float64 `json:"cost_usd"`
+	NumTurns            int     `json:"num_turns"`
+	NumToolCalls        int     `json:"num_tool_calls"`
+	// Timing is the step's wall-clock attribution (issue #399), nil for steps
+	// recorded before it existed or run by a runner that reports none. Nil means
+	// "not measured" and must render as such, not as a breakdown of zeros.
+	Timing     *model.Timing `json:"timing,omitempty"`
+	StartedAt  *time.Time    `json:"started_at"`
+	FinishedAt *time.Time    `json:"finished_at"`
 }
 
 // CIPollView is one recorded wait_for CI poll, surfaced in instance and
@@ -366,6 +370,13 @@ func (d *Dispatcher) stepRunView(ctx context.Context, instanceID string, s db.St
 		InputPrompt: s.InputPrompt,
 		StartedAt:   s.StartedAt,
 		FinishedAt:  s.FinishedAt,
+	}
+	// Wall-clock attribution, when the step was measured. Steps recorded before it
+	// existed leave Timing nil so the caller can say "not measured" rather than
+	// present a breakdown of zeros as a finding.
+	if s.HasTiming() {
+		t := s.ToModel()
+		srv.Timing = &t
 	}
 	// Prefer the step's own usage rollup (summed across failover attempts). Fall
 	// back to the latest task_execution for rows written before step_runs carried

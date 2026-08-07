@@ -2,6 +2,8 @@
 
 ## Ativas
 
+- **step-wallclock-attribution** — Atribuição de wall-clock por step (thinking / writing / esperas de tool / tarefas em background) gravada em `task_executions` e `step_runs` ao lado das colunas de token, lista das chamadas mais lentas, payload do evento `system:task_started` no log, e comando `apiary profile <instance-id> [--json]`. GitHub issue #399.
+
 ## Arquivadas
 
 ### 2026-07-22

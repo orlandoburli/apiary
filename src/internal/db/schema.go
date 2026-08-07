@@ -431,6 +431,32 @@ var migrations = []string{
 	// "aborted".
 	`ALTER TABLE task_executions ADD COLUMN credit_exhausted INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE task_executions ADD COLUMN failure_kind TEXT`,
+	// Wall-clock attribution (issue #399): where a step's minutes went, alongside
+	// the token columns above. The buckets are exclusive and sum to the run's wall
+	// clock; time_background_ms is the union of the intervals with background work
+	// outstanding and deliberately OVERLAPS them (the model writes while a suite
+	// runs), so it must never be added to the others. time_model_ms is latency that
+	// carried no thinking signal and so could not be split — un-attributed, not a
+	// third kind of model work.
+	//
+	// Fixed columns rather than one JSON blob because these roll up across a step's
+	// failover attempts by plain summation, exactly as the token columns do, and
+	// aggregate queries over them should not need JSON extraction. The slowest-call
+	// list is the variable-shape part, so that alone is JSON.
+	`ALTER TABLE task_executions ADD COLUMN time_thinking_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN time_writing_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN time_model_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN time_tool_wait_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN time_other_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN time_background_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE task_executions ADD COLUMN slow_tools TEXT`,
+	`ALTER TABLE step_runs ADD COLUMN time_thinking_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE step_runs ADD COLUMN time_writing_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE step_runs ADD COLUMN time_model_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE step_runs ADD COLUMN time_tool_wait_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE step_runs ADD COLUMN time_other_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE step_runs ADD COLUMN time_background_ms INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE step_runs ADD COLUMN slow_tools TEXT`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).

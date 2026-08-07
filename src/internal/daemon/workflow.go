@@ -464,6 +464,12 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 	// winning attempt. Per-attempt detail stays in each task_executions row.
 	var summedUsage model.Usage
 	var anyUsage bool
+	// Wall-clock attribution accumulates the same way, so a step that burned an
+	// hour in a rate-limited attempt before failing over reports that hour rather
+	// than only the winning attempt's minutes. Attempts run strictly one after
+	// another, so adding their timings double-counts nothing.
+	var summedTiming db.StepTiming
+	var anyTiming bool
 	for i, c := range candidates {
 		last := i == len(candidates)-1
 		if !last && x.d.runnerPausedUntil(c.runnerType).After(time.Now()) {
@@ -504,6 +510,10 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 			summedUsage.NumTurns += out.Usage.NumTurns
 			summedUsage.NumToolCalls += out.Usage.NumToolCalls
 			summedUsage.CostUSD += out.Usage.CostUSD
+		}
+		if out.Timing != nil {
+			anyTiming = true
+			summedTiming.Add(db.TimingFrom(out.Timing))
 		}
 
 		// Classify the failure and either fail over or stop. A run that was
@@ -563,13 +573,18 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		u := summedUsage
 		usage = &u
 	}
+	var timing *model.Timing
+	if anyTiming {
+		t := summedTiming.ToModel()
+		timing = &t
+	}
 
 	// A malformed APIARY_SPAWN block is a step-level error so the workflow fails
 	// with a descriptive message rather than silently dropping the request. The
 	// step's memorize requests still travel — persisted knowledge should survive
 	// an unrelated spawn failure.
 	if res.SpawnError != nil {
-		return workflow.StepResult{Success: false, Output: res.Output, Usage: usage, InputPrompt: res.InputPrompt,
+		return workflow.StepResult{Success: false, Output: res.Output, Usage: usage, Timing: timing, InputPrompt: res.InputPrompt,
 			MemorizeRequests: memorizeRequests, MemorizeError: memorizeError, Err: res.SpawnError}
 	}
 
@@ -584,6 +599,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		MemorizeRequests: memorizeRequests,
 		MemorizeError:    memorizeError,
 		Usage:            usage,
+		Timing:           timing,
 		InputPrompt:      res.InputPrompt,
 		Err:              res.Error,
 	}
@@ -633,6 +649,9 @@ func (x *wfStepExecutor) finishExecution(ctx context.Context, exec *db.Execution
 		if res.Error != nil {
 			exec.ErrorMsg = res.Error.Error()
 		}
+	}
+	if res.Timing != nil {
+		exec.StepTiming = db.TimingFrom(res.Timing)
 	}
 	if res.Usage != nil {
 		exec.InputTokens = res.Usage.InputTokens
