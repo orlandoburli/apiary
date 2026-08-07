@@ -37,7 +37,7 @@ func TestDropOnceMatches(t *testing.T) {
 		{Route: config.RouteConfig{ID: "implementation", Once: false}}, // not once → kept even though done
 		{Route: config.RouteConfig{ID: "po-spec", Once: true}},         // once but never ran → kept
 	}
-	got := d.dropOnceMatches(ctx, "T1", matches)
+	got, _ := d.dropOnceMatches(ctx, "T1", matches)
 
 	kept := map[string]bool{}
 	for _, m := range got {

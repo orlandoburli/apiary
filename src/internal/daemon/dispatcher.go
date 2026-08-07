@@ -96,6 +96,12 @@ type Dispatcher struct {
 	// concurrent poll from dispatching a fresh step-1 instance for the same pair
 	// before the resume descendant exists in the DB (issue #376).
 	autoResuming sync.Map
+	// dropNotified remembers, per task id, the reason signature of the last
+	// "every match was dropped" report, so the INFO line is emitted when a task
+	// first goes fully-dropped (and again whenever the reason changes) instead of
+	// once per poll interval for as long as a workflow runs. Cleared as soon as
+	// the task dispatches something again.
+	dropNotified sync.Map
 
 	stats  map[string]*sourceStat
 	statMu sync.RWMutex
@@ -114,8 +120,12 @@ type Dispatcher struct {
 	eventExporters []*plugin.Client
 
 	// Durable dispatch queue and optional embedded local protocol-1 worker.
-	dispatchQueue  queuepkg.Store
-	localWorker    *workerpkg.Runtime
+	dispatchQueue queuepkg.Store
+	// warnedUnsatisfiable holds the ids of queued jobs already reported as
+	// unleasable, so the periodic watchdog warns once per job instead of once per
+	// tick. An id is forgotten as soon as the job becomes satisfiable again.
+	warnedUnsatisfiable sync.Map
+	localWorker         *workerpkg.Runtime
 	queueWorker    queuepkg.Worker
 	queueProjectID string
 	queueWorkerID  string
@@ -606,6 +616,18 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		go func() {
 			defer wg.Done()
 			d.cursorCostLoop(ctx)
+		}()
+	}
+
+	// Keep re-checking that every queued dispatch job can still be leased by some
+	// worker. The startup check alone misses the case that actually bites: a job
+	// enqueued later whose required pool/labels/capabilities nothing advertises,
+	// which then sits queued forever in silence (#375).
+	if d.dispatchQueue != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.queueWatchdogLoop(ctx)
 		}()
 	}
 
@@ -1504,17 +1526,33 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 		// has a non-terminal instance for this task, so a re-poll does not dispatch
 		// a duplicate while it runs or waits at an approval step. Replaces the
 		// label-based lock (state_lock / "in-progress"), which is source-specific.
+		routed := len(matches)
+		var dropped []droppedMatch
 		if persisted && d.db != nil {
-			matches = d.dropAutoResumingMatches(task.ID, matches)
-			matches = d.dropActiveMatches(ctx, task.ID, matches)
-			matches = d.dropOnceMatches(ctx, task.ID, matches)
-			matches = d.dropCappedMatches(ctx, task, matches)
+			var batch []droppedMatch
+			matches, batch = d.dropAutoResumingMatches(task.ID, matches)
+			dropped = append(dropped, batch...)
+			matches, batch = d.dropActiveMatches(ctx, task.ID, matches)
+			dropped = append(dropped, batch...)
+			matches, batch = d.dropOnceMatches(ctx, task.ID, matches)
+			dropped = append(dropped, batch...)
+			matches, batch = d.dropCappedMatches(ctx, task, matches)
+			dropped = append(dropped, batch...)
 		}
 		if len(matches) == 0 {
-			aplog.Debug("cell %s (%q): no matching route, skipping", cell.LogLabel(), cell.Title)
+			if routed == 0 || len(dropped) == 0 {
+				aplog.Debug("cell %s (%q): no matching route, skipping", cell.LogLabel(), cell.Title)
+			} else {
+				// Every route that matched was removed by a pre-dispatch guard:
+				// nothing will run for this cell, and until #380 that was entirely
+				// silent. Report it (once per distinct reason set) so a wedged task
+				// is distinguishable from an idle one.
+				d.reportFullyDropped(ctx, cell, task, dropped)
+			}
 			d.inFlight.Delete(cell.ID)
 			continue
 		}
+		d.dropNotified.Delete(task.ID)
 		d.fanOut(ctx, cell, adapter, task, persisted, matches, nil, nil)
 	}
 
@@ -1693,29 +1731,102 @@ func (d *Dispatcher) recordRouteEvents(ctx context.Context, task model.InternalT
 	}
 }
 
+// droppedMatch records one workflow a pre-dispatch guard removed, and why. The
+// guards used to drop silently (a DEBUG line at most), so a task whose every
+// match was dropped looked exactly like an idle one: the poll reported the cell
+// and nothing else was ever said about it (issue #380). Collecting the reason
+// lets poll report the wedge at INFO and persist it as an execution event.
+type droppedMatch struct {
+	WorkflowID string
+	// Reason is a short, stable token — "active instance", "once", "capped",
+	// "auto-resuming", "guard error" — safe to log and to store in an event.
+	Reason string
+	// Detail is optional human context appended to the log line.
+	Detail string
+}
+
+// String renders "workflow (reason: detail)" for a log line.
+func (d droppedMatch) String() string {
+	if d.Detail == "" {
+		return fmt.Sprintf("%s (%s)", d.WorkflowID, d.Reason)
+	}
+	return fmt.Sprintf("%s (%s: %s)", d.WorkflowID, d.Reason, d.Detail)
+}
+
 // dropActiveMatches removes matches whose workflow already has a non-terminal
 // instance for this task (running or approval_waiting). It is the source-agnostic
 // in-flight guard: the in-memory inFlight marker is released when a workflow parks
 // at an approval step, so without this a later poll would dispatch a duplicate
 // while the instance is still waiting. Keyed on (task, workflow) so a completed
 // earlier workflow (e.g. triage) does not block the one a hand-off routes to.
+// Terminal states — including 'interrupted' — never block: an instance stranded
+// by a restart stays eligible for re-dispatch or manual resume (issue #380).
 // Fail-closed: on a query error the match is dropped (skip this poll, retry next)
 // rather than risk a duplicate dispatch.
-func (d *Dispatcher) dropActiveMatches(ctx context.Context, taskID string, matches []router.Match) []router.Match {
+//
+// Returns the surviving matches and, for each removed one, why it was removed.
+func (d *Dispatcher) dropActiveMatches(ctx context.Context, taskID string, matches []router.Match) ([]router.Match, []droppedMatch) {
 	out := make([]router.Match, 0, len(matches))
+	var dropped []droppedMatch
 	for _, m := range matches {
 		active, err := d.db.HasActiveInstanceForRoute(ctx, taskID, m.Route.ID)
 		if err != nil {
 			aplog.Error("in-flight check task %s workflow %s: %v — skipping this poll", taskID, m.Route.ID, err)
+			dropped = append(dropped, droppedMatch{WorkflowID: m.Route.ID, Reason: "guard error", Detail: err.Error()})
 			continue
 		}
 		if active {
 			aplog.Debug("task %s: workflow %s already active (running/approval_waiting), skipping re-dispatch", taskID, m.Route.ID)
+			dropped = append(dropped, droppedMatch{WorkflowID: m.Route.ID, Reason: "active instance"})
 			continue
 		}
 		out = append(out, m)
 	}
-	return out
+	return out, dropped
+}
+
+// dropSignature is the stable identity of a "fully dropped" outcome: the set of
+// (workflow, reason) pairs, order-independent. Two consecutive polls that drop
+// the same workflows for the same reasons share a signature and are reported once.
+func dropSignature(dropped []droppedMatch) string {
+	parts := make([]string, 0, len(dropped))
+	for _, drop := range dropped {
+		parts = append(parts, drop.WorkflowID+"="+drop.Reason)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+// reportFullyDropped announces that a polled cell matched at least one route but
+// had every match removed by a pre-dispatch guard, so no workflow will run and no
+// instance will exist. Before #380 this outcome produced no log line at any level
+// and (in queue mode) a dispatch job that reported `succeeded` with nothing to
+// show for it, which made a permanently wedged task indistinguishable from an
+// idle one.
+//
+// One INFO line names the cell, the task, every dropped workflow and its reason;
+// a `dispatch.dropped` execution event per workflow makes the same fact queryable
+// per task. Repeats are suppressed while the reason set is unchanged: an
+// "active instance" drop is the normal state of a task whose workflow is still
+// running, and re-logging it every poll interval would bury the signal.
+func (d *Dispatcher) reportFullyDropped(ctx context.Context, cell model.SourceItem, task model.InternalTask, dropped []droppedMatch) {
+	signature := dropSignature(dropped)
+	if previous, seen := d.dropNotified.Load(task.ID); seen && previous == signature {
+		return
+	}
+	d.dropNotified.Store(task.ID, signature)
+
+	reasons := make([]string, 0, len(dropped))
+	for _, drop := range dropped {
+		reasons = append(reasons, drop.String())
+	}
+	aplog.Info("cell %s (%q): task %s matched %d workflow(s) but every one was dropped before dispatch — %s; nothing will run for this task until the reason clears",
+		cell.LogLabel(), cell.Title, task.ID, len(dropped), strings.Join(reasons, ", "))
+
+	for _, drop := range dropped {
+		d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "dispatch.dropped", TaskID: task.ID, WorkflowID: drop.WorkflowID,
+			Metadata: map[string]any{"reason": drop.Reason, "detail": drop.Detail, "source_item_id": cell.ID}})
+	}
 }
 
 // dropOnceMatches removes matches whose trigger declared `once: true` and that
@@ -1726,8 +1837,9 @@ func (d *Dispatcher) dropActiveMatches(ctx context.Context, taskID string, match
 // #119). Only routes that opt in via `once` are checked; all others pass through.
 // Fail-closed: on a query error the (once) match is dropped — skip this poll and
 // retry next, rather than risk a duplicate fan-out.
-func (d *Dispatcher) dropOnceMatches(ctx context.Context, taskID string, matches []router.Match) []router.Match {
+func (d *Dispatcher) dropOnceMatches(ctx context.Context, taskID string, matches []router.Match) ([]router.Match, []droppedMatch) {
 	out := make([]router.Match, 0, len(matches))
+	var dropped []droppedMatch
 	for _, m := range matches {
 		if !m.Route.Once {
 			out = append(out, m)
@@ -1736,15 +1848,17 @@ func (d *Dispatcher) dropOnceMatches(ctx context.Context, taskID string, matches
 		done, err := d.db.HasCompletedInstanceForRoute(ctx, taskID, m.Route.ID)
 		if err != nil {
 			aplog.Error("once check task %s workflow %s: %v — skipping this poll", taskID, m.Route.ID, err)
+			dropped = append(dropped, droppedMatch{WorkflowID: m.Route.ID, Reason: "guard error", Detail: err.Error()})
 			continue
 		}
 		if done {
 			aplog.Debug("task %s: workflow %s already completed and is once-only, skipping re-dispatch", taskID, m.Route.ID)
+			dropped = append(dropped, droppedMatch{WorkflowID: m.Route.ID, Reason: "once", Detail: "already completed"})
 			continue
 		}
 		out = append(out, m)
 	}
-	return out
+	return out, dropped
 }
 
 // dropCappedMatches removes matches whose (task, workflow) has reached the
@@ -1755,12 +1869,13 @@ func (d *Dispatcher) dropOnceMatches(ctx context.Context, taskID string, matches
 // applied best-effort (so an issue parks to needs-attention and leaves the poll
 // set when the workflow defines one). Fail-open: on a count error the match is
 // kept (the cap is a safety net, not a correctness guard).
-func (d *Dispatcher) dropCappedMatches(ctx context.Context, task model.InternalTask, matches []router.Match) []router.Match {
+func (d *Dispatcher) dropCappedMatches(ctx context.Context, task model.InternalTask, matches []router.Match) ([]router.Match, []droppedMatch) {
 	limit := d.cfg.Settings.MaxAttempts
 	if limit <= 0 {
-		return matches
+		return matches, nil
 	}
 	out := make([]router.Match, 0, len(matches))
+	var dropped []droppedMatch
 	for _, m := range matches {
 		n, err := d.db.CountConsecutiveFailedInstances(ctx, task.ID, m.Route.ID)
 		if err != nil {
@@ -1771,11 +1886,12 @@ func (d *Dispatcher) dropCappedMatches(ctx context.Context, task model.InternalT
 		if n >= limit {
 			aplog.Warn("task %s: workflow %s hit failure cap (%d/%d consecutive failures), not re-dispatching", task.ID, m.Route.ID, n, limit)
 			d.parkCappedTask(ctx, task, m.Route.ID)
+			dropped = append(dropped, droppedMatch{WorkflowID: m.Route.ID, Reason: "capped", Detail: fmt.Sprintf("%d/%d consecutive failures", n, limit)})
 			continue
 		}
 		out = append(out, m)
 	}
-	return out
+	return out, dropped
 }
 
 // parkCappedTask applies a capped workflow's on_fail hook to the task's source

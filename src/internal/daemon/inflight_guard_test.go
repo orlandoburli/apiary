@@ -34,7 +34,7 @@ func TestDropActiveMatches(t *testing.T) {
 		{Route: config.RouteConfig{ID: "triage"}},         // done → kept
 		{Route: config.RouteConfig{ID: "po-spec"}},        // never ran → kept
 	}
-	got := d.dropActiveMatches(ctx, "T1", matches)
+	got, _ := d.dropActiveMatches(ctx, "T1", matches)
 
 	kept := map[string]bool{}
 	for _, m := range got {

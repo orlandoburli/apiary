@@ -116,6 +116,8 @@ func (d *Dispatcher) enqueueFanOut(ctx context.Context, cell model.SourceItem, t
 			if isTerminalJobState(job.State) {
 				aplog.Warn("task %s: workflow %s not enqueued — dispatch key %q already belongs to a %s job; re-dispatch waits for a new dispatch generation",
 					task.ID, match.Route.ID, job.IdempotencyKey, job.State)
+				d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "dispatch.dropped", TaskID: task.ID, WorkflowID: match.Route.ID,
+					Metadata: map[string]any{"reason": "idempotency key held by a terminal job", "detail": string(job.State), "job_id": job.ID}})
 			} else {
 				aplog.Debug("task %s: workflow %s already enqueued (job %s, %s) — skipping duplicate", task.ID, match.Route.ID, job.ID, job.State)
 			}
@@ -174,9 +176,19 @@ func (d *Dispatcher) ExecuteQueuedJob(ctx context.Context, job queue.Job, worker
 			return queue.FinishResult{Error: fmt.Sprintf("check completed workflow: %v", err), Retry: true}
 		}
 		if completed {
-			aplog.Debug("queue job %s: workflow %s already completed for task %s — skipping redelivery",
-				job.ID, payload.Match.Route.ID, payload.Task.ID)
-			return queue.FinishResult{Success: true}
+			reason := "redelivery of an already-completed workflow"
+			if payload.Match.Route.Once {
+				reason = "trigger declared once: true and the workflow already completed"
+			}
+			// INFO, not DEBUG: this is the job finishing without creating an
+			// instance or a step run. Reported at DEBUG it was invisible on a
+			// --verbose daemon, and the job's `succeeded` state said nothing
+			// about the fact that no work happened (issue #380).
+			aplog.Info("queue job %s: not running workflow %s for task %s — %s; job finishes without creating an instance",
+				job.ID, payload.Match.Route.ID, payload.Task.ID, reason)
+			d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "dispatch.dropped", TaskID: payload.Task.ID, WorkflowID: payload.Match.Route.ID,
+				Metadata: map[string]any{"reason": "once", "detail": reason, "job_id": job.ID, "attempt": job.AttemptCount}})
+			return queue.FinishResult{Success: true, Note: "skipped: " + reason}
 		}
 	}
 	d.active.Add(1)
@@ -247,10 +259,37 @@ func (d *Dispatcher) settleRemoteQueueJob(ctx context.Context, job queue.Job) er
 	return d.db.InternalTasks().UpdateTaskState(ctx, job.TaskID, taskState)
 }
 
+// queueWatchdogInterval is how often the daemon re-checks whether every queued
+// dispatch job can still be leased by some registered worker.
+const queueWatchdogInterval = time.Minute
+
+// queueWatchdogLoop re-runs the unsatisfiable-job check on a timer, not only at
+// startup. A job enqueued *after* startup that no worker can lease — a workflow
+// whose agent requires a label or runner capability the embedded worker does not
+// advertise — otherwise sits queued forever with nothing said about it: the poll
+// keeps reporting the cell, `apiary status` shows a healthy idle worker, and the
+// task never runs. That is the "enqueued but never leased" shape of #375, and it
+// deserves to be loud whenever it happens, not just if it was true at boot.
+func (d *Dispatcher) queueWatchdogLoop(ctx context.Context) {
+	ticker := time.NewTicker(queueWatchdogInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.warnUnsatisfiableQueueJobs(ctx)
+		}
+	}
+}
+
 // warnUnsatisfiableQueueJobs logs a warning for queued jobs whose pool, labels,
 // or required capabilities no registered worker (including the embedded one)
 // can satisfy. Without it this failure mode is completely silent: jobs sit
 // queued forever while `apiary status` shows a ready worker with free capacity.
+// Each job is warned about once (tracked in warnedUnsatisfiable) so running the
+// check on a timer does not turn one stuck job into a log flood; a job that
+// later becomes leasable is forgotten so a recurrence is reported again.
 func (d *Dispatcher) warnUnsatisfiableQueueJobs(ctx context.Context) {
 	if d.dispatchQueue == nil {
 		return
@@ -273,14 +312,22 @@ func (d *Dispatcher) warnUnsatisfiableQueueJobs(ctx context.Context) {
 	if d.localWorker != nil {
 		workers = append(workers, d.queueWorker)
 	}
-	unsatisfiable := 0
+	unsatisfiable, fresh := 0, 0
 	for _, job := range jobs {
 		if !jobSatisfiableByAnyWorker(job, workers) {
 			unsatisfiable++
+			if _, warned := d.warnedUnsatisfiable.LoadOrStore(job.ID, struct{}{}); warned {
+				continue
+			}
+			fresh++
 			aplog.Warn("queued job %s (task %s, workflow %s) is not satisfiable by any registered worker: pool=%q required_labels=%v required_capabilities=%v", job.ID, job.TaskID, job.WorkflowID, job.Pool, job.RequiredLabels, job.RequiredCapabilities)
+			d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "dispatch.dropped", TaskID: job.TaskID, WorkflowID: job.WorkflowID,
+				Metadata: map[string]any{"reason": "unsatisfiable by any worker", "detail": fmt.Sprintf("pool=%q labels=%v capabilities=%v", job.Pool, job.RequiredLabels, job.RequiredCapabilities), "job_id": job.ID}})
+			continue
 		}
+		d.warnedUnsatisfiable.Delete(job.ID)
 	}
-	if unsatisfiable > 0 {
+	if fresh > 0 {
 		aplog.Warn("%d queued job(s) cannot be leased by any registered worker — they will stay queued until a worker advertising the required pool/labels/capabilities registers", unsatisfiable)
 	}
 }

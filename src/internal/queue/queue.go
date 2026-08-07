@@ -131,6 +131,12 @@ type HeartbeatResult struct {
 type FinishResult struct {
 	Success bool
 	Error   string
+	// Note explains a successful finish that did no work — the control plane
+	// decided not to execute the job (a redelivery of an already-completed
+	// workflow, a `once: true` route). It is recorded on the attempt row so a
+	// no-op job is distinguishable from one that really ran, without inventing a
+	// queue-level state for a dispatch-level decision (issue #380).
+	Note string
 	// Retry is reserved for infrastructure failures where execution is safe to
 	// repeat. Ordinary workflow failures are terminal at the queue layer.
 	Retry   bool

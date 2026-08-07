@@ -34,6 +34,65 @@ func registerQueueWorker(t *testing.T, store *QueueStore, id string, capacity in
 	}
 }
 
+// TestRegisterWorkerResetsStaleActiveJobs pins the restart invariant behind
+// #375's "enqueued but never leased" residue. active_jobs is a durable counter
+// incremented at claim and decremented at finish; a process killed mid-job never
+// decrements it. Claim refuses every job while active_jobs >= capacity and the
+// embedded worker's default capacity is 1, so a registration that carried the
+// stale count forward meant the restarted daemon leased nothing at all — jobs
+// piled up queued with no error anywhere. A worker registering owns no leases by
+// definition, so re-registration must zero the counter.
+func TestRegisterWorkerResetsStaleActiveJobs(t *testing.T) {
+	ctx := context.Background()
+	client, _ := queueTestClient(t)
+	store := client.Queue()
+	registerQueueWorker(t, store, "worker-1", 1, nil, nil)
+
+	if _, err := store.Enqueue(ctx, testJob("task:1:implement")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(ctx, queue.ClaimRequest{WorkerID: "worker-1", LeaseDuration: time.Hour, WorkerTimeout: time.Hour}); err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	// The daemon is killed here: the lease is still live and active_jobs is 1.
+	registerQueueWorker(t, store, "worker-1", 1, nil, nil)
+
+	if _, err := store.Enqueue(ctx, testJob("task:1:review")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(ctx, queue.ClaimRequest{WorkerID: "worker-1", LeaseDuration: time.Hour, WorkerTimeout: time.Hour}); err != nil {
+		t.Fatalf("a freshly registered worker owns no leases and must be able to claim; got %v", err)
+	}
+}
+
+// TestFinishRecordsSkipNoteOnAttempt pins #380's "distinguishable outcome"
+// requirement without adding a queue job state: a job that succeeded while doing
+// no work carries its explanation on the attempt row, so `succeeded` rows can be
+// told apart in the DB.
+func TestFinishRecordsSkipNoteOnAttempt(t *testing.T) {
+	ctx := context.Background()
+	client, _ := queueTestClient(t)
+	store := client.Queue()
+	registerQueueWorker(t, store, "worker-1", 2, nil, nil)
+	if _, err := store.Enqueue(ctx, testJob("task:1:implement")); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.Claim(ctx, queue.ClaimRequest{WorkerID: "worker-1", LeaseDuration: time.Hour, WorkerTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Finish(ctx, claim.Job.ID, claim.Attempt.ID, claim.Attempt.ClaimToken, queue.FinishResult{Success: true, Note: "skipped: redelivery of an already-completed workflow"}); err != nil {
+		t.Fatal(err)
+	}
+	var message string
+	if err := client.db.QueryRowContext(ctx, `SELECT COALESCE(error_message,'') FROM dispatch_attempts WHERE id=?`, claim.Attempt.ID).Scan(&message); err != nil {
+		t.Fatal(err)
+	}
+	if message != "skipped: redelivery of an already-completed workflow" {
+		t.Errorf("attempt must record the skip note; got %q", message)
+	}
+}
+
 func TestQueuePersistsAndEnqueueIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	client, path := queueTestClient(t)
