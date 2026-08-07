@@ -15,6 +15,37 @@ type source interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
+// hasColumn reports whether a table carries a column.
+//
+// This matters because the improve command opens the database READ-ONLY and so
+// never runs migrations, unlike every other entry point. A database written by
+// an older binary is missing the newer columns, and selecting one is a hard SQL
+// error rather than a null — so any column added after the first release has to
+// be probed before it is selected. Degrading to "that metric is unavailable" is
+// correct here; refusing to analyse an older database is not.
+func hasColumn(ctx context.Context, db source, table, column string) bool {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid                        int
+			name, ctype                string
+			notnull, pk                int
+			dflt                       sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false
+		}
+		if name == column {
+			return true
+		}
+	}
+	return false
+}
+
 // stepAccumulator collects one step's rows before they are folded into a
 // StepMetrics. Durations are kept as a slice because percentiles need the full
 // ordered set, not a running sum.
@@ -27,6 +58,8 @@ type stepAccumulator struct {
 	durations                             []int64
 
 	tokens, inputTokens, cacheReadTokens int64
+	thinkingMS, writingMS, toolWaitMS    int64
+	otherMS                              int64
 	promptBytes                          int64
 	cost                                 float64
 	turns, toolCalls                     int64
@@ -46,6 +79,18 @@ type stepAccumulator struct {
 func StepMetricsFor(ctx context.Context, db source, w Window, sc Scope) ([]StepMetrics, error) {
 	where, args := stepFilter(w, sc)
 
+	// Wall-clock attribution arrived after the first release (#399). A database
+	// written by an older binary has no such columns, and this command never
+	// migrates, so select them only when they exist.
+	timingCols := `0, 0, 0, 0`
+	hasTiming := hasColumn(ctx, db, "step_runs", "time_thinking_ms")
+	if hasTiming {
+		timingCols = `COALESCE(sr.time_thinking_ms, 0),
+		       COALESCE(sr.time_writing_ms, 0),
+		       COALESCE(sr.time_tool_wait_ms, 0),
+		       COALESCE(sr.time_model_ms, 0) + COALESCE(sr.time_other_ms, 0)`
+	}
+
 	rows, err := db.QueryContext(ctx, `
 		SELECT wi.workflow_id,
 		       sr.step_id,
@@ -63,7 +108,8 @@ func StepMetricsFor(ctx context.Context, db source, w Window, sc Scope) ([]StepM
 		       COALESCE(LENGTH(CAST(sr.input_prompt AS BLOB)), 0),
 		       COALESCE(sr.cost_usd, 0),
 		       COALESCE(sr.num_turns, 0),
-		       COALESCE(sr.num_tool_calls, 0)
+		       COALESCE(sr.num_tool_calls, 0),
+		       `+timingCols+`
 		FROM step_runs sr
 		JOIN workflow_instances wi ON wi.id = sr.workflow_instance_id
 		`+where+`
@@ -85,9 +131,11 @@ func StepMetricsFor(ctx context.Context, db source, w Window, sc Scope) ([]StepM
 			promptLen                       int64
 			cost                            float64
 			turns, tools                    int64
+			thinkMS, writeMS, waitMS, othMS int64
 		)
 		if err := rows.Scan(&wf, &step, &agent, &state, &cachedFlag, &durMs,
-			&tokens, &inTok, &outTok, &cacheTok, &promptLen, &cost, &turns, &tools); err != nil {
+			&tokens, &inTok, &outTok, &cacheTok, &promptLen, &cost, &turns, &tools,
+			&thinkMS, &writeMS, &waitMS, &othMS); err != nil {
 			return nil, fmt.Errorf("scan step run: %w", err)
 		}
 
@@ -126,6 +174,10 @@ func StepMetricsFor(ctx context.Context, db source, w Window, sc Scope) ([]StepM
 		a.cost += cost
 		a.turns += turns
 		a.toolCalls += tools
+		a.thinkingMS += thinkMS
+		a.writingMS += writeMS
+		a.toolWaitMS += waitMS
+		a.otherMS += othMS
 		if turns > 0 {
 			a.withTurns++
 			a.turnCap[turns]++
@@ -173,6 +225,14 @@ func StepMetricsFor(ctx context.Context, db source, w Window, sc Scope) ([]StepM
 		}
 		if a.outputTokens > 0 {
 			m.PromptWeightRatio = float64(a.promptBytes) / float64(a.outputTokens)
+		}
+		// Attributed wall clock. Runners that don't stream provider events report
+		// nothing here, leaving all three shares at zero rather than a misleading
+		// even split.
+		if attributed := a.thinkingMS + a.writingMS + a.toolWaitMS + a.otherMS; attributed > 0 {
+			m.ThinkingShare = float64(a.thinkingMS) / float64(attributed)
+			m.WritingShare = float64(a.writingMS) / float64(attributed)
+			m.ToolWaitShare = float64(a.toolWaitMS) / float64(attributed)
 		}
 		if f, ok := failover[key]; ok {
 			m.FailoverRate = rate(f.multiAttempt, a.runs)

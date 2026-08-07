@@ -103,6 +103,15 @@ type StepMetrics struct {
 	// prompt yielding a tiny output is a prompt-design smell.
 	PromptWeightRatio float64 `json:"prompt_weight_ratio"`
 
+	// Wall-clock attribution (issue #399): where the step's minutes actually
+	// went. Shares of the attributed total, so they sum to ~1 for runners that
+	// report timing and are all zero for those that don't. "Slow" means something
+	// different for a step that is 80% tool waits than for one that is 80%
+	// thinking, and only this split tells them apart.
+	ThinkingShare float64 `json:"thinking_share"`
+	WritingShare  float64 `json:"writing_share"`
+	ToolWaitShare float64 `json:"tool_wait_share"`
+
 	// FailoverRate is the share of runs that needed more than one runner attempt.
 	FailoverRate float64        `json:"failover_rate"`
 	FailureKinds map[string]int `json:"failure_kinds,omitempty"`

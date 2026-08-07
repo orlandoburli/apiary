@@ -48,7 +48,11 @@ func seedDB(t *testing.T) *sql.DB {
 			input_prompt TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
 			total_tokens INTEGER DEFAULT 0, cache_creation_tokens INTEGER DEFAULT 0,
 			cache_read_tokens INTEGER DEFAULT 0, num_turns INTEGER DEFAULT 0,
-			num_tool_calls INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0)`,
+			num_tool_calls INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0,
+			time_thinking_ms INTEGER DEFAULT 0, time_writing_ms INTEGER DEFAULT 0,
+			time_model_ms INTEGER DEFAULT 0, time_tool_wait_ms INTEGER DEFAULT 0,
+			time_other_ms INTEGER DEFAULT 0, time_background_ms INTEGER DEFAULT 0,
+			slow_tools TEXT)`,
 		`CREATE TABLE task_executions (
 			id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, agent_id TEXT, model TEXT,
 			runner TEXT, attempt INTEGER DEFAULT 1, status TEXT,
@@ -110,6 +114,9 @@ type stepOpts struct {
 	turns      int64
 	toolCalls  int64
 	cached     bool
+	thinkingMS int64
+	writingMS  int64
+	toolWaitMS int64
 }
 
 func addStep(t *testing.T, db *sql.DB, o stepOpts) {
@@ -128,11 +135,13 @@ func addStep(t *testing.T, db *sql.DB, o stepOpts) {
 	_, err := db.Exec(`INSERT INTO step_runs
 		(id, workflow_instance_id, step_id, agent_id, state, skipped_cached,
 		 started_at, finished_at, input_prompt, input_tokens, output_tokens,
-		 total_tokens, cache_read_tokens, num_turns, num_tool_calls, cost_usd)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 total_tokens, cache_read_tokens, num_turns, num_tool_calls, cost_usd,
+		 time_thinking_ms, time_writing_ms, time_tool_wait_ms)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		o.id, o.instanceID, o.stepID, o.agentID, o.state, cached,
 		o.startedAt, finished, o.prompt, o.inputTok, o.outputTok,
-		o.tokens, o.cacheRead, o.turns, o.toolCalls, o.cost)
+		o.tokens, o.cacheRead, o.turns, o.toolCalls, o.cost,
+		o.thinkingMS, o.writingMS, o.toolWaitMS)
 	if err != nil {
 		t.Fatalf("insert step run: %v", err)
 	}
