@@ -146,6 +146,9 @@ sources:
       max_new_per_poll: 10
       # Flap dampener: alerts must have been firing at least this long.
       min_age: 1m
+      # One task per firing alert (default), or one per Alertmanager group —
+      # so an incident that fans out into a dozen alerts is one investigation.
+      # dispatch_by: group
       # Opt-in: silence a dispatched alert in Alertmanager while an agent
       # investigates it, so it stops paging the on-call. Off by default.
       # ack_via_silence: true

@@ -71,6 +71,15 @@ type Adapter struct {
 	ackViaSilence   bool
 	silenceDuration time.Duration
 
+	// byGroup dispatches one task per Alertmanager group instead of one per
+	// alert, so a single incident that fans out into a dozen alerts becomes a
+	// single investigation.
+	byGroup bool
+
+	// groupEpoch pins each live group's cycle-start (see groupItemID). Entries
+	// are dropped when the group empties, which ends the cycle.
+	groupEpoch map[string]time.Time
+
 	// filters are Alertmanager matcher strings sent as filter= params,
 	// built from SourceFilters.Labels.
 	filters []string
@@ -148,6 +157,21 @@ func (a *Adapter) Connect(_ context.Context, cfg map[string]any) error {
 		a.minAge = d
 	}
 
+	if v, ok := cfg["dispatch_by"]; ok {
+		s, isString := v.(string)
+		if !isString {
+			return fmt.Errorf("prometheus: config.dispatch_by must be \"alert\" or \"group\", got %v", v)
+		}
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "alert", "":
+			a.byGroup = false
+		case "group":
+			a.byGroup = true
+		default:
+			return fmt.Errorf("prometheus: config.dispatch_by must be \"alert\" or \"group\", got %q", s)
+		}
+	}
+
 	a.ackViaSilence, _ = cfg["ack_via_silence"].(bool)
 
 	a.silenceDuration = defaultSilenceDuration
@@ -164,6 +188,7 @@ func (a *Adapter) Connect(_ context.Context, cfg map[string]any) error {
 	a.labels = map[string]map[string]string{}
 	a.silenced = map[string]silenceRecord{}
 	a.resolveStreak = map[string]int{}
+	a.groupEpoch = map[string]time.Time{}
 
 	aplog.Info("prometheus: configured  alertmanager=%s  max_new_per_poll=%d  min_age=%s  ack_via_silence=%v  silence_duration=%s",
 		baseURL, a.maxNewPerPoll, a.minAge, a.ackViaSilence, a.silenceDuration)
@@ -211,6 +236,10 @@ func toMatcher(l string) string {
 // the dispatcher's active-instance / once dedup keeps shadowing it; item IDs
 // (fingerprint:startsAt) make re-dispatch impossible while a fire cycle lasts.
 func (a *Adapter) Poll(ctx context.Context, _ time.Time) ([]model.SourceItem, error) {
+	if a.byGroup {
+		return a.pollGroups(ctx)
+	}
+
 	alerts, err := a.client.alerts(ctx, a.filters)
 	if err != nil {
 		return nil, fmt.Errorf("prometheus: polling alerts: %w", err)
@@ -441,6 +470,19 @@ func (a *Adapter) ResolvedItems(ctx context.Context, itemIDs []string) ([]string
 		return nil, nil
 	}
 
+	// In group mode the in-flight ids are group ids, so the live set must be
+	// built from groups too — comparing them against per-alert ids would find
+	// no match for anything and report every running investigation resolved.
+	if a.byGroup {
+		groups, err := a.client.allAlertGroups(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("prometheus: checking resolved alert groups: %w", err)
+		}
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.confirmResolved(itemIDs, a.groupLiveIDs(groups)), nil
+	}
+
 	alerts, err := a.client.allAlerts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("prometheus: checking resolved alerts: %w", err)
@@ -461,6 +503,13 @@ func (a *Adapter) ResolvedItems(ctx context.Context, itemIDs []string) ([]string
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	return a.confirmResolved(itemIDs, live), nil
+}
+
+// confirmResolved applies the debounce: an item absent from the live set is
+// only reported once it has been absent on resolveConfirmations consecutive
+// checks. Callers must hold a.mu.
+func (a *Adapter) confirmResolved(itemIDs []string, live map[string]struct{}) []string {
 	// Only the ids we were asked about are tracked, so the streak map cannot
 	// outgrow the set of in-flight investigations.
 	asked := make(map[string]struct{}, len(itemIDs))
@@ -484,7 +533,7 @@ func (a *Adapter) ResolvedItems(ctx context.Context, itemIDs []string) ([]string
 			delete(a.resolveStreak, id)
 		}
 	}
-	return resolved, nil
+	return resolved
 }
 
 // silenceMatchers builds the exact-equality matchers for one alert and reports

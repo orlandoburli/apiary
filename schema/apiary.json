@@ -155,7 +155,7 @@
           },
           "config": {
             "type": "object",
-            "description": "Adapter-specific configuration. github: repo, api_key, base_url. jira: base_url, email, api_token, project. plane: workspace, project, api_key, base_url. prometheus: alertmanager_url, bearer_token, basic_auth_user, basic_auth_password, max_new_per_poll, min_age, ack_via_silence, silence_duration. dynatrace: base_url, api_token, max_new_per_poll, min_age, lookback. plugin: plugin (the id of an installed, enabled plugin with the source capability)",
+            "description": "Adapter-specific configuration. github: repo, api_key, base_url. jira: base_url, email, api_token, project. plane: workspace, project, api_key, base_url. prometheus: alertmanager_url, bearer_token, basic_auth_user, basic_auth_password, max_new_per_poll, min_age, dispatch_by, ack_via_silence, silence_duration. dynatrace: base_url, api_token, max_new_per_poll, min_age, lookback. plugin: plugin (the id of an installed, enabled plugin with the source capability)",
             "additionalProperties": true
           },
           "poll_interval": {
