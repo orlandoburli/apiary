@@ -25,6 +25,10 @@ type RunOutcome struct {
 	// RawOutput is the advisor's text with the sentinel stripped. Kept so a run
 	// that produced no parseable output can still be inspected.
 	RawOutput string
+	// Structured is the raw APIARY_OUTPUT object, before it is decoded into a
+	// particular shape. The analysis pass decodes it into an Analysis; the critic
+	// pass decodes the same field into a CritiqueSet.
+	Structured map[string]any
 }
 
 // AttemptRecord is one runner invocation.
@@ -84,6 +88,7 @@ func RunAdvisor(ctx context.Context, cfg *config.Config, adv *Advisor, prompt st
 			if res.Success {
 				out.Duration = time.Since(started)
 				out.RawOutput = res.Output
+				out.Structured = res.StructuredOutput
 				if res.StructuredOutput == nil {
 					return out, fmt.Errorf("advisor produced no APIARY_OUTPUT block; "+
 						"see the raw output above (%d bytes)", len(res.Output))
@@ -101,6 +106,60 @@ func RunAdvisor(ctx context.Context, cfg *config.Config, adv *Advisor, prompt st
 
 		out.Attempts = append(out.Attempts, rec)
 		lastErr = err
+	}
+
+	out.Duration = time.Since(started)
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no runner candidates available")
+	}
+	return out, lastErr
+}
+
+// runStructured performs one advisor invocation for a prompt whose output shape
+// is decided by the caller. RunAdvisor is the analysis-shaped wrapper around it;
+// the critic pass uses this directly.
+func runStructured(ctx context.Context, cfg *config.Config, adv *Advisor, prompt string, k Knobs, workDir string) (*RunOutcome, error) {
+	out := &RunOutcome{}
+	started := time.Now()
+	var lastErr error
+
+	for _, c := range candidateChain(cfg, adv) {
+		res, err := runOnce(ctx, cfg, c, prompt, k, workDir)
+		rec := AttemptRecord{RunnerID: c.runnerID, Adapter: c.adapter, Model: c.model}
+		if err != nil {
+			rec.Err = err.Error()
+		}
+		if res == nil {
+			out.Attempts = append(out.Attempts, rec)
+			lastErr = err
+			continue
+		}
+
+		rec.Duration = res.Duration
+		rec.Success = res.Success
+		if res.Usage != nil {
+			addUsage(&out.Usage, res.Usage)
+		}
+		kind, _ := execution.FailureDetectorFor(c.adapter).Detect(model.RunRequest{}, res)
+		if kind != model.FailureNone {
+			rec.Failure = kind.String()
+		}
+		out.Attempts = append(out.Attempts, rec)
+
+		if kind == model.FailureRateLimited || kind == model.FailureCreditExhausted {
+			lastErr = fmt.Errorf("runner %s: %s", c.runnerID, kind)
+			continue
+		}
+		if res.Success {
+			out.Duration = time.Since(started)
+			out.RawOutput = res.Output
+			out.Structured = res.StructuredOutput
+			if res.StructuredOutput == nil {
+				return out, fmt.Errorf("agent produced no APIARY_OUTPUT block (%d bytes of output)", len(res.Output))
+			}
+			return out, nil
+		}
+		lastErr = fmt.Errorf("runner %s failed: %v", c.runnerID, res.Error)
 	}
 
 	out.Duration = time.Since(started)
@@ -192,16 +251,22 @@ func runOnce(ctx context.Context, cfg *config.Config, c candidate, prompt string
 	return &res, err
 }
 
-// decodeAnalysis converts the runner's parsed structured output into the typed
-// analysis. Round-tripping through JSON keeps the field mapping in one place
-// (the struct tags) rather than duplicating it as map lookups.
-func decodeAnalysis(structured map[string]any) (Analysis, error) {
+// decodeInto converts a parsed structured output into a typed shape.
+// Round-tripping through JSON keeps the field mapping in one place (the struct
+// tags) rather than duplicating it as map lookups.
+func decodeInto(structured map[string]any, dst any) error {
 	raw, err := json.Marshal(structured)
 	if err != nil {
-		return Analysis{}, fmt.Errorf("re-encode advisor output: %w", err)
+		return fmt.Errorf("re-encode agent output: %w", err)
 	}
+	return json.Unmarshal(raw, dst)
+}
+
+// decodeAnalysis converts the runner's parsed structured output into the typed
+// analysis.
+func decodeAnalysis(structured map[string]any) (Analysis, error) {
 	var a Analysis
-	if err := json.Unmarshal(raw, &a); err != nil {
+	if err := decodeInto(structured, &a); err != nil {
 		return Analysis{}, fmt.Errorf("advisor output did not match the expected shape: %w", err)
 	}
 	if len(a.Findings) == 0 && len(a.Recommendations) == 0 {
@@ -274,4 +339,10 @@ func (o *RunOutcome) DescribeAttempts() string {
 		parts = append(parts, s)
 	}
 	return strings.Join(parts, " → ")
+}
+
+// AddUsage folds a second pass's usage into this outcome, so the reported cost
+// covers the whole analysis rather than only its first call.
+func (o *RunOutcome) AddUsage(u model.Usage) {
+	addUsage(&o.Usage, &u)
 }

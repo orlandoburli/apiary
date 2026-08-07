@@ -157,22 +157,49 @@ ad-hoc --runner/--model pair, settings.improve.agent, or an agent named
 				return runErr
 			}
 
+			// Validate every proposal before it is shown. A patch that cannot be
+			// applied, or that breaks the config, must not reach the reviewer
+			// looking actionable.
+			validator := improve.NewValidator(ws, configFile, cfg)
+			verdicts := validator.Validate(outcome.Analysis.Recommendations)
+
+			if knobs.Critic {
+				fmt.Fprintf(os.Stderr, "running critic pass over %d proposal(s)…\n", len(verdicts))
+				updated, criticOut, err := improve.RunCritic(ctx, cfg, adv, outcome.Analysis, verdicts,
+					files, knobs, filepath.Dir(configFile))
+				if err != nil {
+					// A failed critic must not discard a valid analysis.
+					fmt.Fprintf(os.Stderr, "  ⚠ critic pass failed (%v); proposals are shown unreviewed\n", err)
+				}
+				verdicts = updated
+				if criticOut != nil {
+					outcome.AddUsage(criticOut.Usage)
+				}
+			}
+
 			report := improve.RenderReport(pack, adv, outcome, effort)
+			diff := improve.RenderDiff(outcome.Analysis, verdicts)
 
 			if outDir != "" {
-				if err := writeArtifacts(outDir, pack, outcome, report); err != nil {
+				if err := writeArtifacts(outDir, pack, outcome, report+"\n"+diff); err != nil {
 					return err
 				}
 				fmt.Fprintf(os.Stderr, "written to %s\n", outDir)
 			}
+
+			fmt.Fprintln(os.Stderr, improve.DiffSummary(verdicts))
 
 			switch output {
 			case "json":
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
 				return enc.Encode(outcome.Analysis)
-			default:
+			case "report":
 				fmt.Fprint(cmd.OutOrStdout(), report)
+				return nil
+			default: // diff
+				fmt.Fprint(cmd.OutOrStdout(), report)
+				fmt.Fprint(cmd.OutOrStdout(), "\n"+diff)
 				return nil
 			}
 		},
@@ -187,7 +214,7 @@ ad-hoc --runner/--model pair, settings.improve.agent, or an agent named
 	cmd.Flags().StringVar(&runnerID, "runner", "", "ad-hoc runner for the analysis (requires --model)")
 	cmd.Flags().StringVar(&modelID, "model", "", "ad-hoc model for the analysis (requires --runner)")
 	cmd.Flags().StringVar(&profile, "profile", "", "activate a named runner profile from config profiles.<name>")
-	cmd.Flags().StringVar(&output, "output", "report", "what to print: report|json")
+	cmd.Flags().StringVar(&output, "output", "diff", "what to print: diff|report|json")
 	cmd.Flags().StringVar(&outDir, "out", "", "also write report, analysis and evidence to this directory")
 	cmd.Flags().BoolVar(&dumpEvidence, "dump-evidence", false, "print the evidence pack as JSON and exit (runs no model)")
 	cmd.Flags().BoolVar(&dumpPrompt, "dump-prompt", false, "print the composed advisor prompt and exit (runs no model)")
