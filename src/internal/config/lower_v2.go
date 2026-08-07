@@ -228,8 +228,14 @@ func (lc *lowerCtx) lowerParallelStep(s StepConfig, prevID, inheritedCondition s
 		Type: StepTypeParallel,
 		Join: s.Join,
 	}
+	// Implicit sequencing uses SeqDependsOn, exactly like lowerLeafStep: a
+	// condition-skipped predecessor must not block its successor. With a hard
+	// DependsOn here, a parallel group authored after a pair of mutually
+	// exclusive `if:` steps could never become runnable (an explicit dep must be
+	// stPassed, and cond_skipped never is) — the group was silently stranded and
+	// the instance still reported success (#379).
 	if prevID != "" {
-		out.DependsOn = []string{prevID}
+		out.SeqDependsOn = []string{prevID}
 	}
 	ownCond, err := lc.rewriteExpr(s.If, s.ID)
 	if err != nil {
@@ -287,8 +293,11 @@ func (lc *lowerCtx) lowerForeachStep(s StepConfig, prevID, inheritedCondition st
 		Concurrency: s.Concurrency,
 		FailFast:    s.FailFast,
 	}
+	// Implicit sequencing via SeqDependsOn — same rationale as lowerParallelStep
+	// and lowerLeafStep: a condition-skipped predecessor must not strand the
+	// for_each node (#379).
 	if prevID != "" {
-		out.DependsOn = []string{prevID}
+		out.SeqDependsOn = []string{prevID}
 	}
 	ownCond, err := lc.rewriteExpr(s.If, s.ID)
 	if err != nil {

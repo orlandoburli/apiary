@@ -460,7 +460,34 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 			return outcomeFailed
 		}
 	}
+
+	// Stranded steps: the scheduler went quiescent while a declared step is still
+	// pending. Such a step neither ran, nor had its own condition evaluate false,
+	// nor was cascade-skipped by a failed/skipped dependency — it simply became
+	// unreachable (typically an explicit depends_on on a condition-skipped step).
+	// Reporting success here silently drops declared work, which is how a pair of
+	// quality gates disappeared from a pipeline with no signal at all (#379).
+	// Fail loudly instead: a declared step that never ran is not a success.
+	if stranded := r.strandedSteps(); len(stranded) > 0 {
+		aplog.Error("workflow %s: instance %s finished with steps that never ran and were never skipped: %s — failing the instance rather than reporting success (check depends_on against condition-skipped steps)",
+			r.wf.ID, r.instID, strings.Join(stranded, ", "))
+		return outcomeFailed
+	}
 	return outcomeDone
+}
+
+// strandedSteps returns the ids of steps still pending once the scheduler has
+// gone quiescent, in declaration order. A pending step at quiescence can never
+// run: nothing is in flight to unblock it and no further control flow is
+// possible. See driveDAG for why this is a failure and not a success.
+func (r *dagRun) strandedSteps() []string {
+	var ids []string
+	for _, id := range r.order {
+		if r.state[id] == stPending {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // enterApproval parks the run at an approval step: it posts the step message to
@@ -598,8 +625,17 @@ func (r *dagRun) skipUnreachable() bool {
 			continue
 		}
 		// Explicit dep ended skipped/failed → this step can never run.
+		// A condition-skipped explicit dep cascades too: depsPassed requires an
+		// explicit dependency to have *passed*, so the dependent is unreachable.
+		// Recording it as skipped (instead of leaving it pending forever) is what
+		// the cascade always intended, and it is announced in the log — a step
+		// that quietly disappears from a pipeline is exactly what #379 cost.
 		for _, dep := range r.byID[id].DependsOn {
-			if r.state[dep] == stSkipped || r.state[dep] == stFailed {
+			if st := r.state[dep]; st == stSkipped || st == stFailed || st == stCondSkipped {
+				if st == stCondSkipped {
+					aplog.Warn("workflow %s: step %q skipped — its explicit depends_on %q was condition-skipped (use an if: on this step, or rely on implicit sequencing, if it should still run)",
+						r.wf.ID, id, dep)
+				}
 				r.markSkipped(id)
 				progress = true
 				break
