@@ -457,6 +457,50 @@ var migrations = []string{
 	`ALTER TABLE step_runs ADD COLUMN time_other_ms INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE step_runs ADD COLUMN time_background_ms INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE step_runs ADD COLUMN slow_tools TEXT`,
+	// Self-improvement ledger (issue #406): what `apiary improve` proposed, what
+	// was applied, and the metrics that justified each proposal — so a later run
+	// can measure whether an applied change actually helped. These live here
+	// rather than in the schema const because CREATE TABLE IF NOT EXISTS there
+	// never fires against a database that already exists.
+	`CREATE TABLE IF NOT EXISTS improvement_runs (
+	  id TEXT PRIMARY KEY,
+	  effort TEXT NOT NULL,
+	  focus TEXT,
+	  window_start TIMESTAMP,
+	  window_end TIMESTAMP,
+	  scope TEXT,                       -- JSON: workflow/agent filters
+	  evidence_digest TEXT,             -- hash of the evidence pack, for reproducibility
+	  advisor_agent TEXT,
+	  advisor_runner TEXT,
+	  advisor_model TEXT,
+	  report_path TEXT,
+	  applied BOOLEAN NOT NULL DEFAULT 0,
+	  applied_at TIMESTAMP,
+	  cost_usd REAL NOT NULL DEFAULT 0,
+	  total_tokens INTEGER NOT NULL DEFAULT 0,
+	  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`,
+	`CREATE TABLE IF NOT EXISTS improvement_findings (
+	  id TEXT PRIMARY KEY,
+	  run_id TEXT NOT NULL,
+	  finding_id TEXT,                  -- the advisor's own id, e.g. "f1"
+	  scope TEXT NOT NULL,              -- "workflow:x/step:y" | "agent:z"
+	  focus TEXT,
+	  severity TEXT,
+	  confidence TEXT,
+	  symptom TEXT,
+	  rationale TEXT,
+	  target_file TEXT,
+	  baseline_metrics TEXT,            -- JSON snapshot of the metrics that justified it
+	  patch TEXT,
+	  machine_checked BOOLEAN NOT NULL DEFAULT 0,
+	  state TEXT NOT NULL,              -- proposed|applied|rejected|reverted
+	  reject_reason TEXT,
+	  FOREIGN KEY(run_id) REFERENCES improvement_runs(id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_improvement_findings_run ON improvement_findings(run_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_improvement_findings_scope ON improvement_findings(scope, state)`,
+	`CREATE INDEX IF NOT EXISTS idx_improvement_runs_created ON improvement_runs(created_at DESC)`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).

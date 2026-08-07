@@ -128,7 +128,22 @@ ad-hoc --runner/--model pair, settings.improve.agent, or an agent named
 				return err
 			}
 			files := ws.Filter(knobs.WorkspaceBreadth, activeAgents(pack), flaggedAgents(pack))
-			prompt := improve.ComposePrompt(pack, ws, files, knobs)
+
+			// Prior findings keep the advisor from re-proposing what was already
+			// tried. A ledger that cannot be opened is not fatal — the analysis is
+			// still worth running, just without that context.
+			var prior []improve.LedgerFinding
+			ledger, ledgerErr := improve.OpenLedger(ctx, dbPath)
+			if ledgerErr != nil {
+				fmt.Fprintf(os.Stderr, "  ⚠ improvement ledger unavailable (%v); history will not be recorded\n", ledgerErr)
+			} else {
+				defer ledger.Close()
+				if prior, err = ledger.PriorFindings(ctx, 50); err != nil {
+					fmt.Fprintf(os.Stderr, "  ⚠ could not read prior findings: %v\n", err)
+				}
+			}
+
+			prompt := improve.ComposePrompt(pack, ws, files, knobs, prior)
 
 			// --dump-prompt runs no model, so it needs no advisor. It exists so the
 			// exact text that would be sent can be reviewed first — including
@@ -192,8 +207,15 @@ ad-hoc --runner/--model pair, settings.improve.agent, or an agent named
 
 			fmt.Fprintln(os.Stderr, improve.DiffSummary(verdicts))
 
+			runID := improve.NewRunID(time.Now())
+			if ledger != nil {
+				if err := recordRun(ctx, ledger, runID, pack, adv, outcome, verdicts, effort, focus, outDir); err != nil {
+					fmt.Fprintf(os.Stderr, "  ⚠ could not record this run in the ledger: %v\n", err)
+				}
+			}
+
 			if apply {
-				return applyChanges(cmd, ws, verdicts, diff, assumeYes)
+				return applyChanges(cmd, ws, verdicts, diff, assumeYes, ledger, runID)
 			}
 
 			switch output {
@@ -228,6 +250,8 @@ ad-hoc --runner/--model pair, settings.improve.agent, or an agent named
 	cmd.Flags().BoolVar(&apply, "apply", false, "write the accepted changes to disk (workspace is assumed to be under version control)")
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "skip the confirmation prompt when applying")
 	cmd.Flags().IntVar(&excerptBudget, "transcript-bytes", 0, "override the per-transcript character budget")
+
+	cmd.AddCommand(newImproveHistoryCmd(), newImproveShowCmd(), newImproveEffectCmd())
 
 	return cmd
 }
@@ -292,7 +316,7 @@ func writeArtifacts(dir string, pack *improve.EvidencePack, outcome *improve.Run
 // applyChanges shows the diff, asks once, and writes. The diff is printed in
 // full first: a confirmation prompt for changes the operator has not seen is
 // not consent, it is a formality.
-func applyChanges(cmd *cobra.Command, ws *improve.Workspace, verdicts []improve.Verdict, diff string, assumeYes bool) error {
+func applyChanges(cmd *cobra.Command, ws *improve.Workspace, verdicts []improve.Verdict, diff string, assumeYes bool, ledger *improve.Ledger, runID string) error {
 	prompt := improve.ConfirmationPrompt(verdicts)
 	if prompt == "" {
 		fmt.Fprintln(os.Stderr, "nothing to apply — no proposal survived validation")
@@ -322,5 +346,67 @@ func applyChanges(cmd *cobra.Command, ws *improve.Workspace, verdicts []improve.
 		return err
 	}
 	fmt.Fprint(os.Stderr, "\n"+res.Summary())
+
+	// Only findings that actually reached disk are marked applied — that is what
+	// the later effect comparison measures against.
+	if ledger != nil {
+		var appliedIDs []string
+		for _, v := range verdicts {
+			if v.OK && v.Path != "" && strings.TrimSpace(v.Recommendation.Patch) != "" {
+				appliedIDs = append(appliedIDs, improve.FindingRowID(runID, v.Recommendation.ID))
+			}
+		}
+		if err := ledger.MarkApplied(context.Background(), runID, appliedIDs, time.Now()); err != nil {
+			fmt.Fprintf(os.Stderr, "  ⚠ could not mark the run applied: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "\nRecorded as run %s. Measure the effect later with:\n  apiary improve effect %s\n", runID, runID)
+		}
+	}
 	return nil
+}
+
+// recordRun writes the analysis to the ledger, capturing the metrics behind each
+// finding so a later run can recompute them and compare.
+func recordRun(ctx context.Context, ledger *improve.Ledger, runID string, pack *improve.EvidencePack,
+	adv *improve.Advisor, outcome *improve.RunOutcome, verdicts []improve.Verdict,
+	effort improve.Effort, focus, outDir string) error {
+
+	scopeJSON, _ := json.Marshal(pack.Scope)
+	run := improve.LedgerRun{
+		ID: runID, Effort: string(effort), Focus: focus,
+		WindowStart: pack.Window.Start, WindowEnd: pack.Window.End,
+		Scope: string(scopeJSON), EvidenceDigest: pack.Digest,
+		AdvisorAgent: adv.AgentID, AdvisorRunner: adv.RunnerID, AdvisorModel: adv.Model,
+		ReportPath: outDir, CostUSD: outcome.Usage.CostUSD,
+		TotalTokens: outcome.Usage.TotalTokens, CreatedAt: time.Now(),
+	}
+
+	findingByID := map[string]improve.Finding{}
+	for _, f := range outcome.Analysis.Findings {
+		findingByID[f.ID] = f
+	}
+
+	var rows []improve.LedgerFinding
+	for _, v := range verdicts {
+		r := v.Recommendation
+		scope, symptom, severity, focusOf := "", "", "", ""
+		for _, id := range r.Addresses {
+			if f, ok := findingByID[id]; ok {
+				scope, symptom, severity, focusOf = f.Scope, f.Symptom, f.Severity, f.Focus
+				break
+			}
+		}
+		state := improve.FindingProposed
+		if !v.OK {
+			state = improve.FindingRejected
+		}
+		rows = append(rows, improve.LedgerFinding{
+			ID: improve.FindingRowID(runID, r.ID), RunID: runID, FindingID: r.ID,
+			Scope: scope, Focus: focusOf, Severity: severity, Confidence: r.Confidence,
+			Symptom: symptom, Rationale: r.Rationale, TargetFile: r.File,
+			BaselineMetrics: improve.BaselineJSON(pack, scope), Patch: r.Patch,
+			MachineChecked: v.MachineChecked, State: state, RejectReason: v.Reason,
+		})
+	}
+	return ledger.RecordRun(ctx, run, rows)
 }

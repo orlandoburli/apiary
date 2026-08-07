@@ -43,7 +43,7 @@ func TestComposePromptCarriesEvidenceAndRules(t *testing.T) {
 	ws := &Workspace{Root: "/repo"}
 	files := []WorkspaceFile{{Path: "apiary.yaml", Kind: KindConfig, Content: "version: \"1\"\n"}}
 
-	got := ComposePrompt(samplePack(), ws, files, EffortStandard.Expand())
+	got := ComposePrompt(samplePack(), ws, files, EffortStandard.Expand(), nil)
 
 	// The evidence must actually be present, not merely referenced.
 	for _, want := range []string{
@@ -80,7 +80,7 @@ func TestComposePromptCarriesEvidenceAndRules(t *testing.T) {
 
 func TestComposePromptWarnsAboutUnresolvedSkills(t *testing.T) {
 	ws := &Workspace{Root: "/repo", UnresolvedSkills: []string{"deploying (declared by engineer)"}}
-	got := ComposePrompt(samplePack(), ws, nil, EffortStandard.Expand())
+	got := ComposePrompt(samplePack(), ws, nil, EffortStandard.Expand(), nil)
 
 	if !strings.Contains(got, "deploying (declared by engineer)") {
 		t.Error("unresolved skills must be named in the prompt")
@@ -96,7 +96,7 @@ func TestComposePromptNeverCarriesASecret(t *testing.T) {
 	raw := "agents:\n  - id: a\n    source_token: ghp_supersecret\n    env:\n      KEY: sk-live-xyz\n"
 	files := []WorkspaceFile{{Path: "apiary.yaml", Kind: KindConfig, Content: RedactConfig(raw)}}
 
-	got := ComposePrompt(samplePack(), &Workspace{}, files, EffortStandard.Expand())
+	got := ComposePrompt(samplePack(), &Workspace{}, files, EffortStandard.Expand(), nil)
 	for _, secret := range []string{"ghp_supersecret", "sk-live-xyz"} {
 		if strings.Contains(got, secret) {
 			t.Errorf("secret %q reached the prompt", secret)
