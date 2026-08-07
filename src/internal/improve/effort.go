@@ -26,6 +26,10 @@ type Knobs struct {
 	// means "the control only" and 3 means "two failures plus a control".
 	TranscriptsPerHotspot int
 	// TranscriptByteBudget truncates each excerpt (head + tail, middle elided).
+	// Agent sessions for a substantial step routinely run to hundreds of
+	// kilobytes, so a small budget keeps a percent or two of the file and the
+	// excerpt stops being evidence of anything. These are sized to keep enough
+	// of both ends to see how a run started and how it ended.
 	TranscriptByteBudget int
 	// WorkspaceBreadth decides which prose files are inlined into the prompt.
 	WorkspaceBreadth Breadth
@@ -80,7 +84,7 @@ func (e Effort) Expand() Knobs {
 			DefaultWindow:         "90d",
 			HotspotLimit:          15,
 			TranscriptsPerHotspot: 5,
-			TranscriptByteBudget:  12000,
+			TranscriptByteBudget:  40000,
 			WorkspaceBreadth:      BreadthAll,
 			MaxTurns:              0,
 			Critic:                true,
@@ -90,7 +94,7 @@ func (e Effort) Expand() Knobs {
 			DefaultWindow:         "14d",
 			HotspotLimit:          5,
 			TranscriptsPerHotspot: 2,
-			TranscriptByteBudget:  8000,
+			TranscriptByteBudget:  24000,
 			WorkspaceBreadth:      BreadthActive,
 			MaxTurns:              0,
 			Critic:                false,
