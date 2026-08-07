@@ -107,11 +107,33 @@ func (d *Dispatcher) enqueueFanOut(ctx context.Context, cell model.SourceItem, t
 			continue
 		}
 		if !created {
+			// The idempotency key already exists. While the existing job is still
+			// pending this is the intended de-duplication of an overlapping poll;
+			// once it is terminal the dispatch is being dropped, and the only
+			// thing that frees the key is a new dispatch generation. That used to
+			// be completely silent — the poll reported the cell and nothing else
+			// ever happened. Say so.
+			if isTerminalJobState(job.State) {
+				aplog.Warn("task %s: workflow %s not enqueued — dispatch key %q already belongs to a %s job; re-dispatch waits for a new dispatch generation",
+					task.ID, match.Route.ID, job.IdempotencyKey, job.State)
+			} else {
+				aplog.Debug("task %s: workflow %s already enqueued (job %s, %s) — skipping duplicate", task.ID, match.Route.ID, job.ID, job.State)
+			}
 			d.rollbackQueuedOutstanding(ctx, task.ID, nil)
 			continue
 		}
 		d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "queue.enqueued", TaskID: task.ID, WorkflowID: match.Route.ID, Metadata: map[string]any{"job_id": job.ID, "generation": generation, "pool": pool, "required_labels": labels, "required_capabilities": capabilities}})
 	}
+}
+
+// isTerminalJobState reports whether a queue job has finished for good — its
+// idempotency key can never be reused by a later dispatch of the same round.
+func isTerminalJobState(state queue.JobState) bool {
+	switch state {
+	case queue.JobSucceeded, queue.JobFailed, queue.JobCanceled:
+		return true
+	}
+	return false
 }
 
 func (d *Dispatcher) rollbackQueuedOutstanding(ctx context.Context, taskID string, err error) {
@@ -135,12 +157,25 @@ func (d *Dispatcher) ExecuteQueuedJob(ctx context.Context, job queue.Job, worker
 	if payload.Version != dispatchPayloadVersion {
 		return queue.FinishResult{Error: fmt.Sprintf("unsupported dispatch payload version %d", payload.Version)}
 	}
-	if d.db != nil && payload.Task.ID != "" {
+	// Redelivery guard. A job whose lease expired (or whose worker died) mid-run is
+	// re-claimed with a bumped attempt count, and re-running an agent that already
+	// finished duplicates its side effects — so a *redelivery* is skipped when the
+	// workflow has since completed. A first delivery (attempt 1) must NOT be skipped
+	// unless the trigger opted into `once: true`: the non-queue path re-dispatches a
+	// still-matching trigger on every poll, and the routing layer (dropActiveMatches
+	// / dropOnceMatches / dropCappedMatches) is what decides whether a re-dispatch is
+	// legitimate. Applying the completed-instance check to every job made that
+	// decision unappealable in queue mode: the job reported success without ever
+	// creating an instance, so a workflow could never run a second time for a task
+	// and the stall was invisible in the logs.
+	if d.db != nil && payload.Task.ID != "" && (job.AttemptCount > 1 || payload.Match.Route.Once) {
 		completed, err := d.db.HasCompletedInstanceForRoute(ctx, payload.Task.ID, payload.Match.Route.ID)
 		if err != nil {
 			return queue.FinishResult{Error: fmt.Sprintf("check completed workflow: %v", err), Retry: true}
 		}
 		if completed {
+			aplog.Debug("queue job %s: workflow %s already completed for task %s — skipping redelivery",
+				job.ID, payload.Match.Route.ID, payload.Task.ID)
 			return queue.FinishResult{Success: true}
 		}
 	}
