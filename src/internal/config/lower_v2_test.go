@@ -245,8 +245,13 @@ func TestLowerV2_ParallelStepKept(t *testing.T) {
 	if len(checks.SubSteps) != 2 {
 		t.Errorf("checks should have 2 children, got %d", len(checks.SubSteps))
 	}
-	if checks.DependsOn[0] != "setup" {
-		t.Errorf("checks depends_on = %v, want [setup]", checks.DependsOn)
+	// Implicit sequencing is a SeqDependsOn edge, never a hard DependsOn — a
+	// hard edge strands the group when its predecessor is condition-skipped (#379).
+	if len(checks.DependsOn) != 0 {
+		t.Errorf("checks depends_on = %v, want none (implicit sequencing uses seq_depends_on)", checks.DependsOn)
+	}
+	if len(checks.SeqDependsOn) != 1 || checks.SeqDependsOn[0] != "setup" {
+		t.Errorf("checks seq_depends_on = %v, want [setup]", checks.SeqDependsOn)
 	}
 }
 
@@ -294,8 +299,8 @@ func TestLowerV2_ParallelDoubleLowerIdempotent(t *testing.T) {
 	if len(checks.SubSteps) != 2 {
 		t.Errorf("checks children after double-lower = %d, want 2", len(checks.SubSteps))
 	}
-	if len(checks.DependsOn) != 1 || checks.DependsOn[0] != "setup" {
-		t.Errorf("checks depends_on after double-lower = %v, want [setup]", checks.DependsOn)
+	if len(checks.SeqDependsOn) != 1 || checks.SeqDependsOn[0] != "setup" {
+		t.Errorf("checks seq_depends_on after double-lower = %v, want [setup]", checks.SeqDependsOn)
 	}
 
 	// Strongest assertion: the second pass must reproduce the first pass exactly.
