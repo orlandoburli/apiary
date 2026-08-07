@@ -43,8 +43,9 @@ type Recommendation struct {
 const outputContract = "APIARY_OUTPUT: " + `{"findings":[{"id":"f1","scope":"workflow:<id>/step:<id>","symptom":"<what is wrong, in one sentence>","evidence":["<metric>=<value> n=<runs>"],"severity":"high|medium|low","focus":"cost|latency|reliability|quality","low_confidence":false}],"recommendations":[{"id":"r1","addresses":["f1"],"file":"<path within the workspace>","summary":"<the change, in one sentence>","rationale":"<why this addresses the finding>","confidence":"high|medium|low","expected_effect":"<quantified where possible>","patch":"<unified diff>"}]}`
 
 // ComposePrompt builds the advisor's prompt: the evidence, the configuration
-// that produced it, and the rules that keep the analysis honest.
-func ComposePrompt(pack *EvidencePack, ws *Workspace, files []WorkspaceFile, k Knobs) string {
+// that produced it, the history of what has already been tried, and the rules
+// that keep the analysis honest.
+func ComposePrompt(pack *EvidencePack, ws *Workspace, files []WorkspaceFile, k Knobs, prior []LedgerFinding) string {
 	var b strings.Builder
 
 	b.WriteString("# Task\n\n")
@@ -106,6 +107,24 @@ func ComposePrompt(pack *EvidencePack, ws *Workspace, files []WorkspaceFile, k K
 			b.WriteString("\n")
 		}
 		b.WriteString("```\n\n")
+	}
+
+	if len(prior) > 0 {
+		// Without this the advisor re-proposes the same change every run, and a
+		// suggestion that was applied and did not help is indistinguishable from
+		// one that was never tried.
+		b.WriteString("# Already tried\n\n")
+		b.WriteString("These changes were proposed and applied by earlier runs. Do not re-propose them. ")
+		b.WriteString("If a problem they addressed is still visible in the evidence above, that is worth saying — ")
+		b.WriteString("the fix did not work, and the reason matters more than another attempt at the same idea.\n\n")
+		for _, f := range prior {
+			fmt.Fprintf(&b, "- **%s** (%s, %s)", f.Symptom, f.Scope, f.State)
+			if f.TargetFile != "" {
+				fmt.Fprintf(&b, " — changed `%s`", f.TargetFile)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
 	}
 
 	b.WriteString("# Output\n\n")
