@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/model"
@@ -71,6 +72,14 @@ type CIStatus struct {
 		Status string // "passed", "failed", "pending", "skipped"
 	}
 }
+
+// ErrUnsupported reports that a source adapter does not implement the optional
+// capability a workflow step asked for. It exists so the engine can tell a
+// permanent gap ("this source will never poll CI") apart from a transient
+// failure ("the token expired", "the forge is down"): the former is terminal
+// and must be surfaced to the operator, the latter is retried next cycle.
+// Wrap it with %w when reporting a missing capability.
+var ErrUnsupported = errors.New("capability not supported by source")
 
 // CIStatusPoller is an optional interface that sources may implement to check the
 // current CI status of a PR or branch. The workflow engine uses it for poll steps

@@ -634,7 +634,9 @@ How it works:
   which the dashboard shows in the task's detail view, so a long CI wait is
   fully auditable.
 - Poll statuses are `passed`, `failed`, `pending`, `timeout`, `error`,
-  `unknown`.
+  `unknown`, `unsupported`. `unsupported` means the source cannot poll CI at
+  all: the step fails at once with the cause logged and recorded, rather than
+  polling until `max_duration`.
 - Like approvals, parked CI waits **survive daemon restarts**.
 - `remove_label: <name>` clears a stale label from the task before polling
   begins.

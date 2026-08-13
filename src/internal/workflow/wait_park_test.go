@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -402,4 +404,38 @@ func countID(seen []StepRequest, id string) int {
 		}
 	}
 	return n
+}
+
+// A source that cannot poll CI fails the wait immediately with the cause
+// named and recorded, instead of polling until max_duration with nothing but a
+// warning per cycle (#425).
+func TestWaitFor_UnsupportedCapabilityFailsTerminally(t *testing.T) {
+	store := newFakeStore()
+	exec := &fakeExecutor{}
+	clock := time.Unix(1000, 0)
+	ci := func() (source.CIStatus, error) {
+		return source.CIStatus{}, fmt.Errorf("source %q cannot poll CI status: %w", "jira", source.ErrUnsupported)
+	}
+	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
+
+	instID, success, _ := eng.RunInstance(context.Background(), waitForWorkflow(), model.InternalTask{ID: "c1"})
+	if success {
+		t.Fatal("a wait against a source without CI polling must not succeed")
+	}
+	if got := store.instances[instID].State; got == db.InstanceStateWaiting {
+		t.Fatalf("the wait parked instead of failing: state %q", got)
+	}
+	if len(eng.ParkedWaits()) != 0 {
+		t.Errorf("expected no parked wait, got %+v", eng.ParkedWaits())
+	}
+	// The cause is recorded in the wait's history, not only in the log.
+	var found bool
+	for _, p := range store.ciPolls {
+		if p.Status == "unsupported" && strings.Contains(p.Detail, "cannot poll CI status") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an 'unsupported' poll recording the cause, got %+v", store.ciPolls)
+	}
 }

@@ -39,7 +39,9 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 			}
 			poller, ok := adapter.(source.CIStatusPoller)
 			if !ok {
-				return source.CIStatus{}, fmt.Errorf("source %q does not support CI status polling", sourceID)
+				// Permanent, not transient: fail the wait at once instead of
+				// polling a capability that will never appear (#425).
+				return source.CIStatus{}, fmt.Errorf("source %q cannot poll CI status: %w", sourceID, source.ErrUnsupported)
 			}
 			return poller.PollCIStatus(ctx, sourceItemID)
 		}))
@@ -51,7 +53,7 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 			}
 			lister, ok := adapter.(source.BlockerLister)
 			if !ok {
-				return nil, fmt.Errorf("source %q does not support blocker listing (wait_for kind: dependency)", sourceID)
+				return nil, fmt.Errorf("source %q cannot list blockers (wait_for kind: dependency): %w", sourceID, source.ErrUnsupported)
 			}
 			return lister.ListBlockers(ctx, sourceItemID, linkType)
 		}))
