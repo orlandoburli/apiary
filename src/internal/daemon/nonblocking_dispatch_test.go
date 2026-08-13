@@ -35,7 +35,7 @@ func TestFanOut_DoesNotBlockOnSaturatedAgent(t *testing.T) {
 	go func() {
 		// persisted=false → no DB side effects; the dispatch goroutine parks on
 		// the saturated semaphore until ctx is cancelled.
-		d.fanOut(ctx, cell, nil, task, false, matches, nil, nil)
+		d.fanOut(ctx, cell, nil, task, false, matches, fanOutOpts{ownsInFlight: true})
 		close(done)
 	}()
 

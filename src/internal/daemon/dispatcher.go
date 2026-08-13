@@ -851,10 +851,14 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 				d.inFlight.Delete(cell.ID)
 				continue
 			}
-			d.fanOut(ctx, cell, adapter, task, persisted, matches, &wg, func(id string) {
-				mu.Lock()
-				failedIDs = append(failedIDs, id)
-				mu.Unlock()
+			d.fanOut(ctx, cell, adapter, task, persisted, matches, fanOutOpts{
+				wg: &wg,
+				onFail: func(id string) {
+					mu.Lock()
+					failedIDs = append(failedIDs, id)
+					mu.Unlock()
+				},
+				ownsInFlight: true,
 			})
 		}
 	}
@@ -1293,7 +1297,7 @@ func (d *Dispatcher) redispatchCell(ctx context.Context, cell model.SourceItem, 
 	}
 	d.dropNotified.Delete(task.ID)
 	aplog.Info("force-restart %s: dispatching %d workflow(s): %v", cell.LogLabel(), len(ids), ids)
-	d.fanOut(ctx, cell, adapter, task, persisted, matches, nil, nil)
+	d.fanOut(ctx, cell, adapter, task, persisted, matches, fanOutOpts{ownsInFlight: true})
 	return len(ids), ids, overridden
 }
 
@@ -1651,6 +1655,10 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(d.WorkflowList())
 	})
+	// POST /workflows/{id}/run — start one named workflow on demand, bypassing
+	// every trigger and pre-dispatch guard. Registered on the subtree so the
+	// exact-match /workflows listing above keeps its own handler.
+	mux.HandleFunc("/workflows/", d.manualRunHandler(ctx))
 	mux.HandleFunc("/instances/stop/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1856,7 +1864,7 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 			continue
 		}
 		d.dropNotified.Delete(task.ID)
-		d.fanOut(ctx, cell, adapter, task, persisted, matches, nil, nil)
+		d.fanOut(ctx, cell, adapter, task, persisted, matches, fanOutOpts{ownsInFlight: true})
 	}
 
 	// PR events (trigger.on: pr_*) ride the same poll cadence, after item
@@ -1903,14 +1911,44 @@ func (d *Dispatcher) WaitBackground(timeout time.Duration) bool {
 	}
 }
 
-func (d *Dispatcher) fanOut(ctx context.Context, cell model.SourceItem, adapter source.Adapter, task model.InternalTask, persisted bool, matches []router.Match, wg *sync.WaitGroup, onFail func(cellID string)) {
+// fanOutOpts carries the knobs that differ between fan-out callers. It exists so
+// the manual-run path can join the same dispatch machinery — queue, semaphores,
+// activeRuns, outstanding accounting — while differing on the two things a manual
+// run must not share with a poll: the in-flight marker it does not own, and the
+// queue idempotency key it must not collide with.
+type fanOutOpts struct {
+	// wg, when non-nil, is signalled per dispatch AND forces inline dispatch:
+	// callers that wait on the runs cannot have them handed to a queue worker.
+	wg *sync.WaitGroup
+	// onFail is called with the cell id for every dispatch that returns
+	// Success == false.
+	onFail func(cellID string)
+	// idemSuffix widens the queue idempotency key beyond taskID:generation:routeID.
+	// Empty for poll and restart, which rely on that key to de-duplicate overlapping
+	// rounds; set per run by a manual dispatch, whose whole point is that a second
+	// identical run is a second run and not a duplicate.
+	idemSuffix string
+	// ownsInFlight reports whether this fan-out stored d.inFlight[cell.ID] and may
+	// therefore clear it when the dispatches finish. A manual run never stores it,
+	// and clearing another path's marker would release a concurrent poll's guard
+	// early — the next tick would then dispatch the cell a second time.
+	ownsInFlight bool
+}
+
+func (d *Dispatcher) fanOut(ctx context.Context, cell model.SourceItem, adapter source.Adapter, task model.InternalTask, persisted bool, matches []router.Match, opts fanOutOpts) {
+	wg, onFail := opts.wg, opts.onFail
+	releaseInFlight := func() {
+		if opts.ownsInFlight {
+			d.inFlight.Delete(cell.ID)
+		}
+	}
 	if len(matches) == 0 {
-		d.inFlight.Delete(cell.ID)
+		releaseInFlight()
 		return
 	}
 	if persisted && d.dispatchQueue != nil && wg == nil {
-		d.enqueueFanOut(ctx, cell, task, matches)
-		d.inFlight.Delete(cell.ID)
+		d.enqueueFanOut(ctx, cell, task, matches, opts.idemSuffix)
+		releaseInFlight()
 		return
 	}
 
@@ -1978,7 +2016,7 @@ func (d *Dispatcher) fanOut(ctx context.Context, cell model.SourceItem, adapter 
 	// the cell can be re-polled (and re-routed against its refreshed task).
 	d.goBackground(func() {
 		inner.Wait()
-		d.inFlight.Delete(cell.ID)
+		releaseInFlight()
 	})
 }
 

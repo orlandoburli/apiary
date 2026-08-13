@@ -48,6 +48,10 @@ trigger:
     labels: [backend, bug]
 ```
 
+A workflow with **no** `trigger:` block never starts on its own. That is a valid
+configuration — see [Manual runs](#manual-runs) — but `apiary validate` warns
+about it, since an unreachable workflow is usually a mistake.
+
 ### `match` fields
 
 | Field | Description |
@@ -99,6 +103,31 @@ which are not reconsidered; nothing will run for this task until the reason clea
 If you want the lower-priority workflow to take over in that state, make the
 handover explicit — narrow the exclusive trigger's `match` so it stops matching
 once its work is done (e.g. on a label the workflow itself sets).
+
+### Manual runs
+
+Everything above describes when a workflow starts **on its own**. Any workflow
+can also be started by hand, which skips all of it:
+
+```sh
+apiary dispatch triage --item CDT-123   # this workflow, this item, right now
+apiary dispatch nightly-audit           # standalone: no source item at all
+```
+
+The same action is `W` in the dashboard. A manual run ignores the trigger's
+`match` block, exclusive suppression, the live-instance guard, `once`, and the
+consecutive-failure cap — so it starts a **second concurrent instance** of a
+workflow that is already running, by design. Every bypass is reported.
+
+Two consequences worth knowing:
+
+- A workflow with no `trigger:` block is perfectly usable as a **manual-only**
+  workflow: maintenance jobs, audits, one-off reports.
+- A standalone run (no `--item`) has no source binding, so steps that write back
+  to a source — comments, state locks, `materialize: sub_issue` — are no-ops.
+  Pass `--input key=value` for the values those workflows need instead.
+
+See [`apiary dispatch`](cli.md#apiary-dispatch) for the full behaviour.
 
 ### PR event triggers (`on:`)
 

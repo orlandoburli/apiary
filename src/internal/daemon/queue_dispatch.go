@@ -84,7 +84,28 @@ func (d *Dispatcher) queuePolicy() queue.ConcurrencyPolicy {
 	return policy
 }
 
-func (d *Dispatcher) enqueueFanOut(ctx context.Context, cell model.SourceItem, task model.InternalTask, matches []router.Match) {
+// dispatchIdempotencyKey is the queue's de-duplication key for one dispatch:
+// task + dispatch generation + workflow. Two polls that overlap on the same
+// round produce the same key, and the second enqueue is correctly swallowed;
+// a new round frees the key by bumping the generation.
+//
+// suffix opts out of that de-duplication for callers where a repeat is the
+// intent rather than an accident — a manual run passes a per-run nonce, so
+// starting the same workflow on the same task twice yields two jobs. It is
+// empty on every automatic path, which keeps those keys byte-identical to what
+// they were before the suffix existed (live queue rows keep matching).
+func dispatchIdempotencyKey(taskID string, generation int, workflowID, suffix string) string {
+	key := fmt.Sprintf("%s:%d:%s", taskID, generation, workflowID)
+	if suffix != "" {
+		key += ":" + suffix
+	}
+	return key
+}
+
+// enqueueFanOut hands each match to the dispatch queue instead of running it in
+// the daemon. idemSuffix widens the idempotency key (see dispatchIdempotencyKey);
+// it is empty for every automatic path.
+func (d *Dispatcher) enqueueFanOut(ctx context.Context, cell model.SourceItem, task model.InternalTask, matches []router.Match, idemSuffix string) {
 	if _, err := d.db.InternalTasks().IncrementOutstanding(ctx, task.ID, len(matches)); err != nil {
 		aplog.Error("task %s: increment outstanding by %d before enqueue: %v", task.ID, len(matches), err)
 		return
@@ -100,7 +121,7 @@ func (d *Dispatcher) enqueueFanOut(ctx context.Context, cell model.SourceItem, t
 			continue
 		}
 		pool, labels, capabilities, affinity := d.requirementsForMatch(task.ID, match)
-		job := &queue.Job{IdempotencyKey: fmt.Sprintf("%s:%d:%s", task.ID, generation, match.Route.ID), ProjectID: d.queueProjectID, SourceID: cell.SourceID, TaskID: task.ID, WorkflowID: match.Route.ID, AgentID: match.Route.Agent, RunnerID: d.agentRunner[match.Route.Agent], Pool: pool, RequiredLabels: labels, RequiredCapabilities: capabilities, AffinityKey: affinity, PayloadVersion: dispatchPayloadVersion, Payload: payload, Priority: -match.Route.Priority, MaxAttempts: d.cfg.Settings.MaxAttempts}
+		job := &queue.Job{IdempotencyKey: dispatchIdempotencyKey(task.ID, generation, match.Route.ID, idemSuffix), ProjectID: d.queueProjectID, SourceID: cell.SourceID, TaskID: task.ID, WorkflowID: match.Route.ID, AgentID: match.Route.Agent, RunnerID: d.agentRunner[match.Route.Agent], Pool: pool, RequiredLabels: labels, RequiredCapabilities: capabilities, AffinityKey: affinity, PayloadVersion: dispatchPayloadVersion, Payload: payload, Priority: -match.Route.Priority, MaxAttempts: d.cfg.Settings.MaxAttempts}
 		created, err := d.dispatchQueue.Enqueue(ctx, job)
 		if err != nil {
 			d.rollbackQueuedOutstanding(ctx, task.ID, fmt.Errorf("enqueue workflow %s: %w", match.Route.ID, err))

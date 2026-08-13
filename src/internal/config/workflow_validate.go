@@ -794,8 +794,8 @@ func (c *Config) WorkflowWarnings() []string {
 		}
 		if wf.Trigger == nil && !referenced[wf.ID] {
 			warnings = append(warnings, fmt.Sprintf(
-				"workflow %q has no trigger and is not referenced as a sub-workflow; it will never run",
-				wf.ID))
+				"workflow %q has no trigger and is not referenced as a sub-workflow; it will never run on its own (start it with `apiary dispatch %s`)",
+				wf.ID, wf.ID))
 		}
 	}
 	return warnings
