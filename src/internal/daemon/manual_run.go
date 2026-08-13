@@ -28,6 +28,14 @@ import (
 // success having done nothing.
 var ErrUnknownWorkflow = errors.New("unknown workflow")
 
+// ErrUnknownSource is returned when an explicitly named source is not configured.
+var ErrUnknownSource = errors.New("unknown source")
+
+// ErrSourceRequired is returned when an item reference is not a known cell and
+// more than one source could hold it. Guessing would mean fetching some other
+// project's PSP-199 and running a workflow over it, so the caller is asked.
+var ErrSourceRequired = errors.New("source required")
+
 // ManualRunRequest asks the daemon to start one named workflow on demand.
 type ManualRunRequest struct {
 	// WorkflowID names the workflow to run. Required.
@@ -37,6 +45,10 @@ type ManualRunRequest struct {
 	// restart` accepts. Empty runs the workflow standalone on a fresh internal
 	// task with no source binding.
 	ItemRef string `json:"item_ref,omitempty"`
+	// SourceID optionally names which source ItemRef belongs to. It is needed
+	// only when the reference is ambiguous, or when it names an item apiary has
+	// never polled and more than one source could fetch it.
+	SourceID string `json:"source_id,omitempty"`
 	// Input seeds a standalone run's task input, readable from steps as
 	// ${{ input.* }}. Ignored when ItemRef is set — that task's input belongs to
 	// the source binding.
@@ -53,6 +65,9 @@ type ManualRunResult struct {
 	TaskID     string `json:"task_id"`
 	CellID     string `json:"cell_id,omitempty"`
 	Ref        string `json:"ref,omitempty"`
+	// SourceID is the source the item was resolved against — worth echoing back
+	// when it was inferred rather than named.
+	SourceID string `json:"source_id,omitempty"`
 	// Standalone reports that no source item is bound: side effects that write
 	// back to a source (comments, state locks, sub-issues) are no-ops for this run.
 	Standalone bool `json:"standalone"`
@@ -88,7 +103,11 @@ func (d *Dispatcher) manualRunHandler(runCtx context.Context) http.HandlerFunc {
 			return
 		}
 
-		req := ManualRunRequest{WorkflowID: wfID, ItemRef: r.URL.Query().Get("item")}
+		req := ManualRunRequest{
+			WorkflowID: wfID,
+			ItemRef:    r.URL.Query().Get("item"),
+			SourceID:   r.URL.Query().Get("source"),
+		}
 		// A body is optional; only a malformed one is an error.
 		if body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20)); len(bytes.TrimSpace(body)) > 0 {
 			var payload struct {
@@ -119,7 +138,8 @@ func manualRunHTTPStatus(err error) int {
 	switch {
 	case errors.Is(err, ErrUnknownWorkflow):
 		return http.StatusNotFound
-	case errors.Is(err, ErrUnknownCell), errors.Is(err, ErrAmbiguousRef):
+	case errors.Is(err, ErrUnknownCell), errors.Is(err, ErrUnknownSource),
+		errors.Is(err, ErrAmbiguousRef), errors.Is(err, ErrSourceRequired):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError
@@ -203,15 +223,17 @@ func (d *Dispatcher) RunWorkflowManual(ctx context.Context, req ManualRunRequest
 		// bindings; mirroring that here keeps logs and activeRuns readable.
 		cell = model.SourceItem{ID: task.ID, Title: task.Title}
 	} else {
-		cell, adapter, task, persisted, err = d.manualTargetItem(ctx, req.ItemRef)
+		cell, adapter, task, persisted, err = d.manualTargetItem(ctx, req.ItemRef, req.SourceID)
 		if err != nil {
 			return res, err
 		}
-		res.CellID = cell.ID
+		res.CellID, res.SourceID, res.Ref = cell.ID, cell.SourceID, cell.Number
 	}
 	res.TaskID = task.ID
 	if res.Ref == "" && res.CellID != "" {
-		if _, number, refErr := d.resolveCellRef(ctx, req.ItemRef); refErr == nil {
+		// The item carried no human reference of its own; fall back to whatever
+		// the binding recorded.
+		if _, number, refErr := d.resolveCellRef(ctx, req.ItemRef, req.SourceID); refErr == nil {
 			res.Ref = number
 		}
 	}
@@ -290,20 +312,43 @@ func (d *Dispatcher) standaloneTask(ctx context.Context, wf config.WorkflowConfi
 // a manual run executes against — the same binding a poll of that item produces,
 // so the run sees live labels and state.
 //
-// It fails closed. A reference that resolves to no known item returns
-// ErrUnknownCell and creates nothing: silently falling back to a standalone task
-// would run the workflow against an empty target while reporting success, which
-// is the mis-targeting class of bug #377 was about.
-func (d *Dispatcher) manualTargetItem(ctx context.Context, ref string) (model.SourceItem, source.Adapter, model.InternalTask, bool, error) {
-	cellID, _, err := d.resolveCellRef(ctx, ref)
-	if err != nil {
+// An item apiary has never polled is fetched from its source and bound on the
+// spot (discoverItem), which is how `--item PSP-199` works for a ticket outside
+// the source's poll filters. It still fails closed: a reference no source can
+// produce an item for returns ErrUnknownCell and creates nothing, rather than
+// running the workflow against an empty target and reporting success (the
+// mis-targeting class of bug #377 was about).
+//
+// sourceID scopes both halves: it disambiguates a reference that exists in more
+// than one source, and it names which source to fetch an unknown one from.
+func (d *Dispatcher) manualTargetItem(ctx context.Context, ref, sourceID string) (model.SourceItem, source.Adapter, model.InternalTask, bool, error) {
+	fail := func(err error) (model.SourceItem, source.Adapter, model.InternalTask, bool, error) {
 		return model.SourceItem{}, nil, model.InternalTask{}, false, err
 	}
-	if err := d.assertKnownCell(ctx, cellID); err != nil {
-		return model.SourceItem{}, nil, model.InternalTask{}, false, err
+	if sourceID != "" {
+		if _, err := d.manualSource(sourceID); err != nil {
+			return fail(err)
+		}
 	}
 
-	cell, adapter, ok := d.fetchCell(ctx, cellID)
+	cellID, _, err := d.resolveCellRef(ctx, ref, sourceID)
+	if err != nil {
+		return fail(err)
+	}
+	if err := d.assertKnownCell(ctx, cellID); err != nil {
+		if !errors.Is(err, ErrUnknownCell) {
+			return fail(err)
+		}
+		// Not a cell apiary has seen. Ask a source for it before giving up.
+		cell, adapter, derr := d.discoverItem(ctx, ref, sourceID)
+		if derr != nil {
+			return fail(derr)
+		}
+		task, persisted := d.bindItem(ctx, cell)
+		return cell, adapter, task, persisted, nil
+	}
+
+	cell, adapter, ok := d.fetchCell(ctx, cellID, sourceID)
 	if !ok {
 		// No source can read the item right now (no TaskPoller, or the fetch
 		// failed). The binding still knows what the task is, so the workflow can
@@ -323,12 +368,119 @@ func (d *Dispatcher) manualTargetItem(ctx context.Context, ref string) (model.So
 	return cell, adapter, task, persisted, nil
 }
 
-// fetchCell reads a source item from whichever configured source can poll it,
+// discoverItem fetches an item apiary has never polled, straight from its source.
+//
+// This is the difference between "run a workflow on a task apiary is tracking"
+// and "run a workflow on PSP-199": a ticket outside the source's poll filters, in
+// a state the filters exclude, or created since the last tick has no binding, so
+// reference resolution finds nothing. The adapter can still resolve it — Jira's
+// /issue/{idOrKey} takes the key, GitHub's /issues/{n} the number — so ask.
+//
+// Unlike fetchCell this accepts the id the adapter reports rather than requiring
+// it to equal what was asked for: the caller passed a human reference (PSP-199)
+// precisely because it does not know the cell id (the opaque numeric issue id),
+// and resolving one to the other is what the fetch is for. The returned item is
+// echoed back to the caller and logged, so a fetch that resolved to something
+// unexpected is visible rather than silent.
+func (d *Dispatcher) discoverItem(ctx context.Context, ref, sourceID string) (model.SourceItem, source.Adapter, error) {
+	id, err := d.manualSourceForDiscovery(sourceID)
+	if err != nil {
+		return model.SourceItem{}, nil, err
+	}
+	adapter := d.sources[id]
+
+	cell, err := adapter.(source.TaskPoller).PollTask(ctx, strings.TrimSpace(ref))
+	if err != nil {
+		return model.SourceItem{}, nil, fmt.Errorf("%w: %s could not fetch %q: %w", ErrUnknownCell, id, ref, err)
+	}
+	if cell.ID == "" {
+		// A source that answers with no id has nothing to bind or write back to.
+		return model.SourceItem{}, nil, fmt.Errorf("%w: %s returned no item for %q", ErrUnknownCell, id, ref)
+	}
+	// The source we asked is authoritative, not the one the item claims: the
+	// binding and the adapter that later writes comments and state back must name
+	// the same source, or the run reads from one and writes to another.
+	if cell.SourceID != "" && cell.SourceID != id {
+		aplog.Warn("manual run: %s returned an item tagged source %q for %q — binding it to %s, the source that answered",
+			id, cell.SourceID, ref, id)
+	}
+	cell.SourceID = id
+	aplog.Info("manual run: %q is not a known cell — fetched it from source %s as %s (%q)",
+		ref, id, cell.LogLabel(), cell.Title)
+	return cell, adapter, nil
+}
+
+// manualSource returns the configured, connected source with this id.
+func (d *Dispatcher) manualSource(id string) (source.Adapter, error) {
+	if adapter, ok := d.sources[id]; ok {
+		return adapter, nil
+	}
+	return nil, fmt.Errorf("%w: %q (configured: %s)", ErrUnknownSource, id, strings.Join(d.sourceIDs(), ", "))
+}
+
+// manualSourceForDiscovery picks the source to fetch an unknown reference from.
+//
+// Named explicitly, it must exist and be able to fetch a single item. Left out,
+// it is inferred only when the answer is unambiguous — exactly one source can do
+// it. With several, the caller is asked rather than guessed at: fetching the
+// wrong project's PSP-199 and running a workflow over it is not an error anyone
+// would catch quickly.
+func (d *Dispatcher) manualSourceForDiscovery(sourceID string) (string, error) {
+	if sourceID != "" {
+		adapter, err := d.manualSource(sourceID)
+		if err != nil {
+			return "", err
+		}
+		if _, ok := adapter.(source.TaskPoller); !ok {
+			return "", fmt.Errorf("%w: source %q cannot fetch a single item (no TaskPoller)", ErrUnknownCell, sourceID)
+		}
+		return sourceID, nil
+	}
+
+	var candidates []string
+	for _, sc := range d.cfg.Sources {
+		if adapter, ok := d.sources[sc.ID]; ok {
+			if _, ok := adapter.(source.TaskPoller); ok {
+				candidates = append(candidates, sc.ID)
+			}
+		}
+	}
+	switch len(candidates) {
+	case 1:
+		return candidates[0], nil
+	case 0:
+		return "", fmt.Errorf("%w: no configured source can fetch a single item", ErrUnknownCell)
+	default:
+		sort.Strings(candidates)
+		return "", fmt.Errorf("%w: %d sources could hold it (%s) — pass --source to say which",
+			ErrSourceRequired, len(candidates), strings.Join(candidates, ", "))
+	}
+}
+
+// sourceIDs returns every configured source id, sorted.
+func (d *Dispatcher) sourceIDs() []string {
+	if d.cfg == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(d.cfg.Sources))
+	for _, sc := range d.cfg.Sources {
+		ids = append(ids, sc.ID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// fetchCell reads a known cell from whichever configured source can poll it,
 // returning the adapter alongside so side effects can write back. It is the
 // read-only half of ForceRestart's label-stripping loop: same TaskPoller scan and
 // same refusal to accept a substituted item, without touching anything.
-func (d *Dispatcher) fetchCell(ctx context.Context, cellID string) (model.SourceItem, source.Adapter, bool) {
+//
+// sourceID, when set, restricts the scan to that source.
+func (d *Dispatcher) fetchCell(ctx context.Context, cellID, sourceID string) (model.SourceItem, source.Adapter, bool) {
 	for _, sc := range d.cfg.Sources {
+		if sourceID != "" && sc.ID != sourceID {
+			continue
+		}
 		adapter, ok := d.sources[sc.ID]
 		if !ok {
 			continue

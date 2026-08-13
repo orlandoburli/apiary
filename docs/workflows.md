@@ -110,7 +110,7 @@ Everything above describes when a workflow starts **on its own**. Any workflow
 can also be started by hand, which skips all of it:
 
 ```sh
-apiary dispatch triage --item CDT-123   # this workflow, this item, right now
+apiary dispatch triage --item PSP-199   # this workflow, this item, right now
 apiary dispatch nightly-audit           # standalone: no source item at all
 ```
 
@@ -118,6 +118,11 @@ The same action is `W` in the dashboard. A manual run ignores the trigger's
 `match` block, exclusive suppression, the live-instance guard, `once`, and the
 consecutive-failure cap — so it starts a **second concurrent instance** of a
 workflow that is already running, by design. Every bypass is reported.
+
+The item does not have to be one apiary is already tracking: a reference it has
+never polled is fetched from its source and bound on the spot, so a manual run
+reaches tickets outside the source's `filters`. Add `--source` when more than one
+source could hold the reference.
 
 Two consequences worth knowing:
 
