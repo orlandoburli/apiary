@@ -209,7 +209,7 @@ Start one named workflow right now, whether or not anything would have triggered
 it. Same action as `W` in the dashboard.
 
 ```sh
-apiary dispatch triage --item CDT-123     # run `triage` on an existing item
+apiary dispatch triage --item PSP-199     # run `triage` on a source item
 apiary dispatch nightly-audit             # run standalone, with no source item
 apiary dispatch report --input scope=q3   # standalone, with structured input
 ```
@@ -227,7 +227,7 @@ A manual run skips **every** gate the poll loop applies:
 Every bypass is printed, so none of them is silent:
 
 ```
-✓ Started workflow triage on CDT-123 (10042)
+✓ Started workflow triage on PSP-199 (10042) in jira
   ! this workflow was already running on the task — a second instance is now live
   ! bypassed guard: trigger match (state/labels/filters)
   ! bypassed guard: exclusive trigger suppression
@@ -237,12 +237,40 @@ Every bypass is printed, so none of them is silent:
   → follow it with: apiary instances
 ```
 
-**With `--item`** the run binds an existing source item and behaves exactly like
-an automatic dispatch of that workflow: it sees the item's live labels and state,
+**With `--item`** the run binds a source item and behaves exactly like an
+automatic dispatch of that workflow: it sees the item's live labels and state,
 and side effects (comments, state locks, sub-issues) write back to the source.
-The value is the item's human reference (`CDT-123`, `#1953`) or its cell id — the
-same vocabulary [`apiary restart`](#apiary-restart) accepts. A reference that
-resolves to nothing fails and creates nothing.
+The value is the item's human reference (`PSP-199`, `#1953`) or its cell id — the
+same vocabulary [`apiary restart`](#apiary-restart) accepts, matched
+case-insensitively with a leading `#` ignored.
+
+The item does **not** have to be one apiary is already tracking. A reference it
+has never polled — a ticket outside the source's `filters`, in an excluded state,
+or created since the last tick — is fetched from the source and bound on the
+spot, exactly as a poll would have bound it:
+
+```sh
+apiary dispatch triage --item PSP-199                 # one source: inferred
+apiary dispatch triage --item PSP-199 --source jira   # several: name it
+```
+
+`--source` is optional when exactly one configured source can fetch a single
+item. When several can, apiary asks rather than guesses — fetching a different
+project's `PSP-199` and running a workflow over it is not a mistake anyone
+catches quickly:
+
+```
+Error: dispatch failed: source required: 2 sources could hold it (jira, my-repo)
+  — pass --source to say which
+```
+
+`--source` also disambiguates a reference that exists in more than one source,
+which previously required looking up the cell id by hand.
+
+A reference no source can produce an item for still fails and creates nothing.
+The source that answered is named in the output and on the binding — with Jira
+the key you typed (`PSP-199`) and the cell id it resolved to (the opaque numeric
+issue id) are both reported, since only one of them appears in Jira's UI.
 
 **Without `--item`** the workflow runs standalone on a fresh internal task with no
 source binding. Nothing writes back to a source: comment and state-lock steps are

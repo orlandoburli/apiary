@@ -985,7 +985,10 @@ var ErrAmbiguousRef = errors.New("ambiguous item reference")
 // ever sees: the Jira adapter binds on the opaque numeric issue id, so `apiary
 // restart CDT-123` — the only form a user could reasonably type — failed as an
 // unknown cell while the id that did work appeared nowhere in the UI.
-func (d *Dispatcher) resolveCellRef(ctx context.Context, ref string) (cellID, number string, err error) {
+// sourceID, when set, scopes the lookup to one source: it is how a caller
+// resolves an ErrAmbiguousRef ("PSP-199 exists in two sources") rather than
+// having to find the cell id by hand.
+func (d *Dispatcher) resolveCellRef(ctx context.Context, ref, sourceID string) (cellID, number string, err error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" || d.db == nil {
 		return ref, "", nil
@@ -995,15 +998,26 @@ func (d *Dispatcher) resolveCellRef(ctx context.Context, ref string) (cellID, nu
 	// numbers overlap (GitHub, where both derive from the issue number) must not
 	// take the slower path.
 	if b, err := d.db.SourceBindings().GetBindingBySourceItemID(ctx, ref); err == nil && b != nil {
-		return b.SourceItemID, b.SourceItemNumber, nil
+		if sourceID == "" || b.SourceID == sourceID {
+			return b.SourceItemID, b.SourceItemNumber, nil
+		}
 	}
 
 	bindings, err := d.db.SourceBindings().ListBindingsBySourceItemNumber(ctx, ref)
 	if err != nil {
 		return ref, "", fmt.Errorf("restart %s: looking up item reference: %w", ref, err)
 	}
+	if sourceID != "" {
+		scoped := bindings[:0]
+		for _, b := range bindings {
+			if b.SourceID == sourceID {
+				scoped = append(scoped, b)
+			}
+		}
+		bindings = scoped
+	}
 	if len(bindings) == 0 {
-		return ref, "", nil // not a known reference; assertKnownCell decides
+		return ref, "", nil // not a known reference; the caller decides
 	}
 
 	// Several bindings are fine when they are the same item (one item can be bound
@@ -1018,7 +1032,7 @@ func (d *Dispatcher) resolveCellRef(ctx context.Context, ref string) (cellID, nu
 			opts = append(opts, fmt.Sprintf("%s:%s", b.SourceID, b.SourceItemID))
 		}
 		sort.Strings(opts)
-		return ref, "", fmt.Errorf("%w: %q matches %d items (%s) — restart the cell id directly",
+		return ref, "", fmt.Errorf("%w: %q matches %d items (%s) — name the source, or use the cell id directly",
 			ErrAmbiguousRef, ref, len(distinct), strings.Join(opts, ", "))
 	}
 
@@ -1052,7 +1066,7 @@ func (d *Dispatcher) resolveCellRef(ctx context.Context, ref string) (cellID, nu
 // id; that, and anything else that resolves to nothing, returns ErrUnknownCell
 // and touches nothing.
 func (d *Dispatcher) ForceRestart(ctx context.Context, ref string) (RestartResult, error) {
-	cellID, number, err := d.resolveCellRef(ctx, ref)
+	cellID, number, err := d.resolveCellRef(ctx, ref, "")
 	if err != nil {
 		return RestartResult{CellID: ref}, err
 	}

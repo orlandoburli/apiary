@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
+	"github.com/orlandoburli/apiary/internal/model"
 )
 
 // manualDispatcher wires the queue harness with a source that can also fetch a
@@ -191,7 +194,138 @@ func TestRunWorkflowManual_UnknownWorkflow(t *testing.T) {
 	}
 }
 
-// An item reference that resolves to nothing must not silently degrade into a
+// keyedAdapter resolves a human reference (a Jira-style key) to an item whose
+// own id is different — the case that makes discovery necessary and that
+// fetchCell's substitution guard would otherwise reject.
+type keyedAdapter struct {
+	mutableAdapter
+	id, key string
+	calls   []string
+}
+
+func (a *keyedAdapter) PollTask(_ context.Context, ref string) (model.SourceItem, error) {
+	a.calls = append(a.calls, ref)
+	if ref != a.id && !strings.EqualFold(ref, a.key) {
+		return model.SourceItem{}, fmt.Errorf("issue %q does not exist", ref)
+	}
+	return model.SourceItem{ID: a.id, SourceID: "src", Number: a.key, Title: "Fix the thing", State: "todo"}, nil
+}
+
+// The point of --item PSP-199: a ticket apiary has never polled is fetched from
+// its source and bound on the spot, and the run binds the item the source
+// resolved the key to — not the key itself.
+func TestRunWorkflowManual_DiscoversUnpolledItem(t *testing.T) {
+	ctx := context.Background()
+	d, _, dbc := newQueueDispatcher(t, false)
+	adapter := &keyedAdapter{id: "10042", key: "PSP-199"}
+	d.sources["src"] = adapter
+
+	res, err := d.RunWorkflowManual(ctx, ManualRunRequest{WorkflowID: "triage", ItemRef: "PSP-199"})
+	if err != nil {
+		t.Fatalf("manual run on an unpolled item: %v", err)
+	}
+	if res.CellID != "10042" {
+		t.Errorf("cell = %q, want the id the source resolved the key to (10042)", res.CellID)
+	}
+	if res.Ref != "PSP-199" {
+		t.Errorf("ref = %q, want PSP-199", res.Ref)
+	}
+	if res.SourceID != "src" {
+		t.Errorf("source = %q, want src", res.SourceID)
+	}
+	if res.Standalone {
+		t.Error("Standalone = true; a discovered item must be bound, not run standalone")
+	}
+
+	// It is bound like any polled item, so the next run resolves it from the DB.
+	binding, err := dbc.SourceBindings().GetBindingBySourceItem(ctx, "src", "10042")
+	if err != nil || binding == nil {
+		t.Fatalf("discovered item was not bound: %v", err)
+	}
+	if binding.SourceItemNumber != "PSP-199" {
+		t.Errorf("binding number = %q, want PSP-199", binding.SourceItemNumber)
+	}
+	if got := len(jobsFor(t, d, "triage")); got != 1 {
+		t.Fatalf("discovered run produced %d job(s), want 1", got)
+	}
+}
+
+// Case-insensitively, too — the same courtesy the binding lookup already gives.
+func TestRunWorkflowManual_DiscoveryIsCaseInsensitive(t *testing.T) {
+	ctx := context.Background()
+	d, _, _ := newQueueDispatcher(t, false)
+	d.sources["src"] = &keyedAdapter{id: "10042", key: "PSP-199"}
+
+	res, err := d.RunWorkflowManual(ctx, ManualRunRequest{WorkflowID: "triage", ItemRef: "psp-199"})
+	if err != nil {
+		t.Fatalf("manual run: %v", err)
+	}
+	if res.CellID != "10042" {
+		t.Errorf("cell = %q, want 10042", res.CellID)
+	}
+}
+
+// A known item must not be re-fetched through discovery: the binding already
+// answers, and the substitution guard still applies on that path.
+func TestRunWorkflowManual_KnownItemSkipsDiscovery(t *testing.T) {
+	ctx := context.Background()
+	d, base, dbc := newQueueDispatcher(t, false)
+	adapter := &pollableAdapter{mutableAdapter: *base}
+	d.sources["src"] = adapter
+	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	task := taskForCell(t, dbc, "src", "c1")
+
+	res, err := d.RunWorkflowManual(ctx, ManualRunRequest{WorkflowID: "impl", ItemRef: "c1"})
+	if err != nil {
+		t.Fatalf("manual run: %v", err)
+	}
+	if res.TaskID != task.ID {
+		t.Errorf("task = %q, want the already-bound task %q — discovery created a new one", res.TaskID, task.ID)
+	}
+}
+
+// With several sources able to fetch, guessing could mean running a workflow
+// over some other project's PSP-199. Ask instead.
+func TestRunWorkflowManual_AmbiguousSourceAsksForOne(t *testing.T) {
+	ctx := context.Background()
+	d, _, _ := newQueueDispatcher(t, false)
+	d.cfg.Sources = append(d.cfg.Sources, config.SourceConfig{ID: "other", Type: "fake"})
+	d.sources["src"] = &keyedAdapter{id: "10042", key: "PSP-199"}
+	d.sources["other"] = &keyedAdapter{id: "77", key: "PSP-199"}
+
+	_, err := d.RunWorkflowManual(ctx, ManualRunRequest{WorkflowID: "triage", ItemRef: "PSP-199"})
+	if !errors.Is(err, ErrSourceRequired) {
+		t.Fatalf("error = %v, want ErrSourceRequired", err)
+	}
+	if !strings.Contains(err.Error(), "src") || !strings.Contains(err.Error(), "other") {
+		t.Errorf("error %q does not name the candidate sources", err)
+	}
+
+	// Naming one resolves it, and the named source is the one that answers.
+	res, err := d.RunWorkflowManual(ctx, ManualRunRequest{WorkflowID: "triage", ItemRef: "PSP-199", SourceID: "other"})
+	if err != nil {
+		t.Fatalf("manual run with --source: %v", err)
+	}
+	if res.CellID != "77" || res.SourceID != "other" {
+		t.Errorf("resolved to %s/%s, want other/77", res.SourceID, res.CellID)
+	}
+}
+
+func TestRunWorkflowManual_UnknownSource(t *testing.T) {
+	ctx := context.Background()
+	d, _, _ := newQueueDispatcher(t, false)
+	d.sources["src"] = &keyedAdapter{id: "10042", key: "PSP-199"}
+
+	_, err := d.RunWorkflowManual(ctx, ManualRunRequest{WorkflowID: "triage", ItemRef: "PSP-199", SourceID: "nope"})
+	if !errors.Is(err, ErrUnknownSource) {
+		t.Fatalf("error = %v, want ErrUnknownSource", err)
+	}
+	if jobs, _ := d.db.Queue().ListJobs(ctx, "", 100); len(jobs) != 0 {
+		t.Fatalf("unknown source still enqueued %d job(s)", len(jobs))
+	}
+}
+
+// An item reference no source can produce must not silently degrade into a
 // standalone run against an empty target (the mis-targeting class of #377).
 func TestRunWorkflowManual_UnknownItem(t *testing.T) {
 	ctx := context.Background()

@@ -20,9 +20,10 @@ import (
 
 func newDispatchCmd() *cobra.Command {
 	var (
-		item   string
-		title  string
-		inputs []string
+		item     string
+		sourceID string
+		title    string
+		inputs   []string
 	)
 
 	cmd := &cobra.Command{
@@ -39,11 +40,18 @@ A manual run skips every gate the poll loop applies:
     SECOND concurrent instance
   • ` + "`once: true`" + `, and the consecutive-failure cap (settings.max_attempts)
 
-With --item the run binds an existing source item and behaves exactly like an
-automatic dispatch of that workflow: the same live labels and state, and side
-effects (comments, state locks, sub-issues) write back to the source. <item> is
-the source item id or its human reference (CDT-123, #1953), the same vocabulary
+With --item the run binds a source item and behaves exactly like an automatic
+dispatch of that workflow: the same live labels and state, and side effects
+(comments, state locks, sub-issues) write back to the source. <item> is the
+source item id or its human reference (PSP-199, #1953), the same vocabulary
 ` + "`apiary restart`" + ` accepts.
+
+The item does not have to be one apiary is already tracking. A reference it has
+never polled — a ticket outside the source's filters, or created since the last
+tick — is fetched from the source and bound on the spot. Use --source to say
+which source to ask; with a single configured source it is optional, and with
+several apiary asks rather than guess. --source also disambiguates a reference
+that exists in more than one source.
 
 Without --item the workflow runs standalone on a fresh internal task with no
 source binding. Nothing writes back to a source: comment and state-lock steps
@@ -74,8 +82,15 @@ steps read as ${{ input.<key> }}.`,
 			client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
 
 			url := "http://apiary/workflows/" + neturl.PathEscape(workflowID) + "/run"
+			query := neturl.Values{}
 			if item != "" {
-				url += "?item=" + neturl.QueryEscape(item)
+				query.Set("item", item)
+			}
+			if sourceID != "" {
+				query.Set("source", sourceID)
+			}
+			if len(query) > 0 {
+				url += "?" + query.Encode()
 			}
 			resp, err := client.Post(url, "application/json", bytes.NewReader(body))
 			if err != nil {
@@ -97,7 +112,14 @@ steps read as ${{ input.<key> }}.`,
 				return nil
 			}
 
-			fmt.Printf("✓ Started workflow %s on %s\n", res.WorkflowID, res.Label())
+			target := res.Label()
+			if res.SourceID != "" {
+				// Name the source even when it was inferred: with --item on an item
+				// apiary had not seen, which source answered is the one thing the
+				// caller cannot check from the reference alone.
+				target += " in " + res.SourceID
+			}
+			fmt.Printf("✓ Started workflow %s on %s\n", res.WorkflowID, target)
 			if res.Concurrent {
 				fmt.Printf("  ! this workflow was already running on the task — a second instance is now live\n")
 			}
@@ -112,7 +134,8 @@ steps read as ${{ input.<key> }}.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&item, "item", "", "source item to run against (item id or reference like CDT-123, #1953); omit to run standalone")
+	cmd.Flags().StringVar(&item, "item", "", "source item to run against (item id or reference like PSP-199, #1953); omit to run standalone")
+	cmd.Flags().StringVar(&sourceID, "source", "", "source the --item belongs to; optional with one configured source, required when several could hold it")
 	cmd.Flags().StringVar(&title, "title", "", "title for the task created by a standalone run")
 	cmd.Flags().StringArrayVar(&inputs, "input", nil, "key=value passed to a standalone run's task input, readable as ${{ input.<key> }} (repeatable)")
 	return cmd
