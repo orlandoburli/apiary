@@ -149,3 +149,70 @@ func TestSourceCaps_SkippedWhenHookNil(t *testing.T) {
 	errsNotContain(t, cfg.Validate(), "capability")
 	errsNotContain(t, cfg.Validate(), "no configured source supports")
 }
+
+// A wait_for ci step nested inside a parallel: group needs the CI capability
+// just like a top-level one. Before #425 the lint walked only the top-level
+// step list, so a Jira-sourced workflow with a `wait_for {kind: ci}` inside a
+// parallel group validated clean and failed at runtime instead.
+func TestSourceCaps_CIWaitNestedInParallelIsLinted(t *testing.T) {
+	withSourceCaps(t)
+
+	cfg := capsConfig(
+		[]config.SourceConfig{{ID: "tickets", Type: "alerts"}},
+		config.WorkflowConfig{
+			ID: "impl",
+			Steps: []config.StepConfig{
+				{ID: "implement", Agent: "eng"},
+				{ID: "gate", ParallelSteps: []config.StepConfig{
+					{ID: "review", Agent: "eng"},
+					{ID: "await-ci", Type: config.StepTypeWaitFor,
+						WaitFor: &config.WaitForConfig{Kind: config.WaitKindCI}},
+				}},
+			},
+		},
+	)
+	errs := cfg.Validate()
+	errsContain(t, errs, `step "await-ci" (wait_for ci)`)
+	errsContain(t, errs, "no configured source supports")
+}
+
+// The same lint reaches a for_each body.
+func TestSourceCaps_CIWaitNestedInForeachIsLinted(t *testing.T) {
+	withSourceCaps(t)
+
+	cfg := capsConfig(
+		[]config.SourceConfig{{ID: "tickets", Type: "alerts"}},
+		config.WorkflowConfig{
+			ID: "impl",
+			Steps: []config.StepConfig{
+				{ID: "design", Agent: "eng"},
+				{ID: "each", ForEachExpr: "${{ design.tasks }}", As: "task", SubSteps: []config.StepConfig{
+					{ID: "await-ci", Type: config.StepTypeWaitFor,
+						WaitFor: &config.WaitForConfig{Kind: config.WaitKindCI}},
+				}},
+			},
+		},
+	)
+	errsContain(t, cfg.Validate(), `step "await-ci" (wait_for ci)`)
+}
+
+// A supported source keeps a nested wait_for ci valid.
+func TestSourceCaps_CIWaitNestedInParallelAcceptedWhenSupported(t *testing.T) {
+	withSourceCaps(t)
+
+	cfg := capsConfig(
+		[]config.SourceConfig{{ID: "tickets", Type: "ticket"}},
+		config.WorkflowConfig{
+			ID: "impl",
+			Steps: []config.StepConfig{
+				{ID: "implement", Agent: "eng"},
+				{ID: "gate", ParallelSteps: []config.StepConfig{
+					{ID: "review", Agent: "eng"},
+					{ID: "await-ci", Type: config.StepTypeWaitFor,
+						WaitFor: &config.WaitForConfig{Kind: config.WaitKindCI}},
+				}},
+			},
+		},
+	)
+	errsNotContain(t, cfg.Validate(), "wait_for ci")
+}

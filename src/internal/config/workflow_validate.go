@@ -596,7 +596,42 @@ func (c *Config) validateParallelStep(
 		childIDs[child.ID] = true
 	}
 	for j, child := range s.SubSteps {
+		errs = append(errs, validateParallelChildKind(sctx, child)...)
 		errs = append(errs, c.validateStep(sctx, j, child, wf, agentIDs, childIDs, wfByID)...)
+	}
+
+	return errs
+}
+
+// validateParallelChildKind rejects the child kinds a parallel group cannot
+// run. The group executes each child by its own type, but only agent and
+// wait_for children are supported: an approval child would need a second,
+// independent park regime inside a group that is already parked as a unit, and
+// a nested group (parallel:/steps:/for_each: inside a parallel child) is never
+// lowered — the lowering pass flattens only leaf children, so the node would
+// reach the engine with its authored v2 fields intact and run as an agent step.
+//
+// Before this check both cases failed at runtime in milliseconds with no usable
+// diagnostic, and under the default join: all they failed their passing
+// siblings with them (#425).
+func validateParallelChildKind(sctx string, child StepConfig) []error {
+	var errs []error
+	cctx := fmt.Sprintf("%s: child %q", sctx, child.ID)
+
+	switch child.StepType() {
+	case StepTypeAgent, StepTypeWaitFor:
+	default:
+		errs = append(errs, fmt.Errorf("%s: a parallel group cannot contain a %s step (only agent and wait_for children are supported)",
+			cctx, child.StepType()))
+	}
+
+	switch {
+	case len(child.ParallelSteps) > 0:
+		errs = append(errs, fmt.Errorf("%s: nested parallel: groups are not supported", cctx))
+	case child.ForEachExpr != "":
+		errs = append(errs, fmt.Errorf("%s: for_each: is not supported inside a parallel group", cctx))
+	case len(child.SubSteps) > 0 && child.Type == "":
+		errs = append(errs, fmt.Errorf("%s: nested steps: groups are not supported inside a parallel group", cctx))
 	}
 
 	return errs

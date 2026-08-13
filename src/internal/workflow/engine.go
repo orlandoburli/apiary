@@ -485,8 +485,10 @@ func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool
 		// matching waiting state so the right rehydration path picks it up after a
 		// restart (approval_waiting → rehydrateParkedApprovals, waiting →
 		// rehydrateParkedWaits).
+		// (A parallel group parked on a wait_for child counts as a wait park —
+		// waitStepConfig resolves the governing step for both shapes, #425.)
 		waitState := db.InstanceStateApprovalWaiting
-		if r.byID[r.waitingStep].StepType() == config.StepTypeWaitFor {
+		if _, isWait := r.waitStepConfig(); isWait {
 			waitState = db.InstanceStateWaiting
 		}
 		_ = e.store.UpdateWorkflowInstanceState(ctx, r.instID, waitState)
