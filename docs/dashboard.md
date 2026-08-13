@@ -69,6 +69,7 @@ The dashboard has four tabs along the top. Use the keyboard to move:
 | `PgUp` / `PgDn`             | Page up / down                                    |
 | `Ctrl+U` / `Ctrl+D` / `Space` | Alternative page up / down                      |
 | `r`                          | Refresh now                                       |
+| `W` (Shift+W)               | [Start a workflow manually](#starting-a-workflow-manually) |
 | `q` / `Ctrl+C`              | Quit                                              |
 
 The active tab refreshes on its own every couple of seconds. The footer shows
@@ -114,6 +115,7 @@ From the list you can drill into the selected task:
 | `Enter` or `l`         | **Logs** — the per-task log lines for that run     |
 | `o`                    | **Open** the task in your browser (its source URL) |
 | `R` (Shift+R)          | **Force restart** — cancel and re-dispatch the task (with confirmation) |
+| `W` (Shift+W)          | **Start a workflow** on the task, ignoring triggers and guards |
 | `C`                    | **Clear logs** — delete all logs for the task (with confirmation) |
 | `Esc` / `Backspace` / `h` / `←` | Back to the list                          |
 
@@ -182,6 +184,29 @@ genuinely running is not started a second time.
 
 Pressing **`C`** on a selected task works the same way — confirm with `y` / `Y`
 to delete the task's logs and execution records, or any other key to cancel.
+
+#### Starting a workflow manually
+
+**`W`** (Shift+W) opens a picker listing every configured workflow. `↑` / `↓`
+select, `Enter` starts, `Esc` cancels. It works from any tab.
+
+Where `R` re-runs *whatever matches* an item, `W` runs *the workflow you name* —
+matched or not. It skips the trigger's `match` block, exclusive suppression, the
+live-instance guard, `once`, and the failure cap. Starting a workflow that is
+already running on the task is allowed: the banner says so, and you get a second
+concurrent instance.
+
+The header of the picker names the target before you commit to it:
+
+- **`item <id>`** — the task focused when you pressed `W`. The run binds it and
+  writes back to the source like any other dispatch.
+- **`standalone — no source item`** — no task was focused, or you pressed `s` to
+  detach from it. The workflow runs on a fresh internal task; comments, state
+  locks and sub-issues are no-ops for that run.
+
+The result appears as the usual banner, e.g. `✓ Started triage on CDT-123 (10042)
+(bypassed triggers and guards)`. Use [`apiary dispatch`](cli.md#apiary-dispatch)
+for the same thing from a shell, where you can also pass `--input`.
 
 #### Watching the live conversation (debug mode)
 

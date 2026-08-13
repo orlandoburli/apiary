@@ -27,6 +27,14 @@ type Model struct {
 	confirmAction string // "restart" or "clear" or "stop" when awaiting confirmation
 	confirmTaskID string
 
+	// Manual workflow picker (W). Unlike confirmAction's yes/no prompt this one
+	// selects among the configured workflows, then starts the chosen one on the
+	// task that was focused when it opened — or standalone, with no source item.
+	pickerActive     bool
+	pickerIdx        int
+	pickerTaskID     string // focused task at open time; empty means nothing was focused
+	pickerStandalone bool   // run with no source item even though one is focused
+
 	notice      string    // one-line result banner for the last IPC action
 	noticeIsErr bool      // render the banner as an error
 	noticeUntil time.Time // banner expiry; zero means no banner

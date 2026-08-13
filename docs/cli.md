@@ -205,12 +205,58 @@ routing without starting an agent.
 
 ### `apiary dispatch`
 
-Manually dispatch a task, bypassing routing. Useful for testing a
-configuration.
+Start one named workflow right now, whether or not anything would have triggered
+it. Same action as `W` in the dashboard.
 
 ```sh
-apiary dispatch --cell <source-id>/<task-id> --worker <worker-id>
+apiary dispatch triage --item CDT-123     # run `triage` on an existing item
+apiary dispatch nightly-audit             # run standalone, with no source item
+apiary dispatch report --input scope=q3   # standalone, with structured input
 ```
+
+A manual run skips **every** gate the poll loop applies:
+
+| Skipped | Meaning |
+|---------|---------|
+| the trigger's `match` block | states, labels, types, `title_regex`, source — the item does not have to look like something the trigger would select |
+| exclusive-trigger suppression | a higher-priority `exclusive: true` trigger does not claim the task away |
+| the live-instance guard | a workflow already running on the task starts a **second concurrent instance** |
+| `once: true` | a spent one-shot workflow runs again |
+| the consecutive-failure cap | `settings.max_attempts` does not block the run |
+
+Every bypass is printed, so none of them is silent:
+
+```
+✓ Started workflow triage on CDT-123 (10042)
+  ! this workflow was already running on the task — a second instance is now live
+  ! bypassed guard: trigger match (state/labels/filters)
+  ! bypassed guard: exclusive trigger suppression
+  ! bypassed guard: active instance / in-flight
+  ! bypassed guard: once
+  ! bypassed guard: consecutive-failure cap
+  → follow it with: apiary instances
+```
+
+**With `--item`** the run binds an existing source item and behaves exactly like
+an automatic dispatch of that workflow: it sees the item's live labels and state,
+and side effects (comments, state locks, sub-issues) write back to the source.
+The value is the item's human reference (`CDT-123`, `#1953`) or its cell id — the
+same vocabulary [`apiary restart`](#apiary-restart) accepts. A reference that
+resolves to nothing fails and creates nothing.
+
+**Without `--item`** the workflow runs standalone on a fresh internal task with no
+source binding. Nothing writes back to a source: comment and state-lock steps are
+no-ops and sub-issues cannot be materialized. Pass `--input key=value` (repeatable)
+for values the steps read as `${{ input.<key> }}`, and `--title` to name the task.
+
+This is what makes a **trigger-less workflow** useful: a workflow with no
+`trigger:` block never starts on its own — `apiary validate` warns about exactly
+that — but `apiary dispatch <id>` runs it on demand.
+
+Because guards are skipped rather than overridden, nothing in the daemon prevents
+two runs of the same workflow on the same task from racing. Where that matters —
+steps that mutate the same branch, comment, or item state — start the second run
+after the first settles.
 
 ### `apiary restart`
 

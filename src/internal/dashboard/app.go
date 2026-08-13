@@ -564,6 +564,24 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// The workflow picker owns every key while it is open, like the confirm modal.
+	if a.model.pickerActive {
+		return a.handleWorkflowPickerKey(key)
+	}
+
+	// Start a workflow manually (Shift+W): pick one, run it now regardless of
+	// triggers, guards, or whether it is already running.
+	if key == "W" {
+		if len(a.pickerWorkflows()) == 0 {
+			return a, noticeCmd("No workflows are configured", true)
+		}
+		a.model.pickerActive = true
+		a.model.pickerIdx = 0
+		a.model.pickerStandalone = false
+		a.model.pickerTaskID, _ = a.focusedTaskID()
+		return a, nil
+	}
+
 	// Force-restart the focused task: cancel and re-dispatch (Shift+R).
 	if key == "R" {
 		if id, ok := a.focusedTaskID(); ok {
@@ -2971,6 +2989,9 @@ func (a *App) View() string {
 	if a.model.confirmAction != "" {
 		view = a.renderConfirmModal(view)
 	}
+	if a.model.pickerActive {
+		view = a.renderWorkflowPicker(view)
+	}
 	return view
 }
 
@@ -5027,12 +5048,12 @@ func (a *App) footerKeys() []fkey {
 				return append(keys, fkey{"-/+", "split"}, fkey{"r", "refresh"}, fkey{"X", "stop"}, fkey{"R", "restart"}, fkey{"esc", "back"}, fkey{"q", "quit"})
 			}
 		}
-		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
+		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"W", "run wf"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
 	case "Workflows":
 		if wt := a.model.workflowsTab; wt != nil && wt.Focus == WorkflowsViewSteps {
 			return []fkey{{"↑/↓", "step"}, {"esc/←", "back"}, {"tab", "next tab"}, {"q", "quit"}}
 		}
-		return []fkey{{"↑/↓", "workflow"}, {"enter/→", "steps"}, {"tab", "next tab"}, {"q", "quit"}}
+		return []fkey{{"↑/↓", "workflow"}, {"enter/→", "steps"}, {"W", "run now"}, {"tab", "next tab"}, {"q", "quit"}}
 	case "Agents":
 		if ag := a.model.agentsTab; ag != nil {
 			switch ag.View {
@@ -5064,7 +5085,7 @@ func (a *App) footerKeys() []fkey {
 		}
 		return []fkey{{"w", wrap}, {"←/→", "scroll"}, {"↑/↓", "lines"}, {"pgup/dn", "page"}, {"home/end", "ends"}, {"tab", "switch"}, {"q", "quit"}}
 	default: // Overview
-		return []fkey{{"tab", "next"}, {"⇧tab", "prev"}, {"r", "refresh"}, {"q", "quit"}}
+		return []fkey{{"tab", "next"}, {"⇧tab", "prev"}, {"W", "run wf"}, {"r", "refresh"}, {"q", "quit"}}
 	}
 }
 

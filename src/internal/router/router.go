@@ -116,6 +116,31 @@ func firstAgentStep(wf config.WorkflowConfig) string {
 	return wf.ID
 }
 
+// ManualMatch builds the Match a manual run dispatches with: the same synthetic
+// route New derives from a trigger — id = workflow id, agent = first agent step —
+// but for any workflow, including one with no trigger at all, which New skips
+// entirely (see the loop in New).
+//
+// No matching happens here by design. A manual run names the workflow it wants;
+// whether the target looks like something the trigger would have selected is
+// exactly the question it exists to bypass. The Match still carries the trigger's
+// Match and Priority so logs, queue priority and requirement lookups read the
+// same as an automatic dispatch of the same workflow.
+//
+// Returns false only for a workflow with no id, which cannot be resolved back to
+// a definition by resolveWorkflow and so must never be dispatched.
+func ManualMatch(wf config.WorkflowConfig) (Match, bool) {
+	if wf.ID == "" {
+		return Match{}, false
+	}
+	route := config.RouteConfig{ID: wf.ID, Agent: firstAgentStep(wf)}
+	if wf.Trigger != nil {
+		route.Priority = wf.Trigger.Priority
+		route.Match = wf.Trigger.Match
+	}
+	return Match{Route: route}, true
+}
+
 // Route evaluates all rules against the SourceItem and returns the first match.
 // Returns (zero, false) if no rule matches.
 func (r *Router) Route(item model.SourceItem) (Match, bool) {

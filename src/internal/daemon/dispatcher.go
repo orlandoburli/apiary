@@ -1655,7 +1655,10 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(d.WorkflowList())
 	})
-	// MANUAL_RUN_ROUTE_PLACEHOLDER
+	// POST /workflows/{id}/run — start one named workflow on demand, bypassing
+	// every trigger and pre-dispatch guard. Registered on the subtree so the
+	// exact-match /workflows listing above keeps its own handler.
+	mux.HandleFunc("/workflows/", d.manualRunHandler(ctx))
 	mux.HandleFunc("/instances/stop/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
