@@ -12,6 +12,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
 	"github.com/orlandoburli/apiary/internal/model"
+	"github.com/orlandoburli/apiary/internal/source"
 )
 
 // errTest is a sentinel error for tests that script a failure.
@@ -193,6 +194,8 @@ type fakeSide struct {
 	hooks          []config.OnComplete
 	materialized   []model.InternalTask
 	materializeErr error
+	linkedPRs      []source.PullRequestRef
+	linkPRErr      error
 }
 
 func (f *fakeSide) StateLock(_ context.Context, _ model.InternalTask, _ []model.SourceBinding) error {
@@ -212,6 +215,13 @@ func (f *fakeSide) MaterializeChild(_ context.Context, _ model.InternalTask, _ [
 		return f.materializeErr
 	}
 	f.materialized = append(f.materialized, child)
+	return nil
+}
+func (f *fakeSide) LinkPullRequest(_ context.Context, _ model.InternalTask, _ []model.SourceBinding, pr source.PullRequestRef) error {
+	if f.linkPRErr != nil {
+		return f.linkPRErr
+	}
+	f.linkedPRs = append(f.linkedPRs, pr)
 	return nil
 }
 

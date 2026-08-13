@@ -70,7 +70,13 @@ visible to the API user and logs a warning.
   whitespace are rewritten with `-` (e.g. `needs review` → `needs-review`).
 - **No CI polling.** `wait_for` steps with `kind: ci` need a source that can
   see pull requests; Jira issues have no PR mapping, so host CI waits on a
-  GitHub source instead.
+  GitHub source instead. `apiary validate` rejects such a step against a
+  Jira-only config, so this surfaces at config time rather than at runtime.
+- **PRs link from the workflow.** Because the adapter cannot enumerate a task's
+  pull requests, the dashboard's `p` shortcut has nothing to open unless the
+  workflow reports the PR itself: point
+  [`pull_request_from`](workflows.md#linking-a-pr-pull_request_from) at the
+  output field carrying the PR URL on the step that opens it.
 - **Dependency waits work.** `wait_for` steps with
   [`kind: dependency`](workflows.md#wait_for-steps-waiting-on-blockers-kind-dependency)
   read the inward side of the issue's `Blocks` links (*"is blocked by"*;

@@ -248,6 +248,16 @@ type StepConfig struct {
 	// sub-issue carries the spawn request's labels, so the normal poll→route loop
 	// picks it up and dispatches the matching workflow.
 	Materialize string `yaml:"materialize,omitempty"`
+	// PullRequestFrom names a field of this step's structured output holding the
+	// URL of a pull request the step opened (e.g. `pull_request_from: pr_url`).
+	// The engine parses that URL and links the PR to the task, which is what the
+	// dashboard's "open PR" shortcut reads.
+	//
+	// It exists because PR discovery is otherwise a GitHub-source privilege: the
+	// PRs of a task sourced from Jira or Plane are invisible, since those
+	// adapters cannot enumerate them. Declaring the field the agent already
+	// emits makes the link work regardless of source type (#425).
+	PullRequestFrom string `yaml:"pull_request_from,omitempty"`
 	// Env is the step-scope environment overlay. It is the highest-precedence
 	// explicit scope: it overrides workflow.env and agent.env for the same key.
 	Env map[string]string `yaml:"env,omitempty"`

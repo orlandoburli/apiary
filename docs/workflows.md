@@ -234,6 +234,7 @@ steps:
 | `on_missing_output` | What to do when `output` is declared but not satisfied: `warn` (default), `fail`, `ignore`. Under `warn` the step still passes, but a `reject_when` gate reading one of this step's own `memory.write` keys fails closed — see [review loops](#reject_when--on_reject--review-loops). `ignore` opts out of both |
 | `memory` | Which output fields to persist, and whether to inject memory — see [Workflow memory](#workflow-memory) |
 | `publish` / `spawn` | Control agent-emitted write-backs and child tasks — see [Tasks & fan-out](tasks-and-fanout.md) |
+| `pull_request_from` | Name of an output field holding the URL of a PR this step opened; links that PR to the task — see [Linking a PR](#linking-a-pr-pull_request_from) |
 | `env` | Step-scope environment variables (highest precedence) |
 | `idempotent` | Mark the step safe to re-run on [resume](#resuming-instances) |
 
@@ -246,6 +247,44 @@ APIARY_OUTPUT: {"complexity": "high", "approach": "refactor the dispatcher"}
 
 Apiary extracts and validates the payload against the schema. Validated
 fields listed in `memory.write` become workflow memory for later steps.
+
+#### Linking a PR (`pull_request_from`)
+
+Apiary links pull requests to a task so features like the dashboard's `p`
+shortcut ("open the task's PR") have something to open. It discovers them
+through the source — which only works for a source that can enumerate the PRs
+of one of its items. A GitHub source can; Jira and Plane cannot, so a task from
+those sources shows no PRs at all, however many its agents opened.
+
+`pull_request_from` closes that gap from the workflow side: point it at the
+output field carrying the PR URL, and the step registers its own PR.
+
+```yaml
+- id: implement
+  agent: engineer
+  prompt: "Implement the change and open a PR."
+  output:
+    type: object
+    properties:
+      pr_url: {type: string}
+    required: [pr_url]
+  pull_request_from: pr_url
+```
+
+- The URL is parsed for the PR number; GitHub, Codeberg/Forgejo, GitLab and
+  Bitbucket link shapes are recognised, self-hosted hosts included.
+- Re-reporting the same PR (a loop-back that re-runs the step) refreshes the
+  existing link instead of adding a duplicate. The most recently linked PR is
+  the one the shortcut opens.
+- Best-effort by design: a step that opened no PR simply leaves the field
+  empty, and a URL that cannot be parsed is logged and skipped — neither fails
+  a step whose real work succeeded. A failed step's PR is never linked.
+- `apiary validate` rejects a `pull_request_from` naming a field the step's
+  `output` schema does not declare.
+
+This does **not** enable `wait_for {kind: ci}` on those sources: polling check
+runs needs a source adapter that can talk to the forge, which is a separate
+capability from knowing a PR's URL.
 
 ### Workflow memory
 
@@ -357,6 +396,31 @@ Children run concurrently; `join` decides the group's outcome:
   expression that cannot be evaluated at runtime fails the parallel step.
   Note: expression accessors cannot reference child ids containing hyphens —
   use `snake_case` ids for children you test in a join expression.
+
+**Which children are allowed.** A group runs `agent` and `wait_for` children.
+Anything else — an `approval`, a `for_each:`, or a nested group — is rejected by
+`apiary validate`.
+
+A `wait_for` child parks the whole group until its wait resolves: the children
+that already finished are remembered, so a re-check re-polls only the wait and
+never re-runs a sibling that passed (this survives daemon restarts, like any
+other park). A group whose `join` is already decided by the children that
+finished does not wait at all — under `join: all` a failed review fails the
+group immediately instead of sitting on a two-hour CI budget.
+
+```yaml
+- id: gate
+  parallel:
+    - id: review
+      agent: reviewer
+      prompt: "Review the PR."
+    - id: await_ci
+      type: wait_for
+      wait_for:
+        kind: ci
+        max_duration: 2h
+  join: all
+```
 
 #### `for_each:` — iteration
 
@@ -561,6 +625,11 @@ How it works:
 
 - The PR is discovered through the issue's timeline (a PR that references
   the issue), so the agent just needs to open a PR that links the task.
+- `kind: ci` needs a source that can poll check runs (GitHub today). Against a
+  source that cannot — Jira, Plane, an alert source — `apiary validate` rejects
+  the step at config time, wherever it sits, including inside a `parallel:`
+  group. See [linking a PR by hand](#linking-a-pr-pull_request_from) for what
+  still works on those sources.
 - Each poll records a row of history — status, PR URL, per-check detail —
   which the dashboard shows in the task's detail view, so a long CI wait is
   fully auditable.

@@ -750,6 +750,21 @@ func (s *wfSideEffects) PostComment(ctx context.Context, task model.InternalTask
 	return nil
 }
 
+// LinkPullRequest persists a PR a workflow step reported against the task. It
+// is attributed to the first binding's source — the task's primary source item,
+// which is what the dashboard groups PRs under.
+func (s *wfSideEffects) LinkPullRequest(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, pr source.PullRequestRef) error {
+	if s.d.db == nil || len(bindings) == 0 {
+		return nil
+	}
+	return s.d.db.UpsertTaskPullRequest(ctx, task.ID, db.TaskPullRequest{
+		SourceID: bindings[0].SourceID,
+		PRNumber: pr.Number,
+		PRURL:    pr.URL,
+		PRState:  pr.State,
+	})
+}
+
 func (s *wfSideEffects) ApplyHook(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, hook config.OnComplete) error {
 	for _, b := range bindings {
 		adapter := s.d.sources[b.SourceID]

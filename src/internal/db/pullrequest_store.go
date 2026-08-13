@@ -44,6 +44,49 @@ func (c *Client) ReplaceTaskPullRequests(ctx context.Context, taskID, sourceID s
 	return tx.Commit()
 }
 
+// UpsertTaskPullRequest links one pull request to a task, keyed by
+// (task_id, source_id, pr_number): a PR already linked has its URL and state
+// refreshed instead of being duplicated, so a step that re-runs (a loop-back
+// after a red CI) never stacks up rows for the same PR.
+//
+// Unlike ReplaceTaskPullRequests this is additive — it is fed by workflow steps
+// reporting the PR they opened (pull_request_from), one at a time, rather than
+// by a source listing that knows the complete set. New rows go to the end of
+// the seq order, so the newest PR stays the one the dashboard opens.
+func (c *Client) UpsertTaskPullRequest(ctx context.Context, taskID string, pr TaskPullRequest) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE task_pull_requests SET pr_url = ?, pr_state = COALESCE(?, pr_state)
+		WHERE task_id = ? AND source_id = ? AND pr_number = ?
+	`, pr.PRURL, nullStr(pr.PRState), taskID, pr.SourceID, pr.PRNumber)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		return tx.Commit()
+	}
+
+	var nextSeq int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(seq)+1, 0) FROM task_pull_requests WHERE task_id = ?`,
+		taskID).Scan(&nextSeq); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO task_pull_requests
+		  (id, task_id, source_id, pr_number, pr_url, pr_state, seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, newID(), taskID, pr.SourceID, pr.PRNumber, pr.PRURL, nullStr(pr.PRState), nextSeq); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ListTaskPullRequests returns all PRs linked to a task across sources, ordered
 // oldest first (seq ASC). The tail is the most recent PR — what the dashboard's
 // "open PR" shortcut opens.

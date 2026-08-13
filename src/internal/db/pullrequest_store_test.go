@@ -84,3 +84,63 @@ func TestTaskPullRequests_PerSourceIsolation(t *testing.T) {
 		t.Fatalf("got %d rows, want 2 (one per source)", len(got))
 	}
 }
+
+// A workflow step reporting the PR it opened links it additively, and a
+// re-reported PR is refreshed rather than duplicated (#425).
+func TestTaskPullRequests_UpsertIsAdditiveAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+
+	if err := c.UpsertTaskPullRequest(ctx, "task1",
+		TaskPullRequest{SourceID: "jira", PRNumber: 42, PRURL: "https://gh/pr/42"}); err != nil {
+		t.Fatalf("upsert 1: %v", err)
+	}
+	// Same PR again (a loop-back re-ran the step): refreshed in place.
+	if err := c.UpsertTaskPullRequest(ctx, "task1",
+		TaskPullRequest{SourceID: "jira", PRNumber: 42, PRURL: "https://gh/pr/42", PRState: "open"}); err != nil {
+		t.Fatalf("upsert 2: %v", err)
+	}
+	// A second, different PR on the same task.
+	if err := c.UpsertTaskPullRequest(ctx, "task1",
+		TaskPullRequest{SourceID: "jira", PRNumber: 43, PRURL: "https://gh/pr/43"}); err != nil {
+		t.Fatalf("upsert 3: %v", err)
+	}
+
+	got, err := c.ListTaskPullRequests(ctx, "task1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want 2 (the re-reported PR must not duplicate): %+v", len(got), got)
+	}
+	if got[0].PRNumber != 42 || got[0].PRState != "open" {
+		t.Errorf("first row = %+v, want PR 42 in state open", got[0])
+	}
+	// The newest link is the tail — what the dashboard's (p) shortcut opens.
+	if last := got[len(got)-1]; last.PRNumber != 43 {
+		t.Errorf("tail = %d, want 43", last.PRNumber)
+	}
+}
+
+// Upserted links coexist with a source listing's rows for another source.
+func TestTaskPullRequests_UpsertDoesNotDisturbOtherSources(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+
+	if err := c.ReplaceTaskPullRequests(ctx, "task1", "github",
+		[]TaskPullRequest{{SourceID: "github", PRNumber: 1, PRURL: "https://gh/pr/1"}}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if err := c.UpsertTaskPullRequest(ctx, "task1",
+		TaskPullRequest{SourceID: "jira", PRNumber: 42, PRURL: "https://gh/pr/42"}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	got, err := c.ListTaskPullRequests(ctx, "task1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want 2: %+v", len(got), got)
+	}
+}

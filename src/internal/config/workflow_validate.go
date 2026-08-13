@@ -270,6 +270,12 @@ func (c *Config) validateStep(
 	// lowering on every step), so lint here rather than in a per-type validator.
 	errs = append(errs, lintStepExprs(sctx, s)...)
 
+	// pull_request_from reads the step's structured output, which only an agent
+	// step produces.
+	if s.PullRequestFrom != "" && s.StepType() != StepTypeAgent {
+		errs = append(errs, fmt.Errorf("%s: pull_request_from is only valid on an agent step", sctx))
+	}
+
 	// on_conflict applies to any step type, so validate it here rather than in a
 	// per-type validator. It is only meaningful on a wait_for step (the sole
 	// producer of a conflict) and otherwise mirrors on_fail (goto + max_retries).
@@ -306,6 +312,14 @@ func (c *Config) validateAgentStep(sctx string, s StepConfig, agentIDs, stepIDs 
 	case "", OnMissingOutputWarn, OnMissingOutputFail, OnMissingOutputIgnore:
 	default:
 		errs = append(errs, fmt.Errorf("%s: invalid on_missing_output %q (want warn|fail|ignore)", sctx, s.OnMissingOutput))
+	}
+
+	// pull_request_from must name a field the step actually emits, otherwise the
+	// PR link silently never appears.
+	if s.PullRequestFrom != "" && s.OutputSchema != nil {
+		if _, declared := s.OutputSchema.Properties[s.PullRequestFrom]; !declared {
+			errs = append(errs, fmt.Errorf("%s: pull_request_from references %q, which the step's output schema does not declare", sctx, s.PullRequestFrom))
+		}
 	}
 
 	switch s.Spawn {
