@@ -32,13 +32,17 @@ func (e *Engine) ParkedWaits() []ParkedWait {
 	defer e.mu.Unlock()
 	out := make([]ParkedWait, 0, len(e.parked))
 	for id, r := range e.parked {
-		if r.byID[r.waitingStep].StepType() != config.StepTypeWaitFor {
+		// Step is the wait_for step to re-check: the parked node itself, or the
+		// wait_for child of a parked parallel group (#425). Approval parks share
+		// the parked set and resolve to no wait step — skipped here.
+		waitStep, ok := r.waitStepConfig()
+		if !ok {
 			continue
 		}
 		out = append(out, ParkedWait{
 			InstanceID: id,
 			Task:       r.task,
-			Step:       r.byID[r.waitingStep],
+			Step:       waitStep,
 			Deadline:   r.waitDeadline,
 			AgentID:    representativeAgent(r.wf),
 		})
@@ -108,12 +112,12 @@ func (e *Engine) RecheckWait(ctx context.Context, instanceID string) (terminal b
 		e.mu.Unlock()
 		return false
 	}
-	step := r.byID[r.waitingStep]
+	step, isWait := r.waitStepConfig()
 	sourceID, itemID := r.cell.SourceID, r.cell.ID
 	deadline := r.waitDeadline
 	e.mu.Unlock()
 
-	if step.StepType() != config.StepTypeWaitFor {
+	if !isWait {
 		return false
 	}
 	res, _ := e.RunWaitStep(ctx, instanceID, step, sourceID, itemID, deadline)
@@ -144,7 +148,10 @@ func (e *Engine) WakeWait(ctx context.Context, instanceID string) {
 
 	step := r.waitingStep
 	r.waitingStep = ""
-	r.state[step] = stPending // re-arm the wait_for step for re-dispatch
+	// For a parked parallel group the waiting child is re-derived on the next
+	// pass; its finished siblings stay memoized in r.parallelDone.
+	r.waitingChild = ""
+	r.state[step] = stPending // re-arm the wait_for (or parallel) step for re-dispatch
 
 	_ = e.store.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateRunning)
 	outcome := e.driveDAG(ctx, r)
@@ -181,13 +188,15 @@ func (e *Engine) RehydrateWait(ctx context.Context, instID string, wf config.Wor
 	r := e.initDAG(instID, wf, task, bindings, nil, 0)
 	e.restoreCachedSteps(r, priorSteps)
 
-	stepID, ok := r.firstRunnableWait()
+	stepID, childID, ok := r.firstRunnableWait()
 	if !ok {
 		return ErrNoWaitStep
 	}
 	r.state[stepID] = stWaiting
 	r.waitingStep = stepID
-	if pc := r.byID[stepID].WaitFor; pc != nil {
+	r.waitingChild = childID
+	waitStep, _ := r.waitStepConfig()
+	if pc := waitStep.WaitFor; pc != nil {
 		if md := pc.ParsedMaxDuration(); md > 0 {
 			r.waitDeadline = e.now().Add(md)
 		}

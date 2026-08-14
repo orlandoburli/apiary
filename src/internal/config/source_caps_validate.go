@@ -94,7 +94,7 @@ func workflowCapNeeds(w WorkflowConfig) []capNeed {
 	addHook("on_complete", w.OnComplete)
 	addHook("on_fail", w.OnFail)
 
-	for _, s := range w.Steps {
+	for _, s := range flattenSteps(w.Steps) {
 		sctx := fmt.Sprintf("step %q", s.ID)
 		switch s.StepType() {
 		case StepTypeApproval:
@@ -109,4 +109,28 @@ func workflowCapNeeds(w WorkflowConfig) []capNeed {
 		}
 	}
 	return needs
+}
+
+// flattenSteps returns every step in declaration order, descending into the
+// children of the group nodes the lowering pass produces: a parallel node keeps
+// its children in SubSteps and a foreach node keeps its body in Step, so a
+// walk over the top-level list alone misses them.
+//
+// A nested step reaches the very same source as a top-level one, so every
+// capability it needs must be linted too. Without this, a `wait_for {kind: ci}`
+// inside a parallel: group escaped the check entirely against a source that
+// cannot poll CI, and the operator learned about it only from a runtime failure
+// (#425).
+func flattenSteps(steps []StepConfig) []StepConfig {
+	out := make([]StepConfig, 0, len(steps))
+	for _, s := range steps {
+		out = append(out, s)
+		if len(s.SubSteps) > 0 {
+			out = append(out, flattenSteps(s.SubSteps)...)
+		}
+		if s.Step != nil {
+			out = append(out, flattenSteps([]StepConfig{*s.Step})...)
+		}
+	}
+	return out
 }

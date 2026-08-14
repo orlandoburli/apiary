@@ -124,6 +124,13 @@ func (e *Engine) restoreCachedSteps(r *dagRun, priorSteps []db.StepRun) []db.Ste
 		}
 		step, ok := r.byID[sr.StepID]
 		if !ok {
+			// A parallel group's child is not a graph node of its own. Restore it
+			// into the parent's memoized child results instead, so a group
+			// rehydrated mid-wait re-polls only its wait_for child and never
+			// re-runs the sibling that already passed (#425).
+			if child, isChild := r.childByID[sr.StepID]; isChild {
+				restoreParallelChild(r, child, sr)
+			}
 			continue // step no longer exists in the workflow definition
 		}
 		if step.StepType() == config.StepTypeSplit {
@@ -159,4 +166,26 @@ func (e *Engine) restoreCachedSteps(r *dagRun, priorSteps []db.StepRun) []db.Ste
 		restored = append(restored, sr)
 	}
 	return restored
+}
+
+// restoreParallelChild memoizes one passed child of a parallel group from its
+// persisted step run, so the group can be resumed without re-running it.
+func restoreParallelChild(r *dagRun, child config.StepConfig, sr db.StepRun) {
+	parent, ok := r.parentOfChild[child.ID]
+	if !ok {
+		return
+	}
+	var structured map[string]any
+	if sr.StructuredOutput != "" {
+		_ = json.Unmarshal([]byte(sr.StructuredOutput), &structured)
+	}
+	if r.parallelDone[parent] == nil {
+		r.parallelDone[parent] = map[string]StepResult{}
+	}
+	r.parallelDone[parent][child.ID] = StepResult{
+		Success:          true,
+		Output:           sr.Output,
+		Summary:          sr.Summary,
+		StructuredOutput: structured,
+	}
 }

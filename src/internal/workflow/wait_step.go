@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -52,10 +53,8 @@ func (e *Engine) checkCIWaitStep(
 	deadline time.Time,
 ) (StepResult, error) {
 	if e.ciChecker == nil {
-		return StepResult{
-			Success: false,
-			Err:     fmt.Errorf("CI status polling not configured"),
-		}, nil
+		return e.unsupportedWait(ctx, instID, step, "ci",
+			fmt.Errorf("CI status polling not configured")), nil
 	}
 
 	cfg := step.WaitFor
@@ -82,6 +81,14 @@ func (e *Engine) checkCIWaitStep(
 	}
 
 	status, err := e.ciChecker(ctx, sourceID, sourceItemID)
+	if errors.Is(err, source.ErrUnsupported) {
+		// The source will never gain the capability by waiting: fail now with the
+		// cause named, rather than polling until max_duration with a WARN a
+		// cycle. `apiary validate` normally catches this at config load; reaching
+		// here means the config was never linted (or the source changed under a
+		// running daemon), so the message has to stand on its own (#425).
+		return e.unsupportedWait(ctx, instID, step, "ci", err), nil
+	}
 	if err != nil {
 		// Surface at WARN (not DEBUG): a persistent error here — e.g. a token
 		// missing 'Pull requests: Read' (403) — would otherwise masquerade as an
@@ -149,6 +156,25 @@ func (e *Engine) checkCIWaitStep(
 	}
 }
 
+// unsupportedWait fails a wait_for step whose backing capability is missing.
+// The failure is logged and recorded as a poll with status "unsupported", so
+// the cause is visible in the daemon log AND in the wait's history — a wait
+// that dies in milliseconds with nothing written anywhere is the worst
+// possible diagnostic, and it is exactly what a wait_for/ci step used to do on
+// a source that cannot poll CI (#425).
+func (e *Engine) unsupportedWait(ctx context.Context, instID string, step config.StepConfig, kind string, cause error) StepResult {
+	aplog.Error("wait_for step %q (kind: %s): %v — failing the step", step.ID, kind, cause)
+	e.recordCIPoll(ctx, instID, step.ID, "unsupported", "", cause.Error())
+	return StepResult{
+		Success: false,
+		Err:     cause,
+		StructuredOutput: map[string]any{
+			"ci_status": "unsupported",
+			"reason":    cause.Error(),
+		},
+	}
+}
+
 // checkDependencyWaitStep performs a single blocker check for a wait_for step
 // with kind "dependency". Transient lookup errors and any still-unsatisfied
 // blocker both yield Pending (the instance stays parked and is re-checked next
@@ -165,10 +191,8 @@ func (e *Engine) checkDependencyWaitStep(
 	deadline time.Time,
 ) (StepResult, error) {
 	if e.depChecker == nil {
-		return StepResult{
-			Success: false,
-			Err:     fmt.Errorf("dependency (blocker) polling not configured"),
-		}, nil
+		return e.unsupportedWait(ctx, instID, step, "dependency",
+			fmt.Errorf("dependency (blocker) polling not configured")), nil
 	}
 
 	cfg := step.WaitFor
@@ -194,6 +218,9 @@ func (e *Engine) checkDependencyWaitStep(
 	}
 
 	blockers, err := e.depChecker(ctx, sourceID, sourceItemID, cfg.BlockerLinkType)
+	if errors.Is(err, source.ErrUnsupported) {
+		return e.unsupportedWait(ctx, instID, step, "dependency", err), nil
+	}
 	if err != nil {
 		// WARN, not DEBUG: a persistent error (missing scope, wrong link type)
 		// would otherwise masquerade as an endless wait with no visible cause.

@@ -50,6 +50,10 @@ type dagRun struct {
 
 	byID  map[string]config.StepConfig
 	order []string // step ids in declaration order (deterministic scheduling)
+	// childByID / parentOfChild index the children of parallel nodes, which are
+	// not graph nodes of their own (they live in the parent's SubSteps).
+	childByID     map[string]config.StepConfig
+	parentOfChild map[string]string // child step id → parallel parent id
 
 	state           map[string]string // step id → st* state
 	activated       map[string]bool   // control-flow has reached this step
@@ -63,6 +67,15 @@ type dagRun struct {
 
 	waitingStep string    // id of the approval/wait_for step currently parked, if any
 	parkedAt    time.Time // when the current approval parked (for timeout)
+	// waitingChild is set when waitingStep is a parallel node parked on a
+	// wait_for CHILD: it holds that child's id, so the re-check knows which
+	// wait_for config to poll. Empty when the parked step is a wait_for itself.
+	waitingChild string
+	// parallelDone memoizes the terminal results of a parked parallel group's
+	// finished children (parent step id → child id → result), so waking the
+	// group to re-poll its wait_for child does not re-run the siblings that
+	// already passed. Cleared once the group reaches a terminal join (#425).
+	parallelDone map[string]map[string]StepResult
 
 	// waitDeadline is the absolute time a parked wait_for step gives up waiting for
 	// CI (set when the wait first parks, preserved across re-checks, cleared once
@@ -94,11 +107,22 @@ func (e *Engine) initDAG(instID string, wf config.WorkflowConfig, task model.Int
 		conflictRetries: map[string]int{},
 		stepStates:      map[string]StepState{},
 		contrib:         map[string]MemoryStep{},
+		parallelDone:    map[string]map[string]StepResult{},
+		childByID:       map[string]config.StepConfig{},
+		parentOfChild:   map[string]string{},
 	}
 	for _, s := range wf.Steps {
 		r.byID[s.ID] = s
 		r.order = append(r.order, s.ID)
 		r.state[s.ID] = stPending
+		// Index a parallel node's children so the park/resume path can resolve a
+		// waiting child's config and restore its cached result by id alone.
+		if s.StepType() == config.StepTypeParallel {
+			for _, child := range s.SubSteps {
+				r.childByID[child.ID] = child
+				r.parentOfChild[child.ID] = s.ID
+			}
+		}
 	}
 	// Identify split targets: they are activated only when their split chooses
 	// them, never at workflow start.
@@ -130,6 +154,9 @@ type workerResult struct {
 	// parallelContribs is set for StepTypeParallel steps: the ordered list of
 	// memory contributions from its passed children (declaration order).
 	parallelContribs []MemoryStep
+	// parallel is set for StepTypeParallel steps: which child (if any) is parked
+	// on a pending wait_for, plus the results of the children that finished.
+	parallel parallelState
 	// foreachExitCode is the failed-item count for StepTypeForeach steps.
 	// Used to populate StepState.ExitCode (allows `steps.<id>.exit_code` in exprs).
 	foreachExitCode int
@@ -219,15 +246,17 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 			contribSnap := r.contribSnapshot()
 			waitDeadline := r.waitDeadline // captured for the wait worker (value copy, safe)
 			inFlight++
+			parallelCache := r.parallelSnapshot(id) // captured for the parallel worker
 			go func(step config.StepConfig, memSnap []MemoryStep, contribSnap map[string]MemoryStep) {
 				sem <- struct{}{}
 				defer func() { <-sem }()
 				var res StepResult
 				var parallelContribs []MemoryStep
+				var parallel parallelState
 				var foreachExitCode int
 				switch step.StepType() {
 				case config.StepTypeParallel:
-					res, parallelContribs = e.runParallelStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, r.wf.Env)
+					res, parallelContribs, parallel = e.runParallelStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, r.wf.Env, parallelCache, waitDeadline)
 				case config.StepTypeForeach:
 					var fr foreachResult
 					if step.Concurrency > 1 {
@@ -253,6 +282,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 					memSnap:          memSnap,
 					res:              res,
 					parallelContribs: parallelContribs,
+					parallel:         parallel,
 					foreachExitCode:  foreachExitCode,
 				}
 			}(step, snap, contribSnap)
@@ -315,6 +345,31 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 		// an approval park. Drain any siblings first (wait_for workflows are sequential
 		// in practice, so this is normally a no-op). The deadline persists across
 		// re-checks via enterWait so the timeout is measured from the first park.
+		// Parallel group whose wait_for child has no answer yet: park the GROUP,
+		// remembering the results of the children that finished so the wake
+		// re-polls only the wait and never re-runs a passed sibling (#425).
+		if step.StepType() == config.StepTypeParallel && res.Pending {
+			for inFlight > 0 {
+				<-resultCh
+				inFlight--
+			}
+			r.parallelDone[step.ID] = wr.parallel.done
+			r.waitingChild = wr.parallel.waitingChild
+			e.enterWait(r, step)
+			return outcomeWaiting
+		}
+		// Terminal parallel join: drop the memoized child results so a later
+		// loop-back (on_fail.goto) re-runs the whole group from scratch.
+		if step.StepType() == config.StepTypeParallel {
+			if _, wasParked := r.parallelDone[step.ID]; wasParked {
+				// Clear the waiting window too, so a loop-back into this group
+				// starts a fresh one (mirrors the plain wait_for path below).
+				r.waitDeadline = time.Time{}
+				delete(r.parallelDone, step.ID)
+			}
+			r.waitingChild = ""
+		}
+
 		if step.StepType() == config.StepTypeWaitFor && res.Pending {
 			for inFlight > 0 {
 				<-resultCh
@@ -508,12 +563,50 @@ func (e *Engine) enterApproval(ctx context.Context, r *dagRun, step config.StepC
 func (e *Engine) enterWait(r *dagRun, step config.StepConfig) {
 	r.state[step.ID] = stWaiting
 	r.waitingStep = step.ID
-	if r.waitDeadline.IsZero() && step.WaitFor != nil {
-		if md := step.WaitFor.ParsedMaxDuration(); md > 0 {
+	// The wait config lives on the parked step itself, or — for a parallel group
+	// parked on a wait_for child — on that child.
+	waitStep, _ := r.waitStepConfig()
+	if r.waitDeadline.IsZero() && waitStep.WaitFor != nil {
+		if md := waitStep.WaitFor.ParsedMaxDuration(); md > 0 {
 			r.waitDeadline = e.now().Add(md)
 		}
 	}
+	if r.waitingChild != "" {
+		aplog.Info("workflow %s: instance %s parked at wait_for child %q of parallel step %q",
+			r.wf.ID, r.instID, r.waitingChild, step.ID)
+		return
+	}
 	aplog.Info("workflow %s: instance %s parked at wait_for step %q", r.wf.ID, r.instID, step.ID)
+}
+
+// waitStepConfig returns the step whose wait_for config governs the current
+// park: the parked step itself when it is a wait_for node, or the parked child
+// when the instance is parked at a parallel group (#425). Reports false when
+// the run is not parked on a wait at all.
+func (r *dagRun) waitStepConfig() (config.StepConfig, bool) {
+	if r.waitingStep == "" {
+		return config.StepConfig{}, false
+	}
+	if r.waitingChild != "" {
+		child, ok := r.childByID[r.waitingChild]
+		return child, ok
+	}
+	step := r.byID[r.waitingStep]
+	return step, step.StepType() == config.StepTypeWaitFor
+}
+
+// parallelSnapshot copies the memoized child results of a parked parallel group
+// so the worker goroutine reads them without touching dagRun.
+func (r *dagRun) parallelSnapshot(stepID string) map[string]StepResult {
+	done := r.parallelDone[stepID]
+	if len(done) == 0 {
+		return nil
+	}
+	out := make(map[string]StepResult, len(done))
+	for k, v := range done {
+		out[k] = v
+	}
+	return out
 }
 
 // resolveApproval applies an approval decision to the parked step so the run can
@@ -549,13 +642,24 @@ func (r *dagRun) firstRunnableApproval() (string, bool) {
 // instance is parked at: wait_for steps persist no step run of their own, so after the
 // cached passed steps are restored the waiting poll is simply the next runnable
 // poll. Returns false when none is runnable.
-func (r *dagRun) firstRunnableWait() (string, bool) {
+// It also matches a parallel group holding a wait_for child, returning that
+// child's id alongside the group's — an instance can park on a wait nested one
+// level inside a group (#425).
+func (r *dagRun) firstRunnableWait() (stepID, childID string, ok bool) {
 	for _, id := range r.pickAllRunnable() {
-		if r.byID[id].StepType() == config.StepTypeWaitFor {
-			return id, true
+		step := r.byID[id]
+		switch step.StepType() {
+		case config.StepTypeWaitFor:
+			return id, "", true
+		case config.StepTypeParallel:
+			for _, child := range step.SubSteps {
+				if child.StepType() == config.StepTypeWaitFor {
+					return id, child.ID, true
+				}
+			}
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // pickAllRunnable returns the IDs of ALL currently runnable steps (activated,

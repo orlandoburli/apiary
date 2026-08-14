@@ -1006,6 +1006,10 @@
           "enum": ["auto", "await"],
           "default": "auto"
         },
+        "pull_request_from": {
+          "type": "string",
+          "description": "Name of a field in this step's structured output holding the URL of a pull request the step opened (e.g. pr_url). The engine parses it and links the PR to the task, which is what the dashboard's 'open PR' shortcut reads — so PR-linked features work even when the task's source (Jira, Plane) cannot enumerate pull requests itself. Only valid on type=agent; must name a field the step's output schema declares"
+        },
         "env": {
           "type": "object",
           "description": "Step-scope environment variables. Highest-precedence explicit scope: overrides workflow.env and agent.env for the same key",

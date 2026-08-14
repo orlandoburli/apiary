@@ -236,6 +236,12 @@ type SideEffects interface {
 	// error when the source does not support sub-issue creation; a duplicate binding
 	// (a concurrent materialize) is treated as success.
 	MaterializeChild(ctx context.Context, parent model.InternalTask, parentBindings []model.SourceBinding, child model.InternalTask) error
+	// LinkPullRequest records a pull request a step opened against the task, so
+	// it shows up in PR-linked features (the dashboard's "open PR" shortcut)
+	// even when the task's source cannot enumerate pull requests itself. The PR
+	// is attributed to the first binding's source. Linking the same PR twice is
+	// a no-op.
+	LinkPullRequest(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, pr source.PullRequestRef) error
 }
 
 // ApprovalProvider delivers a provider-neutral approval request to an external
@@ -485,8 +491,10 @@ func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool
 		// matching waiting state so the right rehydration path picks it up after a
 		// restart (approval_waiting → rehydrateParkedApprovals, waiting →
 		// rehydrateParkedWaits).
+		// (A parallel group parked on a wait_for child counts as a wait park —
+		// waitStepConfig resolves the governing step for both shapes, #425.)
 		waitState := db.InstanceStateApprovalWaiting
-		if r.byID[r.waitingStep].StepType() == config.StepTypeWaitFor {
+		if _, isWait := r.waitStepConfig(); isWait {
 			waitState = db.InstanceStateWaiting
 		}
 		_ = e.store.UpdateWorkflowInstanceState(ctx, r.instID, waitState)
@@ -652,6 +660,7 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 	// Memorize runs before publish so knowledge is persisted even when the
 	// source write-back fails; neither outcome affects the step state.
 	e.memorizeStep(instID, task, step, res)
+	e.linkPullRequest(ctx, task, bindings, step, res)
 	e.publishStep(ctx, task, bindings, res, sr)
 	_ = e.store.UpdateStepRun(ctx, sr)
 	res.StepRunID = sr.ID
@@ -900,6 +909,34 @@ func (e *Engine) publishStep(ctx context.Context, task model.InternalTask, bindi
 		return
 	}
 	sr.PublishState = db.PublishStateSent
+}
+
+// linkPullRequest links the pull request a step reported (via the output field
+// named by pull_request_from) to the task, so PR-linked features work for tasks
+// whose source cannot enumerate pull requests on its own — a Jira- or
+// Plane-sourced task whose agents open PRs on some git forge (#425).
+//
+// Best-effort by design: a step that legitimately opened no PR (a no-op
+// implement run) simply has no field to read, and a malformed URL is logged and
+// skipped rather than failing a step whose real work succeeded.
+func (e *Engine) linkPullRequest(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, step config.StepConfig, res StepResult) {
+	if step.PullRequestFrom == "" || !res.Success || e.side == nil || len(bindings) == 0 {
+		return
+	}
+	raw, ok := res.StructuredOutput[step.PullRequestFrom].(string)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return
+	}
+	pr, err := source.ParsePullRequestURL(raw)
+	if err != nil {
+		aplog.Warn("step %q: pull_request_from %q: %v", step.ID, step.PullRequestFrom, err)
+		return
+	}
+	if err := e.side.LinkPullRequest(ctx, task, bindings, pr); err != nil {
+		aplog.Warn("step %q: linking pull request %s: %v", step.ID, pr.URL, err)
+		return
+	}
+	aplog.Info("step %q: linked pull request %s to task %s", step.ID, pr.URL, task.ID)
 }
 
 // applyCompletion applies the on_complete/on_fail hook and posts the on_complete

@@ -270,6 +270,12 @@ func (c *Config) validateStep(
 	// lowering on every step), so lint here rather than in a per-type validator.
 	errs = append(errs, lintStepExprs(sctx, s)...)
 
+	// pull_request_from reads the step's structured output, which only an agent
+	// step produces.
+	if s.PullRequestFrom != "" && s.StepType() != StepTypeAgent {
+		errs = append(errs, fmt.Errorf("%s: pull_request_from is only valid on an agent step", sctx))
+	}
+
 	// on_conflict applies to any step type, so validate it here rather than in a
 	// per-type validator. It is only meaningful on a wait_for step (the sole
 	// producer of a conflict) and otherwise mirrors on_fail (goto + max_retries).
@@ -306,6 +312,14 @@ func (c *Config) validateAgentStep(sctx string, s StepConfig, agentIDs, stepIDs 
 	case "", OnMissingOutputWarn, OnMissingOutputFail, OnMissingOutputIgnore:
 	default:
 		errs = append(errs, fmt.Errorf("%s: invalid on_missing_output %q (want warn|fail|ignore)", sctx, s.OnMissingOutput))
+	}
+
+	// pull_request_from must name a field the step actually emits, otherwise the
+	// PR link silently never appears.
+	if s.PullRequestFrom != "" && s.OutputSchema != nil {
+		if _, declared := s.OutputSchema.Properties[s.PullRequestFrom]; !declared {
+			errs = append(errs, fmt.Errorf("%s: pull_request_from references %q, which the step's output schema does not declare", sctx, s.PullRequestFrom))
+		}
 	}
 
 	switch s.Spawn {
@@ -596,7 +610,42 @@ func (c *Config) validateParallelStep(
 		childIDs[child.ID] = true
 	}
 	for j, child := range s.SubSteps {
+		errs = append(errs, validateParallelChildKind(sctx, child)...)
 		errs = append(errs, c.validateStep(sctx, j, child, wf, agentIDs, childIDs, wfByID)...)
+	}
+
+	return errs
+}
+
+// validateParallelChildKind rejects the child kinds a parallel group cannot
+// run. The group executes each child by its own type, but only agent and
+// wait_for children are supported: an approval child would need a second,
+// independent park regime inside a group that is already parked as a unit, and
+// a nested group (parallel:/steps:/for_each: inside a parallel child) is never
+// lowered — the lowering pass flattens only leaf children, so the node would
+// reach the engine with its authored v2 fields intact and run as an agent step.
+//
+// Before this check both cases failed at runtime in milliseconds with no usable
+// diagnostic, and under the default join: all they failed their passing
+// siblings with them (#425).
+func validateParallelChildKind(sctx string, child StepConfig) []error {
+	var errs []error
+	cctx := fmt.Sprintf("%s: child %q", sctx, child.ID)
+
+	switch child.StepType() {
+	case StepTypeAgent, StepTypeWaitFor:
+	default:
+		errs = append(errs, fmt.Errorf("%s: a parallel group cannot contain a %s step (only agent and wait_for children are supported)",
+			cctx, child.StepType()))
+	}
+
+	switch {
+	case len(child.ParallelSteps) > 0:
+		errs = append(errs, fmt.Errorf("%s: nested parallel: groups are not supported", cctx))
+	case child.ForEachExpr != "":
+		errs = append(errs, fmt.Errorf("%s: for_each: is not supported inside a parallel group", cctx))
+	case len(child.SubSteps) > 0 && child.Type == "":
+		errs = append(errs, fmt.Errorf("%s: nested steps: groups are not supported inside a parallel group", cctx))
 	}
 
 	return errs
