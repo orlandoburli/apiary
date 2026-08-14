@@ -256,7 +256,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 				var foreachExitCode int
 				switch step.StepType() {
 				case config.StepTypeParallel:
-					res, parallelContribs, parallel = e.runParallelStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, r.wf.Env, parallelCache, waitDeadline)
+					res, parallelContribs, parallel = e.runParallelStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, r.wf.ID, r.wf.Env, parallelCache, waitDeadline)
 				case config.StepTypeForeach:
 					var fr foreachResult
 					if step.Concurrency > 1 {
@@ -385,23 +385,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 		}
 
 		// Missing structured output for a step that declared an output schema.
-		if res.Success && step.OutputSchema != nil && len(res.StructuredOutput) == 0 &&
-			step.OnMissingOutput != config.OnMissingOutputIgnore {
-			aplog.Error("workflow %s: step %q declared output_schema but emitted no APIARY_OUTPUT — conditions reading its fields will see empty values", r.wf.ID, step.ID)
-			// Beyond the log line: record it on the instance so it is visible in
-			// the dashboard / event stream, not only in the daemon log (#390).
-			e.recordStepExecutionEvent(ctx, r, step.ID, "step.missing_output", map[string]any{
-				"policy":       missingOutputPolicy(step),
-				"memory_write": step.MemoryWriteFields(),
-			})
-			// on_missing_output: fail — declared output schema required structured output.
-			if step.OnMissingOutput == config.OnMissingOutputFail {
-				res.Success = false
-				res.Output = fmt.Sprintf("on_missing_output=fail: step %q declared an output schema but emitted no APIARY_OUTPUT", step.ID)
-				aplog.Info("workflow %s: step %q failed: on_missing_output=fail and no structured output", r.wf.ID, step.ID)
-				e.markStepRunFailed(ctx, res.StepRunID, res.Output)
-			}
-		}
+		res = e.applyMissingOutput(ctx, runIDs{taskID: r.task.ID, wfID: r.wf.ID, instID: r.instID}, step, res)
 
 		// fail_when (authored as reject_when) — evaluate on the scheduler
 		// goroutine after the agent runs.
@@ -1050,6 +1034,37 @@ func unevaluableGateKeys(gate *Expr, step config.StepConfig, res StepResult, par
 		}
 	}
 	return unset
+}
+
+// applyMissingOutput enforces on_missing_output for a step that declared an
+// output schema and finished without emitting APIARY_OUTPUT. It takes the ids
+// explicitly instead of a *dagRun so it can also run on a worker goroutine, for
+// the children of a parallel or foreach group — those never reach the scheduler
+// loop and used to skip the guard entirely: the child was recorded as passed
+// with a NULL structured output and nothing was logged (#421).
+//
+// A no-op for results that are already failed, carry structured output, declare
+// no schema, or opt out with on_missing_output: ignore.
+func (e *Engine) applyMissingOutput(ctx context.Context, ids runIDs, step config.StepConfig, res StepResult) StepResult {
+	if !res.Success || step.OutputSchema == nil || len(res.StructuredOutput) > 0 ||
+		step.OnMissingOutput == config.OnMissingOutputIgnore {
+		return res
+	}
+	aplog.Error("workflow %s: step %q declared output_schema but emitted no APIARY_OUTPUT — conditions reading its fields will see empty values", ids.wfID, step.ID)
+	// Beyond the log line: record it on the instance so it is visible in
+	// the dashboard / event stream, not only in the daemon log (#390).
+	e.recordStepExecutionEventFor(ctx, ids, step.ID, "step.missing_output", map[string]any{
+		"policy":       missingOutputPolicy(step),
+		"memory_write": step.MemoryWriteFields(),
+	})
+	// on_missing_output: fail — declared output schema required structured output.
+	if step.OnMissingOutput == config.OnMissingOutputFail {
+		res.Success = false
+		res.Output = fmt.Sprintf("on_missing_output=fail: step %q declared an output schema but emitted no APIARY_OUTPUT", step.ID)
+		aplog.Info("workflow %s: step %q failed: on_missing_output=fail and no structured output", ids.wfID, step.ID)
+		e.markStepRunFailed(ctx, res.StepRunID, res.Output)
+	}
+	return res
 }
 
 // missingOutputPolicy returns the effective on_missing_output policy of a step

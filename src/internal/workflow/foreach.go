@@ -89,6 +89,9 @@ func (e *Engine) executeForeachSequential(
 		sub.Prompt = renderItemTemplate(step.Step.Prompt, as, item)
 
 		res := e.runStep(ctx, instID, sub, cell, task, bindings, memSnap, wfEnv)
+		// Items never pass through the scheduler loop, so the on_missing_output
+		// guard has to be applied here (#421).
+		res = e.applyMissingOutput(ctx, runIDs{taskID: task.ID, wfID: wfID, instID: instID}, sub, res)
 		if res.Success {
 			fr.passed++
 		} else {
@@ -150,6 +153,7 @@ func (e *Engine) executeForeachConcurrent(
 			defer func() { <-sem }()
 
 			res := e.runStep(ctx, instID, sub, cell, task, bindings, memSnap, wfEnv)
+			res = e.applyMissingOutput(ctx, runIDs{taskID: task.ID, wfID: wfID, instID: instID}, sub, res)
 
 			mu.Lock()
 			if res.Success {
