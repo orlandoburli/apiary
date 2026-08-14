@@ -14,6 +14,14 @@ with heartbeats. If a worker disappears, the control plane expires the attempt
 and makes the job available again; a late worker cannot heartbeat or finish the
 new attempt with its stale token.
 
+A redelivered job (attempt 2 and up) is checked against the control plane before
+it runs: it is skipped when the workflow has already completed for that task, and
+also when the task's run of that workflow is still alive — being auto-resumed
+after a restart, or recorded as a running or parked instance. Otherwise the run
+the first attempt started, and which a restart continued, would get a second agent
+on the same branch. A redelivery with nothing live behind it still executes, which
+is what makes a dead worker's job recoverable.
+
 This means workflow actions should remain idempotent. A process can fail after
 performing an external action but before acknowledging completion, causing a
 retry. Apiary's existing workflow instance, publish, spawn, and hook

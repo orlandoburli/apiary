@@ -215,6 +215,15 @@ Daemon restarts (crash, upgrade, reboot) don't lose in-flight work:
   stays put and the next poll dispatches a fresh run from step 1, so a
   long pipeline that must not restart from scratch should opt into
   `resume: auto`.
+- **Queue redelivery.** In [queue mode](distributed-workers.md) the job whose
+  run the crash killed is still leased; the next process reclaims it once the
+  lease expires and delivers it again. That redelivery is dropped when the same
+  task and workflow already has a live run — one being auto-resumed, or an
+  instance that is running or parked — so a reclaimed job cannot put a second
+  agent on the branch its first attempt is still working on. The embedded worker
+  starts only after every startup pass above, so it never claims a job before
+  those guards exist. A redelivery with nothing live behind it still runs: that
+  is the recovery path.
 - **Force restart.** From the [dashboard](dashboard.md) (`R` on a task) or
   `apiary restart <task>`, a stale task's running dispatch and queued jobs are
   cancelled, its non-terminal instances are interrupted, its control labels are

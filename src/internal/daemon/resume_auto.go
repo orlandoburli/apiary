@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
@@ -134,4 +135,27 @@ func (d *Dispatcher) dropAutoResumingMatches(taskID string, matches []router.Mat
 		out = append(out, m)
 	}
 	return out, dropped
+}
+
+// redeliveryConflict reports whether a re-delivered dispatch job would start a
+// second live run of the same (task, workflow). It answers the question the
+// completed-instance check cannot: the earlier run is not done, it is still
+// going — either being auto-resumed at startup (the descendant row may not exist
+// yet) or already running/parked as an instance of its own.
+//
+// It returns the reason to log when the job must be skipped. A query error is
+// returned to the caller, which retries the delivery rather than risking a
+// duplicate agent on the branch.
+func (d *Dispatcher) redeliveryConflict(ctx context.Context, taskID, workflowID string) (string, bool, error) {
+	if _, resuming := d.autoResuming.Load(autoResumeKey(taskID, workflowID)); resuming {
+		return "the interrupted run is being auto-resumed (resume: auto)", true, nil
+	}
+	active, err := d.db.HasActiveInstanceForRoute(ctx, taskID, workflowID)
+	if err != nil {
+		return "", false, fmt.Errorf("check live workflow instance: %w", err)
+	}
+	if active {
+		return "the workflow already has a live instance for this task", true, nil
+	}
+	return "", false, nil
 }

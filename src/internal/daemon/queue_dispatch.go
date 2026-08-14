@@ -212,6 +212,26 @@ func (d *Dispatcher) ExecuteQueuedJob(ctx context.Context, job queue.Job, worker
 			return queue.FinishResult{Success: true, Note: "skipped: " + reason}
 		}
 	}
+	// Second redelivery guard: the run this job started may still be alive under
+	// a different instance. A daemon that dies mid-run leaves its jobs leased; the
+	// next process reclaims them once the lease expires and re-delivers them —
+	// while startup has already continued the interrupted instance (`resume: auto`)
+	// or a poll has re-dispatched it. Running the payload again then puts a second
+	// agent on the same task, the same worktree and the same branch (issue #422).
+	// Only redeliveries are checked: a first delivery's right to run was decided by
+	// the routing guards at enqueue time, and a manual run deliberately overrides
+	// them.
+	if d.db != nil && payload.Task.ID != "" && job.AttemptCount > 1 {
+		if reason, skip, err := d.redeliveryConflict(ctx, payload.Task.ID, payload.Match.Route.ID); err != nil {
+			return queue.FinishResult{Error: err.Error(), Retry: true}
+		} else if skip {
+			aplog.Info("queue job %s: not running workflow %s for task %s — %s; job finishes without creating an instance",
+				job.ID, payload.Match.Route.ID, payload.Task.ID, reason)
+			d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "dispatch.dropped", TaskID: payload.Task.ID, WorkflowID: payload.Match.Route.ID,
+				Metadata: map[string]any{"reason": "live run", "detail": reason, "job_id": job.ID, "attempt": job.AttemptCount}})
+			return queue.FinishResult{Success: true, Note: "skipped: " + reason}
+		}
+	}
 	d.active.Add(1)
 	defer d.active.Add(-1)
 	d.activeRuns.Store(job.ID, model.ActiveRun{ID: job.ID, Cell: payload.Cell, WorkerID: workerID, Model: payload.Match.Worker.Model, Status: model.RunStatusRunning, StartedAt: time.Now()})
