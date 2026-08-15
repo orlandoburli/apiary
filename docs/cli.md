@@ -96,10 +96,22 @@ List workflow instances, or show one in step-level detail.
 ```sh
 apiary instances [--workflow id] [--state s] [--limit n] [--json]
 apiary instances <instance-id>
+apiary instances <instance-id> --cancel
 ```
 
 States: `pending`, `running`, `approval_waiting`, `interrupted`, `done`,
 `failed`.
+
+`--cancel` stops one running instance: its in-flight step is cancelled and the
+instance is marked `interrupted`, along with any queued or leased dispatch job
+for the same task and workflow. The source item is left alone — no labels are
+stripped and no state is reset — so unlike [`apiary restart`](#apiary-restart)
+nothing is re-dispatched, and the run can be picked up later with
+[`apiary resume <instance-id>`](#apiary-resume).
+
+Use it when a task has more than one live instance and you want to keep one of
+them: `restart` acts on the whole cell, and stopping the run from the dashboard
+targets the cell too.
 
 ### `apiary profile`
 

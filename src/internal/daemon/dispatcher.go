@@ -90,6 +90,13 @@ type Dispatcher struct {
 	inFlight   sync.Map
 	activeRuns sync.Map
 	runCancel  sync.Map
+	// instanceCancel holds the same cancel funcs as runCancel, keyed by workflow
+	// instance id instead of cell id. One cell can carry two live instances (a
+	// resumed run and a re-dispatched one, issue #422), and the cell-keyed map
+	// only remembers whichever started last — so cancelling by cell cannot target
+	// one of them. `apiary instances <id> --cancel` uses this map to stop exactly
+	// the run the operator named.
+	instanceCancel sync.Map
 	// waitAdvancing guards a parked wait_for instance while its CI re-check (and any
 	// follow-on advance) is in flight, so overlapping poll cycles don't double-check
 	// or double-advance the same instance. Mirrors inFlight for polled cells.
@@ -495,15 +502,6 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 // Start launches one poll goroutine per source.
 // Cancel ctx to initiate a graceful shutdown; then call wg.Wait().
 func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
-	if d.localWorker != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := d.localWorker.Run(ctx); err != nil {
-				aplog.Error("embedded worker: %v", err)
-			}
-		}()
-	}
 	// Enforce the shared git hooks directory on the agents' repo checkouts
 	// (settings.git_hooks) before the first dispatch, so pre-push hooks gate
 	// agent pushes from the very first run.
@@ -598,6 +596,24 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 	// a fresh run from step 1 and discard the completed work (issue #376). Must
 	// run before the poll loops start so the dispatch guard is already claimed.
 	d.resumeAutoInterrupted(ctx)
+
+	// The embedded queue worker starts last, after every startup pass above.
+	// It reclaims leases the dead process left behind and re-delivers those jobs
+	// immediately, so starting it first (as it used to) raced the reconciles:
+	// a job could be claimed before its instance was even marked interrupted,
+	// and before auto-resume had claimed its dispatch guard — the redelivery
+	// then ran the workflow from step 1 alongside the run being resumed, two
+	// agents on one branch (issue #422). Nothing here dispatches work, so the
+	// delay only postpones the first claim by the length of the reconcile pass.
+	if d.localWorker != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := d.localWorker.Run(ctx); err != nil {
+				aplog.Error("embedded worker: %v", err)
+			}
+		}()
+	}
 
 	// Prune old service_logs/task_logs rows once at startup and then daily,
 	// mirroring the file-side retention (settings.log_max_age_days). Without
@@ -1684,7 +1700,11 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 			return
 		}
 		if err := d.StopInstance(ctx, instanceID); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			status := http.StatusInternalServerError
+			if errors.Is(err, ErrInstanceNotFound) {
+				status = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), status)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

@@ -270,28 +270,43 @@ func (d *Dispatcher) StopInstance(ctx context.Context, instanceID string) error 
 		return nil
 	}
 	inst, err := d.db.GetWorkflowInstance(ctx, instanceID)
-	if err != nil || inst == nil {
+	if err != nil {
 		return err
+	}
+	if inst == nil {
+		// Reporting success for an id that names nothing let `--cancel` (and the
+		// dashboard) claim a run was stopped when nothing was even looked at.
+		return ErrInstanceNotFound
 	}
 	if d.dispatchQueue != nil {
 		if _, err := d.dispatchQueue.RequestCancelFor(ctx, inst.TaskID, inst.WorkflowID); err != nil {
 			aplog.Error("stop instance %s: cancel queued work: %v", instanceID, err)
 		}
 	}
-	// Cancel the in-flight run for this cell.
-	if val, ok := d.runCancel.LoadAndDelete(inst.CellID); ok {
-		cancel := val.(context.CancelFunc)
-		cancel()
+	// Cancel this instance's own step, when it registered one. Cancelling by cell
+	// instead would be ambiguous the moment a cell carries two live instances —
+	// exactly the state this command exists to clean up (issue #422) — because the
+	// cell-keyed map holds only whichever run started last.
+	if val, ok := d.instanceCancel.LoadAndDelete(instanceID); ok {
+		val.(context.CancelFunc)()
+	} else if val, ok := d.runCancel.LoadAndDelete(inst.CellID); ok {
+		// No per-instance registration (no step in flight for it, or a run that
+		// predates the instance-keyed map): fall back to the cell.
+		val.(context.CancelFunc)()
+		// Sweep the cell's active runs only on this path: doing it while a sibling
+		// instance is still running would drop the survivor from the dashboard.
+		d.activeRuns.Range(func(key, val any) bool {
+			run := val.(model.ActiveRun)
+			if run.Cell.ID == inst.CellID {
+				d.activeRuns.Delete(key)
+			}
+			return true
+		})
 	}
-	// Remove from in-flight and active tracking so the slot is freed.
+	// The marker only guards the routing→hand-off window, so releasing it is safe
+	// either way: a sibling instance that is still running keeps the cell shadowed
+	// by the in-flight instance guard.
 	d.inFlight.Delete(inst.CellID)
-	d.activeRuns.Range(func(key, val any) bool {
-		run := val.(model.ActiveRun)
-		if run.Cell.ID == inst.CellID {
-			d.activeRuns.Delete(key)
-		}
-		return true
-	})
 
 	// Mark the running task_execution interrupted.
 	if lastExec, err := d.db.GetLastExecution(ctx, inst.CellID); err == nil && lastExec != nil && lastExec.Status == "running" {

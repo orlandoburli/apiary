@@ -503,9 +503,17 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		// Register the cancel func so `apiary restart` / ForceRestart can interrupt
 		// an in-flight step. A single key per cell mirrors legacy behaviour.
 		x.d.runCancel.Store(req.Cell.ID, cancel)
+		// Also key it by instance, so a single run can be stopped when the cell
+		// carries more than one (issue #422).
+		if req.InstanceID != "" {
+			x.d.instanceCancel.Store(req.InstanceID, cancel)
+		}
 		out, err := c.adapter.Run(runCtx, rr)
 		cancel()
 		x.d.runCancel.Delete(req.Cell.ID)
+		if req.InstanceID != "" {
+			x.d.instanceCancel.Delete(req.InstanceID)
+		}
 		if err != nil && out.Error == nil {
 			out.Error = err
 		}

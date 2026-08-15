@@ -33,13 +33,26 @@ func newInstancesCmd() *cobra.Command {
 		state    string
 		limit    int
 		asJSON   bool
+		cancel   bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "instances [instance-id]",
-		Short: "List workflow instances or show one in detail",
-		Args:  cobra.MaximumNArgs(1),
+		Short: "List workflow instances, show one in detail, or cancel one",
+		Long: "List workflow instances, show one in detail, or cancel one.\n\n" +
+			"--cancel stops a single running instance: its in-flight step is cancelled\n" +
+			"and the instance is marked interrupted, without touching the source item's\n" +
+			"labels or state (unlike `apiary restart`, which acts on the whole cell).\n" +
+			"Queued or leased dispatch jobs for the same task and workflow are cancelled\n" +
+			"with it. A cancelled instance can be continued later with `apiary resume`.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cancel {
+				if len(args) != 1 {
+					return fmt.Errorf("--cancel needs an instance id: apiary instances <instance-id> --cancel")
+				}
+				return cancelInstance(args[0], asJSON)
+			}
 			if len(args) == 1 {
 				return showInstance(args[0], asJSON)
 			}
@@ -51,6 +64,7 @@ func newInstancesCmd() *cobra.Command {
 	cmd.Flags().StringVar(&state, "state", "", "filter by state (pending, running, approval_waiting, interrupted, done, failed)")
 	cmd.Flags().IntVar(&limit, "limit", 20, "max rows")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output as JSON")
+	cmd.Flags().BoolVar(&cancel, "cancel", false, "stop this instance and mark it interrupted")
 	cmd.AddCommand(newInstancesCompareCmd())
 	return cmd
 }
@@ -104,6 +118,37 @@ func compareInstances(beforeID, afterID string, asJSON bool) error {
 			fmt.Printf("  %s\n", instMuted.Render(fmt.Sprintf("model/runner: %s/%s → %s/%s", row.BeforeModel, row.BeforeRunner, row.AfterModel, row.AfterRunner)))
 		}
 	}
+	return nil
+}
+
+// cancelInstance stops one running instance through the daemon. It exists so a
+// duplicate run can be recovered from inside the tool: `apiary restart` acts on a
+// whole cell (and re-dispatches it), and `apiary instances` used to be read-only,
+// which left killing the agent's process by hand as the only option (issue #422).
+func cancelInstance(id string, asJSON bool) error {
+	var stopped struct {
+		Stopped string `json:"stopped"`
+	}
+	status, err := ipcDo(http.MethodPost, "/instances/stop/"+url.PathEscape(id), &stopped)
+	if err != nil {
+		switch status {
+		case http.StatusNotFound:
+			fmt.Println(instErr.Render("Instance not found: ") + id)
+			os.Exit(2)
+		case 0:
+			return daemonDownHint()
+		default:
+			fmt.Println(instErr.Render("Error: ") + err.Error())
+			os.Exit(1)
+		}
+	}
+	if asJSON {
+		line, _ := json.Marshal(map[string]string{"cancelled": id})
+		fmt.Println(string(line))
+		return nil
+	}
+	fmt.Println(instOK.Render("✓") + " Cancelled instance " + id +
+		instMuted.Render(" (marked interrupted; continue it with `apiary resume "+id+"`)"))
 	return nil
 }
 
