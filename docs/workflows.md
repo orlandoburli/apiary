@@ -422,6 +422,12 @@ group immediately instead of sitting on a two-hour CI budget.
   join: all
 ```
 
+Children are full steps: a child that declares an `output` schema and emits no
+`APIARY_OUTPUT` honours its own `on_missing_output` exactly like a top-level
+step — `fail` fails the child (and, under `join: all`, the group), `warn`
+records a `step.missing_output` event, `ignore` opts out. The same applies to
+the inner step of a `for_each:`.
+
 #### `for_each:` — iteration
 
 ```yaml

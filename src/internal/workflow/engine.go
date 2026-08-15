@@ -688,12 +688,28 @@ func (e *Engine) markStepRunFailed(ctx context.Context, stepRunID, output string
 // recordStepExecutionEvent records a lifecycle event attributed to a specific
 // step (recordExecutionEvent attributes to the run's waiting step instead).
 func (e *Engine) recordStepExecutionEvent(ctx context.Context, r *dagRun, stepID, eventType string, metadata map[string]any) {
-	recorder, ok := e.store.(executionEventRecorder)
-	if !ok || r == nil {
+	if r == nil {
 		return
 	}
-	_ = recorder.RecordExecutionEvent(ctx, &db.ExecutionEvent{Type: eventType, TaskID: r.task.ID, WorkflowID: r.wf.ID,
-		WorkflowInstanceID: r.instID, StepID: stepID, Metadata: metadata})
+	e.recordStepExecutionEventFor(ctx, runIDs{taskID: r.task.ID, wfID: r.wf.ID, instID: r.instID}, stepID, eventType, metadata)
+}
+
+// runIDs carries the identifiers a dagRun would otherwise supply, for code that
+// runs on a worker goroutine and must not touch dagRun (parallel/foreach children).
+type runIDs struct {
+	taskID string
+	wfID   string
+	instID string
+}
+
+// recordStepExecutionEventFor is recordStepExecutionEvent without a dagRun.
+func (e *Engine) recordStepExecutionEventFor(ctx context.Context, ids runIDs, stepID, eventType string, metadata map[string]any) {
+	recorder, ok := e.store.(executionEventRecorder)
+	if !ok {
+		return
+	}
+	_ = recorder.RecordExecutionEvent(ctx, &db.ExecutionEvent{Type: eventType, TaskID: ids.taskID, WorkflowID: ids.wfID,
+		WorkflowInstanceID: ids.instID, StepID: stepID, Metadata: metadata})
 }
 
 // secretPattern returns the name of the first common credential pattern found
