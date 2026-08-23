@@ -510,8 +510,39 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
-	// Quit is always available.
-	if key == "q" || key == "ctrl+c" {
+	// Ctrl+C is always available, even while typing a filter.
+	if key == "ctrl+c" {
+		return a, tea.Quit
+	}
+
+	// While the task filter is being typed it owns the keyboard: esc clears
+	// and closes it, enter confirms it, backspace edits, printable chars
+	// append. Every other binding (q, tab, r, ...) stays inert until then.
+	if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.FilterActive {
+		t := a.model.tasksTab
+		switch key {
+		case "esc":
+			t.FilterActive = false
+			t.FilterText = ""
+			t.SelectedIdx = 0
+		case "enter":
+			t.FilterActive = false
+			t.SelectedIdx = 0
+		case "backspace":
+			if len(t.FilterText) > 0 {
+				t.FilterText = t.FilterText[:len(t.FilterText)-1]
+				t.SelectedIdx = 0
+			}
+		default:
+			if len(key) == 1 && key >= " " && key <= "~" {
+				t.FilterText += key
+				t.SelectedIdx = 0
+			}
+		}
+		return a, nil
+	}
+
+	if key == "q" {
 		return a, tea.Quit
 	}
 
@@ -700,14 +731,9 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "esc":
-		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.FilterActive {
-			a.model.tasksTab.FilterActive = false
+		// Clear a confirmed filter (typing-mode esc is handled up top).
+		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.FilterText != "" {
 			a.model.tasksTab.FilterText = ""
-			a.model.tasksTab.SelectedIdx = 0
-		}
-	case "backspace":
-		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.FilterActive && len(a.model.tasksTab.FilterText) > 0 {
-			a.model.tasksTab.FilterText = a.model.tasksTab.FilterText[:len(a.model.tasksTab.FilterText)-1]
 			a.model.tasksTab.SelectedIdx = 0
 		}
 	case "up":
@@ -849,13 +875,6 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.model.agentsTab.Detail = ag
 				a.model.agentsTab.View = AgentViewDetail
 			}
-		}
-	default:
-		// If task filter is active, any printable char appends to filter text
-		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.FilterActive && len(key) == 1 && key >= " " && key <= "~" {
-			a.model.tasksTab.FilterText += key
-			a.model.tasksTab.SelectedIdx = 0
-			return a, nil
 		}
 	}
 	return a, nil
@@ -3291,7 +3310,9 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 			msg = "No tasks match filter"
 		}
 		title := "TASKS"
-		if t.FilterText != "" {
+		if t.FilterActive {
+			title += " [/" + t.FilterText + "▌]"
+		} else if t.FilterText != "" {
 			title += " [/" + t.FilterText + "]"
 		}
 		return a.box(title, StyleMuted.Render(msg)+"\n", height)
@@ -3315,7 +3336,9 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 	// Box title with sort/filter indicators
 	title := "TASKS"
 	parts := []string{}
-	if t.FilterText != "" {
+	if t.FilterActive {
+		parts = append(parts, "/"+t.FilterText+"▌")
+	} else if t.FilterText != "" {
 		parts = append(parts, "/"+t.FilterText)
 	}
 	if t.SortField != "" {
@@ -5047,8 +5070,11 @@ func (a *App) footerKeys() []fkey {
 				}
 				return append(keys, fkey{"-/+", "split"}, fkey{"r", "refresh"}, fkey{"X", "stop"}, fkey{"R", "restart"}, fkey{"esc", "back"}, fkey{"q", "quit"})
 			}
+			if t.FilterActive {
+				return []fkey{{"type", "filter"}, {"enter", "apply"}, {"esc", "cancel"}}
+			}
 		}
-		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"W", "run wf"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
+		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"/", "filter"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"W", "run wf"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
 	case "Workflows":
 		if wt := a.model.workflowsTab; wt != nil && wt.Focus == WorkflowsViewSteps {
 			return []fkey{{"↑/↓", "step"}, {"esc/←", "back"}, {"tab", "next tab"}, {"q", "quit"}}
