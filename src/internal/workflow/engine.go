@@ -955,17 +955,22 @@ func (e *Engine) linkPullRequest(ctx context.Context, task model.InternalTask, b
 	aplog.Info("step %q: linked pull request %s to task %s", step.ID, pr.URL, task.ID)
 }
 
-// applyCompletion applies the on_complete/on_fail hook and posts the on_complete
-// result comment (the final memory document) to the task's source bindings.
+// applyCompletion applies the on_complete/on_fail hook and posts the result
+// comment (the final memory document) to the task's source bindings.
 func (e *Engine) applyCompletion(ctx context.Context, r *dagRun, failed bool) {
 	if e.side == nil {
 		return
 	}
 	wf := r.wf
+	mode := e.resultCommentMode(wf)
 
-	if !failed && e.resultCommentMode(wf) == config.ResultCommentOnComplete {
+	if !failed && (mode == config.ResultCommentOnComplete || mode == config.ResultCommentAlways) {
 		doc := e.mem.Build(r.cell, r.memSteps())
 		_ = e.side.PostComment(ctx, r.task, r.bindings, finalComment(wf, false, doc))
+	}
+	if failed && (mode == config.ResultCommentOnFail || mode == config.ResultCommentAlways) {
+		doc := e.mem.Build(r.cell, r.memSteps())
+		_ = e.side.PostComment(ctx, r.task, r.bindings, finalComment(wf, true, doc))
 	}
 
 	var hook *config.OnComplete

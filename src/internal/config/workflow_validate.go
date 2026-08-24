@@ -73,9 +73,10 @@ func (c *Config) validateWorkflow(
 
 	// Result comment mode.
 	switch wf.ResultComment {
-	case "", ResultCommentOnComplete, ResultCommentPerStep, ResultCommentOff:
+	case "", ResultCommentOnComplete, ResultCommentPerStep, ResultCommentOff,
+		ResultCommentOnFail, ResultCommentAlways:
 	default:
-		errs = append(errs, fmt.Errorf("%s: invalid result_comment %q (want on_complete|per_step|off)", ctx, wf.ResultComment))
+		errs = append(errs, fmt.Errorf("%s: invalid result_comment %q (want on_complete|per_step|off|on_fail|always)", ctx, wf.ResultComment))
 	}
 
 	// Trigger source reference.

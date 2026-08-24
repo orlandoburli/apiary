@@ -134,7 +134,7 @@ func TestWorkflow_InvalidResume(t *testing.T) {
 func TestWorkflow_InvalidResultComment(t *testing.T) {
 	cfg := baseWorkflowConfig()
 	cfg.Workflows = []config.WorkflowConfig{
-		{ID: "wf", ResultComment: "always", Steps: []config.StepConfig{{ID: "s1", Agent: "architect"}}},
+		{ID: "wf", ResultComment: "bogus", Steps: []config.StepConfig{{ID: "s1", Agent: "architect"}}},
 	}
 	assertError(t, cfg, "invalid result_comment")
 }

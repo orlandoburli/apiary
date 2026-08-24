@@ -35,6 +35,8 @@ const (
 	ResultCommentOnComplete = "on_complete"
 	ResultCommentPerStep    = "per_step"
 	ResultCommentOff        = "off"
+	ResultCommentOnFail     = "on_fail" // post only when the workflow fails
+	ResultCommentAlways     = "always"  // post on both success and failure
 )
 
 // Publish modes for an agent step: whether the engine writes an APIARY_PUBLISH
