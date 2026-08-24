@@ -777,6 +777,85 @@ func TestEngine_ResultCommentOff(t *testing.T) {
 	}
 }
 
+func TestEngine_ResultCommentOnFail(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Settings.ResultComment = false
+
+	t.Run("posts on failure", func(t *testing.T) {
+		store := newFakeStore()
+		exec := &fakeExecutor{results: map[string]StepResult{"run": {Success: false, Output: "boom"}}}
+		side := &fakeSide{}
+		eng := testEngine(cfg, store, exec, side)
+
+		wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+		wf.ResultComment = config.ResultCommentOnFail
+		_, _, _ = eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "C1", Title: "t"})
+
+		if len(side.comments) != 1 {
+			t.Fatalf("expected 1 on_fail comment, got %d", len(side.comments))
+		}
+		if !strings.Contains(side.comments[0], "✗ Failed") {
+			t.Errorf("unexpected comment: %q", side.comments[0])
+		}
+	})
+
+	t.Run("silent on success", func(t *testing.T) {
+		store := newFakeStore()
+		exec := &fakeExecutor{results: map[string]StepResult{"run": {Success: true, Output: "ok"}}}
+		side := &fakeSide{}
+		eng := testEngine(cfg, store, exec, side)
+
+		wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+		wf.ResultComment = config.ResultCommentOnFail
+		_, _, _ = eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "C1", Title: "t"})
+
+		if len(side.comments) != 0 {
+			t.Errorf("expected no comments on success with on_fail mode, got: %v", side.comments)
+		}
+	})
+}
+
+func TestEngine_ResultCommentAlways(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Settings.ResultComment = false
+
+	t.Run("posts on success", func(t *testing.T) {
+		store := newFakeStore()
+		exec := &fakeExecutor{results: map[string]StepResult{"run": {Success: true, Output: "ok"}}}
+		side := &fakeSide{}
+		eng := testEngine(cfg, store, exec, side)
+
+		wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+		wf.ResultComment = config.ResultCommentAlways
+		_, _, _ = eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "C1", Title: "t"})
+
+		if len(side.comments) != 1 {
+			t.Fatalf("expected 1 comment on success with always mode, got %d", len(side.comments))
+		}
+		if !strings.Contains(side.comments[0], "✓ Done") {
+			t.Errorf("unexpected comment: %q", side.comments[0])
+		}
+	})
+
+	t.Run("posts on failure", func(t *testing.T) {
+		store := newFakeStore()
+		exec := &fakeExecutor{results: map[string]StepResult{"run": {Success: false, Output: "boom"}}}
+		side := &fakeSide{}
+		eng := testEngine(cfg, store, exec, side)
+
+		wf := synthWF(config.RouteConfig{ID: "r", Agent: "backend-dev"})
+		wf.ResultComment = config.ResultCommentAlways
+		_, _, _ = eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "C1", Title: "t"})
+
+		if len(side.comments) != 1 {
+			t.Fatalf("expected 1 comment on failure with always mode, got %d", len(side.comments))
+		}
+		if !strings.Contains(side.comments[0], "✗ Failed") {
+			t.Errorf("unexpected comment: %q", side.comments[0])
+		}
+	})
+}
+
 func TestEngine_StructuredOutputPersisted(t *testing.T) {
 	cfg := baseCfg()
 	store := newFakeStore()
