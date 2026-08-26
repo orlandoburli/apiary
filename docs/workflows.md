@@ -566,7 +566,62 @@ if: ${{ not (memory.track == "docs" or memory.track == "chore") }}
 
 ### Approval steps
 
-An approval step parks the workflow until a human acts on the source item:
+An approval step parks the workflow until a human answers it. The instance
+enters the `approval_waiting` state and survives daemon restarts.
+
+The simplest form waits for whoever is running apiary — no approver list, no
+source signals:
+
+```yaml
+- id: approve
+  type: approval
+  message: High-complexity change detected. Proceed?
+  timeout: 48h
+```
+
+Answer it from the dashboard (`y`/`n`, or `a` to open the form) or from the
+terminal:
+
+```bash
+apiary approvals                    # what is waiting
+apiary approve wf-8a31:approve      # let it through
+apiary reject  wf-8a31:approve --comment "needs a design doc first"
+```
+
+Without a `timeout` such a gate parks until it is answered, which is often
+what you want; `apiary validate` warns so it is never a surprise.
+
+#### Asking for more than yes/no
+
+Declare `fields` and the gate collects structured answers. They reach the
+workflow as `memory.<field>`, so a `choice` field is how a human picks the
+branch:
+
+```yaml
+- id: pick-rollout
+  type: approval
+  message: Release is staged. How should it go out?
+  fields:
+    - name: strategy
+      label: Rollout strategy
+      type: choice
+      options: [canary, blue_green, full]
+      required: true
+
+- id: canary-deploy
+  agent: release-engineer
+  if: ${{ memory.strategy == 'canary' }}
+```
+
+Field types are `string`, `text`, `boolean`, `number`, and `choice`. The
+dashboard renders them as a form (`a`); the CLI prompts for them on a terminal
+and takes `--field strategy=canary` off one. A **rejection never collects
+fields** — refusing a change should not mean filling in its paperwork.
+
+#### Waiting on a source signal instead
+
+`resume_on` / `abort_on` park the gate against the source item rather than a
+local answer:
 
 ```yaml
 - id: approve
@@ -579,9 +634,8 @@ An approval step parks the workflow until a human acts on the source item:
   timeout: 48h
 ```
 
-The `message` is posted to the source item (e.g. as an issue comment). The
-instance enters the `approval_waiting` state and is re-checked each poll
-cycle against the resume/abort conditions:
+The `message` is posted to the source item (e.g. as an issue comment), and the
+gate is re-checked each poll cycle against the conditions:
 
 | Condition | Fires when |
 |---|---|
@@ -591,6 +645,13 @@ cycle against the resume/abort conditions:
 
 Any single matching condition is sufficient (OR semantics). `timeout` fails
 the step if nobody responds in time.
+
+!!! warning "Comment matching has no author filter"
+    `comment_contains` scans every comment on the item, including the
+    `message` this step just posted. A gate whose message contains the word it
+    waits for resumes itself on the next poll — from the outside it looks like
+    the workflow never stopped. Either keep the trigger word out of the
+    message, or drop `resume_on` and answer the gate locally.
 
 Parked approvals are durable: they are **rehydrated after a daemon restart**
 with their original timestamps and timeout intact.

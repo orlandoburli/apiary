@@ -166,6 +166,14 @@ func confirm(prompt string) bool {
 // JSON response into out (when non-nil). It returns the HTTP status code (0 on
 // transport failure) so callers can map distinct exit codes.
 func ipcDo(method, path string, out any) (int, error) {
+	return ipcRequest(method, path, nil, out)
+}
+
+// ipcRequest performs one request against the daemon's Unix socket, optionally
+// with a body, and decodes the JSON response into out. A non-2xx response returns
+// its status alongside an error carrying the daemon's own message, so callers can
+// map the status onto an exit code.
+func ipcRequest(method, path string, body io.Reader, out any) (int, error) {
 	socketPath := daemon.SocketPath(config.DataDir(configFile))
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -174,9 +182,12 @@ func ipcDo(method, path string, out any) (int, error) {
 	}
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 
-	req, err := http.NewRequest(method, "http://apiary"+path, nil)
+	req, err := http.NewRequest(method, "http://apiary"+path, body)
 	if err != nil {
 		return 0, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := client.Do(req)
 	if err != nil {

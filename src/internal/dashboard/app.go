@@ -600,6 +600,12 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleWorkflowPickerKey(key)
 	}
 
+	// So does the approval form — its text fields consume printable keys, so no
+	// global shortcut may fire underneath it.
+	if a.model.approvalActive {
+		return a.handleApprovalFormKey(key)
+	}
+
 	// Start a workflow manually (Shift+W): pick one, run it now regardless of
 	// triggers, guards, or whether it is already running.
 	if key == "W" {
@@ -1188,13 +1194,9 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 			a.model.loading = true
 			return a, tea.Batch(a.fetchTaskDetail(row.TaskID, row.InternalTaskID), a.refreshTaskPullsCmd(row.InternalTaskID))
 		}
-	case "y", "n":
+	case "a", "y", "n":
 		if t.View == TaskViewDetail && t.DetailInstance != nil && t.DetailInstance.Approval != nil {
-			decision := "approve"
-			if key == "n" {
-				decision = "reject"
-			}
-			return a, a.approvalResponseCmd(t.DetailInstance.Approval.ID, decision)
+			return a.answerApproval(t.DetailInstance.Approval, key)
 		}
 	case "l", "enter":
 		if row, ok := a.selectedTask(); ok {
@@ -1391,13 +1393,9 @@ func (a *App) handleWorkflowMonitorKey(key string) (tea.Model, tea.Cmd) {
 		a.model.confirmAction = "restart"
 		a.model.confirmTaskID = inst.CellID
 
-	case "y", "n":
+	case "a", "y", "n":
 		if inst.Approval != nil {
-			decision := "approve"
-			if key == "n" {
-				decision = "reject"
-			}
-			return a, a.approvalResponseCmd(inst.Approval.ID, decision)
+			return a.answerApproval(inst.Approval, key)
 		}
 	}
 	return a, nil
@@ -1775,13 +1773,38 @@ func (a *App) stopInstanceCmd(instanceID string) tea.Cmd {
 	}
 }
 
-func (a *App) approvalResponseCmd(requestID, decision string) tea.Cmd {
+// approvalActor returns the name recorded against an approval response. It is
+// provenance for the audit timeline — who was at the keyboard — not an identity
+// check: the daemon only authorizes an actor when the request names approvers.
+func approvalActor() string {
+	if actor := os.Getenv("USER"); actor != "" {
+		return actor
+	}
+	return "dashboard-user"
+}
+
+// approvalResponseCmd answers a pending approval request. values carries the
+// step's structured fields (nil for a plain y/n gate) and reaches the workflow as
+// memory.<field>.
+//
+// It reports what the daemon said. The previous version discarded the response
+// entirely, so a refusal — an unauthorized actor, a missing required field, a
+// gate someone else had already answered — looked exactly like success.
+func (a *App) approvalResponseCmd(requestID, decision string, values map[string]any, feedback string) tea.Cmd {
 	return func() tea.Msg {
-		actor := os.Getenv("USER")
-		if actor == "" {
-			actor = "dashboard-user"
+		actor := approvalActor()
+		payload := map[string]any{
+			"decision":        decision,
+			"actor":           actor,
+			"idempotency_key": fmt.Sprintf("dashboard:%s:%s:%s", requestID, actor, decision),
 		}
-		body, _ := json.Marshal(map[string]any{"decision": decision, "actor": actor, "idempotency_key": fmt.Sprintf("dashboard:%s:%s:%s", requestID, actor, decision)})
+		if len(values) > 0 {
+			payload["values"] = values
+		}
+		if feedback != "" {
+			payload["feedback"] = feedback
+		}
+		body, _ := json.Marshal(payload)
 		transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", a.socketPath)
 		}}
@@ -1789,10 +1812,28 @@ func (a *App) approvalResponseCmd(requestID, decision string) tea.Cmd {
 		req, _ := http.NewRequest(http.MethodPost, "http://apiary/approvals/"+requestID+"/respond", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
-		if err == nil {
-			resp.Body.Close()
+		if err != nil {
+			return noticeMsg{text: fmt.Sprintf("Approval failed: cannot reach daemon: %v", err), isErr: true}
 		}
-		return nil
+		defer resp.Body.Close()
+		if msg, ok := ipcFailure(resp, "Approval"); !ok {
+			return msg
+		}
+		var out struct {
+			Resolved  bool `json:"resolved"`
+			Approvals int  `json:"approvals"`
+			Required  int  `json:"required"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		verb := map[string]string{"approve": "Approved", "reject": "Rejected"}[decision]
+		if verb == "" {
+			verb = "Recorded"
+		}
+		if !out.Resolved {
+			// A quorum gate that still needs other approvers.
+			return noticeMsg{text: fmt.Sprintf("%s — %d of %d approvals recorded, still waiting", verb, out.Approvals, out.Required)}
+		}
+		return noticeMsg{text: verb + " — workflow resuming"}
 	}
 }
 
@@ -3011,6 +3052,9 @@ func (a *App) View() string {
 	if a.model.pickerActive {
 		view = a.renderWorkflowPicker(view)
 	}
+	if a.model.approvalActive {
+		view = a.renderApprovalForm(view)
+	}
 	return view
 }
 
@@ -3760,11 +3804,14 @@ func renderWorkflowSteps(inst *WorkflowInstanceItem) string {
 	if inst.State == db.InstanceStateApprovalWaiting && inst.Message != "" {
 		b.WriteString("  " + StyleWarning.Render("⏸ "+inst.Message) + "\n")
 		if inst.Approval != nil {
-			b.WriteString("  " + StyleMuted.Render("Approvers: "+strings.Join(inst.Approval.Approvers, ", ")) + "\n")
+			if len(inst.Approval.Approvers) > 0 {
+				b.WriteString("  " + StyleMuted.Render("Approvers: "+strings.Join(inst.Approval.Approvers, ", ")) + "\n")
+			}
 			if len(inst.Approval.Fields) == 0 {
 				b.WriteString("  " + StyleAccent.Render("Press y to approve or n to reject") + "\n")
 			} else {
-				b.WriteString("  " + StyleMuted.Render("Structured fields required; submit through the signed webhook channel.") + "\n")
+				b.WriteString("  " + StyleAccent.Render(fmt.Sprintf(
+					"Press a to answer (%d fields) or n to reject", len(inst.Approval.Fields))) + "\n")
 			}
 		}
 	}

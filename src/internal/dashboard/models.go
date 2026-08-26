@@ -35,6 +35,16 @@ type Model struct {
 	pickerTaskID     string // focused task at open time; empty means nothing was focused
 	pickerStandalone bool   // run with no source item even though one is focused
 
+	// Approval form (a, or y/n on a request that carries fields). Renders the
+	// request's declared fields as editable rows and posts decision + values in
+	// one response. See approval_form.go.
+	approvalActive bool
+	approvalReq    *db.ApprovalRequest
+	approvalIdx    int               // cursor over the field rows
+	approvalVals   map[string]any    // committed values, by field name
+	approvalDraft  map[string]string // in-progress text for typed fields
+	approvalErr    string            // local validation message, cleared on edit
+
 	notice      string    // one-line result banner for the last IPC action
 	noticeIsErr bool      // render the banner as an error
 	noticeUntil time.Time // banner expiry; zero means no banner

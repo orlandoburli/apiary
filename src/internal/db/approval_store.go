@@ -170,6 +170,19 @@ func (c *Client) ResolveApprovalRequest(ctx context.Context, id string, response
 	req, getErr := c.GetApprovalRequest(ctx, id)
 	return req, resolved, getErr
 }
+
+// CountApprovals returns how many approve responses a request has recorded so
+// far, for progress display against RequiredApprovals. A request with no
+// approvers resolves on the first response, so this is only interesting for a
+// multi-party gate.
+func (c *Client) CountApprovals(ctx context.Context, id string) (int, error) {
+	var n int
+	err := c.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM approval_responses WHERE request_id=? AND decision=?`,
+		id, ApprovalApproved).Scan(&n)
+	return n, err
+}
+
 func (c *Client) MarkApprovalTimedOut(ctx context.Context, id string) (bool, error) {
 	return c.updateApprovalStatus(ctx, id, ApprovalTimedOut, ApprovalPending, ApprovalEscalated)
 }
