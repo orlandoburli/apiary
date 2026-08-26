@@ -30,13 +30,19 @@ const (
 	ResumeAuto      = "auto"
 )
 
-// Result comment modes for a workflow.
+// Result comment modes for a workflow. The completion modes post the workflow's
+// memory document — the aggregate the engine builds across every step — which is
+// why they are not superseded by an agent's APIARY_PUBLISH block.
 const (
-	ResultCommentOnComplete = "on_complete"
-	ResultCommentPerStep    = "per_step"
-	ResultCommentOff        = "off"
-	ResultCommentOnFail     = "on_fail" // post only when the workflow fails
-	ResultCommentAlways     = "always"  // post on both success and failure
+	ResultCommentOnComplete = "on_complete" // post the memory document when the workflow succeeds
+	ResultCommentOnFail     = "on_fail"     // post it only when the workflow fails
+	ResultCommentAlways     = "always"      // post it on both success and failure
+	ResultCommentOff        = "off"         // post nothing
+	// ResultCommentPerStep posts each step's raw output as its own comment.
+	// DEPRECATED: an agent that wants to report should emit an APIARY_PUBLISH
+	// block, which lets it choose what to say instead of dumping stdout. Still
+	// functional; warnDeprecatedResultComment advises against it at load.
+	ResultCommentPerStep = "per_step"
 )
 
 // Publish modes for an agent step: whether the engine writes an APIARY_PUBLISH
@@ -81,7 +87,8 @@ type WorkflowConfig struct {
 	// allowed (default), forbidden, or auto. Empty means allowed.
 	Resume string `yaml:"resume,omitempty"`
 	// ResultComment overrides settings.result_comment for this workflow:
-	// on_complete (default), per_step, or off. Empty inherits the global default.
+	// on_complete, on_fail, always, per_step (deprecated), or off. Empty inherits
+	// the global default.
 	ResultComment string         `yaml:"result_comment,omitempty"`
 	Trigger       *TriggerConfig `yaml:"trigger,omitempty"`
 	Steps         []StepConfig   `yaml:"steps"`

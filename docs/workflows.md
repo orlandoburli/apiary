@@ -858,8 +858,27 @@ triggered the workflow, so a label-driven trigger fires once and the item
 stops matching on the next poll. Removals run after `add_labels`, and sources
 that don't support label removal skip the directive.
 
-A workflow can also override the global result-comment behavior:
-`result_comment: on_complete | per_step | off`.
+A workflow can also override the global result-comment behavior with
+`result_comment`:
+
+| Mode | Posts |
+|---|---|
+| `on_complete` | the workflow's memory document, when it succeeds |
+| `on_fail` | the memory document, when it fails |
+| `always` | both |
+| `off` | nothing |
+| `per_step` | each step's raw output, as its own comment — **deprecated** |
+
+The completion modes post the **memory document**: the aggregate the engine
+builds from every step's `memory.write` fields. No single agent produces it, and
+`on_fail` covers exactly the runs where a step crashed, timed out, or was rate
+limited and emitted nothing at all — so these are the right tool when you want a
+guaranteed write-back.
+
+`per_step` is deprecated because it dumps a step's stdout verbatim. An agent that
+wants to report should say so deliberately with an
+[`APIARY_PUBLISH`](tasks-and-fanout.md#apiary_publish-write-back) block, choosing its own
+wording. It still works, but `apiary validate` advises against it.
 
 ## Resuming instances
 
