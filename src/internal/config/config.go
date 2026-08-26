@@ -914,17 +914,29 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// warnDeprecatedResultComment logs a deprecation warning when result_comment is
-// set to any non-default value, at the global settings level or on any workflow.
-// The feature still works (see Engine.resultCommentMode); the APIARY_PUBLISH
-// marker in agent output is the supported replacement.
+// warnDeprecatedResultComment logs a deprecation warning for result_comment
+// per_step, the one mode APIARY_PUBLISH actually replaces.
+//
+// The original deprecation (#74) covered every mode, on the premise that an
+// agent-emitted marker supersedes an engine-posted comment. That holds for
+// per_step, which dumps a step's raw stdout: an agent that wants to report can
+// say so deliberately, and better, with APIARY_PUBLISH.
+//
+// It does not hold for the completion modes. on_complete, on_fail and always
+// post the workflow's *memory document* — an aggregate the engine builds across
+// every step (Engine.applyCompletion), which no single agent's output contains.
+// on_fail is the sharper case: it exists precisely for runs where a step failed,
+// timed out, or hit a rate limit and produced no usable output at all, so there
+// may be no agent left to emit a marker. Warning there told operators to replace
+// a working feature with one that structurally cannot cover it — and #431 then
+// extended those very modes, leaving the config both deprecated and growing.
+//
+// The per_step path stays functional; this is advice, not removal.
 func warnDeprecatedResultComment(cfg *Config) {
-	const msg = "result_comment is deprecated; use APIARY_PUBLISH marker in agent output instead"
-	if cfg.Settings.ResultComment {
-		aplog.Warn("settings.result_comment: %s", msg)
-	}
+	const msg = "result_comment: per_step is deprecated; have the agent emit an APIARY_PUBLISH block instead " +
+		"(the on_complete/on_fail/always modes are not deprecated — they post the workflow memory document)"
 	for _, wf := range cfg.Workflows {
-		if wf.ResultComment != "" {
+		if wf.ResultComment == ResultCommentPerStep {
 			aplog.Warn("workflow %q: %s", wf.ID, msg)
 		}
 	}
