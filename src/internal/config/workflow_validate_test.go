@@ -260,12 +260,27 @@ func TestWorkflow_OnFailGotoNotAncestor(t *testing.T) {
 	cfg.Workflows = []config.WorkflowConfig{
 		{ID: "wf", Steps: []config.StepConfig{
 			{ID: "a", Agent: "architect"},
-			{ID: "b", Agent: "backend-dev"},
-			// b does not depend on a, so goto a is not an ancestor back-edge.
-			{ID: "c", Agent: "architect", DependsOn: []string{"b"}, OnFail: &config.StepOutcome{Goto: "a", MaxRetries: 1}},
+			// Jumping forward to a step declared later is not a back-edge.
+			{ID: "b", Agent: "backend-dev", OnFail: &config.StepOutcome{Goto: "c", MaxRetries: 1}},
+			{ID: "c", Agent: "architect"},
 		}},
 	}
 	assertError(t, cfg, "must target an ancestor")
+}
+
+// Declaration order makes an earlier step a valid back-edge target, because
+// steps are sequenced implicitly — `a` precedes `b` precedes `c`, so `goto a`
+// from `c` is a genuine loop-back even with no depends_on anywhere.
+func TestWorkflow_OnFailGotoEarlierStepIsAnAncestor(t *testing.T) {
+	cfg := baseWorkflowConfig()
+	cfg.Workflows = []config.WorkflowConfig{
+		{ID: "wf", Steps: []config.StepConfig{
+			{ID: "a", Agent: "architect"},
+			{ID: "b", Agent: "backend-dev"},
+			{ID: "c", Agent: "architect", OnFail: &config.StepOutcome{Goto: "a", MaxRetries: 1}},
+		}},
+	}
+	assertNoError(t, cfg)
 }
 
 // Regression: a v2 workflow mixes plain sequential steps (chained only via the

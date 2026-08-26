@@ -17,9 +17,21 @@ import (
 // than re-dissolved into a sequential group — so re-validating an in-place-lowered
 // Config (Config.Validate mutates) preserves concurrency and the join policy.
 func LowerV2Workflow(wf WorkflowConfig) (WorkflowConfig, error) {
-	// Quick exit: no step uses v2 fields → nothing to do.
+	// No step uses a v2 field, so there is nothing to lower — but the steps still
+	// need the implicit sequential edges the engine promises. Without them a flat
+	// workflow reaches the DAG with no dependencies at all, every step is
+	// immediately runnable, and they run concurrently: an approval step gated
+	// nothing, and the step after it could finish before the instance even parked.
+	//
+	// The early exit stays because it is also the idempotence guard: a workflow
+	// that has already been lowered reports no v2 steps (Condition replaces If,
+	// and a lowered parallel node is explicitly excluded), so re-entering the full
+	// pass would rewrite already-rewritten expressions. sequenceSteps is safe to
+	// re-run — it only fills in edges that are missing.
 	if !anyV2Steps(wf.Steps) {
-		return wf, nil
+		out := wf
+		out.Steps = sequenceSteps(wf.Steps)
+		return out, nil
 	}
 
 	lc := &lowerCtx{
@@ -69,6 +81,31 @@ func buildStepIndex(steps []StepConfig) map[string]StepConfig {
 	}
 	walk(steps)
 	return m
+}
+
+// sequenceSteps threads the implicit sequential ordering through a step list the
+// lowering pass leaves alone: each step depends on the one declared before it.
+//
+// This is what makes "steps run in the order they are declared" true — the
+// promise the docs make and that the removal of `depends_on` points authors at.
+// It uses SeqDependsOn rather than DependsOn for the same reason lowerLeafStep
+// does: a condition-skipped step must not block its successor.
+//
+// It is idempotent, and it never overrides an edge a step already carries, so it
+// is safe on an already-lowered workflow.
+func sequenceSteps(steps []StepConfig) []StepConfig {
+	out := make([]StepConfig, len(steps))
+	prevID := ""
+	for i, s := range steps {
+		out[i] = s
+		if prevID != "" && len(s.DependsOn) == 0 && len(s.SeqDependsOn) == 0 {
+			out[i].SeqDependsOn = []string{prevID}
+		}
+		if s.ID != "" {
+			prevID = s.ID
+		}
+	}
+	return out
 }
 
 // anyV2Steps reports whether any step in the list (or its children) uses a v2
