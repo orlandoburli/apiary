@@ -58,12 +58,17 @@ type AgentCount struct {
 }
 
 type OverviewTab struct {
-	Status            string
-	Uptime            string
-	Concurrency       int
-	ActiveAgents      int
-	ActiveRuns        int
-	QueuedTasks       int
+	Status       string
+	Uptime       string
+	Concurrency  int
+	ActiveAgents int
+	ActiveRuns   int
+	QueuedTasks  int
+	// PendingApprovals counts approval requests nobody has answered yet. It is
+	// the only Overview number that is a to-do rather than a measurement: a gate
+	// with no timeout waits forever, and until now nothing outside the Tasks tab
+	// said one was waiting.
+	PendingApprovals  int
 	CompletedToday    int
 	FailedToday       int
 	ThroughputRatio   string

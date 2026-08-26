@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -154,5 +155,74 @@ func TestApprovalFormRendersOptions(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("form is missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// The banner must show the step's own question. Both call sites used to
+// overwrite it with a fixed "reply on the task to resume or abort" line, which
+// discarded the prompt and pointed operators at the source-comment flow — a
+// no-op for a gate that declares no resume_on.
+func TestApprovalPromptShowsTheStepsQuestion(t *testing.T) {
+	item := &WorkflowInstanceItem{
+		ID:    "wf-1",
+		State: db.InstanceStateApprovalWaiting,
+		Approval: &db.ApprovalRequest{
+			ID:      "wf-1:gate",
+			Message: "Release 2.4 is staged. How should it go out?",
+		},
+	}
+	// A nil db keeps the already-loaded request; the message must win.
+	applyApprovalPrompt(context.Background(), nil, item)
+	if item.Message != "Release 2.4 is staged. How should it go out?" {
+		t.Fatalf("banner = %q, want the approval's own message", item.Message)
+	}
+	if strings.Contains(item.Message, "reply on the task") {
+		t.Fatal("the stale source-comment advice is back")
+	}
+}
+
+// An empty Message hides the banner and its key hints, so a request without one
+// still needs a non-empty fallback — but not the misleading old text.
+func TestApprovalPromptFallsBackWithoutAMessage(t *testing.T) {
+	item := &WorkflowInstanceItem{ID: "wf-1", State: db.InstanceStateApprovalWaiting}
+	applyApprovalPrompt(context.Background(), nil, item)
+	if item.Message == "" {
+		t.Fatal("an empty message would hide the approval banner entirely")
+	}
+	if strings.Contains(item.Message, "reply on the task") {
+		t.Fatalf("fallback should not advise replying on the task: %q", item.Message)
+	}
+}
+
+// Instances that are not parked at an approval must be left alone.
+func TestApprovalPromptIgnoresOtherStates(t *testing.T) {
+	item := &WorkflowInstanceItem{ID: "wf-1", State: db.InstanceStateRunning, Message: "step 2 of 4"}
+	applyApprovalPrompt(context.Background(), nil, item)
+	if item.Message != "step 2 of 4" {
+		t.Fatalf("message was rewritten for a running instance: %q", item.Message)
+	}
+}
+
+// Overview must surface a waiting approval, since a gate with no timeout waits
+// forever and nothing outside the Tasks tab used to mention one.
+func TestOverviewShowsPendingApprovals(t *testing.T) {
+	a := newFormApp()
+	a.model.overviewTab = &OverviewTab{PendingApprovals: 2}
+	out := stripANSI(a.renderOverviewTab(40))
+	if !strings.Contains(out, "Approvals:") {
+		t.Fatalf("overview is missing the approvals row:\n%s", out)
+	}
+	if !strings.Contains(out, "2 ⏸") {
+		t.Fatalf("overview should show the pending count:\n%s", out)
+	}
+
+	// Zero stays quiet — it is a to-do counter, not an alert to cry wolf with.
+	a.model.overviewTab = &OverviewTab{}
+	out = stripANSI(a.renderOverviewTab(40))
+	if !strings.Contains(out, "Approvals:") {
+		t.Fatalf("the row should still render at zero:\n%s", out)
+	}
+	if strings.Contains(out, "⏸") {
+		t.Fatalf("zero approvals should not render an alert:\n%s", out)
 	}
 }
