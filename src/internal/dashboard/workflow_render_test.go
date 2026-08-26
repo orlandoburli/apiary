@@ -98,10 +98,26 @@ func TestRenderWorkflowSteps_ApprovalActions(t *testing.T) {
 			t.Fatalf("missing %q:\n%s", want, out)
 		}
 	}
+	// With declared fields the answer is a form, not a keystroke — the detail
+	// panel points at it rather than sending the operator to the webhook.
 	inst.Approval.Fields = []map[string]any{{"name": "ticket", "required": true}}
 	out = stripANSI(renderWorkflowSteps(inst))
-	if !strings.Contains(out, "signed webhook") {
+	if !strings.Contains(out, "Press a to answer (1 fields)") {
 		t.Fatalf("structured-field guidance missing:\n%s", out)
+	}
+}
+
+// A gate with no approvers is answered by whoever is at the keyboard, so the
+// panel must not print an empty "Approvers:" line.
+func TestRenderWorkflowSteps_OperatorGateOmitsApprovers(t *testing.T) {
+	inst := &WorkflowInstanceItem{ID: "wf-2", Workflow: "release", State: db.InstanceStateApprovalWaiting,
+		Message: "Ship it?", Approval: &db.ApprovalRequest{ID: "wf-2:gate"}}
+	out := stripANSI(renderWorkflowSteps(inst))
+	if strings.Contains(out, "Approvers:") {
+		t.Fatalf("unexpected approvers line for an operator gate:\n%s", out)
+	}
+	if !strings.Contains(out, "Press y to approve or n to reject") {
+		t.Fatalf("missing approve/reject hint:\n%s", out)
 	}
 }
 

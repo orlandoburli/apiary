@@ -98,7 +98,13 @@ func workflowCapNeeds(w WorkflowConfig) []capNeed {
 		sctx := fmt.Sprintf("step %q", s.ID)
 		switch s.StepType() {
 		case StepTypeApproval:
-			needs = append(needs, capNeed{sctx + " (approval)", func(c SourceCaps) bool { return c.Approvals }})
+			// An operator gate is answered locally and never evaluates a source
+			// signal, so it needs no TaskPoller — requiring one would block a
+			// perfectly valid gate on a read-only source (and on standalone runs,
+			// which have no source binding at all).
+			if !s.IsOperatorGate() {
+				needs = append(needs, capNeed{sctx + " (approval)", func(c SourceCaps) bool { return c.Approvals }})
+			}
 		case StepTypeWaitFor:
 			if s.WaitFor != nil && (s.WaitFor.Kind == "" || s.WaitFor.Kind == WaitKindCI) {
 				needs = append(needs, capNeed{sctx + " (wait_for ci)", func(c SourceCaps) bool { return c.CIWait }})

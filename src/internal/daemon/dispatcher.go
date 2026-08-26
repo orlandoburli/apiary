@@ -1456,7 +1456,11 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 	mux.HandleFunc("/events", d.handleExecutionEvents)
 	mux.HandleFunc("/events/stream", d.handleExecutionEventStream)
 	mux.HandleFunc("/approvals", d.handleApprovals)
-	mux.HandleFunc("/approvals/", d.handleApprovalResponse)
+	// The daemon's ctx, not the request's: a resolved approval advances the
+	// workflow after the HTTP exchange has already been answered.
+	mux.HandleFunc("/approvals/", func(w http.ResponseWriter, r *http.Request) {
+		d.handleApprovalResponse(ctx, w, r)
+	})
 	mux.HandleFunc("/restart/", func(w http.ResponseWriter, r *http.Request) {
 		// Human references reach this route too (CDT-123, #1953), and '#' must be
 		// percent-encoded by the caller or it would be read as a URL fragment and

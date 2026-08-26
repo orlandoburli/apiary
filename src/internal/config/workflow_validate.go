@@ -465,9 +465,12 @@ func validateApprovalStep(sctx string, s StepConfig) []error {
 	if s.Message == "" {
 		errs = append(errs, fmt.Errorf("%s: approval step requires a message", sctx))
 	}
-	if (s.ResumeOn == nil || s.ResumeOn.IsEmpty()) && len(s.Approvers) == 0 {
-		errs = append(errs, fmt.Errorf("%s: approval step requires resume_on or at least one approver", sctx))
-	}
+	// A step with neither resume_on nor approvers is the operator gate: it parks
+	// and waits for a local answer from the dashboard or `apiary approve`. That is
+	// the natural shape for a tool one person runs on their own machine, so it is
+	// legal — EvaluateApproval already returns ApprovalWait for it, and nothing
+	// but a local response or the timeout un-parks it. WorkflowWarnings flags the
+	// timeout-less case rather than failing the config.
 	for name, raw := range map[string]string{"remind_after": s.RemindAfter, "escalate_after": s.EscalateAfter} {
 		if raw != "" {
 			if d, err := time.ParseDuration(raw); err != nil || d <= 0 {
@@ -846,6 +849,19 @@ func (c *Config) WorkflowWarnings() []string {
 			warnings = append(warnings, fmt.Sprintf(
 				"workflow %q has no trigger and is not referenced as a sub-workflow; it will never run on its own (start it with `apiary dispatch %s`)",
 				wf.ID, wf.ID))
+		}
+		for _, s := range flattenSteps(wf.Steps) {
+			// abort_on can still end the wait from the source side, so only a gate
+			// with no external exit at all parks truly indefinitely.
+			if !s.IsOperatorGate() || s.Timeout != "" || (s.AbortOn != nil && !s.AbortOn.IsEmpty()) {
+				continue
+			}
+			// Don't name a request id here: it is <instance-id>:<step-id> and the
+			// instance does not exist until the workflow runs. Point at the command
+			// that lists the real ids instead.
+			warnings = append(warnings, fmt.Sprintf(
+				"workflow %q step %q waits for a local answer and has no timeout; it parks indefinitely until answered (`apiary approvals` lists what is waiting)",
+				wf.ID, s.ID))
 		}
 	}
 	return warnings

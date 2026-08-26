@@ -185,6 +185,28 @@ genuinely running is not started a second time.
 Pressing **`C`** on a selected task works the same way — confirm with `y` / `Y`
 to delete the task's logs and execution records, or any other key to cancel.
 
+#### Answering an approval
+
+A workflow parked at an approval step shows its question in the task detail and
+in the workflow monitor. Answer it there:
+
+| Key | Action |
+|---|---|
+| `y` | approve — or open the form, when the step declares fields |
+| `n` | reject |
+| `a` | open the form |
+
+The form renders the step's declared fields: `↑` / `↓` move between them, a
+choice is selected with `←` / `→` or its number, a boolean toggles with space,
+`Enter` approves, `Ctrl+R` rejects, `Esc` cancels. Submitted values reach the
+workflow as `${{ memory.<field> }}`.
+
+The result is reported in the banner — including a refusal, such as a gate
+someone else has already answered. Rejecting never asks for the fields.
+
+The same requests are answerable from the terminal with `apiary approvals`; see
+[Human-in-the-loop approvals](human-approvals.md).
+
 #### Starting a workflow manually
 
 **`W`** (Shift+W) opens a picker listing every configured workflow. `↑` / `↓`

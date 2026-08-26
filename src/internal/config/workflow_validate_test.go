@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/orlandoburli/apiary/internal/config"
@@ -429,14 +430,65 @@ func TestWorkflow_ApprovalMissingMessage(t *testing.T) {
 	assertError(t, cfg, "requires a message")
 }
 
-func TestWorkflow_ApprovalMissingResumeOn(t *testing.T) {
+// An approval step with neither resume_on nor approvers is the operator gate: it
+// parks until answered from the dashboard or the CLI. It is valid config.
+func TestWorkflow_OperatorGateIsValid(t *testing.T) {
 	cfg := baseWorkflowConfig()
 	cfg.Workflows = []config.WorkflowConfig{
 		{ID: "wf", Steps: []config.StepConfig{
-			{ID: "s", Type: config.StepTypeApproval, Message: "ok"},
+			{ID: "s", Type: config.StepTypeApproval, Message: "ok", Timeout: "24h"},
 		}},
 	}
-	assertError(t, cfg, "requires resume_on")
+	assertNoError(t, cfg)
+}
+
+// Without a timeout nothing but a local answer ever un-parks the gate, which is
+// often intended — so it warns rather than failing.
+func TestWorkflow_OperatorGateWithoutTimeoutWarns(t *testing.T) {
+	cfg := baseWorkflowConfig()
+	cfg.Workflows = []config.WorkflowConfig{
+		{ID: "wf", Trigger: &config.TriggerConfig{}, Steps: []config.StepConfig{
+			{ID: "gate", Type: config.StepTypeApproval, Message: "ok"},
+		}},
+	}
+	assertNoError(t, cfg)
+
+	warnings := cfg.WorkflowWarnings()
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "parks indefinitely") && strings.Contains(w, "gate") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected an indefinite-park warning for the timeout-less gate, got %v", warnings)
+	}
+
+	// A timeout, or an abort_on that can end the wait from the source, silences it.
+	cfg.Workflows[0].Steps[0].Timeout = "1h"
+	if w := cfg.WorkflowWarnings(); len(w) != 0 {
+		t.Fatalf("expected no warnings once a timeout is set, got %v", w)
+	}
+}
+
+// A gate answered locally never reads a source signal, so it must not demand a
+// TaskPoller from the configured source.
+func TestWorkflow_OperatorGateNeedsNoSourceCapability(t *testing.T) {
+	prev := config.SourceCapabilities
+	config.SourceCapabilities = func(string) config.SourceCaps { return config.SourceCaps{} }
+	t.Cleanup(func() { config.SourceCapabilities = prev })
+
+	cfg := baseWorkflowConfig()
+	cfg.Workflows = []config.WorkflowConfig{
+		{ID: "wf", Steps: []config.StepConfig{
+			{ID: "gate", Type: config.StepTypeApproval, Message: "ok", Timeout: "1h"},
+		}},
+	}
+	assertNoError(t, cfg)
+
+	// Naming approvers brings the source back into play (delegated/webhook flows).
+	cfg.Workflows[0].Steps[0].Approvers = []string{"alice"}
+	assertError(t, cfg, "requires a capability")
 }
 
 func TestWorkflow_SensitiveActionRequiresApprovalPolicy(t *testing.T) {

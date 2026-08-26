@@ -81,20 +81,43 @@ workflows:
       # ── 2. High-complexity gate ──────────────────────────────────────────────
       # An approval step guards high-complexity changes; low/medium skip straight
       # to implementation. The `if:` condition is evaluated after classify runs.
+      #
+      # With no `approvers` and no `resume_on`, this is an operator gate: it parks
+      # until you answer it from the dashboard (y / n / a) or the terminal
+      # (`apiary approvals`, `apiary approve <request-id>`). The `fields` turn it
+      # from yes/no into a question — every answer lands in memory.<field>.
       - id: approve
         type: approval
         if: ${{ memory.complexity == "high" }}
         message: |
           High-complexity change detected (complexity=${{ memory.complexity }}).
-          Comment `approve` to proceed or `reject` to stop.
-        resume_on: {comment_contains: "approve"}
-        abort_on:  {comment_contains: "reject"}
+          How should it be implemented?
+        fields:
+          - name: track
+            label: Implementation track
+            type: choice
+            options: [full, minimal]
+            required: true
         timeout: 48h
 
+      # NOTE: a source-signal gate is the other shape —
+      #   resume_on: {comment_contains: "approve"}
+      #   abort_on:  {comment_contains: "reject"}
+      # Keep the trigger word OUT of `message` if you use it: comment matching has
+      # no author filter, so a message that says "comment approve" matches itself
+      # on the next poll and the gate never actually waits.
+
       # ── 3. Implement ─────────────────────────────────────────────────────────
+      # The gate's answer steers which implementation runs.
       - id: implement
         agent: engineer
+        if: ${{ memory.track != "minimal" }}
         prompt: "Implement the change following the approach in memory."
+
+      - id: implement-minimal
+        agent: engineer
+        if: ${{ memory.track == "minimal" }}
+        prompt: "Implement the smallest change that resolves the issue."
 
       # ── 4. Review with automatic retry loop ─────────────────────────────────
       # The reviewer writes a `verdict` field. If it is "rejected" the engine

@@ -188,6 +188,30 @@ validation gate and what applying does.
 
 ## Intervening
 
+### `apiary approvals` / `approve` / `reject`
+
+Answer an approval step that has parked its workflow. See
+[Human-in-the-loop approvals](human-approvals.md).
+
+```sh
+apiary approvals                                   # what is waiting
+apiary approvals --status all --json               # every request, machine-readable
+apiary approvals <request-id>                      # one request, with the fields it expects
+
+apiary approve <request-id>                        # prompts for any declared fields
+apiary approve <request-id> --field strategy=canary --field ticket=OPS-482
+apiary reject  <request-id> --comment "needs a design doc first"
+```
+
+Values submitted with `--field` reach the workflow as `${{ memory.<field> }}`,
+which is how a `choice` field decides what runs next. On a terminal, fields left
+unsupplied are prompted for; off one, a missing required field is an error rather
+than a prompt, so a scripted approval never hangs. A rejection never collects
+fields.
+
+Exit codes: `0` resolved · `3` recorded but the gate still waits (a quorum gate) ·
+`4` unknown or already answered · `1` transport or validation.
+
 ### `apiary resume`
 
 Replay a failed or interrupted workflow instance as a new immutable descendant.

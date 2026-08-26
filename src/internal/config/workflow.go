@@ -353,6 +353,20 @@ func (s StepConfig) StepType() string {
 	return s.Type
 }
 
+// IsOperatorGate reports whether this step is an approval that only a local
+// operator can resume: no approvers to authorize against and no resume_on for a
+// source signal to match. EvaluateApproval returns ApprovalWait for such a step
+// forever, so the only ways past it are a dashboard/CLI response or its timeout.
+//
+// It is the natural shape for a single-operator install, where there is nobody
+// to name in approvers: and a source-comment trigger would match the step's own
+// posted message.
+func (s StepConfig) IsOperatorGate() bool {
+	return s.StepType() == StepTypeApproval &&
+		len(s.Approvers) == 0 &&
+		(s.ResumeOn == nil || s.ResumeOn.IsEmpty())
+}
+
 // MemoryReadEnabled reports whether the workflow memory document should be
 // injected into this step. Defaults to true; only an explicit `memory.read: false`
 // disables it.
