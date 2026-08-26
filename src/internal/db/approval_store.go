@@ -171,6 +171,17 @@ func (c *Client) ResolveApprovalRequest(ctx context.Context, id string, response
 	return req, resolved, getErr
 }
 
+// CountPendingApprovals returns how many approval requests are still unanswered.
+// Escalated counts as unanswered: escalation re-targets a request, it does not
+// resolve it — an operator still has to respond.
+func (c *Client) CountPendingApprovals(ctx context.Context) (int, error) {
+	var n int
+	err := c.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM approval_requests WHERE status IN (?,?)`,
+		ApprovalPending, ApprovalEscalated).Scan(&n)
+	return n, err
+}
+
 // CountApprovals returns how many approve responses a request has recorded so
 // far, for progress display against RequiredApprovals. A request with no
 // approvers resolves on the first response, so this is only interesting for a

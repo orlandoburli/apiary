@@ -1862,6 +1862,33 @@ func (a *App) openWorkflowMonitorOrLogs(taskID string) tea.Cmd {
 	}
 }
 
+// applyApprovalPrompt loads the pending approval request for an instance parked
+// at an approval step and shows the operator what it is actually asking.
+//
+// Both call sites used to overwrite Message with a fixed string — "Awaiting human
+// approval — reply on the task to resume or abort." — which threw away the step's
+// own question and, worse, gave advice that only ever applied to a resume_on gate.
+// A gate with no source trigger cannot be answered by replying on the task at all,
+// so the banner was telling operators to do the one thing that does nothing.
+//
+// The message the step declared is the prompt; the keys to answer it come from
+// renderWorkflowSteps. The fixed line survives only as a fallback for an instance
+// whose request row is missing or carries no message, since an empty Message
+// hides the banner (and its key hints) entirely.
+func applyApprovalPrompt(ctx context.Context, dbConn *db.Client, item *WorkflowInstanceItem) {
+	if item == nil || item.State != db.InstanceStateApprovalWaiting {
+		return
+	}
+	if dbConn != nil {
+		item.Approval, _ = dbConn.GetApprovalByInstance(ctx, item.ID)
+	}
+	if item.Approval != nil && strings.TrimSpace(item.Approval.Message) != "" {
+		item.Message = item.Approval.Message
+		return
+	}
+	item.Message = "Awaiting human approval."
+}
+
 // buildWorkflowInstanceItem hydrates a WorkflowInstanceItem (steps + per-step
 // usage) from a stored workflow instance, for the live monitor views.
 func buildWorkflowInstanceItem(ctx context.Context, dbConn *db.Client, inst *db.WorkflowInstance) *WorkflowInstanceItem {
@@ -1872,10 +1899,7 @@ func buildWorkflowInstanceItem(ctx context.Context, dbConn *db.Client, inst *db.
 		CellID:    inst.CellID,
 		CreatedAt: inst.CreatedAt,
 	}
-	if inst.State == "approval_waiting" {
-		item.Message = "Awaiting human approval — reply on the task to resume or abort."
-		item.Approval, _ = dbConn.GetApprovalByInstance(ctx, inst.ID)
-	}
+	applyApprovalPrompt(ctx, dbConn, item)
 	steps, err := dbConn.ListStepRuns(ctx, inst.ID)
 	if err == nil {
 		usage := loadStepUsageFallback(ctx, dbConn, inst.ID, steps)
@@ -2270,6 +2294,10 @@ func (a *App) fetchOverview() tea.Cmd {
 		}
 
 		if dbConn != nil {
+			// Independent of the stats rollup: a waiting approval must still be
+			// reported when the 24h aggregate query fails.
+			data.PendingApprovals, _ = dbConn.CountPendingApprovals(ctx)
+
 			if stats, err := dbConn.GetDashboardStats(ctx, time.Now().AddDate(0, 0, -1)); err == nil && stats != nil {
 				data.Status = stats.DispatcherStatus
 				data.ActiveAgents = stats.ActiveAgents
@@ -2802,9 +2830,7 @@ func (a *App) buildTaskHistory(ctx context.Context, dbConn *db.Client, internalT
 				if polls, err := dbConn.ListCIPollChecks(ctx, seg.Instance.ID); err == nil {
 					item.CIPolls = mapCIPolls(polls)
 				}
-				if item.State == db.InstanceStateApprovalWaiting {
-					item.Message = "Awaiting human approval — reply on the task to resume or abort."
-				}
+				applyApprovalPrompt(ctx, dbConn, &item)
 				segments = append(segments, TaskHistorySegmentItem{
 					Instance: item,
 					Logs:     mapLogLines(seg.Logs),
@@ -3228,10 +3254,19 @@ func (a *App) renderOverviewTab(height int) string {
 	if o.TodayTokens > 0 {
 		tokensStr = fmt.Sprintf("%s in / %s out / %s total", format.Tokens(o.TodayInputTokens), format.Tokens(o.TodayOutputTokens), format.Tokens(o.TodayTokens))
 	}
+	// A waiting approval is a to-do, not a measurement: it is the one line here
+	// that stays until a human acts, so it is rendered as an alert when non-zero
+	// and dimmed to a plain zero otherwise.
+	approvals := StyleMuted.Render("0")
+	if o.PendingApprovals > 0 {
+		approvals = StyleWarning.Render(fmt.Sprintf("%d ⏸ — press a on the task to answer", o.PendingApprovals))
+	}
+
 	fmt.Fprintf(&b,
 		"\nTasks (24h):\n"+
 			"  Running:    %d\n"+
 			"  Queued:     %d\n"+
+			"  Approvals:  %s\n"+
 			"  Completed:  %s\n"+
 			"  Failed:     %s\n"+
 			"\n"+
@@ -3245,6 +3280,7 @@ func (a *App) renderOverviewTab(height int) string {
 			"  Success Rate: %s\n",
 		o.ActiveRuns,
 		o.QueuedTasks,
+		approvals,
 		StyleSuccess.Render(fmt.Sprintf("%d ✓", o.CompletedToday)),
 		StyleError.Render(fmt.Sprintf("%d ✗", o.FailedToday)),
 		costStr,
