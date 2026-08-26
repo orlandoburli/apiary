@@ -131,7 +131,7 @@ the plugin's publisher, then verify the artifact out of band (checksum,
 signature):
 
 ```bash
-go build -o apiary-plugin-source-file ./src/examples/plugins/source-file
+(cd src && go build -o ../apiary-plugin-source-file ./examples/plugins/source-file)
 ```
 
 **2. Create the plugin's directory** under a searched location, named by the
