@@ -113,14 +113,14 @@ func (e *Engine) RecheckWait(ctx context.Context, instanceID string) (terminal b
 		return false
 	}
 	step, isWait := r.waitStepConfig()
-	sourceID, itemID := r.cell.SourceID, r.cell.ID
+	target := r.waitTarget()
 	deadline := r.waitDeadline
 	e.mu.Unlock()
 
 	if !isWait {
 		return false
 	}
-	res, _ := e.RunWaitStep(ctx, instanceID, step, sourceID, itemID, deadline)
+	res, _ := e.RunWaitStep(ctx, instanceID, step, target, deadline)
 	return !res.Pending
 }
 

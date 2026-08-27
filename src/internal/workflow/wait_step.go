@@ -24,7 +24,7 @@ func (e *Engine) RunWaitStep(
 	ctx context.Context,
 	instID string,
 	step config.StepConfig,
-	sourceID, sourceItemID string,
+	target WaitTarget,
 	deadline time.Time,
 ) (StepResult, error) {
 	if step.WaitFor == nil {
@@ -34,9 +34,9 @@ func (e *Engine) RunWaitStep(
 	cfg := step.WaitFor
 	switch cfg.Kind {
 	case "", config.WaitKindCI:
-		return e.checkCIWaitStep(ctx, instID, step, sourceID, sourceItemID, deadline)
+		return e.checkCIWaitStep(ctx, instID, step, target, deadline)
 	case config.WaitKindDependency:
-		return e.checkDependencyWaitStep(ctx, instID, step, sourceID, sourceItemID, deadline)
+		return e.checkDependencyWaitStep(ctx, instID, step, target, deadline)
 	default:
 		return StepResult{}, fmt.Errorf("wait_for step %q unsupported kind: %q", step.ID, cfg.Kind)
 	}
@@ -49,7 +49,7 @@ func (e *Engine) checkCIWaitStep(
 	ctx context.Context,
 	instID string,
 	step config.StepConfig,
-	sourceID, sourceItemID string,
+	target WaitTarget,
 	deadline time.Time,
 ) (StepResult, error) {
 	if e.ciChecker == nil {
@@ -80,7 +80,20 @@ func (e *Engine) checkCIWaitStep(
 		}, nil
 	}
 
-	status, err := e.ciChecker(ctx, sourceID, sourceItemID)
+	status, err := e.ciChecker(ctx, CIStatusRequest{
+		TaskID:       target.TaskID,
+		SourceID:     target.SourceID,
+		SourceItemID: target.SourceItemID,
+		CISourceID:   cfg.CISource,
+	})
+	if errors.Is(err, ErrPRNotLinked) {
+		// The workflow waits on a PR that no step has reported yet (the forge is
+		// a different system from the source, so nothing else can discover it).
+		// That is a "not yet", not a failure: the deadline still bounds it.
+		aplog.Debug("wait_for step %q: no pull request linked to the task yet", step.ID)
+		e.recordCIPoll(ctx, instID, step.ID, "pending", "", "no pull request linked to the task yet")
+		return StepResult{Pending: true}, nil
+	}
 	if errors.Is(err, source.ErrUnsupported) {
 		// The source will never gain the capability by waiting: fail now with the
 		// cause named, rather than polling until max_duration with a WARN a
@@ -187,7 +200,7 @@ func (e *Engine) checkDependencyWaitStep(
 	ctx context.Context,
 	instID string,
 	step config.StepConfig,
-	sourceID, sourceItemID string,
+	target WaitTarget,
 	deadline time.Time,
 ) (StepResult, error) {
 	if e.depChecker == nil {
@@ -217,7 +230,7 @@ func (e *Engine) checkDependencyWaitStep(
 		return StepResult{Pending: true}, nil
 	}
 
-	blockers, err := e.depChecker(ctx, sourceID, sourceItemID, cfg.BlockerLinkType)
+	blockers, err := e.depChecker(ctx, target.SourceID, target.SourceItemID, cfg.BlockerLinkType)
 	if errors.Is(err, source.ErrUnsupported) {
 		return e.unsupportedWait(ctx, instID, step, "dependency", err), nil
 	}

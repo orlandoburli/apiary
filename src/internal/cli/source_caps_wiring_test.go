@@ -46,7 +46,7 @@ func TestSourceCapsWiring_RealAdapters(t *testing.T) {
 		t.Errorf("dynatrace caps = %+v, want all-false (read-only problem source)", caps)
 	}
 
-	want := config.SourceCaps{SetState: true, AddLabels: true, RemoveLabels: true, Approvals: true, CIWait: true, SubIssues: true}
+	want := config.SourceCaps{SetState: true, AddLabels: true, RemoveLabels: true, Approvals: true, CIWait: true, PRCIWait: true, SubIssues: true}
 	if caps := config.SourceCapabilities("github"); caps != want {
 		t.Errorf("github caps = %+v, want %+v", caps, want)
 	}

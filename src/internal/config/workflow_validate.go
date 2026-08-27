@@ -744,6 +744,31 @@ func (c *Config) validateWaitForStep(sctx string, s StepConfig) []error {
 		errs = append(errs, fmt.Errorf("%s: wait_for step kind %q not supported (valid: ci, dependency)", sctx, cfg.Kind))
 	}
 
+	// ci_source names the source that hosts the PR whose CI this step waits on.
+	// It only makes sense for a CI wait, must name a source that exists, and
+	// that source's adapter must be able to poll CI for a pull request by
+	// number — otherwise the wait would fail at runtime for a reason the config
+	// already reveals (#444).
+	if cfg.CISource != "" {
+		switch {
+		case cfg.Kind != "" && cfg.Kind != WaitKindCI:
+			errs = append(errs, fmt.Errorf("%s: wait_for ci_source is only valid with kind \"ci\"", sctx))
+		case len(c.Sources) > 0:
+			var srcType string
+			for _, src := range c.Sources {
+				if src.ID == cfg.CISource {
+					srcType = src.Type
+					break
+				}
+			}
+			if srcType == "" {
+				errs = append(errs, fmt.Errorf("%s: wait_for ci_source %q is not a configured source", sctx, cfg.CISource))
+			} else if SourceCapabilities != nil && !SourceCapabilities(srcType).PRCIWait {
+				errs = append(errs, fmt.Errorf("%s: wait_for ci_source %q (type %q) cannot poll CI for a pull request", sctx, cfg.CISource, srcType))
+			}
+		}
+	}
+
 	// dependency-only fields are rejected on other kinds.
 	if cfg.Kind != WaitKindDependency {
 		if len(cfg.SatisfiedWhen) > 0 {

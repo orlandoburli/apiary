@@ -34,7 +34,7 @@ func waitForEngine(cfg *config.Config, store Store, exec StepExecutor, side Side
 		WithSideEffects(side),
 		WithClock(func() time.Time { return *clock }),
 		WithIDGen(func(prefix string) string { return prefix + "-" + itoa(int(seq.Add(1))) }),
-		WithCIStatusChecker(func(_ context.Context, _, _ string) (source.CIStatus, error) {
+		WithCIStatusChecker(func(_ context.Context, _ CIStatusRequest) (source.CIStatus, error) {
 			return ci()
 		}),
 	)

@@ -1171,6 +1171,10 @@
           "type": "string",
           "description": "Remove this label from the task before polling begins (resets stale labels from previous runs)"
         },
+        "ci_source": {
+          "type": "string",
+          "description": "Kind 'ci' only: id of the configured source hosting the pull request whose CI to wait on, for setups where the issue tracker and the git forge differ (a Jira task whose PRs live on GitHub). The PR itself comes from the task's linked pull requests, recorded by an earlier step's pull_request_from. Empty polls the task's own source by its item id"
+        },
         "satisfied_when": {
           "type": "array",
           "description": "Kind 'dependency' only: conditions under which a blocker counts as satisfied — 'merged' (a linked PR merged) and/or 'done' (status is Done-category). A blocker is satisfied when ANY listed condition holds. Defaults to [merged, done]",

@@ -284,9 +284,9 @@ output field carrying the PR URL, and the step registers its own PR.
 - `apiary validate` rejects a `pull_request_from` naming a field the step's
   `output` schema does not declare.
 
-This does **not** enable `wait_for {kind: ci}` on those sources: polling check
-runs needs a source adapter that can talk to the forge, which is a separate
-capability from knowing a PR's URL.
+A linked PR is also what `wait_for {kind: ci}` waits on when the forge is not
+the task's source — see [waiting on CI hosted
+elsewhere](#waiting-on-ci-hosted-elsewhere-ci_source).
 
 ### Workflow memory
 
@@ -697,8 +697,8 @@ How it works:
 - `kind: ci` needs a source that can poll check runs (GitHub today). Against a
   source that cannot — Jira, Plane, an alert source — `apiary validate` rejects
   the step at config time, wherever it sits, including inside a `parallel:`
-  group. See [linking a PR by hand](#linking-a-pr-pull_request_from) for what
-  still works on those sources.
+  group. When the PRs live on a forge that is not the task's source, add
+  [`ci_source`](#waiting-on-ci-hosted-elsewhere-ci_source) instead.
 - Each poll records a row of history — status, PR URL, per-check detail —
   which the dashboard shows in the task's detail view, so a long CI wait is
   fully auditable.
@@ -716,6 +716,65 @@ is present, it routes that failure exclusively — typically looping back to
 the implementation step so the agent rebases — with its own `max_retries`
 budget, separate from `on_fail`. Without `on_conflict`, a conflict falls
 through to `on_fail` like any other failure.
+
+#### Waiting on CI hosted elsewhere (`ci_source`)
+
+The default CI wait resolves the PR from the task's own source item, which only
+a source that hosts both the issue **and** the code can do. In the common split
+setup — issues in Jira, code on GitHub — nothing in the tracker knows what a
+pull request is, and the wait can never pass.
+
+`ci_source` names the configured source that hosts the PR, and the wait polls
+*that* forge for the PR the workflow itself reported:
+
+```yaml
+sources:
+  - id: jira
+    type: jira
+    config: {site: acme, email: ..., api_token: ...}
+  - id: github            # the forge: same repo the agents push to
+    type: github
+    config: {repo: acme/backend, api_key: ...}
+
+workflows:
+  - id: deliver
+    trigger: {match: {source: jira, labels: [ai-ready]}}
+    steps:
+      - id: implement
+        agent: engineer
+        prompt: "Implement the change and open a PR."
+        output:
+          type: object
+          properties:
+            pr_url: {type: string}
+          required: [pr_url]
+        pull_request_from: pr_url     # ← records the PR against the task
+
+      - id: check-ci
+        type: wait_for
+        wait_for:
+          kind: ci
+          ci_source: github           # ← poll THIS source, by PR number
+          check_interval: 60s
+          max_duration: 2h
+```
+
+- The PR comes from the task's linked pull requests, so a step earlier in the
+  workflow must record one with
+  [`pull_request_from`](#linking-a-pr-pull_request_from). The **most recently
+  linked** PR is the one polled — a rework lap after a red CI waits on the new
+  PR, not the old one.
+- Until a PR is linked, the wait simply stays **pending** (parked, restart-safe)
+  rather than failing — it is safe to start waiting before the PR exists.
+  `max_duration` still bounds it.
+- The task's own source needs no CI capability at all: with `ci_source` set,
+  `apiary validate` checks the *named* source instead, rejecting one that is not
+  configured or whose adapter cannot poll a PR's checks.
+- The named source must be configured for the repository the PRs live in. A PR
+  URL from a different repository is refused rather than answered with a
+  same-numbered PR of the configured one.
+- Everything else is unchanged: conflict detection, `fail_if_not_passed`,
+  `on_conflict`, poll history, restart-safe parking.
 
 ### `wait_for` steps — waiting on blockers (`kind: dependency`)
 
