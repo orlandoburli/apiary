@@ -14,8 +14,34 @@ Import path:
 import pluginsdk "github.com/orlandoburli/apiary/sdk/plugin"
 ```
 
-The SDK lives in the main Apiary module (`src/sdk/plugin`) and has no
-dependencies beyond the standard library.
+Add it with:
+
+```bash
+go get github.com/orlandoburli/apiary/sdk@latest
+```
+
+The SDK is its **own Go module** (`github.com/orlandoburli/apiary/sdk`, living
+in `sdk/` at the repository root), separate from the daemon module. Depending
+on it pulls in **nothing but the standard library** — none of the daemon's
+dependency graph.
+
+### Versioning and the protocol
+
+The SDK is tagged independently of the daemon:
+
+| Tag | Module | Example |
+|---|---|---|
+| `sdk/vX.Y.Z` | the SDK (`github.com/orlandoburli/apiary/sdk`) | `sdk/v1.0.0` → `go get github.com/orlandoburli/apiary/sdk@v1.0.0` |
+| `vX.Y.Z` | the Apiary daemon release | `v0.18.2` |
+
+So an SDK version does **not** track the daemon version — pin whichever you
+like, they move on separate schedules. What binds them is
+`pluginsdk.ProtocolVersion`, the wire protocol the SDK speaks: any SDK
+version whose `ProtocolVersion` matches the daemon's is compatible. Protocol 1
+is current, and the SDK stays on `sdk/v1.x` for as long as protocol 1 is what
+it speaks; a future protocol bump gets its own SDK major version
+(`sdk/v2.x`, import path `github.com/orlandoburli/apiary/sdk/v2`). Within a
+protocol, SDK patch and minor releases are additive and safe to upgrade.
 
 ### Entry points
 

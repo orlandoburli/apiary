@@ -10,6 +10,7 @@ on:
       - ".github/workflows/release*.yml"
       - "src/go.mod"
       - "src/go.sum"
+      - "sdk/**"
   workflow_dispatch: {}
 
 permissions:

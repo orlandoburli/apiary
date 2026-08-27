@@ -1,4 +1,5 @@
 SRC     := src
+SDK     := sdk
 BINARY  := apiary
 BIN_DIR := bin
 PKG     := github.com/orlandoburli/apiary/internal/version
@@ -13,6 +14,7 @@ LDFLAGS  := -ldflags "-X $(PKG).Version=$(VERSION)"
 .PHONY: build
 build: ## Build the apiary binary into bin/
 	@mkdir -p $(BIN_DIR)
+	cd $(SDK) && go build ./...
 	cd $(SRC) && go build $(LDFLAGS) -o ../$(BIN_DIR)/$(BINARY) ./cmd/apiary
 	@echo "→ $(BIN_DIR)/$(BINARY)  ($(VERSION))"
 
@@ -24,7 +26,8 @@ install: ## Install apiary to $$GOPATH/bin (makes it available on PATH)
 # ── test ───────────────────────────────────────────────────────────────────────
 
 .PHONY: test
-test: ## Run all tests
+test: ## Run all tests (daemon module + SDK module)
+	cd $(SDK) && go test ./...
 	cd $(SRC) && go test ./...
 
 .PHONY: test-verbose
@@ -43,11 +46,13 @@ test-cover: ## Run tests and open an HTML coverage report
 check: build test ## Build + test (use in CI)
 
 .PHONY: tidy
-tidy: ## Run go mod tidy
+tidy: ## Run go mod tidy (both modules)
+	cd $(SDK) && go mod tidy
 	cd $(SRC) && go mod tidy
 
 .PHONY: vet
-vet: ## Run go vet
+vet: ## Run go vet (both modules)
+	cd $(SDK) && go vet ./...
 	cd $(SRC) && go vet ./...
 
 # ── clean ──────────────────────────────────────────────────────────────────────

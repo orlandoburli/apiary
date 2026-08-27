@@ -11,6 +11,7 @@ require (
 	github.com/creativeprojects/go-selfupdate v1.5.2
 	github.com/joho/godotenv v1.5.1
 	github.com/kardianos/service v1.2.4
+	github.com/orlandoburli/apiary/sdk v0.0.0
 	github.com/spf13/cobra v1.10.2
 	github.com/yuin/goldmark v1.7.13
 	golang.org/x/term v0.38.0
@@ -73,3 +74,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/orlandoburli/apiary/sdk => ../sdk
