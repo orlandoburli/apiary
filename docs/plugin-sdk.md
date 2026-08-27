@@ -2,9 +2,31 @@
 
 Plugins talk to Apiary over a deliberately small JSON protocol (see
 [Protocol version 1](plugins.md#protocol-version-1)), so a plugin can be
-written in **any language**. For Go there is an official SDK that handles the
-protocol envelope for you; for everything else this page specifies exactly
-what your code — or an SDK you build for your language — must do.
+written in **any language**. Official SDKs handle the protocol envelope for you
+in **Go** and **Python**; for everything else this page specifies exactly what
+your code — or an SDK you build for your language — must do, and the
+[conformance kit](#the-conformance-kit) checks that it does.
+
+## Versioning and the protocol
+
+**Every SDK version tracks the protocol, not the Apiary release.** The daemon
+and the SDKs move on separate schedules and are versioned separately; what
+binds them is the wire protocol a given SDK speaks. Any SDK whose protocol
+version matches the daemon's is compatible — so pin whichever versions you
+like.
+
+| Artifact | Version scheme | Current |
+|---|---|---|
+| Go SDK (`github.com/orlandoburli/apiary/sdk`) | tag `sdk/vX.Y.Z` | `sdk/v1.x` → protocol 1 |
+| Python SDK (`apiary-plugin`, in `sdk/python`) | `X.Y.Z` | `1.x` → protocol 1 |
+| Apiary daemon | tag `vX.Y.Z` | see [releases](https://github.com/orlandoburli/apiary/releases) |
+
+An SDK stays on major version 1 for as long as protocol 1 is what it speaks;
+a future protocol bump gets its own SDK major version (for Go, `sdk/v2.x` with
+import path `github.com/orlandoburli/apiary/sdk/v2`; for Python,
+`apiary-plugin` 2.x). Within a protocol, SDK patch and minor releases are
+additive and safe to upgrade. Any SDK you write for another language should
+follow the same rule.
 
 ## Go SDK
 
@@ -25,23 +47,10 @@ in `sdk/` at the repository root), separate from the daemon module. Depending
 on it pulls in **nothing but the standard library** — none of the daemon's
 dependency graph.
 
-### Versioning and the protocol
-
-The SDK is tagged independently of the daemon:
-
-| Tag | Module | Example |
-|---|---|---|
-| `sdk/vX.Y.Z` | the SDK (`github.com/orlandoburli/apiary/sdk`) | `sdk/v1.0.0` → `go get github.com/orlandoburli/apiary/sdk@v1.0.0` |
-| `vX.Y.Z` | the Apiary daemon release | `v0.18.2` |
-
-So an SDK version does **not** track the daemon version — pin whichever you
-like, they move on separate schedules. What binds them is
-`pluginsdk.ProtocolVersion`, the wire protocol the SDK speaks: any SDK
-version whose `ProtocolVersion` matches the daemon's is compatible. Protocol 1
-is current, and the SDK stays on `sdk/v1.x` for as long as protocol 1 is what
-it speaks; a future protocol bump gets its own SDK major version
-(`sdk/v2.x`, import path `github.com/orlandoburli/apiary/sdk/v2`). Within a
-protocol, SDK patch and minor releases are additive and safe to upgrade.
+The tag `sdk/vX.Y.Z` releases it, independently of the daemon's `vX.Y.Z` —
+`sdk/v1.0.0` is fetched as `go get github.com/orlandoburli/apiary/sdk@v1.0.0`.
+The constant `pluginsdk.ProtocolVersion` is the protocol it speaks; see
+[Versioning and the protocol](#versioning-and-the-protocol).
 
 ### Entry points
 
@@ -154,9 +163,89 @@ echo '{"protocol":1,"request_id":"t1","capability":"source","method":"poll","con
 In Go tests, drive `ServeOne` with a `strings.Reader` and a `bytes.Buffer` —
 no subprocess needed.
 
+## Python SDK
+
+Import path:
+
+```python
+from apiary_plugin import CAPABILITY_SOURCE, PluginError, Request, main
+from apiary_plugin.source import SOURCE_METHOD_POLL, SourceItem, SourceOKResult, SourcePollResult
+```
+
+Install it from a checkout — the package lives in `sdk/python` and is **not
+published to PyPI**:
+
+```bash
+pip install ./sdk/python
+```
+
+Like the Go SDK it depends on **nothing but the standard library**, and its
+version tracks the protocol (`apiary-plugin` 1.x speaks protocol 1) — see
+[Versioning and the protocol](#versioning-and-the-protocol).
+
+### Entry points
+
+| Symbol | Purpose |
+|---|---|
+| `main(handler)` | Call from `__main__`: serves one request on stdin/stdout, reports transport failures on stderr, exits 2 on them |
+| `serve_one(handler, stdin=…, stdout=…)` | The engine behind `main`, with injectable streams — use it in tests |
+| `Request` | The decoded envelope: `protocol`, `request_id`, `capability`, `method`, `config`, `payload` |
+| `PluginError(code, message)` | **Raise** it to return an error response; both fields must be non-empty (the constructor enforces it) |
+| `TransportError` | The stream itself was unusable, so no response can be delivered — distinct from a *delivered* error |
+| `apiary_plugin.source` | Typed mirrors of `sdk/plugin/source.go`: `SourceItem`, `SourcePollRequest`/`SourcePollResult`, `SourceAckRequest`, `SourceWriteResultRequest`, `SourceOKResult`, and the method-name constants |
+
+Where the Go SDK returns `(result, *ResponseError)`, the Python SDK returns the
+result and raises `PluginError` — the same dichotomy in idiomatic Python.
+Anything with a `to_dict()` (every typed mirror) encodes itself, and empty
+optional fields are dropped exactly as the Go structs' `omitempty` drops them,
+so both SDKs put the same bytes on the wire.
+
+### A complete source plugin in Python
+
+This is the bundled example (`sdk/python/examples/source_file.py`), trimmed to
+its essence — the same behaviour as the Go `source-file` plugin:
+
+```python
+#!/usr/bin/env python3
+import json
+
+from apiary_plugin import CAPABILITY_SOURCE, PluginError, Request, main
+from apiary_plugin.source import (
+    SOURCE_METHOD_ACKNOWLEDGE, SOURCE_METHOD_POLL, SOURCE_METHOD_WRITE_RESULT,
+    SourceItem, SourceOKResult, SourcePollResult,
+)
+
+
+def handle(request: Request):
+    if request.capability != CAPABILITY_SOURCE:
+        raise PluginError("unsupported_capability", "expected capability source")
+    if request.method == SOURCE_METHOD_POLL:
+        path = request.config.get("path")
+        if not isinstance(path, str) or path == "":
+            raise PluginError("invalid_config", "config.path is required")
+        try:
+            with open(path, encoding="utf-8") as handle_:
+                items = json.load(handle_)
+        except FileNotFoundError:
+            return SourcePollResult(items=[])          # no file yet means no work yet
+        except (OSError, ValueError) as err:
+            raise PluginError("read_failed", str(err)) from err
+        return SourcePollResult(items=[SourceItem.from_dict(item) for item in items])
+    if request.method in (SOURCE_METHOD_ACKNOWLEDGE, SOURCE_METHOD_WRITE_RESULT):
+        return SourceOKResult()
+    raise PluginError("unsupported_method", f"unknown method {request.method}")
+
+
+main(handle)
+```
+
+Make it executable, pair it with a manifest declaring
+`"capabilities": ["source"]`, and [install it](plugins.md#installing-a-plugin)
+like any other plugin.
+
 ## Other languages
 
-There is no official SDK outside Go yet (tracked in
+TypeScript/Node and Rust SDKs are still open (tracked in
 [#367](https://github.com/orlandoburli/apiary/issues/367)) — but none is
 required. Complete installable examples ship in `src/examples/plugins/`:
 `source-bash` (shell script, no build step) and `source-node`
@@ -178,9 +267,15 @@ set -euo pipefail
 
 req=$(cat)                                       # the single request, stdin → EOF
 request_id=$(jq -r '.request_id' <<<"$req")
+protocol=$(jq -r '.protocol' <<<"$req")
 method=$(jq -r '.method' <<<"$req")
 
 respond() { jq -nc --arg id "$request_id" "{protocol: 1, request_id: \$id} + $1"; }
+
+if [[ "$protocol" != "1" ]]; then                # refuse, don't serve, on mismatch
+  respond '{error: {code: "unsupported_protocol", message: "expected protocol 1"}}'
+  exit 0
+fi
 
 case "$method" in
   poll)
@@ -203,9 +298,11 @@ esac
 
 Real-world versions swap the hard-coded item for `curl`/`jq` against whatever
 API you monitor. Mind stdout purity: every `echo` that isn't the response must
-go to stderr (`>&2`). A complete, installable Bash plugin (config handling,
-error responses, file-backed items) ships as
-`src/examples/plugins/source-bash`.
+go to stderr (`>&2`). Trimmed for the page, this one skips the `capability`
+check; a plugin that may be asked for more than one capability should switch on
+it too, the way `src/examples/plugins/source-bash` does — a complete,
+installable Bash plugin with config handling, error responses and file-backed
+items.
 
 ### Rust example
 
@@ -283,3 +380,63 @@ minimal SDK must:
 
 Keep it stateless — the process serves one request and exits, so an SDK needs
 no connection handling, retries, or lifecycle management.
+
+## The conformance kit
+
+You do not have to take those seven rules on trust, and you should not have to
+discover a violation from a daemon log. `sdk/conformance/` is a
+**language-agnostic golden corpus**: JSON request fixtures plus the
+expectations each response must meet, one case per rule, driven against any
+plugin executable as a subprocess over stdin/stdout. The Go SDK, the Python
+SDK, a Bash script and a Rust binary are all validated by the same corpus.
+
+Point it at your plugin:
+
+```bash
+python3 sdk/conformance/run.py -- ./my-plugin
+```
+
+If your plugin needs configuration, pass the `config:` block the host would
+have supplied from `apiary.yaml`:
+
+```bash
+python3 sdk/conformance/run.py \
+  --config '{"path":"sdk/conformance/fixtures/items.json"}' \
+  -- ./my-plugin
+```
+
+```text
+  PASS  poll-result-shape        rules 1,3,4,5,6,7
+  PASS  protocol-mismatch        rules 2
+  …
+  10/10 cases passed
+```
+
+The runner needs nothing but `python3` — no pip install, no virtualenv — and
+your plugin needs nothing but the ability to be executed, so the kit is the
+same amount of work in every ecosystem. Each case names the rules it enforces,
+so a failure points at the paragraph above that it violates; cases marked
+`[should]` are advisory and warn instead of failing. `make conformance` runs
+the whole corpus against every plugin this repository ships, **including the
+Python, Rust and Bash examples extracted from these docs** — a documented
+snippet that drifts out of conformance fails CI rather than quietly misleading
+a reader.
+
+For the full case list and how to add one, see
+[`sdk/conformance/README.md`](https://github.com/orlandoburli/apiary/blob/main/sdk/conformance/README.md).
+
+### If you are writing a new-language SDK
+
+1. Write the thinnest possible envelope wrapper and one example plugin that
+   answers `poll`, `acknowledge` and `write_result` — the Python SDK's
+   `sdk/python/examples/source_file.py` is the shape to copy.
+2. Run the kit against that example until it is 10/10. Every rule has at least
+   one case, so a green run is a real statement about the implementation, not
+   a smoke test.
+3. Mirror the typed source structs (rule 7). The corpus checks the wire shape
+   your mirrors produce: stable non-empty `id`, RFC3339 timestamps, string
+   `key:value` labels, no duplicate ids in one poll.
+4. Version it against the **protocol**, per
+   [Versioning and the protocol](#versioning-and-the-protocol).
+5. Add it to `sdk/conformance/check-examples.sh` so it is checked on every
+   change to the protocol, the docs or the SDKs.

@@ -1,0 +1,12 @@
+{
+  "name": "empty-stdin",
+  "rules": [1, 4],
+  "level": "must",
+  "description": "An empty stream carries no request, so there is nothing to answer. The plugin must not invent a success result; a non-zero exit with a diagnostic on stderr is the expected shape, and a well-formed error response is also acceptable.",
+  "stdin_raw": "",
+  "expect": {
+    "exit_code": "any",
+    "stdout": "at_most_one_json_object",
+    "outcome": "no_result"
+  }
+}

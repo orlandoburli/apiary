@@ -1,0 +1,18 @@
+{
+  "name": "trailing-data",
+  "rules": [1],
+  "level": "must",
+  "description": "Exactly one request object is delivered per process. A second object glued onto the stream is a framing error: the plugin must not answer it as if it were a valid single request. Either refuse it with an error response (exit 0) or fail the transport (no response on stdout, non-zero exit) — what it must never do is emit a success result.",
+  "request": {
+    "protocol": 1,
+    "request_id": "conf-trailing-1",
+    "capability": "source",
+    "method": "poll"
+  },
+  "stdin_suffix": "\n{\"protocol\":1,\"request_id\":\"conf-trailing-2\",\"capability\":\"source\",\"method\":\"poll\"}\n",
+  "expect": {
+    "exit_code": "any",
+    "stdout": "at_most_one_json_object",
+    "outcome": "no_result"
+  }
+}

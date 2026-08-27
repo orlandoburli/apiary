@@ -58,6 +58,12 @@ func ServeOne(ctx context.Context, input io.Reader, output io.Writer, handler Ha
 	if err := decoder.Decode(&request); err != nil {
 		return fmt.Errorf("decode request: %w", err)
 	}
+	// Exactly one request per process: a second value on the stream is a
+	// framing error, not a second turn to serve. Answering the first one
+	// anyway would let a malformed stream look like a healthy exchange.
+	if decoder.More() {
+		return fmt.Errorf("decode request: unexpected trailing data after the request; the protocol is single-shot")
+	}
 	response := Response{Protocol: ProtocolVersion, RequestID: request.RequestID}
 	if request.Protocol != ProtocolVersion {
 		response.Error = &ResponseError{Code: "unsupported_protocol", Message: fmt.Sprintf("protocol %d is unsupported; expected %d", request.Protocol, ProtocolVersion)}

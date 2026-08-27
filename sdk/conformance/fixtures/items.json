@@ -1,0 +1,22 @@
+[
+  {
+    "id": "conf-1",
+    "number": "CONF-1",
+    "title": "Conformance fixture item",
+    "description": "An item served by the plugin under test so the runner can check the SourceItem mirror.",
+    "labels": ["origin:conformance", "severity:low"],
+    "type": "task",
+    "priority": "low",
+    "state": "open",
+    "url": "https://example.invalid/conf-1",
+    "metadata": {"fixture": true},
+    "created_at": "2026-01-02T03:04:05Z",
+    "updated_at": "2026-01-02T03:04:05Z"
+  },
+  {
+    "id": "conf-2",
+    "title": "Second conformance fixture item",
+    "labels": ["origin:conformance"],
+    "state": "open"
+  }
+]

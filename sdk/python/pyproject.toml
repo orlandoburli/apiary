@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apiary-plugin"
+version = "1.0.0"
+description = "Official Python SDK for Apiary plugins (protocol 1)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "Orlando Burli" }]
+keywords = ["apiary", "plugin", "sdk", "agents", "orchestration"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries",
+]
+# Standard library only, on purpose: a plugin is a short-lived subprocess the
+# daemon spawns, and it should not drag a dependency tree into that path.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/orlandoburli/apiary"
+Documentation = "https://orlandoburli.com.br/apiary/plugin-sdk/"
+Source = "https://github.com/orlandoburli/apiary/tree/main/sdk/python"
+
+[tool.setuptools]
+packages = ["apiary_plugin"]
+
+[tool.setuptools.package-data]
+apiary_plugin = ["py.typed"]

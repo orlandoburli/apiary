@@ -1,0 +1,20 @@
+{
+  "name": "protocol-zero",
+  "rules": [2],
+  "level": "must",
+  "description": "Protocol 0 (the zero value a sloppy encoder produces when the field is dropped) is just as unsupported as any other mismatch, and must be reported the same way.",
+  "request": {
+    "protocol": 0,
+    "request_id": "conf-protocol-0",
+    "capability": "source",
+    "method": "acknowledge"
+  },
+  "expect": {
+    "exit_code": 0,
+    "stdout": "single_json_object",
+    "protocol": 1,
+    "request_id": "echo",
+    "outcome": "error",
+    "error_code": "unsupported_protocol"
+  }
+}

@@ -26,9 +26,18 @@ install: ## Install apiary to $$GOPATH/bin (makes it available on PATH)
 # ── test ───────────────────────────────────────────────────────────────────────
 
 .PHONY: test
-test: ## Run all tests (daemon module + SDK module)
+test: ## Run all tests (daemon module + Go SDK module + Python SDK)
 	cd $(SDK) && go test ./...
 	cd $(SRC) && go test ./...
+	cd $(SDK)/python && python3 -m unittest discover -s tests
+
+.PHONY: test-python
+test-python: ## Run the Python SDK's unit tests (stdlib only)
+	cd $(SDK)/python && python3 -m unittest discover -s tests
+
+.PHONY: conformance
+conformance: ## Run the plugin protocol conformance kit against every example we ship
+	$(SDK)/conformance/check-examples.sh
 
 .PHONY: test-verbose
 test-verbose: ## Run all tests with per-test output

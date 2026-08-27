@@ -1,0 +1,25 @@
+{
+  "name": "write-result-ok",
+  "rules": [4, 5, 6],
+  "level": "must",
+  "description": "source.write_result carries the run outcome back to the plugin. Like acknowledge, a plugin with no result surface answers with a result rather than an error.",
+  "request": {
+    "protocol": 1,
+    "request_id": "conf-write-result-1",
+    "capability": "source",
+    "method": "write_result",
+    "payload": {
+      "item": {"id": "conf-1", "title": "Conformance fixture item"},
+      "success": true,
+      "output": "conformance runner"
+    }
+  },
+  "expect": {
+    "exit_code": 0,
+    "stdout": "single_json_object",
+    "protocol": 1,
+    "request_id": "echo",
+    "outcome": "result",
+    "result_shape": "source_ok"
+  }
+}

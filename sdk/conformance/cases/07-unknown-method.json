@@ -1,0 +1,20 @@
+{
+  "name": "unknown-method",
+  "rules": [5, 6],
+  "level": "must",
+  "description": "An unknown method is a failure the plugin reports, not one it crashes on: a well-formed error response with a non-empty machine-readable code and a non-empty message, still exiting 0 because a response was delivered. `unsupported_method` is the conventional code (a different one is only a warning).",
+  "request": {
+    "protocol": 1,
+    "request_id": "conf-unknown-method",
+    "capability": "source",
+    "method": "definitely_not_a_method"
+  },
+  "expect": {
+    "exit_code": 0,
+    "stdout": "single_json_object",
+    "protocol": 1,
+    "request_id": "echo",
+    "outcome": "error",
+    "error_code_preferred": "unsupported_method"
+  }
+}
