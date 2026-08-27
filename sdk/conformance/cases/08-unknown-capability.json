@@ -1,0 +1,19 @@
+{
+  "name": "unknown-capability",
+  "rules": [5, 6],
+  "level": "should",
+  "description": "A capability the plugin does not implement should be refused rather than silently served by whatever method handler happens to match. Advisory: the seven contract rules do not mandate a capability check, so returning a result here is a warning, not a failure — but a plugin that answers `poll` for capability `runner` is answering a question it was not asked.",
+  "request": {
+    "protocol": 1,
+    "request_id": "conf-unknown-capability",
+    "capability": "definitely_not_a_capability",
+    "method": "poll"
+  },
+  "expect": {
+    "exit_code": 0,
+    "stdout": "single_json_object",
+    "protocol": 1,
+    "request_id": "echo",
+    "outcome": "error"
+  }
+}

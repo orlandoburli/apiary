@@ -1,0 +1,20 @@
+{
+  "name": "request-id-verbatim",
+  "rules": [3],
+  "level": "must",
+  "description": "The request id is opaque to the plugin: whatever string the host sends comes back byte for byte, including spaces, punctuation and non-ASCII characters. Plugins that re-derive or normalise the id fail here.",
+  "request": {
+    "protocol": 1,
+    "request_id": "conf/id with spaces & ünïcode-42",
+    "capability": "source",
+    "method": "acknowledge",
+    "payload": {"item": {"id": "conf-1"}, "action": "dispatched"}
+  },
+  "expect": {
+    "exit_code": 0,
+    "stdout": "single_json_object",
+    "protocol": 1,
+    "request_id": "echo",
+    "outcome": "either"
+  }
+}

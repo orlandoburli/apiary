@@ -7,6 +7,15 @@ version: 2
 
 project_name: apiary
 
+git:
+  # The SDK module is tagged `sdk/vX.Y.Z`, independently of the daemon's
+  # `vX.Y.Z`. Left alone, `git describe` picks whichever is nearest, and an
+  # SDK tag makes the derived version `sdk/v1.0.0-…` — a slash Docker rejects
+  # as an image tag ("invalid reference format"). Daemon releases are the only
+  # thing this config builds, so it only ever looks at `v*` tags.
+  ignore_tags:
+    - "sdk/*"
+
 before:
   hooks:
     - sh -c "cd src && go mod tidy"

@@ -319,8 +319,10 @@ else:
 ```
 
 Make it executable, name it in a manifest with `"capabilities": ["source"]`,
-and it installs like any other plugin. Go authors get all of the envelope
-handling for free from the SDK — see below.
+and it installs like any other plugin. Go and Python authors get all of the
+envelope handling for free from the [official SDKs](plugin-sdk.md), and any
+plugin — hand-rolled or not — can be checked against the
+[conformance kit](plugin-sdk.md#the-conformance-kit).
 
 Capability method vocabulary:
 

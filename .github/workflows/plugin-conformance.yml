@@ -1,0 +1,62 @@
+name: plugin-conformance
+
+# Runs the language-agnostic plugin protocol conformance kit against every
+# plugin implementation the repository ships — the Go and Python SDKs, the
+# in-tree Bash and Node example plugins, and the hand-rolled Python/Rust/Bash
+# examples extracted from the docs. A documented snippet that drifts out of
+# conformance fails here instead of quietly misleading a reader.
+on:
+  pull_request:
+    paths:
+      - "sdk/**"
+      - "src/examples/plugins/**"
+      - "docs/plugins.md"
+      - "docs/plugin-sdk.md"
+      - ".github/workflows/plugin-conformance.yml"
+  push:
+    branches: [main]
+    paths:
+      - "sdk/**"
+      - "src/examples/plugins/**"
+      - "docs/plugins.md"
+      - "docs/plugin-sdk.md"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # ubuntu-latest ships jq and a Rust toolchain; the kit skips anything
+      # that turns out to be missing rather than failing the run.
+      - name: Build the Node example plugin
+        working-directory: src/examples/plugins/source-node
+        run: npm install && npm run build
+
+      - name: Go SDK unit tests
+        working-directory: sdk
+        run: go test ./...
+
+      - name: Python SDK unit tests
+        working-directory: sdk/python
+        run: python3 -m unittest discover -s tests
+
+      - name: Conformance kit
+        run: sdk/conformance/check-examples.sh

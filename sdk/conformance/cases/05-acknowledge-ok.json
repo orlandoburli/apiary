@@ -1,0 +1,21 @@
+{
+  "name": "acknowledge-ok",
+  "rules": [4, 5, 6],
+  "level": "must",
+  "description": "source.acknowledge is a write-back method a source plugin must answer. Plugins with nothing to mark answer with a result (conventionally {\"ok\": true}) rather than an error.",
+  "request": {
+    "protocol": 1,
+    "request_id": "conf-ack-1",
+    "capability": "source",
+    "method": "acknowledge",
+    "payload": {"item": {"id": "conf-1", "title": "Conformance fixture item"}, "action": "dispatched"}
+  },
+  "expect": {
+    "exit_code": 0,
+    "stdout": "single_json_object",
+    "protocol": 1,
+    "request_id": "echo",
+    "outcome": "result",
+    "result_shape": "source_ok"
+  }
+}

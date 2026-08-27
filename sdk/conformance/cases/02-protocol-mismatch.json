@@ -1,0 +1,20 @@
+{
+  "name": "protocol-mismatch",
+  "rules": [2],
+  "level": "must",
+  "description": "A request carrying an unsupported protocol version must be refused with a well-formed error response whose code is exactly `unsupported_protocol` — not a crash, not a result.",
+  "request": {
+    "protocol": 99,
+    "request_id": "conf-protocol-99",
+    "capability": "source",
+    "method": "poll"
+  },
+  "expect": {
+    "exit_code": 0,
+    "stdout": "single_json_object",
+    "protocol": 1,
+    "request_id": "echo",
+    "outcome": "error",
+    "error_code": "unsupported_protocol"
+  }
+}
