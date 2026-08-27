@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/orlandoburli/apiary/internal/config"
+	"github.com/orlandoburli/apiary/internal/skills"
 )
 
 // FileKind classifies a workspace file by what changing it would affect.
@@ -39,20 +40,6 @@ type Workspace struct {
 	// an agent whose instructions it never saw is worse than one that knows a
 	// piece is missing.
 	UnresolvedSkills []string `json:"unresolved_skills,omitempty"`
-}
-
-// skillSearchDirs lists where a declared skill name may live, relative to the
-// workspace root plus the user's home.
-//
-// Apiary itself never resolves skills: agents[].skills is passed through to the
-// runner as bare names (the opencode agent file carries them verbatim), and the
-// runner applies its own conventions. So this mirrors those conventions rather
-// than reusing an apiary resolver — there is none. A name that matches nothing
-// is reported in UnresolvedSkills.
-var skillSearchDirs = []string{
-	".claude/skills",
-	".opencode/skills",
-	".apiary/skills",
 }
 
 // Discover walks the configuration to find every file that shapes agent
@@ -133,28 +120,10 @@ func Discover(cfg *config.Config, configFile string) (*Workspace, error) {
 }
 
 // resolveSkill looks for a declared skill name in the conventional locations.
+// It delegates to the shared resolver so the advisor, `apiary validate`, the
+// daemon's startup warning and the dashboard all search the same paths.
 func resolveSkill(root, name string) string {
-	if name == "" {
-		return ""
-	}
-	home, _ := os.UserHomeDir()
-	roots := []string{root}
-	if home != "" {
-		roots = append(roots, home)
-	}
-	for _, r := range roots {
-		for _, dir := range skillSearchDirs {
-			for _, candidate := range []string{
-				filepath.Join(r, dir, name, "SKILL.md"),
-				filepath.Join(r, dir, name+".md"),
-			} {
-				if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-					return candidate
-				}
-			}
-		}
-	}
-	return ""
+	return skills.Resolve(root, name).Path
 }
 
 // excludedNames matches files that must never reach a prompt or a patch,

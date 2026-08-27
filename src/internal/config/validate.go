@@ -8,6 +8,7 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/plugin"
+	"github.com/orlandoburli/apiary/internal/skills"
 )
 
 // KnownAdapters reports the registered runner adapter names. The cli package
@@ -209,6 +210,18 @@ func (c *Config) Validate() []error {
 		if a.SoulFile != "" {
 			if _, err := os.Stat(a.SoulFile); err != nil {
 				errs = append(errs, fmt.Errorf("agents[%d] %q: soul_file %q not found or not readable: %w", i, a.ID, a.SoulFile, err))
+			}
+		}
+		// A declared skill that resolves to nothing is the same class of error
+		// as a missing soul_file: the agent runs without instructions it was
+		// configured to have, and nothing else in a run says so.
+		for _, name := range a.Skills {
+			if strings.TrimSpace(name) == "" {
+				errs = append(errs, fmt.Errorf("agents[%d] %q: skills: skill name must not be empty", i, a.ID))
+				continue
+			}
+			if res := skills.Resolve("", name); !res.Found() {
+				errs = append(errs, fmt.Errorf("agents[%d] %q: %s", i, a.ID, res.Reason()))
 			}
 		}
 		if a.Runner != "" && !runnerIDs[a.Runner] {
