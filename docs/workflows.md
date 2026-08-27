@@ -31,6 +31,7 @@ loops. This page covers the whole surface.
 | `steps` | The pipeline — see [Steps](#steps) |
 | `on_complete` / `on_fail` | [Hooks](#completion-hooks) applied when the instance finishes |
 | `env` | Workflow-scope [environment variables](configuration.md#environment-variables) |
+| `working_dir` | [Working directory](runners.md#working-directory) for every step of this workflow |
 | `resume` | [Resume policy](#resuming-instances): `allowed` (default), `forbidden`, `auto` |
 
 ## Triggers
@@ -236,6 +237,7 @@ steps:
 | `publish` / `spawn` | Control agent-emitted write-backs and child tasks — see [Tasks & fan-out](tasks-and-fanout.md) |
 | `pull_request_from` | Name of an output field holding the URL of a PR this step opened; links that PR to the task — see [Linking a PR](#linking-a-pr-pull_request_from) |
 | `env` | Step-scope environment variables (highest precedence) |
+| `working_dir` | [Working directory](runners.md#working-directory) for this step (highest precedence) |
 | `idempotent` | Mark the step safe to re-run on [resume](#resuming-instances) |
 
 **Structured output.** When a step declares an `output` schema, the agent is

@@ -189,6 +189,7 @@ agents:
 | `fallback_strategy` | no | Ordering policy for the failover chain: `ordered` (default), `random`, `least_cost`, `fastest` |
 | `mcps` | no | Agent-scope [MCP servers](runners.md#mcp-servers), layered over the runner's |
 | `env` | no | Agent-scope environment variables — see [Environment variables](#environment-variables) |
+| `working_dir` | no | Directory this agent's steps run in — see [Working directory](runners.md#working-directory). Defaults to the directory holding `apiary.yaml` |
 
 Which tasks reach an agent is decided by a
 [workflow `trigger`](workflows.md#triggers), never by the agent itself.

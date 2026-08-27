@@ -131,6 +131,24 @@ type StepRequest struct {
 	// instance this step belongs to. The executor merges it between agent.env and
 	// step.env when building the subprocess environment.
 	WorkflowEnv map[string]string
+	// WorkflowWorkingDir is the workflow-scope working directory (wf.working_dir)
+	// for the instance this step belongs to. The executor folds it into the
+	// working-directory precedence chain, below step.working_dir (#436).
+	WorkflowWorkingDir string
+}
+
+// wfScope carries the workflow-level settings a step inherits while it runs:
+// the environment overlay and the authored working directory. It is threaded
+// through the scheduler so nested steps (parallel children, foreach items)
+// inherit them too.
+type wfScope struct {
+	Env        map[string]string
+	WorkingDir string
+}
+
+// scopeOf builds the inherited scope for one workflow.
+func scopeOf(wf config.WorkflowConfig) wfScope {
+	return wfScope{Env: wf.Env, WorkingDir: wf.WorkingDir}
 }
 
 // StepResult is the outcome of executing one agent step.
@@ -582,7 +600,7 @@ func (e *Engine) completeTask(ctx context.Context, r *dagRun, failed bool) {
 // publish write-back can reach the task's source bindings; they are passed by
 // value (not via dagRun) so the function stays safe to call from the parallel
 // and foreach worker goroutines.
-func (e *Engine) runStep(ctx context.Context, instID string, step config.StepConfig, cell model.SourceItem, task model.InternalTask, bindings []model.SourceBinding, memSteps []MemoryStep, wfEnv map[string]string) StepResult {
+func (e *Engine) runStep(ctx context.Context, instID string, step config.StepConfig, cell model.SourceItem, task model.InternalTask, bindings []model.SourceBinding, memSteps []MemoryStep, scope wfScope) StepResult {
 	started := e.now()
 	sr := &db.StepRun{
 		ID:                 e.newID("sr"),
@@ -616,14 +634,15 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 		ag = *agent
 	}
 	res := e.exec.ExecuteStep(ctx, StepRequest{
-		InstanceID:  instID,
-		Cell:        cell,
-		Step:        step,
-		Agent:       ag,
-		Model:       resolvedModel,
-		MemoryDoc:   memDoc,
-		Prompt:      step.Prompt,
-		WorkflowEnv: wfEnv,
+		InstanceID:         instID,
+		Cell:               cell,
+		Step:               step,
+		Agent:              ag,
+		Model:              resolvedModel,
+		MemoryDoc:          memDoc,
+		Prompt:             step.Prompt,
+		WorkflowEnv:        scope.Env,
+		WorkflowWorkingDir: scope.WorkingDir,
 	})
 
 	finished := e.now()

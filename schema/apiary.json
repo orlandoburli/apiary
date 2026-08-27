@@ -255,6 +255,10 @@
             "type": "string",
             "description": "Path to agent persona/instructions file"
           },
+          "working_dir": {
+            "type": "string",
+            "description": "Process working directory for every step that runs this agent. Overrides runners[].config.working_dir; overridden by workflow.working_dir and step.working_dir. Relative paths resolve against the directory holding apiary.yaml; '~' is expanded. Default: the apiary.yaml directory"
+          },
           "skills": {
             "type": "array",
             "description": "Skill names injected into the agent's prompt",
@@ -502,6 +506,10 @@
           },
           "on_fail": {
             "$ref": "#/definitions/OnComplete"
+          },
+          "working_dir": {
+            "type": "string",
+            "description": "Process working directory for every step of this workflow. Overrides agents[].working_dir; overridden by step.working_dir. Relative paths resolve against the directory holding apiary.yaml; '~' is expanded"
           },
           "env": {
             "type": "object",
@@ -1009,6 +1017,10 @@
         "pull_request_from": {
           "type": "string",
           "description": "Name of a field in this step's structured output holding the URL of a pull request the step opened (e.g. pr_url). The engine parses it and links the PR to the task, which is what the dashboard's 'open PR' shortcut reads — so PR-linked features work even when the task's source (Jira, Plane) cannot enumerate pull requests itself. Only valid on type=agent; must name a field the step's output schema declares"
+        },
+        "working_dir": {
+          "type": "string",
+          "description": "Process working directory for this step. Highest-precedence scope: overrides workflow.working_dir, agents[].working_dir and runners[].config.working_dir. Relative paths resolve against the directory holding apiary.yaml; '~' is expanded"
         },
         "env": {
           "type": "object",

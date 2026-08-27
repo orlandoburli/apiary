@@ -27,6 +27,13 @@ runners:
   - id: claude-cli
     type: cli
     provider: claude
+    # config:
+    #   # Fleet-wide default working directory for agents on this runner. It is
+    #   # the lowest-precedence layer of the chain
+    #   #   step.working_dir > workflow.working_dir > agents[].working_dir >
+    #   #   runners[].config.working_dir > the directory holding apiary.yaml
+    #   # Relative paths resolve against the apiary.yaml directory; "~" expands.
+    #   working_dir: ~/Projects/project-erp
     # Model Context Protocol servers exposed to every agent on this runner.
     # Each provider writes them into its own native MCP config: claude uses a
     # temp file + `--mcp-config`, cursor merges ~/.cursor/mcp.json + `--approve-mcps`,
@@ -245,6 +252,9 @@ agents:
     soul_file: .apiary/souls/engineer.md
     runner: claude-cli
     model: claude-sonnet-4-6
+    # Agent-scope working directory: every step running this agent starts here,
+    # unless the workflow or the step says otherwise. Relative to this file.
+    working_dir: ..
     skills: [git-workflow, e2e-before-pr, gitnexus-codebase, handler-error-logging, changelog-contexto]
     # Rate-limit failover chain: if claude-cli is rejected by the 5h session
     # limit, retry on these runners (in order) until one isn't rate-limited.
@@ -356,6 +366,11 @@ workflows:
       match:
         source: project-erp
         labels: [agent:reviewer]
+    # Workflow-scope working directory: every step of this workflow runs here.
+    # Overrides agents[].working_dir and runners[].config.working_dir; a step's
+    # own working_dir still wins. Relative paths resolve against this file's
+    # directory, so ".." is the repository root.
+    working_dir: ..
     # Workflow-scope env: applied to every step of this workflow. Overrides
     # agent.env; overridden by step.env. Precedence: STEP > WORKFLOW > AGENT.
     env:
@@ -364,6 +379,9 @@ workflows:
     steps:
       - id: run
         agent: reviewer
+        # Step-scope working directory: highest precedence of all. Same shape as
+        # env — the narrowest scope that declares one wins.
+        working_dir: ../src
         # Step-scope env: highest-precedence explicit scope. CI_TARGET here wins
         # over the workflow value; REVIEW_PROFILE falls back to the workflow's.
         env:

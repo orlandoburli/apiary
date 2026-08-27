@@ -97,6 +97,10 @@ type WorkflowConfig struct {
 	// Env is the workflow-scope environment overlay applied to every step of this
 	// workflow. It overrides agent.env and is overridden by step.env.
 	Env map[string]string `yaml:"env,omitempty"`
+	// WorkingDir is the process working directory for every step of this
+	// workflow, unless a step overrides it. Relative paths are resolved against
+	// the directory holding apiary.yaml; "~" is expanded.
+	WorkingDir string `yaml:"working_dir,omitempty"`
 }
 
 // ResumePolicy returns the effective resume policy, defaulting to ResumeAllowed.
@@ -224,7 +228,12 @@ type StepConfig struct {
 	FailWhen string `yaml:"fail_when,omitempty"`
 
 	// ── agent step ────────────────────────────────────────────────
-	Agent           string        `yaml:"agent,omitempty"`
+	Agent string `yaml:"agent,omitempty"`
+	// WorkingDir is the process working directory for this step's agent
+	// subprocess. Highest precedence in the working-directory chain (see
+	// Config.ResolveWorkingDir). Relative paths are resolved against the
+	// directory holding apiary.yaml; "~" is expanded.
+	WorkingDir      string        `yaml:"working_dir,omitempty"`
 	Model           string        `yaml:"model,omitempty"` // overrides agent's model for this step
 	Prompt          string        `yaml:"prompt,omitempty"`
 	SummaryPrompt   string        `yaml:"summary_prompt,omitempty"`
