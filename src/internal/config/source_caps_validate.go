@@ -106,7 +106,11 @@ func workflowCapNeeds(w WorkflowConfig) []capNeed {
 				needs = append(needs, capNeed{sctx + " (approval)", func(c SourceCaps) bool { return c.Approvals }})
 			}
 		case StepTypeWaitFor:
-			if s.WaitFor != nil && (s.WaitFor.Kind == "" || s.WaitFor.Kind == WaitKindCI) {
+			// ci_source delegates the CI check to another configured source (the
+			// forge hosting the PR), so the task's own source needs no CI
+			// capability at all — that separation is the point of the field.
+			// validateWaitForStep checks the named source instead (#444).
+			if s.WaitFor != nil && (s.WaitFor.Kind == "" || s.WaitFor.Kind == WaitKindCI) && s.WaitFor.CISource == "" {
 				needs = append(needs, capNeed{sctx + " (wait_for ci)", func(c SourceCaps) bool { return c.CIWait }})
 			}
 		}

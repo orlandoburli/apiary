@@ -50,6 +50,17 @@ GitHub's `/issues` endpoint also returns pull requests, but the adapter filters
 them out during polling — only plain issues become cells (always
 `Type: "issue"`).
 
+### As a CI source for another tracker
+
+The adapter can answer for a pull request by number, not only for one it
+resolved from its own issues. That makes it usable as the `ci_source` of a
+workflow whose tasks come from somewhere else — a Jira- or Plane-sourced
+pipeline whose agents push here. Configure it as a second source pointing at
+the repository the PRs live in, and point the wait at it with
+[`ci_source`](workflows.md#waiting-on-ci-hosted-elsewhere-ci_source). A PR URL
+belonging to another repository is refused rather than answered with this
+repository's same-numbered PR.
+
 ## PR event polling (`trigger.on: pr_*`)
 
 When any workflow declares a [PR event trigger](workflows.md#pr-event-triggers-on),

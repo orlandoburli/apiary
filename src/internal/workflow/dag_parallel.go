@@ -158,7 +158,7 @@ func (e *Engine) runParallelChild(
 	case config.StepTypeAgent:
 		return e.runStep(ctx, instID, child, cell, task, bindings, memSnap, wfEnv)
 	case config.StepTypeWaitFor:
-		res, err := e.RunWaitStep(ctx, instID, child, cell.SourceID, cell.ID, waitDeadline)
+		res, err := e.RunWaitStep(ctx, instID, child, WaitTarget{TaskID: task.ID, SourceID: cell.SourceID, SourceItemID: cell.ID}, waitDeadline)
 		if err != nil {
 			aplog.Error("workflow: parallel child %q: wait_for step failed: %v", child.ID, err)
 			return StepResult{Success: false, Output: err.Error(), Err: err}

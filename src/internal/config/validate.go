@@ -33,6 +33,7 @@ type SourceCaps struct {
 	RemoveLabels bool // source.LabelRemover — remove_labels
 	Approvals    bool // source.TaskPoller — approval steps
 	CIWait       bool // source.CIStatusPoller — wait_for kind "ci"
+	PRCIWait     bool // source.PRCIStatusPoller — wait_for kind "ci" with ci_source
 	SubIssues    bool // source.SubIssueCreator — materialize: sub_issue
 	Resolvable   bool // source.ItemResolver — interrupt_on_resolve
 }

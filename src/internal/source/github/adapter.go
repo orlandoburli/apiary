@@ -21,14 +21,15 @@ func init() {
 // Compile-time checks: the GitHub adapter supports the optional source
 // capabilities used by the dispatcher and the workflow engine.
 var (
-	_ source.StateSetter     = (*Adapter)(nil)
-	_ source.LabelAdder      = (*Adapter)(nil)
-	_ source.LabelRemover    = (*Adapter)(nil)
-	_ source.TaskPoller      = (*Adapter)(nil)
-	_ source.CIStatusPoller  = (*Adapter)(nil)
-	_ source.SubIssueCreator = (*Adapter)(nil)
-	_ source.BlockerLister   = (*Adapter)(nil)
-	_ source.PREventPoller   = (*Adapter)(nil)
+	_ source.StateSetter      = (*Adapter)(nil)
+	_ source.LabelAdder       = (*Adapter)(nil)
+	_ source.LabelRemover     = (*Adapter)(nil)
+	_ source.TaskPoller       = (*Adapter)(nil)
+	_ source.CIStatusPoller   = (*Adapter)(nil)
+	_ source.PRCIStatusPoller = (*Adapter)(nil)
+	_ source.SubIssueCreator  = (*Adapter)(nil)
+	_ source.BlockerLister    = (*Adapter)(nil)
+	_ source.PREventPoller    = (*Adapter)(nil)
 )
 
 type Adapter struct {
@@ -407,9 +408,17 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 		}
 	}
 
+	return a.ciStatusFromPRBody(ctx, prBody, cellID)
+}
+
+// ciStatusFromPRBody synthesizes a CI status from an already-fetched pull
+// request payload. It is the half of the CI check that is the same whether the
+// PR was resolved from an issue (PollCIStatus) or addressed directly by number
+// (PollCIStatusForPR); ref only labels log lines and error messages.
+func (a *Adapter) ciStatusFromPRBody(ctx context.Context, prBody []byte, ref string) (source.CIStatus, error) {
 	var pr pullRequest
 	if err := json.Unmarshal(prBody, &pr); err != nil {
-		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: decoding PR %s: %w", cellID, err)
+		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: decoding PR %s: %w", ref, err)
 	}
 
 	// A PR with merge conflicts can never merge until someone rebases/resolves it,
@@ -420,13 +429,13 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 	// definitive "has conflicts" signal; "unknown"/null means GitHub is still
 	// computing mergeability (lazy, async) so we fall through and keep waiting.
 	if pr.MergeableState == "dirty" {
-		aplog.Info("github: PR #%d for %s has merge conflicts (mergeable_state=dirty)", pr.Number, cellID)
+		aplog.Info("github: PR #%d for %s has merge conflicts (mergeable_state=dirty)", pr.Number, ref)
 		return source.CIStatus{Status: "conflict", URL: pr.HTMLURL}, nil
 	}
 
 	headSHA := pr.Head.SHA
 	if headSHA == "" {
-		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: PR %s has no head SHA", cellID)
+		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: PR %s has no head SHA", ref)
 	}
 
 	// Get the combined status for this commit.
@@ -517,6 +526,60 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 	}
 
 	return source.CIStatus{Status: overall, URL: pr.HTMLURL, Checks: checks}, nil
+}
+
+// PollCIStatusForPR checks the CI status of one pull request in this adapter's
+// repository, for tasks whose own source cannot resolve a PR (a Jira-sourced
+// task whose agents push to GitHub). Implements source.PRCIStatusPoller.
+//
+// A ref whose URL points at a different repository is a configuration error, not
+// a transient one: reporting some same-numbered PR of the configured repo would
+// be worse than failing. A ref with no URL is trusted as-is — the number is all
+// the caller had.
+func (a *Adapter) PollCIStatusForPR(ctx context.Context, pr source.PullRequestRef) (source.CIStatus, error) {
+	if pr.Number <= 0 {
+		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: pull request ref has no number")
+	}
+	if err := a.checkPRRefRepo(pr); err != nil {
+		return source.CIStatus{Status: "unknown"}, err
+	}
+
+	prPath := fmt.Sprintf("/repos/%s/%s/pulls/%d", a.owner, a.repo, pr.Number)
+	body, err := a.client.get(ctx, prPath)
+	if err != nil {
+		if isAuthError(err) {
+			return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: cannot read PR #%d — the configured token likely lacks 'Pull requests: Read' (and 'Contents: Read'): %w", pr.Number, err)
+		}
+		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: fetching PR #%d: %w", pr.Number, err)
+	}
+	return a.ciStatusFromPRBody(ctx, body, fmt.Sprintf("#%d", pr.Number))
+}
+
+// checkPRRefRepo rejects a PR ref whose URL names a repository other than the
+// one this adapter is configured for. An unparseable or repo-less URL is
+// tolerated: the check only fires on a URL that clearly identifies a different
+// owner/repo.
+func (a *Adapter) checkPRRefRepo(pr source.PullRequestRef) error {
+	if strings.TrimSpace(pr.URL) == "" {
+		return nil
+	}
+	u, err := url.Parse(pr.URL)
+	if err != nil {
+		return nil
+	}
+	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(segs) < 2 || segs[0] == "" || segs[1] == "" {
+		return nil
+	}
+	// An API URL (/repos/<owner>/<repo>/pulls/N) carries the pair one level in.
+	if segs[0] == "repos" && len(segs) >= 3 {
+		segs = segs[1:]
+	}
+	if !strings.EqualFold(segs[0], a.owner) || !strings.EqualFold(segs[1], a.repo) {
+		return fmt.Errorf("github: pull request %s belongs to %s/%s, but source %q is configured for %s/%s: %w",
+			pr.URL, segs[0], segs[1], a.id, a.owner, a.repo, source.ErrUnsupported)
+	}
+	return nil
 }
 
 // ListPullRequests returns every pull request cross-referenced from the issue,

@@ -32,18 +32,24 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 			opts = append(opts, workflow.WithMemoryStore(d.memStore))
 		}
 		// Wire up CI status polling for wait_for steps.
-		opts = append(opts, workflow.WithCIStatusChecker(func(ctx context.Context, sourceID, sourceItemID string) (source.CIStatus, error) {
-			adapter, ok := d.sources[sourceID]
+		opts = append(opts, workflow.WithCIStatusChecker(func(ctx context.Context, req workflow.CIStatusRequest) (source.CIStatus, error) {
+			// ci_source: the forge that hosts the PR is a different system from
+			// the source that owns the task (Jira issue, GitHub PR) — ask it
+			// about the task's linked PR instead of the task's own item (#444).
+			if req.CISourceID != "" {
+				return d.pollCIForLinkedPR(ctx, req)
+			}
+			adapter, ok := d.sources[req.SourceID]
 			if !ok {
-				return source.CIStatus{}, fmt.Errorf("source %q not found", sourceID)
+				return source.CIStatus{}, fmt.Errorf("source %q not found", req.SourceID)
 			}
 			poller, ok := adapter.(source.CIStatusPoller)
 			if !ok {
 				// Permanent, not transient: fail the wait at once instead of
 				// polling a capability that will never appear (#425).
-				return source.CIStatus{}, fmt.Errorf("source %q cannot poll CI status: %w", sourceID, source.ErrUnsupported)
+				return source.CIStatus{}, fmt.Errorf("source %q cannot poll CI status: %w", req.SourceID, source.ErrUnsupported)
 			}
-			return poller.PollCIStatus(ctx, sourceItemID)
+			return poller.PollCIStatus(ctx, req.SourceItemID)
 		}))
 		// Wire up blocker listing for wait_for steps with kind: dependency.
 		opts = append(opts, workflow.WithDependencyChecker(func(ctx context.Context, sourceID, sourceItemID, linkType string) ([]source.BlockerRef, error) {
@@ -758,6 +764,47 @@ func (s *wfSideEffects) PostComment(ctx context.Context, task model.InternalTask
 		}
 	}
 	return nil
+}
+
+// pollCIForLinkedPR answers a wait_for/ci check whose step named a ci_source:
+// the CI status comes from the task's most recently linked pull request, polled
+// on the forge that hosts it, rather than from the task's own source item.
+//
+// The PR set is the one pull_request_from writes as the workflow runs, so the
+// newest row (seq ASC → last) is the PR the current lap opened — a rework lap
+// after a red CI waits on its new PR, not the old one.
+//
+// Errors are split deliberately: a missing/incapable ci_source wraps
+// source.ErrUnsupported so the engine fails the step at once with the cause
+// named, while a database hiccup is returned bare and retried next cycle. No PR
+// linked yet is neither — it is workflow.ErrPRNotLinked, which keeps the wait
+// pending until a step reports one.
+func (d *Dispatcher) pollCIForLinkedPR(ctx context.Context, req workflow.CIStatusRequest) (source.CIStatus, error) {
+	adapter, ok := d.sources[req.CISourceID]
+	if !ok {
+		return source.CIStatus{}, fmt.Errorf("ci_source %q is not a configured source: %w", req.CISourceID, source.ErrUnsupported)
+	}
+	poller, ok := adapter.(source.PRCIStatusPoller)
+	if !ok {
+		return source.CIStatus{}, fmt.Errorf("ci_source %q cannot poll CI for a pull request: %w", req.CISourceID, source.ErrUnsupported)
+	}
+	if d.db == nil {
+		return source.CIStatus{}, fmt.Errorf("ci_source %q needs the task's linked pull requests, which require a database: %w", req.CISourceID, source.ErrUnsupported)
+	}
+
+	prs, err := d.db.ListTaskPullRequests(ctx, req.TaskID)
+	if err != nil {
+		return source.CIStatus{}, fmt.Errorf("listing pull requests linked to task %s: %w", req.TaskID, err)
+	}
+	if len(prs) == 0 {
+		return source.CIStatus{}, workflow.ErrPRNotLinked
+	}
+	pr := prs[len(prs)-1]
+	return poller.PollCIStatusForPR(ctx, source.PullRequestRef{
+		Number: pr.PRNumber,
+		URL:    pr.PRURL,
+		State:  pr.PRState,
+	})
 }
 
 // LinkPullRequest persists a PR a workflow step reported against the task. It

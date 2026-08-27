@@ -46,6 +46,7 @@ func init() {
 		_, caps.RemoveLabels = a.(source.LabelRemover)
 		_, caps.Approvals = a.(source.TaskPoller)
 		_, caps.CIWait = a.(source.CIStatusPoller)
+		_, caps.PRCIWait = a.(source.PRCIStatusPoller)
 		_, caps.SubIssues = a.(source.SubIssueCreator)
 		_, caps.Resolvable = a.(source.ItemResolver)
 		return caps

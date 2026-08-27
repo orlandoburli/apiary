@@ -83,6 +83,11 @@ type dagRun struct {
 	waitDeadline time.Time
 }
 
+// waitTarget is the run's work item as a wait_for step addresses it.
+func (r *dagRun) waitTarget() WaitTarget {
+	return WaitTarget{TaskID: r.task.ID, SourceID: r.cell.SourceID, SourceItemID: r.cell.ID}
+}
+
 // initDAG builds the in-memory state for a workflow instance's step graph. The
 // execution view (cell) is projected from the task + its primary binding. seed
 // is inherited memory for a sub-workflow child; depth tracks nesting.
@@ -272,7 +277,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 				case config.StepTypeWorkflow:
 					res = e.executeSubWorkflowStep(ctx, r.instID, step, r.task, r.bindings, memSnap, contribSnap, r.depth, r.wf.ID)
 				case config.StepTypeWaitFor:
-					res, _ = e.RunWaitStep(ctx, r.instID, step, r.cell.SourceID, r.cell.ID, waitDeadline)
+					res, _ = e.RunWaitStep(ctx, r.instID, step, r.waitTarget(), waitDeadline)
 				default: // StepTypeAgent
 					res = e.runStep(ctx, r.instID, step, r.cell, r.task, r.bindings, memSnap, r.wf.Env)
 				}

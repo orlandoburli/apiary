@@ -89,6 +89,24 @@ type CIStatusPoller interface {
 	PollCIStatus(ctx context.Context, cellID string) (CIStatus, error)
 }
 
+// PRCIStatusPoller is an optional interface a source may implement to check the
+// CI status of a pull request it hosts, addressed by the PR itself rather than
+// by one of the source's own items.
+//
+// It exists for the split setup where the issue tracker and the git forge are
+// different systems — a Jira- or Plane-sourced task whose agents open PRs on
+// GitHub. CIStatusPoller cannot serve that case: it takes a source item id and
+// resolves the PR from it, which only a forge that hosts BOTH can do. Here the
+// engine supplies the PR (linked to the task by pull_request_from) and the forge
+// named by the step's ci_source answers for it (#444).
+//
+// The ref carries the PR URL as well as its number: an adapter is configured for
+// exactly one repository and MUST reject a ref that belongs to another one,
+// rather than silently reporting some unrelated PR's checks.
+type PRCIStatusPoller interface {
+	PollCIStatusForPR(ctx context.Context, pr PullRequestRef) (CIStatus, error)
+}
+
 // PullRequestRef is one pull request linked to a source item (e.g. a PR that
 // cross-references a GitHub issue). State is best-effort and may be empty when
 // the source does not fetch it.

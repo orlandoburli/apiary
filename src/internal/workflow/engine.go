@@ -262,9 +262,37 @@ type ApprovalLifecycleProvider interface {
 // runs, threads workflow memory between steps, and applies side effects. In
 // Phase 2 it executes agent steps sequentially in declaration order (single-step
 // and linear chains); the DAG executor with splits/foreach arrives in Phase 3.
+// WaitTarget identifies the work item a wait_for step polls against: the task
+// itself plus the primary source binding it executes as. Both halves matter —
+// the source item is what a source-native check (CI resolved from an issue,
+// blockers of an issue) addresses, while the task is what carries cross-system
+// links such as its pull requests (#444).
+type WaitTarget struct {
+	TaskID       string
+	SourceID     string
+	SourceItemID string
+}
+
+// CIStatusRequest is one CI status question from a wait_for step. When
+// CISourceID is empty the task's own source answers for its item id (the
+// GitHub-sourced case). When set, that source is asked about the task's most
+// recently linked pull request instead, which is how a Jira-sourced task gets
+// the CI status of a PR living on a git forge.
+type CIStatusRequest struct {
+	TaskID       string
+	SourceID     string
+	SourceItemID string
+	CISourceID   string
+}
+
+// ErrPRNotLinked reports that a ci_source wait found no pull request linked to
+// the task yet. It is a "not yet", not a failure: the step stays pending until
+// a step reports its PR via pull_request_from (or the deadline elapses).
+var ErrPRNotLinked = errors.New("no pull request linked to the task")
+
 // CIStatusChecker is called by wait_for steps to check the current CI status of a PR/branch.
 // It returns a CIStatus or an error if the check fails (transient or permanent).
-type CIStatusChecker func(ctx context.Context, sourceID, sourceItemID string) (source.CIStatus, error)
+type CIStatusChecker func(ctx context.Context, req CIStatusRequest) (source.CIStatus, error)
 
 // DependencyChecker is called by wait_for steps with kind "dependency" to list
 // the task's upstream blockers. linkType is the step's blocker_link_type

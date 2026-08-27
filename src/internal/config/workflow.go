@@ -536,6 +536,18 @@ type WaitForConfig struct {
 	// Used to reset stale labels from previous runs.
 	RemoveLabel string `yaml:"remove_label,omitempty"`
 
+	// CISource names the configured source that hosts the pull request whose CI
+	// this step waits on, for setups where the issue tracker and the git forge
+	// are different systems (a Jira task whose PRs live on GitHub). Empty — the
+	// default — polls the task's own source by its item id, which is what a
+	// GitHub-sourced pipeline wants.
+	//
+	// The PR itself comes from the task's linked pull requests, which a step
+	// earlier in the workflow records with pull_request_from. Until one is
+	// linked the wait simply stays pending, exactly as it does while the source
+	// has not cross-referenced a PR yet (#444). kind: ci only.
+	CISource string `yaml:"ci_source,omitempty"`
+
 	// ── kind: dependency only ─────────────────────────────────────
 	// SatisfiedWhen lists the conditions under which a blocker counts as
 	// satisfied: "merged" (a linked PR merged) and/or "done" (status is
