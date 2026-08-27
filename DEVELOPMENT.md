@@ -62,9 +62,13 @@ apiary/
 │   │   │   ├── github/     # GitHub Issues source adapter
 │   │   │   └── plane/      # Plane source adapter
 │   │   └── tui/            # Bubble Tea terminal UI
-│   ├── sdk/                # Public SDK for custom adapters (planned)
-│   ├── go.mod
+│   ├── go.mod              # daemon module (replaces the SDK with ../sdk)
 │   └── go.sum
+├── sdk/                    # Public plugin SDK — its OWN Go module
+│   │                       #   github.com/orlandoburli/apiary/sdk
+│   │                       #   stdlib-only, tagged sdk/vX.Y.Z
+│   ├── plugin/             # protocol envelope + source wire types
+│   └── go.mod
 └── openspec/               # Specifications (proposal / design / tasks)
     ├── CHANGELOG.md
     ├── specs/              # Canonical specs per topic

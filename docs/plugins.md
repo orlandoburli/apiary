@@ -381,7 +381,9 @@ waits, `set_state`, or label write-back — `apiary validate` rejects workflows
 that require those against a `type: plugin` source. Publish findings to a
 ticket source (`APIARY_PUBLISH` / `APIARY_SPAWN`) instead.
 
-Go plugin authors can import `github.com/orlandoburli/apiary/sdk/plugin` and call
+Go plugin authors can `go get github.com/orlandoburli/apiary/sdk` — a
+standalone, standard-library-only module, tagged `sdk/vX.Y.Z` independently of
+the daemon — then import `github.com/orlandoburli/apiary/sdk/plugin` and call
 `plugin.Main(handler)`. The SDK decodes one request, rejects protocol mismatches,
 echoes the request ID, and emits the structured response envelope. Plugins in
 other languages implement the JSON contract directly — the
