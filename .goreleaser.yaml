@@ -8,11 +8,11 @@ version: 2
 project_name: apiary
 
 git:
-  # The SDK module is tagged `sdk/vX.Y.Z`, independently of the daemon's
-  # `vX.Y.Z`. Left alone, `git describe` picks whichever is nearest, and an
-  # SDK tag makes the derived version `sdk/v1.0.0-…` — a slash Docker rejects
-  # as an image tag ("invalid reference format"). Daemon releases are the only
-  # thing this config builds, so it only ever looks at `v*` tags.
+  # Kept for changelog/previous-tag selection only. NOTE: this does NOT stop
+  # `git describe` from picking an `sdk/vX.Y.Z` tag as the *current* tag —
+  # verified against goreleaser 2.16.0, where every pattern form was a no-op.
+  # The snapshot build pins GORELEASER_CURRENT_TAG instead; see
+  # .github/workflows/release-check.yml.
   ignore_tags:
     - "sdk/*"
 
