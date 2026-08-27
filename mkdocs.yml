@@ -61,6 +61,7 @@ nav:
       - Dynatrace: dynatrace-source.md
   - Plugins:
       - Overview & Architecture: plugins.md
+      - Plugin Directory: plugin-directory.md
       - Plugin SDK: plugin-sdk.md
   - Reference:
       - CLI: cli.md

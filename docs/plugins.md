@@ -426,6 +426,9 @@ requires them.
 
 ## Reference plugins
 
+For plugins you can install rather than copy, see the
+[Plugin Directory](plugin-directory.md).
+
 Each directory under `src/examples/plugins/` ships a manifest, a README with
 build/install commands, and a complete plugin:
 
