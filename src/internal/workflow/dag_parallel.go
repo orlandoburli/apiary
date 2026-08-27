@@ -55,7 +55,7 @@ func (e *Engine) runParallelStep(
 	ctx context.Context, instID string,
 	step config.StepConfig, cell model.SourceItem,
 	task model.InternalTask, bindings []model.SourceBinding,
-	memSnap []MemoryStep, wfID string, wfEnv map[string]string,
+	memSnap []MemoryStep, wfID string, scope wfScope,
 	cached map[string]StepResult, waitDeadline time.Time,
 ) (StepResult, []MemoryStep, parallelState) {
 	children := step.SubSteps
@@ -76,7 +76,7 @@ func (e *Engine) runParallelStep(
 		}
 		pending++
 		go func(i int, child config.StepConfig) {
-			res := e.runParallelChild(ctx, instID, child, cell, task, bindings, memSnap, wfEnv, waitDeadline)
+			res := e.runParallelChild(ctx, instID, child, cell, task, bindings, memSnap, scope, waitDeadline)
 			// Children never pass through the scheduler loop, so the
 			// on_missing_output guard has to be applied here (#421). A pending
 			// wait_for child is not successful yet, so the guard skips it.
@@ -152,11 +152,11 @@ func (e *Engine) runParallelChild(
 	ctx context.Context, instID string,
 	child config.StepConfig, cell model.SourceItem,
 	task model.InternalTask, bindings []model.SourceBinding,
-	memSnap []MemoryStep, wfEnv map[string]string, waitDeadline time.Time,
+	memSnap []MemoryStep, scope wfScope, waitDeadline time.Time,
 ) StepResult {
 	switch child.StepType() {
 	case config.StepTypeAgent:
-		return e.runStep(ctx, instID, child, cell, task, bindings, memSnap, wfEnv)
+		return e.runStep(ctx, instID, child, cell, task, bindings, memSnap, scope)
 	case config.StepTypeWaitFor:
 		res, err := e.RunWaitStep(ctx, instID, child, cell.SourceID, cell.ID, waitDeadline)
 		if err != nil {

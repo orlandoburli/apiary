@@ -403,7 +403,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		SummaryPrompt:      req.Step.SummaryPrompt,
 		StepID:             req.Step.ID,
 		WorkflowInstanceID: req.InstanceID,
-		WorkingDir:         "/",
+		WorkingDir:         x.d.cfg.ResolveWorkingDir(req.Agent, req.WorkflowWorkingDir, req.Step.WorkingDir),
 		Env:                env,
 		Timeout:            x.d.cfg.Settings.TaskTimeoutDuration(),
 		StallTimeout:       x.d.cfg.Settings.StallTimeoutDuration(),

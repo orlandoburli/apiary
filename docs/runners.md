@@ -197,6 +197,59 @@ runners:
     with [sandboxing](#sandboxing-agent-execution) so a successful prompt
     injection is contained, or narrow the runner with `allowed_tools`.
 
+## Working directory
+
+Every agent subprocess starts in a working directory, and that directory is the
+agent's whole frame of reference: it is what `pwd` reports, what a bare `git
+status` inspects, and the root a relative path in a prompt resolves against. An
+agent that starts nowhere in particular has to *find* the repository first —
+burning turns on it, and searching the operator's home directory on the way.
+
+Apiary resolves the directory per step, taking the first of these that is set:
+
+| # | Source | Scope |
+|---|---|---|
+| 1 | `steps[].working_dir` | One step |
+| 2 | `workflows[].working_dir` | Every step of one workflow |
+| 3 | `agents[].working_dir` | Every step that runs one agent |
+| 4 | `runners[].config.working_dir` | Every agent on one runner |
+| 5 | the directory holding `apiary.yaml` | Fleet-wide default |
+
+The last row is the default, so an agent always starts somewhere the operator
+chose — usually the very repository the hive is about.
+
+Relative paths resolve against the directory holding `apiary.yaml`, and a
+leading `~` expands to the user's home. With the config at
+`~/Projects/app/.apiary/apiary.yaml`, `working_dir: ..` is the repository root.
+
+```yaml
+runners:
+  - id: claude-cli
+    type: cli
+    provider: claude
+    config:
+      working_dir: ~/Projects/app        # fleet-wide default
+
+agents:
+  - id: docs-writer
+    runner: claude-cli
+    model: sonnet
+    working_dir: ~/Projects/app/docs     # this agent writes docs only
+
+workflows:
+  - id: release
+    working_dir: ~/Projects/app          # every step of this workflow
+    steps:
+      - id: build
+        agent: builder
+        working_dir: ~/Projects/app/src  # this step only
+```
+
+!!! tip "Checkout per workflow"
+    `workflows[].working_dir` is the knob for pointing one hive at several
+    checkouts — a workflow per repository, each with its own directory, all
+    sharing the same agents.
+
 ## API runners
 
 API runners skip the subprocess and POST to a chat-completions endpoint

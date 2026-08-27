@@ -30,6 +30,18 @@ type Config struct {
 	Plugins       []plugin.InstanceConfig             `yaml:"plugins,omitempty"`
 
 	rawContent string // original YAML text before env expansion; used by Save()
+	configDir  string // absolute directory holding apiary.yaml; base for relative paths
+}
+
+// Dir returns the absolute directory the config was loaded from. It is the base
+// for resolving relative paths declared in the config (e.g. working_dir) and the
+// last-resort working directory for agent steps. Empty when the Config was not
+// produced by Load (defaults, tests).
+func (c *Config) Dir() string {
+	if c == nil {
+		return ""
+	}
+	return c.configDir
 }
 
 // ProfileConfig is an overlay that overrides runner, model, fallbacks, and
@@ -135,7 +147,12 @@ type AgentConfig struct {
 	// MaxTurns caps the number of agent turns per step run. 0 (the default)
 	// means unlimited: CLI runners omit the provider's turns flag entirely, so
 	// long-running coding tasks are never cut short unless explicitly capped.
-	MaxTurns    int    `yaml:"max_turns,omitempty"`
+	MaxTurns int `yaml:"max_turns,omitempty"`
+	// WorkingDir is the process working directory for every step that runs this
+	// agent. It sits between workflow.working_dir and runners[].config.working_dir
+	// in the precedence chain (see Config.ResolveWorkingDir). Relative paths are
+	// resolved against the directory holding apiary.yaml; "~" is expanded.
+	WorkingDir  string `yaml:"working_dir,omitempty"`
 	SourceToken string `yaml:"source_token,omitempty"`
 	SourceEmail string `yaml:"source_email,omitempty"`
 	SourceName  string `yaml:"source_name,omitempty"`
@@ -335,8 +352,8 @@ type Settings struct {
 	// support per-agent permissions. Default false preserves the historical
 	// permissive behaviour; individual agents can always restrict themselves via
 	// agents[].permissions regardless of this setting.
-	LeastPrivilegeAgents bool   `yaml:"least_privilege_agents,omitempty"`
-	ResultComment        bool   `yaml:"result_comment"`
+	LeastPrivilegeAgents bool `yaml:"least_privilege_agents,omitempty"`
+	ResultComment        bool `yaml:"result_comment"`
 	// TaskTimeout bounds a single runner invocation end to end. Default 2h.
 	// It is a runaway backstop, not a service-level target: an implementation
 	// step legitimately runs for an hour or more, so a short total bound kills
@@ -881,6 +898,11 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	cfg.rawContent = raw
+	if abs, err := filepath.Abs(path); err == nil {
+		cfg.configDir = filepath.Dir(abs)
+	} else {
+		cfg.configDir = filepath.Dir(path)
+	}
 	if err := resolveLocalWorkflows(path, &cfg); err != nil {
 		return nil, err
 	}

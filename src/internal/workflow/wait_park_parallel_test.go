@@ -203,7 +203,7 @@ func TestParallelChild_UnsupportedKindFailsWithDiagnostic(t *testing.T) {
 
 	res := eng.runParallelChild(context.Background(), "inst-1",
 		config.StepConfig{ID: "nested", Type: config.StepTypeForeach},
-		model.SourceItem{}, model.InternalTask{}, nil, nil, nil, time.Time{})
+		model.SourceItem{}, model.InternalTask{}, nil, nil, wfScope{}, time.Time{})
 
 	if res.Success {
 		t.Fatal("an unsupported parallel child must not report success")
