@@ -27,6 +27,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/db"
 	"github.com/orlandoburli/apiary/internal/format"
 	"github.com/orlandoburli/apiary/internal/model"
+	"github.com/orlandoburli/apiary/internal/skills"
 )
 
 // refreshInterval controls how often the active tab re-queries the database.
@@ -4655,12 +4656,18 @@ func (a *App) buildAgentFiles(d *AgentStatus) []AgentFileItem {
 		})
 	}
 	for _, skill := range d.Skills {
-		path := filepath.Join(".claude", "skills", skill, "SKILL.md")
+		// Shared resolver: this panel, `apiary validate` and the daemon's
+		// startup warning must agree on where a skill is looked for.
+		res := skills.Resolve("", skill)
+		path := res.Path
+		if path == "" {
+			path = skills.PrimaryPath("", skill)
+		}
 		files = append(files, AgentFileItem{
 			Kind:    "skill",
 			Name:    skill,
 			Path:    path,
-			Missing: !fileExists(path),
+			Missing: !res.Found(),
 		})
 	}
 	return files

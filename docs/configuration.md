@@ -179,7 +179,7 @@ agents:
 | `model` | yes | Model name passed to the runner |
 | `runner` | no | Runner ID (falls back to `default_runner`) |
 | `soul_file` | no | Path to the agent's system prompt / persona file |
-| `skills` | no | Skill names injected into the agent's context |
+| `skills` | no | Skill names injected into the agent's context — each must exist as `<name>/SKILL.md`, see [Skills](#skills) |
 | `max_workers` | no | Per-agent concurrency cap (default 1) — see [concurrency](#concurrency) |
 | `max_turns` | no | Max agent turns per step run (default 0 = unlimited). CLI runners pass it as the provider's turns flag (e.g. claude's `--max-turns`); 0 omits the flag |
 | `permissions` | no | Per-agent tool permissions for runners that support them (OpenCode). Keys: `read`, `glob`, `grep`, `task`, `edit`, `bash`, `webfetch`; values `allow`/`deny`. An explicit entry always wins over `settings.least_privilege_agents`. Note: with the permissive default, `webfetch` is omitted from the generated `opencode.json` (preserving the historical key set) unless you set it explicitly |
@@ -192,6 +192,47 @@ agents:
 
 Which tasks reach an agent is decided by a
 [workflow `trigger`](workflows.md#triggers), never by the agent itself.
+
+### Skills
+
+`skills` lists **names**, not paths. Each name must exist on disk as a
+directory holding a `SKILL.md` — never as a flat `<name>.md` file:
+
+```
+.apiary/skills/
+└── git-workflow/
+    └── SKILL.md        ✅  resolves as skills: [git-workflow]
+
+.apiary/skills/
+└── git-workflow.md     ❌  never loaded
+```
+
+The search order, first match wins:
+
+| # | Path |
+|---|---|
+| 1 | `.claude/skills/<name>/SKILL.md` |
+| 2 | `.opencode/skills/<name>/SKILL.md` |
+| 3 | `.apiary/skills/<name>/SKILL.md` |
+| 4–6 | the same three directories under `$HOME` (globally installed skills) |
+
+The first three are relative to the directory the daemon runs in, the same
+root `soul_file` paths are resolved against.
+
+A skill that resolves to nothing is an error, not a warning:
+
+- `apiary validate` **fails**, listing every candidate path it tried, and — if
+  a flat `<name>.md` is sitting where the directory was expected — telling you
+  the path you probably meant;
+- the daemon logs one warning per unresolved skill at startup, naming the
+  agent, the skill and the candidates;
+- the dashboard's agent panel flags the file as `(missing)`.
+
+!!! warning "Upgrading"
+    Before this check existed, a skill that could not be located was silently
+    dropped and the agent ran without it. If your hive carries a dangling skill
+    name, `apiary validate` now fails on it: fix the layout, or remove the name
+    from `skills`.
 
 ### Agent identity
 

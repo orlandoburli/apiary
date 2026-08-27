@@ -24,14 +24,18 @@ agents:
     description: Senior software engineer — backend and API design
     soul_file: .apiary/souls/engineer.md
     model: claude-sonnet-4-6
-    skills: [backend-api, error-handling, database]
+    # Each name must exist on disk as <root>/.apiary/skills/<name>/SKILL.md
+    # (.claude/skills and .opencode/skills are searched too, plus the same
+    # directories under $HOME). `apiary validate` fails on a name it cannot
+    # find, so this example ships the declaration commented out:
+    # skills: [backend-api, error-handling, database]
     runner: claude-cli
 
   - id: reviewer
     description: Code reviewer — quality assurance and best practices
     soul_file: .apiary/souls/reviewer.md
     model: claude-sonnet-4-6
-    skills: [code-review, testing]
+    # skills: [code-review, testing]   # see the note on the engineer agent above
     runner: claude-cli
 
 workflows:

@@ -507,6 +507,11 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 	// agent pushes from the very first run.
 	installGitHooks(d.cfg.Settings.GitHooks)
 
+	// Say so, once, before the first dispatch when an agent declares a skill
+	// that is not on disk: the run would otherwise proceed with the agent
+	// quietly missing instructions it was configured to have.
+	d.warnUnresolvedSkills()
+
 	// A fresh process owns no in-flight runs: clear any executions left in the
 	// 'running' state by a previously-killed dispatcher so the dashboard's
 	// agent status reflects real, live claude processes rather than orphans.
