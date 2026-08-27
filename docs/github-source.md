@@ -28,6 +28,11 @@ sources:
 | `api_key` | no | — | GitHub personal access token (see permissions below) |
 | `base_url` | no | `https://api.github.com` | API base URL for GHES |
 
+These three are the only keys accepted; `apiary validate` rejects anything else
+(see [Accepted `config` keys](configuration.md#accepted-config-keys)). The token
+key is `api_key`, **not** `token`: a private repo polled without a token gets a
+`404` from GitHub, not a `401`, so the mistake reads as a missing repository.
+
 ### `filters`
 
 | Field | Description |

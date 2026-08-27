@@ -29,6 +29,9 @@ sources:
 | `api_key` | yes | Plane API key |
 | `base_url` | no | Instance URL for self-hosted Plane (defaults to Plane cloud) |
 
+These are the only keys accepted; `apiary validate` rejects anything else (see
+[Accepted `config` keys](configuration.md#accepted-config-keys)).
+
 ### `filters`
 
 | Field | Description |

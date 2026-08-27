@@ -51,6 +51,9 @@ workflows:
 | `ack_via_silence` | no | When `true`, acknowledging a dispatched alert creates an Alertmanager silence for it, so it stops paging while an agent investigates. Default `false` (acknowledge is a no-op) |
 | `silence_duration` | no | How long an `ack_via_silence` silence lasts. Default `2h` |
 
+These are the only keys accepted; `apiary validate` rejects anything else (see
+[Accepted `config` keys](configuration.md#accepted-config-keys)).
+
 ### `filters`
 
 | Field | Description |

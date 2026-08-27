@@ -33,6 +33,9 @@ sources:
 | `project` | no | Project key (e.g. `ERP`) or list of keys (`[ERP, OPS]`) to scope polling; recommended |
 | `started_state` | no | Status name Acknowledge transitions issues to on dispatch |
 
+These are the only keys accepted; `apiary validate` rejects anything else (see
+[Accepted `config` keys](configuration.md#accepted-config-keys)).
+
 If neither `project` nor `filters.jql` is set, the adapter polls every issue
 visible to the API user and logs a warning.
 

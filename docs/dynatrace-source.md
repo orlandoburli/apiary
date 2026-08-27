@@ -47,6 +47,9 @@ workflows:
 | `min_age` | no | Flap dampener: a problem must have been open at least this long before it is ingested. Default `1m` |
 | `lookback` | no | How far back the poll's `from=` window reaches. The problems API defaults to the last 2 hours, which would hide older still-open problems, so the adapter always sends an explicit window. Default `720h` (30 days) |
 
+These are the only keys accepted; `apiary validate` rejects anything else (see
+[Accepted `config` keys](configuration.md#accepted-config-keys)).
+
 ### `filters`
 
 | Field | Description |

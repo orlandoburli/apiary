@@ -177,6 +177,18 @@ func (c *Config) Validate() []error {
 		}
 		sourceIDs[s.ID] = true
 
+		// A key the adapter never reads is a silent misconfiguration: the
+		// daemon starts, the source polls, and the setting simply does not
+		// apply (`token:` instead of `api_key:` polls GitHub anonymously).
+		// Reject it here, where it is still cheap to fix.
+		handledElsewhere := map[string]bool{}
+		if s.Type == "plugin" {
+			// The dedicated check below reports a missing config.plugin with a
+			// message that also explains what to point it at.
+			handledElsewhere["plugin"] = true
+		}
+		errs = append(errs, validateSourceConfig(fmt.Sprintf("sources[%d] %q", i, s.ID), s.Type, s.Config, handledElsewhere)...)
+
 		// A plugin-bridged source must name a declared, enabled plugin
 		// instance — the daemon resolves it at startup, but a broken
 		// reference should fail `apiary validate`, not the daemon.
