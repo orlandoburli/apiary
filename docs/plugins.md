@@ -362,6 +362,12 @@ sources:
       labels: ["severity=critical"]
 ```
 
+`plugin` is the **only** key the source entry accepts, and `apiary validate`
+rejects any other: the bridge forwards nothing from here to the plugin process.
+The plugin's own settings belong under `plugins[].config`, where they are
+checked against the manifest's JSON schema — a setting written on the source
+entry would be silently dropped.
+
 Methods (wire types in `sdk/plugin/source.go`):
 
 | Method | Payload → result |

@@ -138,6 +138,47 @@ Adapter details, API operations, and token permissions:
 - [GitHub source](github-source.md)
 - [Plane source](plane-source.md)
 
+### Accepted `config` keys
+
+`apiary validate` checks every `sources[].config` map against the keys the
+source type's adapter actually reads, and **fails** on an unknown key or a
+missing required one. A key the adapter never reads is a silent
+misconfiguration: the daemon starts, the source polls, and the setting simply
+never applies — writing `token:` instead of `api_key:` on a private GitHub repo
+polls anonymously, and GitHub answers `404`, so the symptom reads as a missing
+repository rather than as a credential that was never sent.
+
+| Type | Required | Optional |
+|---|---|---|
+| `github` | `repo` | `api_key`, `base_url` |
+| `plane` | `api_key`, `project`, `workspace` | `base_url` |
+| `jira` | `api_token`, `base_url`, `email` | `project`, `started_state` |
+| `prometheus` | `alertmanager_url` | `ack_via_silence`, `basic_auth_password`, `basic_auth_user`, `bearer_token`, `dispatch_by`, `max_new_per_poll`, `min_age`, `silence_duration` |
+| `dynatrace` | `api_token`, `base_url` | `lookback`, `max_new_per_poll`, `min_age` |
+| `plugin` | `plugin` | — |
+
+Near-misses get a suggestion, including the well-known synonyms that no edit
+distance would catch:
+
+```text
+✗ sources[0] "gh": config: unknown key "token" — did you mean "api_key"?
+  accepted keys for type "github": api_key, base_url, repo
+```
+
+Notes:
+
+- **A required key only has to be written**, not filled in.
+  `api_key: ${GITHUB_TOKEN}` on an unset variable still passes validation, so
+  `apiary validate` runs in a shell or CI job that does not hold the hive's
+  secrets. The missing credential surfaces when the daemon connects.
+- **`type: plugin` is not open-ended.** The only key it accepts is `plugin`,
+  the id of the bridged instance; a plugin's own settings live under
+  `plugins[].config` and are checked against the plugin manifest's JSON schema.
+  A setting placed on the source entry would be dropped, so it is rejected.
+- Upgrading can turn a previously accepted config into a validation error if it
+  carries stray or legacy keys. That is deliberate: those keys were doing
+  nothing.
+
 !!! tip "Use a label as the opt-in switch"
     Filtering on a label like `ai-ready` means nothing reaches the agents
     unless a human deliberately marked it. It's the simplest safety gate.
