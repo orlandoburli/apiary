@@ -30,3 +30,6 @@ apiary.yaml.local
 *.swp
 .gitnexus
 site/
+
+# Built by `make registry-build` / the docs deploy from registry/plugins/*.yaml
+docs/registry/

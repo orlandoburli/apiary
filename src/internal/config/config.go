@@ -27,7 +27,13 @@ type Config struct {
 	Tasks         *TasksConfig                        `yaml:"tasks"`
 	Notifications *NotificationsConfig                `yaml:"notifications"`
 	PluginDirs    []string                            `yaml:"plugin_dirs,omitempty"`
-	Plugins       []plugin.InstanceConfig             `yaml:"plugins,omitempty"`
+	// PluginRegistries lists the indexes `apiary plugins search|info|install`
+	// resolve names against. Each entry is a URL, or a mapping carrying that
+	// registry's own signing key. Unset means the official index; an explicit
+	// empty list disables the registry entirely. The daemon never reads it —
+	// registry access is a CLI concern only.
+	PluginRegistries []plugin.RegistrySource `yaml:"plugin_registries,omitempty"`
+	Plugins          []plugin.InstanceConfig `yaml:"plugins,omitempty"`
 
 	rawContent string // original YAML text before env expansion; used by Save()
 	configDir  string // absolute directory holding apiary.yaml; base for relative paths
@@ -42,6 +48,17 @@ func (c *Config) Dir() string {
 		return ""
 	}
 	return c.configDir
+}
+
+// Registries returns the plugin registries to consult. A nil list means the
+// operator expressed no preference and gets the official index; an explicitly
+// empty list means they turned the registry off, and is returned as-is so
+// commands can say so instead of silently reaching out.
+func (c *Config) Registries() []plugin.RegistrySource {
+	if c == nil || c.PluginRegistries == nil {
+		return plugin.DefaultRegistrySources()
+	}
+	return c.PluginRegistries
 }
 
 // ProfileConfig is an overlay that overrides runner, model, fallbacks, and

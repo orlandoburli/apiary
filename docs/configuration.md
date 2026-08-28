@@ -36,9 +36,24 @@ version: "1"        # currently the only accepted value
 
 Out-of-process extensions are discovered through `plugin_dirs` and enabled in
 the top-level `plugins` list. `apiary validate` checks installed manifests,
-Apiary/protocol compatibility, and each enabled instance's configuration schema.
-See [Out-of-process plugins](plugins.md) for the manifest, protocol, CLI, and
+Apiary/protocol compatibility, each enabled instance's configuration schema, and
+the integrity of any pinned executable. See
+[Out-of-process plugins](plugins.md) for the manifest, protocol, CLI, and
 security model.
+
+`plugin_registries` lists the indexes `apiary plugins search|info|install`
+resolve names against — the CLI only; the daemon never contacts a registry.
+Omit it for the official index, set `[]` to disable the registry and install by
+hand, or point it at a mirror and pin that mirror's signing key:
+
+```yaml
+plugin_registries:
+  - https://orlandoburli.com.br/apiary/registry/v1/index.json
+  - url: file:///opt/apiary/registry/index.json
+    public_key: RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
+```
+
+Details in [Registries and mirrors](plugins.md#registries-and-mirrors).
 
 ## `runners`
 

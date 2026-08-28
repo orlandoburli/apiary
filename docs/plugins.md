@@ -122,9 +122,74 @@ permissions.
 
 ## Installing a plugin
 
-Apiary has no plugin registry and never downloads plugins — installation is
-placing files, deliberately. Using the bundled `source-file` reference plugin
-as the example:
+Installation is placing files, deliberately — `apiary plugins install` does that
+for you and verifies what it places, or you do it by hand. Either way the daemon
+never downloads anything, nothing is enabled without an edit you make, and the
+files land in the same place.
+
+### From the registry
+
+```bash
+apiary plugins search cron                       # find one
+apiary plugins info dev.apiary.routines          # read what it declares
+apiary plugins install dev.apiary.routines       # verify, confirm, place the files
+```
+
+`install` resolves the release for this host — version constraint, protocol,
+platform, withdrawals — **before** downloading, then verifies the archive's
+digest against the registry's, unpacks it into a staging directory outside every
+searched path, validates the manifest, confirms the archive holds the plugin you
+asked for, and verifies the executable's digest. Only then does it print what it
+is about to install and ask:
+
+```text
+dev.apiary.routines 0.1.0  (source)
+  from     https://github.com/orlandoburli/apiary-routines/releases/download/v0.1.0/…tar.gz
+  sha256   efb15a92…405f64d7 (verified)
+  registry https://orlandoburli.com.br/apiary/registry/v1/index.json (signature verified)
+  conformance  FAILED the protocol kit in registry CI — expect protocol bugs
+  pinned   f4d0c199…52b709f6 (from the registry, not from the archive)
+
+  Declared access (a declaration, not a sandbox):
+    network      no
+    read paths   configured state_file
+    write paths  configured state_file
+    secret env   (none)
+
+  This executable will run with the daemon's OS permissions, as its user.
+  A registry listing is a pointer to someone else's repository — it is not an
+  endorsement, and Apiary has not reviewed this code.
+
+Install into .apiary/plugins? [y/N]
+```
+
+That conformance line is real, and worth reading rather than skimming: registry
+CI ran the [conformance kit](plugin-sdk.md#the-conformance-kit) against this
+published binary and it failed three cases. A failure does not block a listing or
+an install — the registry describes plugins, it does not certify them — but it
+does tell you to expect protocol-level rough edges.
+
+`--yes` skips the prompt, not the summary. Other flags: `--dir` to choose which
+searched directory to install into (default: the first `plugin_dirs` entry),
+`--sha256` to cross-check the archive digest you were told to expect against the
+registry's (a disagreement stops the install before anything is downloaded),
+`--registry` for a one-off index, `--offline` to use the cached index.
+
+The commit is a single atomic rename: until you answer the prompt, nothing
+exists in any directory the daemon searches.
+
+**Pinning.** If the publisher's manifest carries no `checksum`, the installer
+writes the registry's executable digest into it. This is the point of installing
+from a registry rather than by hand: the pin now originates in a repository the
+publisher does not control, so the per-invocation integrity check compares
+against a value they cannot quietly rewrite. `apiary plugins validate` re-derives
+it too, so a swapped binary is caught by a command rather than at 3am. A
+publisher pin that disagrees with the registry aborts the install.
+
+### By hand
+
+The manual procedure needs no network and no registry, and stays fully
+supported. Using the bundled `source-file` reference plugin as the example:
 
 **1. Obtain the executable.** Build it from source or download a release from
 the plugin's publisher, then verify the artifact out of band (checksum,
@@ -152,8 +217,12 @@ apiary plugins inspect dev.apiary.source-file
 apiary plugins validate
 ```
 
+### Enabling it (either way)
+
 **4. Enable it in `apiary.yaml`.** Installation makes a plugin *available*;
-only a `plugins:` entry makes it *run*:
+only a `plugins:` entry makes it *run*. `apiary plugins install` prints this
+snippet, seeded with the config keys the manifest requires — it never edits your
+config itself:
 
 ```yaml
 plugins:
@@ -172,11 +241,65 @@ configured but inert.
 installed or reconfigured while the daemon runs is picked up on the next
 start.
 
-To **upgrade**, verify the new artifact in a staging directory, stop Apiary,
-replace the whole plugin directory atomically, run `apiary plugins validate`,
-and restart (details under [Trust and secrets](#trust-and-secrets)). To
-**uninstall**, remove the `plugins:` entry (or set `enabled: false`) and
-delete the plugin's directory.
+### Upgrading and uninstalling
+
+```bash
+apiary plugins upgrade dev.apiary.routines             # same checks, then swap
+apiary plugins upgrade dev.apiary.routines --rollback  # restore the kept version
+apiary plugins uninstall dev.apiary.routines
+```
+
+`upgrade` runs the full verification, sets the current version aside as
+`<id>.bak` (one generation), and commits the new one; if the result does not
+validate, the previous version is restored automatically. A running daemon keeps
+the version it started with until you restart it.
+
+`uninstall` removes the directory and refuses while the plugin is still enabled
+in `apiary.yaml` (`--force` overrides). It never edits your config — a `plugins:`
+entry pointing at an uninstalled id is already a clear `apiary validate` error.
+
+By hand, the equivalent is: verify the new artifact in a staging directory, stop
+Apiary, replace the whole plugin directory atomically, run
+`apiary plugins validate`, and restart (details under
+[Trust and secrets](#trust-and-secrets)). To uninstall, remove the `plugins:`
+entry (or set `enabled: false`) and delete the plugin's directory.
+
+### Registries and mirrors
+
+`plugin_registries` lists the indexes `search`, `info` and `install` resolve
+names against. Unset means the official index; each entry is a URL, or a mapping
+that pins that registry to a signing key:
+
+```yaml
+plugin_registries:
+  # The official index, verified against the key built into the binary.
+  - https://orlandoburli.com.br/apiary/registry/v1/index.json
+  # An internal mirror, verified against a key this organisation controls.
+  - url: file:///opt/apiary/registry/index.json
+    public_key: RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
+```
+
+Registries are consulted in order and the first hit wins, so a mirror listed
+first deliberately shadows the official index. Only `https://` and `file://` are
+accepted: digests protect the payload, but nothing protects a plaintext
+resolution. `plugin_registries: []` disables the registry entirely, leaving
+manual installation. The daemon never reads any of this — registry access is a
+CLI concern.
+
+The index is signed with [minisign](https://jedisct1.github.io/minisign/) and
+verified before it is parsed; the local cache is verified on read too, so a cache
+poisoned on disk is caught rather than served. **Once a key is pinned there is no
+way to skip verification** — no flag, no environment variable. When no key is
+available for a registry, commands print
+`! … is not signature-verified (no public key pinned for it)` rather than letting
+an unverified index read as a checked one.
+
+Signing covers the index, which carries the digests, which cover the artifacts.
+It does not authenticate plugin publishers; artifact signing is a separate
+problem and is not solved here.
+
+For air-gapped installs, use a `file://` mirror or `--offline`, which uses the
+cached index and never touches the network.
 
 ## Manifest version 1
 
@@ -213,10 +336,16 @@ delete the plugin's directory.
   bare hex. When present it is verified when the plugin client is created and
   again before each invocation, so a binary replaced after installation is rejected.
   A malformed value is an error rather than being treated as unpinned, so
-  `apiary validate` catches a bad pin. This is **tamper-evidence, not
-  authenticity**: the digest lives beside the binary, so anyone able to rewrite
-  the executable can rewrite the pin too. It detects accidental drift and
-  unsophisticated swaps, not a determined attacker with write access.
+  `apiary validate` catches a bad pin, and both `apiary validate` and
+  `apiary plugins validate` re-derive the digest to catch a binary that changed
+  after installation. When the publisher ships no pin, `apiary plugins install`
+  writes the registry's digest here. A publisher-written pin is
+  **tamper-evidence, not authenticity**: the digest lives beside the binary, so
+  anyone able to rewrite the executable can rewrite the pin too — it detects
+  accidental drift and unsophisticated swaps, not a determined attacker with
+  write access. An installer-injected pin originates outside the publisher's own
+  release, which is what makes it a supply-chain check rather than a drift
+  check.
 - `capabilities` accepts `source`, `runner`, `workflow_action`,
   `approval_provider`, `secret_provider`, and `event_exporter`.
 - `config_schema` supports `type`, `properties`, `required`,
@@ -402,14 +531,30 @@ Python, Rust, and Bash examples.
 
 Plugins execute with the Apiary service account's OS permissions. Before install:
 
-1. Obtain the binary from a trusted publisher.
-2. Verify its checksum and signature out of band.
-3. Inspect the manifest's network, path, and secret requirements.
+1. Obtain the binary from a trusted publisher — read the code you are about to
+   run as that account. A registry listing is a pointer to someone else's
+   repository, reviewed but not endorsed, and never a substitute for this.
+2. Verify its provenance. `apiary plugins install` does the mechanical part:
+   digests checked before unpacking, manifest cross-checked against the listing,
+   executable pinned. Installing by hand means doing it out of band yourself.
+3. Inspect the manifest's network, path, and secret requirements — `install`
+   prints them and waits for you; `apiary plugins inspect` shows them any time.
 4. Install into a directory writable only by the Apiary operator/service account.
 
-Apiary does not download or auto-upgrade plugins. Upgrade atomically by verifying
-the new artifact in a staging directory, stopping Apiary, replacing the complete
-plugin directory, running `apiary plugins validate`, and restarting. Keep the old
+**How far the checks reach.** Signature verification covers the registry index,
+which carries the digests, which cover the artifacts. It does not authenticate
+plugin publishers, and it says nothing about what a plugin does with the access
+it declares. A `checksum` the publisher wrote is tamper-evidence only — the pin
+lives beside the binary, so anyone who can rewrite one can rewrite the other. A
+pin *injected at install* comes from the registry repository instead, which is a
+meaningfully stronger claim, but still one about bytes, not about intent.
+
+The daemon never contacts a registry, never downloads, and never auto-upgrades:
+every one of those is a command you run. Upgrade with
+`apiary plugins upgrade`, which stages, verifies, keeps one generation as
+`<id>.bak`, and restores it if the new copy fails to validate — or, by hand,
+verify the new artifact in a staging directory, stop Apiary, replace the complete
+plugin directory, run `apiary plugins validate`, and restart. Keep the old
 directory for rollback, but never leave two versions with the same ID in searched
 directories.
 

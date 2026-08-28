@@ -1,0 +1,48 @@
+schema_version: 1
+id: dev.apiary.routines
+summary: >-
+  Scheduled routines: turns each due cron occurrence into a work item, so a
+  nightly audit or an hourly sweep routes through triggers and workflows like
+  any other task.
+capabilities: [source]
+homepage: https://orlandoburli.com.br/apiary-routines/
+repository: https://github.com/orlandoburli/apiary-routines
+license: MIT
+
+# The configuration registry CI runs the protocol conformance kit with. It is
+# never used by the CLI and never installed — the kit needs a plugin that can
+# answer poll/acknowledge/write_result, and only the plugin's own author knows
+# what a harmless configuration looks like.
+conformance_config:
+  state_file: /tmp/apiary-routines-conformance.json
+  routines:
+    - id: conformance
+      schedule: "0 3 * * *"
+      title: Conformance probe
+
+releases:
+  - version: 0.1.0
+    apiary: ">= 0.13.0-0"
+    protocol: 1
+    published_at: 2026-08-27
+    artifacts:
+      - os: darwin
+        arch: amd64
+        url: https://github.com/orlandoburli/apiary-routines/releases/download/v0.1.0/apiary-routines_0.1.0_darwin_amd64.tar.gz
+        archive_sha256: a9273c4398787d7a204359f1c043de8033d0a00237a32f4b1e1f19bf67e07f96
+        executable_sha256: efdd5b96c1894b91d52994ac64d8ef035913e3e8bf910dad38d85daaa3b087d0
+      - os: darwin
+        arch: arm64
+        url: https://github.com/orlandoburli/apiary-routines/releases/download/v0.1.0/apiary-routines_0.1.0_darwin_arm64.tar.gz
+        archive_sha256: efb15a92c9a4c3f9b1b2d586524f5b310ada850ea82f86c8610d3f78405f64d7
+        executable_sha256: f4d0c199278a776aa0927860be6c5487733c3d3543b7b17daf6e102252b709f6
+      - os: linux
+        arch: amd64
+        url: https://github.com/orlandoburli/apiary-routines/releases/download/v0.1.0/apiary-routines_0.1.0_linux_amd64.tar.gz
+        archive_sha256: 611317a087587d85b664d937bb54d44f8ac029ed68c58a324c71d490769235a5
+        executable_sha256: 7883c2f09980069626a44b58a020c55d8b0633480a00315d1ac1ba18edd7ee3a
+      - os: linux
+        arch: arm64
+        url: https://github.com/orlandoburli/apiary-routines/releases/download/v0.1.0/apiary-routines_0.1.0_linux_arm64.tar.gz
+        archive_sha256: 00fc21d3387de2d191a23a71c3904761f47e617f898cf8a1a94591d539ab5735
+        executable_sha256: 6e9e7aecc3e01183b3aac14618dbad604a3e6c3c84f9b87ae5bb3e7643d0e435

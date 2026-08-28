@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -74,6 +75,18 @@ func verifyChecksum(execPath, want string) error {
 		return fmt.Errorf("executable %q failed integrity check: manifest pins sha256:%s but file is sha256:%s (the plugin binary changed after installation)", execPath, digest, got)
 	}
 	return nil
+}
+
+// VerifyPin re-derives the executable's digest and compares it to the manifest's
+// pin. The daemon does this when it creates a client and before every
+// invocation; exposing it lets `apiary plugins validate` answer the same
+// question ahead of time, which matters most for a registry install, where the
+// pin came from the registry rather than from beside the binary.
+func (p *Installed) VerifyPin() error {
+	if p.Manifest.Checksum == "" {
+		return nil
+	}
+	return verifyChecksum(filepath.Join(p.Root, p.Manifest.Executable), p.Manifest.Checksum)
 }
 
 // integrityGuard re-verifies a pinned executable before each invocation, so a

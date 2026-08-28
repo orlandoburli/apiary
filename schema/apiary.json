@@ -200,6 +200,24 @@
       "description": "Directories searched for installed plugin folders. Relative paths resolve beside apiary.yaml; defaults to .apiary/plugins",
       "items": {"type": "string"}
     },
+    "plugin_registries": {
+      "type": "array",
+      "description": "Plugin registry indexes that `apiary plugins search|info|install` resolve names against. Each entry is an https:// or file:// URL, or a mapping with url and public_key. Omit for the official index; an empty list disables the registry. The daemon never reads it",
+      "items": {
+        "oneOf": [
+          {"type": "string", "description": "Registry index URL (https:// or file://)"},
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["url"],
+            "properties": {
+              "url": {"type": "string", "description": "Registry index URL (https:// or file://)"},
+              "public_key": {"type": "string", "description": "minisign public key (the bare base64 line) this registry's index must be signed by; once set, verification cannot be skipped"}
+            }
+          }
+        ]
+      }
+    },
     "plugins": {
       "type": "array",
       "description": "Installed out-of-process plugin instances. Omitted enabled defaults to true; disabled plugins remain discoverable but are not started or schema-validated",

@@ -15,6 +15,15 @@ import (
 func configuredPlugins(cfg *config.Config) (*plugin.Registry, []error) {
 	registry, errs := plugin.DiscoverConfigured(cfg.PluginDirs, configFile, version.Version)
 	errs = append(errs, plugin.ValidateConfigured(registry, cfg.Plugins)...)
+	// Discovery checks that a pin is well-formed; only re-hashing the executable
+	// checks that it is still true. The daemon does this at client creation and
+	// before every invocation — doing it here means an operator finds out from
+	// `validate`, rather than from a plugin that stops working at 3am.
+	for _, installed := range registry.List() {
+		if err := installed.VerifyPin(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	return registry, errs
 }
 
@@ -53,6 +62,11 @@ func newPluginsCmd() *cobra.Command {
 			return encoder.Encode(installed)
 		},
 	})
+	cmd.AddCommand(newPluginsSearchCmd())
+	cmd.AddCommand(newPluginsInfoCmd())
+	cmd.AddCommand(newPluginsInstallCmd())
+	cmd.AddCommand(newPluginsUpgradeCmd())
+	cmd.AddCommand(newPluginsUninstallCmd())
 	cmd.AddCommand(&cobra.Command{
 		Use:   "validate",
 		Short: "Validate discovered manifests and enabled plugin configuration",

@@ -381,6 +381,40 @@ Reset the project's SQLite database (asks for confirmation; `--yes` skips).
 
 Scaffold a starter `apiary.yaml` in the current directory.
 
+### `apiary plugins`
+
+Find, install and inspect [out-of-process plugins](plugins.md). The registry
+half (`search`, `info`, `install`, `upgrade`, `uninstall`) talks to a plugin
+index; the rest reports on what is already on disk.
+
+```sh
+apiary plugins search [query] [--capability source]
+apiary plugins info <id>[@version]
+apiary plugins install <id>[@version] [--dir path] [--yes] [--sha256 digest]
+apiary plugins upgrade <id> [--rollback]
+apiary plugins uninstall <id> [--force]
+apiary plugins list
+apiary plugins inspect <id>
+apiary plugins validate
+```
+
+| Command | Description |
+|---|---|
+| `search` | List registry entries matching a query, optionally filtered by capability |
+| `info` | One listing in full: capabilities, repository, releases, what CI's conformance run found, and whether it can be installed on this host |
+| `install` | Resolve, verify digests, validate the manifest, print what it will place and what access it declares, then commit it atomically. Prints the `plugins:` snippet — it never edits `apiary.yaml`, and never enables anything |
+| `upgrade` | The same checks, then swap; keeps one generation as `<id>.bak`, restores it if the new copy fails to validate. `--rollback` restores it on demand |
+| `uninstall` | Remove an installed plugin directory. Refuses while it is enabled in `apiary.yaml` unless `--force` |
+| `list` | What is installed, with each plugin's configured state |
+| `inspect` | Print one installed manifest as JSON |
+| `validate` | Re-check installed manifests, enabled instances' config, and pinned executables |
+
+Registry commands accept `--registry <url>` for a one-off index and `--offline`
+to use the cached one. A plugin runs with the daemon's OS permissions; a listing
+is reviewed, not endorsed. See
+[Registries and mirrors](plugins.md#registries-and-mirrors) for pinning a
+signing key or turning the registry off.
+
 ### `apiary service`
 
 Manage Apiary as a system service — systemd (Linux), launchd (macOS), or

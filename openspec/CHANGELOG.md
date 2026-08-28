@@ -2,6 +2,7 @@
 
 ## Ativas
 
+- **plugin-registry** — Plugin registry and command-line installs: a static, PR-reviewed index (`registry/plugins/*.yaml` compiled to signed `index.json`, artifacts stay with their publishers) plus `apiary plugins search|info|install|upgrade|uninstall`. Pre-download resolution (host semver, protocol, os/arch, yanks), staged installs with digest verification and safe unpacking, checksum pin injection from the index — turning the manifest pin from drift detection into a supply-chain check — an explicit `security:` trust summary before commit, registry CI that re-derives every digest and runs the conformance kit, and mirrors/`--offline` for air-gapped installs. Installed still never means enabled; the daemon never contacts the registry. Four phases.
 - **step-wallclock-attribution** — Atribuição de wall-clock por step (thinking / writing / esperas de tool / tarefas em background) gravada em `task_executions` e `step_runs` ao lado das colunas de token, lista das chamadas mais lentas, payload do evento `system:task_started` no log, e comando `apiary profile <instance-id> [--json]`. GitHub issue #399.
 
 ## Arquivadas
