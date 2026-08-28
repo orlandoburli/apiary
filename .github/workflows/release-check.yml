@@ -38,6 +38,18 @@ jobs:
           version: "~> v2"
           args: check
 
+      # The SDK module is tagged `sdk/vX.Y.Z`, independently of the daemon's
+      # `vX.Y.Z`. GoReleaser derives the snapshot version from `git describe`,
+      # which picks whichever tag is nearest — so an SDK tag yields
+      # `sdk/v1.0.1-SNAPSHOT-<sha>`, and Docker rejects the slash as an image
+      # tag ("invalid reference format"). `git.ignore_tags` does NOT cover this:
+      # it is accepted by `goreleaser check` but does not affect current-tag
+      # selection. Pinning the current tag to the newest daemon tag does.
+      - name: Pin GoReleaser to the newest daemon tag
+        run: |
+          tag="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)"
+          echo "GORELEASER_CURRENT_TAG=${tag:-v0.0.0}" >> "$GITHUB_ENV"
+
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
