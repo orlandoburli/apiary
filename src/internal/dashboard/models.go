@@ -44,6 +44,7 @@ type Model struct {
 	approvalVals   map[string]any    // committed values, by field name
 	approvalDraft  map[string]string // in-progress text for typed fields
 	approvalErr    string            // local validation message, cleared on edit
+	approvalMsg    []string          // the request's message, markdown-rendered once on open
 
 	notice      string    // one-line result banner for the last IPC action
 	noticeIsErr bool      // render the banner as an error

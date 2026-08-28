@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/orlandoburli/apiary/internal/db"
 )
 
@@ -224,5 +226,48 @@ func TestOverviewShowsPendingApprovals(t *testing.T) {
 	}
 	if strings.Contains(out, "⏸") {
 		t.Fatalf("zero approvals should not render an alert:\n%s", out)
+	}
+}
+
+// The gate's message is markdown, and the form must keep its shape. It used to
+// be word-wrapped into one yellow paragraph, which collapsed every line break,
+// list item and code block into prose.
+func TestApprovalFormRendersMessageAsMarkdown(t *testing.T) {
+	a := newFormApp()
+	a.model.width, a.model.height = 100, 40
+	req := fieldRequest()
+	req.Message = "Release 2.4 is staged.\n\n- migrations applied\n- smoke tests green\n\nProceed?"
+	a.openApprovalForm(req)
+
+	out := stripANSI(a.renderApprovalForm(""))
+	for _, want := range []string{"migrations applied", "smoke tests green", "Proceed?"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("form is missing %q:\n%s", want, out)
+		}
+	}
+	// The two bullets are separate lines, not one run-together sentence.
+	if strings.Contains(out, "migrations applied smoke tests green") {
+		t.Fatalf("list items were collapsed into a paragraph:\n%s", out)
+	}
+}
+
+// A message longer than the terminal must not push the fields and key hints off
+// the screen — the operator would have no way left to answer the gate.
+func TestApprovalFormTruncatesLongMessage(t *testing.T) {
+	a := newFormApp()
+	a.model.width, a.model.height = 100, 20
+	req := fieldRequest()
+	req.Message = strings.Repeat("- a bullet\n", 40)
+	a.openApprovalForm(req)
+
+	out := stripANSI(a.renderApprovalForm(""))
+	if !strings.Contains(out, "more lines") {
+		t.Fatalf("long message should be trimmed with a hint:\n%s", out)
+	}
+	if !strings.Contains(out, "approve") || !strings.Contains(out, "Rollout strategy") {
+		t.Fatalf("fields and key hints must survive a long message:\n%s", out)
+	}
+	if got := lipgloss.Height(a.renderApprovalForm("")); got > a.model.height {
+		t.Fatalf("dialog is %d lines tall, taller than the %d-line terminal", got, a.model.height)
 	}
 }
