@@ -72,13 +72,33 @@ jobs:
           go-version-file: src/go.mod
           cache-dependency-path: src/go.sum
 
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Re-derive the registry's conformance verdicts
+        # Best effort on purpose. This downloads every listed artifact to run the
+        # protocol kit against it, so a publisher's dead link or a slow release
+        # host must not be able to take the documentation site down with it —
+        # without verdicts the index publishes them as "not run", which is
+        # exactly what happened.
+        continue-on-error: true
+        run: |
+          cd src && go run ./cmd/apiary-registry check \
+            --dir ../registry \
+            --conformance-runner ../sdk/conformance/run.py \
+            --results "$RUNNER_TEMP/conformance.json"
+
       - name: Compile the plugin registry index
         # Published at /apiary/registry/v1/index.json — what `apiary plugins
         # search|info` resolve names against. Metadata only; artifacts stay with
-        # their publishers.
+        # their publishers. A missing results file is tolerated: every release
+        # then publishes as "conformance not run".
         run: |
           cd src && go run ./cmd/apiary-registry build \
-            --dir ../registry --out ../docs/registry/v1/index.json
+            --dir ../registry --results "$RUNNER_TEMP/conformance.json" \
+            --out ../docs/registry/v1/index.json
 
       - name: Sign the plugin registry index
         # Signing covers the index, which carries the digests, which cover the
@@ -101,11 +121,6 @@ jobs:
             -t "apiary plugin registry index, commit $GITHUB_SHA"
           shred -u "$RUNNER_TEMP/minisign.key" 2>/dev/null || rm -f "$RUNNER_TEMP/minisign.key"
           echo "signed: $(ls docs/registry/v1/)"
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.x"
 
       - name: Install mkdocs
         run: pip install mkdocs-material
