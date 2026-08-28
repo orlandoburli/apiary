@@ -440,3 +440,96 @@ For the full case list and how to add one, see
    [Versioning and the protocol](#versioning-and-the-protocol).
 5. Add it to `sdk/conformance/check-examples.sh` so it is checked on every
    change to the protocol, the docs or the SDKs.
+
+## Publishing to the registry
+
+The [registry](plugin-directory.md) is how operators find and install your
+plugin from the command line. It stores metadata and digests only: your
+artifacts stay on your own release infrastructure, and nothing about the listing
+gives Apiary a copy of your code.
+
+### 1. Publish release artifacts
+
+One archive (`.tar.gz` or `.zip`) per platform, containing the executable and
+its `apiary-plugin.json`. The manifest may sit at the archive root or inside a
+single top-level directory. Anything that is not a plain file or directory —
+symlinks, hardlinks, devices — is refused at install time, so do not ship them.
+
+Releases are immutable: publish `1.0.1`, never a re-cut `1.0.0`.
+
+### 2. Compute both digests
+
+Every artifact declares two: the archive as you publish it, and the executable
+*inside* it, after unpacking.
+
+```bash
+shasum -a 256 myplugin_1.0.0_linux_amd64.tar.gz              # archive_sha256
+tar -xzf myplugin_1.0.0_linux_amd64.tar.gz -C /tmp/unpacked
+shasum -a 256 /tmp/unpacked/myplugin                          # executable_sha256
+```
+
+The second one becomes the `checksum` pin in the installed manifest when your
+own manifest carries none — which is why it comes from the registry rather than
+from your archive. If you do pin a `checksum` yourself, it must be the
+executable you ship, or the install aborts.
+
+### 3. Open a pull request
+
+Add `registry/plugins/<your-plugin-id>.yaml` to the
+[apiary repository](https://github.com/orlandoburli/apiary). The filename must
+be the plugin id.
+
+```yaml
+schema_version: 1
+id: com.example.nagios
+summary: One sentence on what it does.
+capabilities: [source]
+repository: https://github.com/example/apiary-nagios   # must be publicly readable
+license: MIT
+
+# Optional: the config registry CI runs the conformance kit with. Without it the
+# release publishes as "conformance not run" — an honest absence rather than an
+# unearned pass.
+conformance_config:
+  api_url: https://example.invalid/api
+
+releases:
+  - version: 1.0.0
+    apiary: ">= 0.13.0-0"    # the same constraint as your manifest's
+    protocol: 1
+    artifacts:
+      - os: linux            # GOOS/GOARCH spelling
+        arch: amd64
+        url: https://github.com/example/apiary-nagios/releases/download/v1.0.0/…tar.gz
+        archive_sha256: "…"
+        executable_sha256: "…"
+```
+
+### What CI checks
+
+Nothing in the listing is taken on trust. For every artifact, on every pull
+request: the entry is validated, the artifact is downloaded and its
+`archive_sha256` re-derived, it is unpacked and the `apiary-plugin.json` inside
+is cross-checked against your entry (id, version, protocol, `apiary` constraint,
+capabilities), `executable_sha256` is re-derived from the executable the
+manifest names, and — if you declared a `conformance_config` — the
+[conformance kit](#the-conformance-kit) runs against your published binary.
+
+A conformance failure does **not** block the listing. The verdict is published
+instead, and `apiary plugins info` shows it: the registry describes plugins, it
+does not certify them. You can run the same check locally with
+`make registry-check`.
+
+### Withdrawing a release
+
+Mark it, never delete it — the index has to stay honest about what was once
+resolvable:
+
+```yaml
+  - version: 1.0.0
+    yanked: true
+    yanked_reason: corrupt linux/amd64 archive; use 1.0.1
+```
+
+Resolution skips yanked releases and says why when nothing else qualifies.
+Operators who already installed one are unaffected until they upgrade.

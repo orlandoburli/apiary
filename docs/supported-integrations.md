@@ -82,7 +82,7 @@ items flow through normal workflow trigger matching.
 
 - **Requirements:** Plugin installed in `plugin_dirs` and enabled under `plugins:`
 - **Write-back:** None (read-only source) — `apiary validate` rejects incompatible workflow features
-- **Setup:** See [Source plugins](plugins.md#source-plugins) and the `source-file` reference plugin
+- **Setup:** `apiary plugins search --capability source` for published ones, or see [Source plugins](plugins.md#source-plugins) and the `source-file` reference plugin
 
 ### Linear
 
