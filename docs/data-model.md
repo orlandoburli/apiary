@@ -283,3 +283,30 @@ poll with its `status` (passed/failed/pending/timeout/error/unknown), the PR
 `pr_url`, the per-check `detail` (JSON), and `checked_at`. This makes a parked CI
 wait auditable — how many times it polled, when, and what each poll returned —
 which the dashboard surfaces in the task detail and history views.
+
+## Getting this data out
+
+The tables above are Apiary's own working store, not a reporting warehouse. Two
+ways out, depending on what you want:
+
+- **`apiary improve --dump-evidence`** computes step, workflow, agent and wait
+  metrics in Go and prints them as JSON, with no model involved. Good for a
+  one-off question. See [Self-Improvement](improve.md).
+- **[apiary-pgsink](https://github.com/orlandoburli/apiary-pgsink)** replicates
+  this schema into PostgreSQL — backfill the history, then follow it — so the
+  data is queryable from BI tools and survives Apiary's own log retention. It is
+  a separate service, not a plugin: it runs beside the daemon and reads its
+  database. See [Companion tools](supported-integrations.md#companion-tools).
+
+Two things about this schema make a naive exporter get it wrong, and are worth
+knowing whichever route you take:
+
+- **`task_executions` and `step_runs` are written twice.** A row is inserted at
+  dispatch with `status = 'running'` and zero cost, and updated at completion
+  with the tokens, cost and timings. Neither table carries an `updated_at`, so a
+  copy driven by an insert cursor alone replicates the empty row and never sees
+  the rest — every cost figure downstream stays zero.
+- **Timestamps carry a local UTC offset**, so comparing them as text sorts them
+  wrongly across offsets. Rows written before the `_time_format` fix also carry
+  a Go monotonic-clock suffix that SQLite's own `datetime()` cannot parse, which
+  is why they are absent from some windowed dashboard queries.

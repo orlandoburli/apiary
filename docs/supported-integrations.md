@@ -223,6 +223,32 @@ Workflows can route to different agents, which run on different runners. Tasks f
 
 ---
 
+## Companion tools
+
+Separate projects that work with Apiary without extending it. Unlike
+[plugins](plugin-directory.md), these are not invoked by the daemon and do not
+speak protocol 1 — they are their own services, with their own releases.
+
+### apiary-pgsink
+
+**Status:** ✅ Stable | **Runs:** beside the daemon, as its user
+
+Replicates Apiary's SQLite database into PostgreSQL: `backfill` loads the
+history, `sync` follows it. Per-table filters and injected columns, so a shared
+target can hold several Apiary installations and carry your own tenant or
+environment labels.
+
+- **Why:** reporting and BI. The sink also keeps rows past Apiary's own log
+  retention, which makes it an archive as well as a mirror.
+- **Requirements:** the same host as the daemon, running as its user — SQLite in
+  WAL mode has no true read-only reader
+- **Install:** [releases](https://github.com/orlandoburli/apiary-pgsink/releases),
+  or `ghcr.io/orlandoburli/apiary-pgsink`
+- **Home:** [apiary-pgsink](https://github.com/orlandoburli/apiary-pgsink) ·
+  [docs](https://orlandoburli.com.br/apiary-pgsink/)
+
+---
+
 ## Planned integrations
 
 | System | Type | Status |
