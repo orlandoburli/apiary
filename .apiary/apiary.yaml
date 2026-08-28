@@ -40,6 +40,18 @@ runners:
         command: npx
         args: ["-y", "gitnexus@latest", "mcp"]
 
+  # Read-only runner for scheduled routines. permission_mode: plan puts claude in
+  # plan mode, where it can read and analyse but cannot edit files, run mutating
+  # commands, or open PRs. A routine reports; it does not change the repo.
+  - id: claude-readonly
+    type: cli
+    provider: claude
+    models:
+      - claude-opus-5
+      - claude-haiku-4-5-20251001
+    config:
+      permission_mode: plan
+
 default_runner: codex
 
 # ── Sources ────────────────────────────────────────────────────────────────────
@@ -56,6 +68,14 @@ sources:
     poll_interval: 60s
     filters:
       states: [open]
+
+  # Scheduled routines, via the dev.apiary.routines plugin. Each due cron
+  # occurrence becomes a work item; the routine-* workflows below match it.
+  - id: routines
+    type: plugin
+    poll_interval: 30s
+    config:
+      plugin: dev.apiary.routines
 
 # ── Agents ─────────────────────────────────────────────────────────────────────
 # Roster is deliberately Go-shaped: no backend/frontend split, because this repo
@@ -95,6 +115,22 @@ agents:
     description: "Validates a change against its acceptance criteria"
     soul_file: .apiary/souls/qa.md
     model: gpt-5.5
+    max_workers: 1
+
+  - id: janitor
+    description: "Checks every 10 min for stuck agent work; read-only, Haiku, turn-capped"
+    runner: claude-readonly
+    model: claude-haiku-4-5-20251001
+    max_workers: 1
+    # A 10-minute routine runs 144x/day, so the cost of one run matters more
+    # than usual. The prompt gives exact commands and this caps the blast
+    # radius if the model decides to explore anyway.
+    max_turns: 10
+
+  - id: reporter
+    description: "Reports on repo health from a scheduled routine; never modifies anything"
+    runner: claude-readonly
+    model: claude-opus-5
     max_workers: 1
 
 # ── Workflows ──────────────────────────────────────────────────────────────────
@@ -247,6 +283,126 @@ workflows:
       add_labels: [needs-attention]
       remove_labels: [apiary:auto]
 
+  # Scheduled routine: a daily read-only health report.
+  #
+  # `source: routines` is pinned deliberately. The capability check only rejects
+  # an unpinned trigger when NO configured source supports the feature, and this
+  # hive also runs GitHub — so without the pin, a write step here would validate
+  # clean and then silently no-op at runtime.
+  - id: routine-health-report
+    description: "Daily repo health report, started by the clock rather than an issue."
+    trigger:
+      priority: 5
+      once: true
+      match:
+        source: routines
+        labels: [routine:daily-health]
+    steps:
+      - id: report
+        agent: reporter
+        prompt: |
+          The repository is at ${HOME}/Projects/Personal/apiary — cd there
+          first. Naming it explicitly is required, not a convenience: apiary runs
+          every agent step with the working directory hardcoded to "/"
+          (internal/daemon/workflow.go, WorkingDir: "/"), and there is no config
+          knob for it. Without this line the agent searches $HOME for something
+          that looks like the repo, which is slow, reads directories it has no
+          business in, and can pick the wrong checkout.
+
+          Report on that repository's current health, READ ONLY — do not modify
+          any file, do not run mutating commands, do not push or open a PR.
+
+          Cover briefly:
+            1. The current branch and whether the working tree is clean.
+            2. How many commits the branch is ahead of main.
+            3. Whether `go vet ./...` passes in src/.
+
+          Answer in under 15 lines.
+
+  # Scheduled routine: every 10 minutes, look for agent work that started and
+  # never landed. Read-only and deterministic — the prompt names the exact
+  # commands so the model reports rather than investigates.
+  - id: routine-stuck-check
+    description: "Find stale agent branches, abandoned worktrees, stuck instances and idle PRs."
+    trigger:
+      priority: 6
+      once: true
+      match:
+        source: routines
+        labels: [routine:stuck-check]
+    steps:
+      - id: check
+        agent: janitor
+        summary_prompt: "One line: STUCK_COUNT and the single most concerning item, or 'all clear'."
+        prompt: |
+          READ ONLY. Never modify a file, never push, never delete a branch or a
+          worktree, never run `git fetch` (it rewrites remote-tracking refs).
+          You report; a human decides.
+
+          Run exactly the commands below, in order, and nothing else. Do not
+          explore the filesystem — apiary starts you in "/" and everything you
+          need is under ${HOME}/Projects/Personal/apiary.
+
+          IMPORTANT — how to decide whether work has landed. This repo
+          SQUASH-merges, so a branch tip is never an ancestor of main even when
+          its work is fully merged. `git merge-base --is-ancestor` and
+          `git branch --merged` are therefore WRONG here and will report live
+          branches as unmerged and merged ones as stuck. The only reliable test
+          is whether a MERGED pull request had that branch as its head.
+
+          Fetch both PR lists once, up front, and reuse them for steps 1 and 2:
+             gh pr list --repo orlandoburli/apiary --state open \
+               --json number,headRefName,updatedAt,isDraft --limit 100
+             gh pr list --repo orlandoburli/apiary --state merged \
+               --json number,headRefName,mergedAt --limit 300
+
+          1) Branches. Classify every remote branch except main:
+             git -C ${HOME}/Projects/Personal/apiary for-each-ref --sort=committerdate refs/remotes/origin \
+               --format='%(committerdate:relative)|%(refname:short)' | head -60
+             - STUCK: last commit older than 24h, no OPEN pr, and no MERGED pr.
+               Work that started and was never proposed or landed. This is the
+               category worth waking someone for.
+             - CLEANABLE: has a MERGED pr. The work landed; the branch is just
+               litter. Report the count, not the list.
+             - Everything else is in flight. Say nothing about it.
+
+          2) Worktrees:
+             git -C ${HOME}/Projects/Personal/apiary worktree list --porcelain
+             For each worktree other than the repo root:
+               git -C <path> status --porcelain | head -5
+               git -C <path> log -1 --format=%cr
+             - ACTIVE — skip it, never report it as abandoned: the worktree is
+               marked `locked`, OR its last commit is under 2 hours old, OR it
+               has uncommitted changes AND a commit in the last 24h. Someone is
+               working in it right now.
+             - CLEANABLE: clean tree, and its branch has a MERGED pr (or it is a
+               detached HEAD older than a week).
+             - STUCK: uncommitted changes with no commit for over 24h. Work
+               someone started and walked away from.
+
+          3) Stuck workflow instances (reads the DB directly, so this works
+             whether or not the daemon is up):
+             sqlite3 ${HOME}/Projects/Personal/apiary/.apiary/apiary.db "select id, workflow_id, state, updated_at from workflow_instances where state in ('pending','running') and updated_at < datetime('now','-2 hours') order by updated_at limit 20;"
+             Report `approval_waiting` separately if you see it and do NOT call
+             it stuck — a parked approval is waiting on a human by design.
+
+          4) Open PRs with no activity in 48h, or with failing checks — from the
+             `gh pr list` output you already have.
+
+          If a command fails (no `gh` auth, no `sqlite3`), say so for that check
+          and continue with the others. A partial report beats no report.
+
+          Output format — at most 20 lines total:
+
+            STUCK_COUNT=<n>            # STUCK items only, never CLEANABLE ones
+            branches:  <one line each, or "none">
+            worktrees: <one line each, or "none">
+            instances: <one line each, or "none">
+            prs:       <one line each, or "none">
+            cleanable: <counts only, e.g. "3 branches, 1 worktree" or "none">
+
+          Nothing else. No preamble, no recommendations unless something is stuck.
+
 # ── Settings ───────────────────────────────────────────────────────────────────
 settings:
   # Deliberately small. Agents here push branches and open PRs against a public
@@ -254,3 +410,26 @@ settings:
   concurrency: 2
   log_level: info
   state_lock: true
+
+# ── Plugins ────────────────────────────────────────────────────────────────────
+# Absolute paths are required here, not preferred: plugin_dirs entries resolve
+# beside apiary.yaml (which lives in .apiary/ on this hive), and a plugin's own
+# working directory is its install directory rather than the project root, so a
+# relative state_file would land next to the binary. ${HOME} is expanded across
+# the whole config before parsing, so this stays checkout-relative.
+plugin_dirs:
+  - ${HOME}/Projects/Personal/apiary/.apiary/plugins
+
+plugins:
+  - id: dev.apiary.routines
+    config:
+      state_file: ${HOME}/Projects/Personal/apiary/.apiary/routines-state.json
+      timezone: America/New_York
+      routines:
+        - id: daily-health
+          schedule: "47 16 * * *"
+          title: "Daily repo health report"
+
+        - id: stuck-check
+          schedule: "0 * * * *"
+          title: "Stuck agent work check"

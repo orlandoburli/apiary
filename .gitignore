@@ -19,6 +19,11 @@ apiary.yaml.local
 **/.apiary/apiary.sock
 **/.apiary/logs/
 **/.apiary/memory/
+# installed plugins (binaries, fetched per host) and the state they keep
+**/.apiary/plugins/
+**/.apiary/routines-state.json
+**/.apiary/backups/
+**/.apiary/*.bak
 
 # worktrees — single canonical location for all git worktrees
 /.worktrees/
