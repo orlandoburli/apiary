@@ -24,6 +24,26 @@ func DiscoverConfigured(paths []string, configFile, apiaryVersion string) (*Regi
 	return Discover(paths, baseDir, apiaryVersion)
 }
 
+// ConfiguredDirs resolves the plugin directories a config declares to absolute
+// paths, applying the same defaulting and base directory as discovery. Commands
+// that write into a plugin directory need the same answer discovery reads from,
+// or an install could land somewhere the daemon never looks.
+func ConfiguredDirs(paths []string, configFile string) []string {
+	absoluteConfig, err := filepath.Abs(configFile)
+	if err != nil {
+		absoluteConfig = configFile
+	}
+	baseDir := filepath.Dir(absoluteConfig)
+	if len(paths) == 0 {
+		paths = []string{filepath.Join(".apiary", "plugins")}
+	}
+	resolved := make([]string, 0, len(paths))
+	for _, path := range paths {
+		resolved = append(resolved, expandPath(path, baseDir))
+	}
+	return resolved
+}
+
 func Discover(paths []string, baseDir, apiaryVersion string) (*Registry, []error) {
 	registry := &Registry{plugins: map[string]*Installed{}}
 	var errs []error

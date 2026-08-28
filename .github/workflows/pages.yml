@@ -8,6 +8,7 @@ on:
       - DEVELOPMENT.md
       - docs/**
       - mkdocs.yml
+      - registry/**
   release:
     types: [published]
   workflow_dispatch:
@@ -64,6 +65,42 @@ jobs:
           else
             echo "could not resolve latest release — keeping versions as committed"
           fi
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Compile the plugin registry index
+        # Published at /apiary/registry/v1/index.json — what `apiary plugins
+        # search|info` resolve names against. Metadata only; artifacts stay with
+        # their publishers.
+        run: |
+          cd src && go run ./cmd/apiary-registry build \
+            --dir ../registry --out ../docs/registry/v1/index.json
+
+      - name: Sign the plugin registry index
+        # Signing covers the index, which carries the digests, which cover the
+        # artifacts. Without a key configured the index publishes unsigned, and
+        # every CLI reports it as unverified — the honest state, and one that
+        # turns into verification the day the secret exists.
+        env:
+          MINISIGN_KEY: ${{ secrets.APIARY_REGISTRY_MINISIGN_KEY }}
+        run: |
+          if [ -z "$MINISIGN_KEY" ]; then
+            echo "::notice::APIARY_REGISTRY_MINISIGN_KEY is not set — publishing the registry index unsigned"
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y minisign
+          umask 077
+          printf '%s\n' "$MINISIGN_KEY" > "$RUNNER_TEMP/minisign.key"
+          # The key must be passwordless (minisign -G -W); CI cannot answer a prompt.
+          minisign -S -s "$RUNNER_TEMP/minisign.key" \
+            -m docs/registry/v1/index.json \
+            -t "apiary plugin registry index, commit $GITHUB_SHA"
+          shred -u "$RUNNER_TEMP/minisign.key" 2>/dev/null || rm -f "$RUNNER_TEMP/minisign.key"
+          echo "signed: $(ls docs/registry/v1/)"
 
       - name: Setup Python
         uses: actions/setup-python@v6

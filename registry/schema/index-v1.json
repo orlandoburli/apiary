@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orlandoburli.com.br/apiary/registry/v1/index.schema.json",
+  "title": "Apiary plugin registry index, version 1",
+  "description": "The compiled document Apiary CLIs fetch. Metadata and digests only: artifacts are hosted by their publishers, and a listing is a pointer to someone else's repository, never an endorsement.",
+  "type": "object",
+  "required": ["schema_version", "plugins"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "Clients fail closed on any other value rather than partially interpreting the document."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When registry CI compiled this index."
+    },
+    "plugins": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/plugin" }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^(sha256:)?[0-9a-f]{64}$"
+    },
+    "plugin": {
+      "type": "object",
+      "required": ["id", "summary", "capabilities", "repository", "releases"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*){2,}$",
+          "description": "Lowercase reverse-DNS identifier, stable across releases."
+        },
+        "summary": { "type": "string", "minLength": 1 },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "source",
+              "runner",
+              "workflow_action",
+              "approval_provider",
+              "secret_provider",
+              "event_exporter"
+            ]
+          }
+        },
+        "homepage": { "type": "string", "format": "uri" },
+        "repository": {
+          "type": "string",
+          "format": "uri",
+          "description": "Publicly readable, so an operator can inspect what they are about to run as the daemon's user."
+        },
+        "license": { "type": "string" },
+        "releases": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/release" }
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "required": ["version", "apiary", "protocol", "artifacts"],
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Semantic version. Releases are immutable: a bad one is yanked, never rewritten."
+        },
+        "apiary": {
+          "type": "string",
+          "description": "Semantic-version constraint on the host, checked before anything is downloaded."
+        },
+        "protocol": { "type": "integer", "minimum": 1 },
+        "published_at": { "type": "string" },
+        "yanked": { "type": "boolean" },
+        "yanked_reason": { "type": "string", "minLength": 1 },
+        "conformance": { "$ref": "#/$defs/conformance" },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/artifact" }
+        }
+      },
+      "if": { "properties": { "yanked": { "const": true } }, "required": ["yanked"] },
+      "then": { "required": ["yanked_reason"] }
+    },
+    "conformance": {
+      "type": "object",
+      "description": "Written by registry CI, never by the submitter. A test result, not a certification.",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["passed", "failed", "not_run"] },
+        "kit": { "type": "string" },
+        "checked_at": { "type": "string" },
+        "commit": { "type": "string" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["os", "arch", "url", "archive_sha256", "executable_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "os": { "type": "string", "description": "GOOS spelling (darwin, linux, windows)." },
+        "arch": { "type": "string", "description": "GOARCH spelling (amd64, arm64)." },
+        "url": {
+          "type": "string",
+          "pattern": "^https://",
+          "description": "Hosted by the plugin's publisher. Apiary never mirrors or re-hosts binaries."
+        },
+        "archive_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Verified before the download is unpacked."
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Becomes the installed manifest's checksum pin, so the digest originates outside the publisher's own release."
+        }
+      }
+    }
+  }
+}

@@ -115,6 +115,11 @@ func (c *Config) Validate() []error {
 			errs = append(errs, fmt.Errorf("plugin_dirs[%d]: path must not be empty", i))
 		}
 	}
+	for i, source := range c.PluginRegistries {
+		if err := source.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("plugin_registries[%d]: %w", i, err))
+		}
+	}
 
 	if c.Version == "" {
 		errs = append(errs, fmt.Errorf("version is required"))

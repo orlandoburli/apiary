@@ -3,9 +3,14 @@ SDK     := sdk
 BINARY  := apiary
 BIN_DIR := bin
 PKG     := github.com/orlandoburli/apiary/internal/version
+PLUGINPKG := github.com/orlandoburli/apiary/internal/plugin
 
-VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
-LDFLAGS  := -ldflags "-X $(PKG).Version=$(VERSION)"
+# The minisign public key the official plugin registry index is signed with.
+# Empty means the index is used unverified, and every registry command says so.
+REGISTRY_KEY ?= $(APIARY_REGISTRY_PUBLIC_KEY)
+
+VERSION  := $(shell git describe --tags --match "v*" --always --dirty 2>/dev/null || echo "0.1.0-dev")
+LDFLAGS  := -ldflags "-X $(PKG).Version=$(VERSION) -X $(PLUGINPKG).OfficialRegistryPublicKey=$(REGISTRY_KEY)"
 
 .DEFAULT_GOAL := help
 
@@ -38,6 +43,23 @@ test-python: ## Run the Python SDK's unit tests (stdlib only)
 .PHONY: conformance
 conformance: ## Run the plugin protocol conformance kit against every example we ship
 	$(SDK)/conformance/check-examples.sh
+
+.PHONY: registry-check
+registry-check: ## Verify every plugin registry entry against its published artifacts
+	cd $(SRC) && go run ./cmd/apiary-registry check --dir ../registry \
+		--conformance-runner ../sdk/conformance/run.py --results ../$(BIN_DIR)/conformance.json
+
+.PHONY: registry-build
+registry-build: ## Compile the registry entries into docs/registry/v1/index.json
+	cd $(SRC) && go run ./cmd/apiary-registry build --dir ../registry \
+		--results ../$(BIN_DIR)/conformance.json --out ../docs/registry/v1/index.json
+
+.PHONY: registry-sign
+registry-sign: ## Sign docs/registry/v1/index.json with minisign (needs MINISIGN_KEY_FILE)
+	@test -n "$(MINISIGN_KEY_FILE)" || { echo "set MINISIGN_KEY_FILE=<path to the minisign secret key>"; exit 1; }
+	minisign -S -s "$(MINISIGN_KEY_FILE)" -m docs/registry/v1/index.json \
+		-t "apiary registry index $(shell git rev-parse --short HEAD)"
+	@echo "→ docs/registry/v1/index.json.minisig"
 
 .PHONY: test-verbose
 test-verbose: ## Run all tests with per-test output

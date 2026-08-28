@@ -35,6 +35,11 @@ builds:
       # keep in sync with the Makefile's version injection
       - -s -w
       - -X github.com/orlandoburli/apiary/internal/version.Version={{ .Version }}
+      # The plugin registry's minisign public key. Released binaries verify the
+      # official index against it; an empty value (no APIARY_REGISTRY_PUBLIC_KEY
+      # in the release environment) means registry commands report the index as
+      # unverified rather than silently trusting it.
+      - -X github.com/orlandoburli/apiary/internal/plugin.OfficialRegistryPublicKey={{ if index .Env "APIARY_REGISTRY_PUBLIC_KEY" }}{{ .Env.APIARY_REGISTRY_PUBLIC_KEY }}{{ end }}
 
 archives:
   - id: apiary

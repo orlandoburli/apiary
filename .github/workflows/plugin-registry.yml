@@ -1,0 +1,52 @@
+name: Plugin registry
+
+# The registry's gate. A listing may not claim a digest, a compatibility range,
+# or a conformance verdict that this job could not reproduce from the published
+# artifact.
+on:
+  pull_request:
+    paths:
+      - registry/**
+      - src/internal/plugin/registry*.go
+      - src/cmd/apiary-registry/**
+      - .github/workflows/plugin-registry.yml
+  push:
+    branches: [main]
+    paths:
+      - registry/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Verify entries against their published artifacts
+        run: |
+          cd src && go run ./cmd/apiary-registry check \
+            --dir ../registry \
+            --conformance-runner ../sdk/conformance/run.py \
+            --results "$RUNNER_TEMP/conformance.json"
+
+      - name: Compile the index
+        run: |
+          cd src && go run ./cmd/apiary-registry build \
+            --dir ../registry \
+            --results "$RUNNER_TEMP/conformance.json" \
+            --out "$RUNNER_TEMP/index.json"
+
+      - name: Show the compiled index
+        run: cat "$RUNNER_TEMP/index.json"
