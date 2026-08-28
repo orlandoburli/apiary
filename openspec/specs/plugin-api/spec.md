@@ -251,6 +251,18 @@ persisted and redacted execution-event envelope. The other capability IDs reserv
 the same manifest and transport boundary for adapters to the Go contracts above.
 See `docs/plugins.md` for the normative field and envelope definitions.
 
+Plugins are obtained either by placing the files directly or through a
+**registry**: a static, reviewed index of metadata and digests, published
+separately from the artifacts it describes. The registry is a CLI concern only —
+the daemon never resolves, downloads, or verifies against it, and installation
+never enables anything. Resolution applies the manifest's own compatibility rules
+(host version, protocol, platform) before a download; the archive and executable
+digests are verified before the plugin directory is committed; and an unpinned
+manifest is pinned to the registry's executable digest, which is what makes the
+`checksum` field a supply-chain check rather than tamper-evidence. Index
+signatures (minisign) authenticate the digest set, not the plugin publisher. See
+`docs/plugin-directory.md` and `registry/README.md`.
+
 ## Cell Env Vars (for `script` runner)
 
 When using the `script` runner, the following environment variables are injected into the subprocess:

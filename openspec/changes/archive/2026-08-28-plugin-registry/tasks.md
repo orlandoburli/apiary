@@ -62,4 +62,4 @@ validates it), and `docs/supported-integrations.md` points at
 
 - [x] Unit and integration tests per the testing section of `design.md`.
 - [x] Run repository gates and GitNexus change detection.
-- [ ] Update `openspec/CHANGELOG.md` and archive the change.
+- [x] Update `openspec/CHANGELOG.md` and archive the change.

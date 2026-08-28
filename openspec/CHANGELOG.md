@@ -2,10 +2,13 @@
 
 ## Ativas
 
-- **plugin-registry** — Plugin registry and command-line installs: a static, PR-reviewed index (`registry/plugins/*.yaml` compiled to signed `index.json`, artifacts stay with their publishers) plus `apiary plugins search|info|install|upgrade|uninstall`. Pre-download resolution (host semver, protocol, os/arch, yanks), staged installs with digest verification and safe unpacking, checksum pin injection from the index — turning the manifest pin from drift detection into a supply-chain check — an explicit `security:` trust summary before commit, registry CI that re-derives every digest and runs the conformance kit, and mirrors/`--offline` for air-gapped installs. Installed still never means enabled; the daemon never contacts the registry. Four phases.
 - **step-wallclock-attribution** — Atribuição de wall-clock por step (thinking / writing / esperas de tool / tarefas em background) gravada em `task_executions` e `step_runs` ao lado das colunas de token, lista das chamadas mais lentas, payload do evento `system:task_started` no log, e comando `apiary profile <instance-id> [--json]`. GitHub issue #399.
 
 ## Arquivadas
+
+### 2026-08-28
+
+- **plugin-registry** — Plugin registry and command-line installs: a static, PR-reviewed index (`registry/plugins/*.yaml` compiled by CI into `docs/registry/v1/index.json`, artifacts hosted by their publishers) plus `apiary plugins search|info|install|upgrade|uninstall`. Resolution runs every compatibility check before a download (host semver, protocol, platform, yanks); installs stage outside every searched directory, verify the archive and executable digests, validate the manifest, print the declared access, and commit with one atomic rename, never enabling anything. An unpinned manifest is pinned to the registry's digest — a value the publisher does not control — and `Installed.VerifyPin` re-derives it in `apiary validate`. The index is minisign-verified in-process (fail-closed once a key is pinned, cache verified on read); signing is wired but dormant until a keypair exists, and until then commands report the index as unverified. `plugin_registries` accepts a URL or a mapping pinning a mirror's key; `[]` disables the registry. Registry CI re-derives every digest, cross-checks the embedded manifest, and runs the conformance kit — publishing the verdict rather than blocking the listing. Four phases (PRs #450, #453, #454); found three protocol failures in `dev.apiary.routines` 0.1.0 (orlandoburli/apiary-routines#5).
 
 ### 2026-08-07
 
