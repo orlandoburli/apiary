@@ -120,6 +120,14 @@ type TasksTab struct {
 	LogDrillKey       string // legacy cell id used to hydrate the detail header
 
 	// Workflow monitor sub-view (View == TaskViewWorkflow).
+	WorkflowTaskID    string // task the monitor is showing (scopes list refreshes)
+	WorkflowTaskLabel string // human label for that task ("#42 — Fix the thing")
+	// WorkflowAwaitTicks counts down the refresh ticks that still re-list the
+	// task's instances while a manually started workflow (Shift+W) has not
+	// appeared yet. Dispatch is asynchronous, so the instance shows up a moment
+	// after the run is accepted; the monitor jumps to it as soon as it exists.
+	WorkflowAwaitTicks int
+
 	WorkflowInstances   []*WorkflowInstanceItem // all instances for the task, newest-first
 	WorkflowInstanceIdx int                     // index into WorkflowInstances of the one being shown
 	WorkflowInstance    *WorkflowInstanceItem   // instance being monitored (== WorkflowInstances[WorkflowInstanceIdx])

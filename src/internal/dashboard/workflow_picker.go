@@ -105,11 +105,30 @@ func (a *App) handleWorkflowPickerKey(key string) (tea.Model, tea.Cmd) {
 		workflowID := ids[a.model.pickerIdx]
 		ref, _ := a.pickerTarget()
 		a.closeWorkflowPicker()
+		a.awaitManualRunInMonitor(ref)
 		return a, a.runWorkflowCmd(workflowID, ref)
 	case "esc":
 		a.closeWorkflowPicker()
 	}
 	return a, nil
+}
+
+// wfMonitorAwaitTicks bounds how long the monitor keeps re-listing instances
+// after a manual run (refreshInterval each), so a run the daemon accepted but
+// never dispatched stops the polling instead of continuing for the whole session.
+const wfMonitorAwaitTicks = 30
+
+// awaitManualRunInMonitor arms the open workflow monitor to pick up the instance
+// a manual run is about to create. Dispatch is asynchronous, so the instance does
+// not exist yet; the monitor's refresh tick watches for it and switches to it.
+// Without this the operator had to leave the screen and come back to see the run
+// they just started.
+func (a *App) awaitManualRunInMonitor(itemRef string) {
+	t := a.model.tasksTab
+	if t == nil || t.View != TaskViewWorkflow || itemRef == "" || t.WorkflowTaskID != itemRef {
+		return
+	}
+	t.WorkflowAwaitTicks = wfMonitorAwaitTicks
 }
 
 // runWorkflowCmd asks the daemon to start a workflow manually and reports the

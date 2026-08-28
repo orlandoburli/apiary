@@ -421,6 +421,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case workflowMonitorMsg:
 		if a.model.tasksTab != nil && len(msg.instances) > 0 {
+			a.model.tasksTab.WorkflowTaskID = msg.taskID
+			a.model.tasksTab.WorkflowTaskLabel = a.taskLabel(msg.taskID)
+			a.model.tasksTab.WorkflowAwaitTicks = 0
 			a.model.tasksTab.WorkflowInstances = msg.instances
 			a.model.tasksTab.WorkflowInstanceIdx = 0
 			a.model.tasksTab.WorkflowInstance = msg.instances[0]
@@ -461,6 +464,35 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.WorkflowInstance = msg.instance
 			if t.WorkflowInstanceIdx >= 0 && t.WorkflowInstanceIdx < len(t.WorkflowInstances) {
 				t.WorkflowInstances[t.WorkflowInstanceIdx] = msg.instance
+			}
+		}
+		a.model.loading = false
+
+	case workflowInstancesRefreshMsg:
+		// Re-listed instances for the open monitor (a manual run was started and
+		// its instance is being waited for). Keep showing the same instance unless
+		// a newer one has appeared, which is exactly what the user asked to see.
+		if t := a.model.tasksTab; t != nil && t.View == TaskViewWorkflow &&
+			t.WorkflowTaskID == msg.taskID && len(msg.instances) > 0 {
+			appeared := len(t.WorkflowInstances) == 0 || t.WorkflowInstances[0].ID != msg.instances[0].ID
+			current := ""
+			if t.WorkflowInstance != nil {
+				current = t.WorkflowInstance.ID
+			}
+			t.WorkflowInstances = msg.instances
+			if appeared {
+				t.WorkflowAwaitTicks = 0
+				a.selectWorkflowInstance(t, 0)
+			} else {
+				// Same set — re-point the cursor at the instance still on screen,
+				// since a new row could have shifted its index.
+				for i, inst := range msg.instances {
+					if inst.ID == current {
+						t.WorkflowInstanceIdx = i
+						t.WorkflowInstance = inst
+						break
+					}
+				}
 			}
 		}
 		a.model.loading = false
@@ -1378,10 +1410,15 @@ func (a *App) handleWorkflowMonitorKey(key string) (tea.Model, tea.Cmd) {
 		}
 
 	case "r":
-		// Refresh the monitor.
+		// Refresh the monitor: the shown instance, plus the task's instance list
+		// so a workflow started since the view opened shows up.
 		if inst != nil {
 			a.model.loading = true
-			return a, a.refreshWorkflowMonitor(inst.ID, inst.CellID)
+			cmds := []tea.Cmd{a.refreshWorkflowMonitor(inst.ID, inst.CellID)}
+			if t.WorkflowTaskID != "" {
+				cmds = append(cmds, a.refreshWorkflowInstances(t.WorkflowTaskID))
+			}
+			return a, tea.Batch(cmds...)
 		}
 
 	case "X":
@@ -1612,6 +1649,11 @@ func (a *App) focusedTaskID() (string, bool) {
 		}
 		if t.View == TaskViewDetail && t.Detail != nil {
 			return t.Detail.TaskID, true
+		}
+		// The monitor's own task, not whatever the list cursor happens to sit on:
+		// a re-sorted list underneath would otherwise retarget the action.
+		if t.View == TaskViewWorkflow && t.WorkflowTaskID != "" {
+			return t.WorkflowTaskID, true
 		}
 		if rows := a.filteredTasks(t); t.SelectedIdx >= 0 && t.SelectedIdx < len(rows) {
 			return rows[t.SelectedIdx].TaskID, true
@@ -1845,22 +1887,52 @@ func (a *App) openWorkflowMonitorOrLogs(taskID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 		defer cancel()
-		if dbConn != nil {
-			// A task can fan out to several workflow instances over its life
-			// (e.g. triage → implementation); load all of them, newest first, so
-			// the monitor can switch between them with [ and ].
-			insts, err := dbConn.ListWorkflowInstancesByCell(ctx, taskID)
-			if err == nil && len(insts) > 0 {
-				items := make([]*WorkflowInstanceItem, 0, len(insts))
-				for i := range insts {
-					items = append(items, buildWorkflowInstanceItem(ctx, dbConn, &insts[i]))
-				}
-				return workflowMonitorMsg{taskID: taskID, instances: items}
-			}
+		if items := listWorkflowInstanceItems(ctx, dbConn, taskID); len(items) > 0 {
+			return workflowMonitorMsg{taskID: taskID, instances: items}
 		}
 		// No workflow instance — fall back to logs view.
 		return taskLogsMsg{taskID: taskID, logs: nil, detail: nil}
 	}
+}
+
+// listWorkflowInstanceItems loads every workflow instance bound to a task,
+// newest first. A task can fan out to several instances over its life (e.g.
+// triage → implementation), and the monitor switches between them with [ and ].
+func listWorkflowInstanceItems(ctx context.Context, dbConn *db.Client, taskID string) []*WorkflowInstanceItem {
+	if dbConn == nil {
+		return nil
+	}
+	insts, err := dbConn.ListWorkflowInstancesByCell(ctx, taskID)
+	if err != nil || len(insts) == 0 {
+		return nil
+	}
+	items := make([]*WorkflowInstanceItem, 0, len(insts))
+	for i := range insts {
+		items = append(items, buildWorkflowInstanceItem(ctx, dbConn, &insts[i]))
+	}
+	return items
+}
+
+// refreshWorkflowInstances re-lists the open monitor's instances so a workflow
+// started manually (Shift+W) shows up on its own, without leaving the view and
+// re-entering it.
+func (a *App) refreshWorkflowInstances(taskID string) tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+		items := listWorkflowInstanceItems(ctx, dbConn, taskID)
+		if len(items) == 0 {
+			return nil
+		}
+		return workflowInstancesRefreshMsg{taskID: taskID, instances: items}
+	}
+}
+
+// workflowInstancesRefreshMsg carries a re-listed instance set for the open monitor.
+type workflowInstancesRefreshMsg struct {
+	taskID    string
+	instances []*WorkflowInstanceItem
 }
 
 // applyApprovalPrompt loads the pending approval request for an instance parked
@@ -2216,8 +2288,16 @@ func (a *App) fetchActiveTab() tea.Cmd {
 		if t := a.model.tasksTab; t != nil {
 			switch t.View {
 			case TaskViewWorkflow:
+				var cmds []tea.Cmd
+				// A manual run was started from this screen: re-list the task's
+				// instances until the new one appears (or the wait times out, so a
+				// run the daemon never dispatched does not poll forever).
+				if t.WorkflowAwaitTicks > 0 && t.WorkflowTaskID != "" {
+					t.WorkflowAwaitTicks--
+					cmds = append(cmds, a.refreshWorkflowInstances(t.WorkflowTaskID))
+				}
 				if inst := t.WorkflowInstance; inst != nil {
-					cmds := []tea.Cmd{a.refreshWorkflowMonitor(inst.ID, inst.CellID)}
+					cmds = append(cmds, a.refreshWorkflowMonitor(inst.ID, inst.CellID))
 					// Live-tail the open step-log panel (throttled like the logs view).
 					if t.WorkflowShowLogs && t.WorkflowLogStepID != "" &&
 						t.WorkflowStepIdx < len(inst.Steps) && a.model.tickCount%2 == 0 {
@@ -4075,6 +4155,35 @@ func wfStateStyle(state string) lipgloss.Style {
 	}
 }
 
+// taskLabel resolves a short human label for a task id ("ERP-42 — Fix the thing"),
+// from the rows already loaded in the Tasks tab. It falls back to the id itself,
+// which is still better than showing nothing.
+func (a *App) taskLabel(taskID string) string {
+	if taskID == "" {
+		return ""
+	}
+	t := a.model.tasksTab
+	if t == nil {
+		return taskID
+	}
+	for _, it := range t.History {
+		if it.TaskID != taskID && it.DrillKey != taskID {
+			continue
+		}
+		title := strings.TrimSpace(it.Title)
+		switch {
+		case it.Number != "" && title != "":
+			return it.Number + " — " + title
+		case title != "":
+			return title
+		case it.Number != "":
+			return it.Number
+		}
+		break
+	}
+	return taskID
+}
+
 func taskDetailLabel(d *TaskItem) string {
 	prefix := ""
 	if d.Number != "" {
@@ -5446,6 +5555,15 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 	// position (oldest = 1) and a hint that [ / ] switch between them.
 	if n := len(t.WorkflowInstances); n > 1 {
 		label += "   " + StyleMuted.Render(fmt.Sprintf("workflow %d/%d · [ ] switch", n-t.WorkflowInstanceIdx, n))
+	}
+	// Which task this run belongs to. Without it the monitor shows a workflow id
+	// and a step list with nothing saying what they are working on. It comes last
+	// in the title and is truncated to whatever the box border leaves free, so a
+	// narrow terminal loses characters of the title instead of its top border.
+	if task := strings.TrimSpace(t.WorkflowTaskLabel); task != "" {
+		if avail := a.model.width - lipgloss.Width(label) - 12; avail >= 12 {
+			label += "   " + StyleMuted.Render("· "+truncate(task, avail))
+		}
 	}
 
 	// ── left panel: step list ───────────────────────────────────────────────
