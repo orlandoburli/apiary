@@ -15,12 +15,15 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"golang.org/x/term"
 
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/daemon"
@@ -575,6 +578,19 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// The workflow picker owns every key while it is open, like the confirm modal.
+	if a.model.pickerActive {
+		return a.handleWorkflowPickerKey(key)
+	}
+
+	// So does the approval form — its text fields consume printable keys, so no
+	// global shortcut may fire underneath it. Both guards sit above the global
+	// single-letter bindings: below them, typing a note into a field ran q (quit
+	// the dashboard), o (open the task in a browser), t, or p instead of typing.
+	if a.model.approvalActive {
+		return a.handleApprovalFormKey(key)
+	}
+
 	if key == "q" {
 		return a, tea.Quit
 	}
@@ -626,17 +642,6 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.confirmTaskID = ""
 		}
 		return a, nil
-	}
-
-	// The workflow picker owns every key while it is open, like the confirm modal.
-	if a.model.pickerActive {
-		return a.handleWorkflowPickerKey(key)
-	}
-
-	// So does the approval form — its text fields consume printable keys, so no
-	// global shortcut may fire underneath it.
-	if a.model.approvalActive {
-		return a.handleApprovalFormKey(key)
 	}
 
 	// Start a workflow manually (Shift+W): pick one, run it now regardless of
@@ -3773,7 +3778,7 @@ func (a *App) taskDetailLines(t *TasksTab) []string {
 		b.WriteString("  " + StyleError.Render(truncate(d.Error, a.model.width-4)) + "\n")
 	}
 	if t.DetailInstance != nil {
-		b.WriteString(renderWorkflowSteps(t.DetailInstance))
+		b.WriteString(renderWorkflowSteps(t.DetailInstance, a.model.width-6))
 	}
 	b.WriteString(renderSourceBindings(d))
 	b.WriteString(renderTaskLineage(d))
@@ -3905,10 +3910,52 @@ func renderTaskTimeline(d *TaskItem) string {
 	return b.String()
 }
 
+// approvalBanner renders the parked gate's message for the detail panel.
+//
+// The message is the step's own question, written in the config and routinely
+// carrying markdown. It used to be printed raw and unwrapped in one yellow
+// string, which both showed the markup as text and spilled past the panel's
+// border on any long line. It is rendered like the approval form's copy of the
+// same message, and memoized because View runs on every keystroke while glamour
+// is far too slow for that (#175).
+func approvalBanner(msg string, width int) string {
+	lines := approvalBannerLines(msg, width-2)
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("  " + StyleWarning.Render("⏸") + strings.TrimRight(lines[0], " ") + "\n")
+	for _, ln := range lines[1:] {
+		b.WriteString("  " + strings.TrimRight(ln, " ") + "\n")
+	}
+	return b.String()
+}
+
+// approvalBannerMemo caches the last banner render. One gate is on screen at a
+// time, so a single entry keyed by (message, width) is all the panel needs; the
+// lock guards against a future caller rendering off the UI goroutine.
+var approvalBannerMemo struct {
+	sync.Mutex
+	msg   string
+	width int
+	lines []string
+}
+
+func approvalBannerLines(msg string, width int) []string {
+	approvalBannerMemo.Lock()
+	defer approvalBannerMemo.Unlock()
+	if approvalBannerMemo.msg == msg && approvalBannerMemo.width == width {
+		return approvalBannerMemo.lines
+	}
+	lines := markdownLines(msg, width)
+	approvalBannerMemo.msg, approvalBannerMemo.width, approvalBannerMemo.lines = msg, width, lines
+	return lines
+}
+
 // renderWorkflowSteps renders the step-progress panel for a task that ran
 // through the workflow engine: the workflow id + instance state, an
 // approval-waiting banner when parked, and one row per step.
-func renderWorkflowSteps(inst *WorkflowInstanceItem) string {
+func renderWorkflowSteps(inst *WorkflowInstanceItem, width int) string {
 	var b strings.Builder
 	b.WriteString("\n  " + StyleLabel.Render("Workflow") + "      " +
 		StyleValueStrong.Render(valueOr(inst.Workflow, "—")) + "  " +
@@ -3919,7 +3966,7 @@ func renderWorkflowSteps(inst *WorkflowInstanceItem) string {
 	}
 
 	if inst.State == db.InstanceStateApprovalWaiting && inst.Message != "" {
-		b.WriteString("  " + StyleWarning.Render("⏸ "+inst.Message) + "\n")
+		b.WriteString(approvalBanner(inst.Message, width))
 		if inst.Approval != nil {
 			if len(inst.Approval.Approvers) > 0 {
 				b.WriteString("  " + StyleMuted.Render("Approvers: "+strings.Join(inst.Approval.Approvers, ", ")) + "\n")
@@ -4867,11 +4914,39 @@ func (a *App) agentFileLines() []string {
 	return lines
 }
 
-// renderMarkdown renders markdown to ANSI-styled terminal text wrapped to width.
-// It uses glamour's auto style so it adapts to the terminal background.
+// markdownStyle is the glamour style every markdown render uses, resolved once
+// by resolveMarkdownStyle before the program starts. See that function for why
+// it is not glamour.WithAutoStyle(). It defaults to the unstyled variant so a
+// caller that never resolves it renders plain text rather than blocking.
+var markdownStyle = styles.NoTTYStyle
+
+// resolveMarkdownStyle picks the glamour style from the terminal background,
+// once, while stdin still belongs to us.
+//
+// glamour.WithAutoStyle() asks the terminal for its background colour and then
+// blocks up to five seconds reading the reply. Once bubbletea is running its own
+// input loop owns stdin and swallows that reply, so the query always waits out
+// its full timeout — on the UI thread that freezes the entire dashboard, and on
+// a warm-up goroutine it stalls the render it was computing. Asking before
+// tea.Program starts costs one fast round trip and every render after it is
+// pure computation.
+func resolveMarkdownStyle() {
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		markdownStyle = styles.NoTTYStyle
+		return
+	}
+	if lipgloss.HasDarkBackground() {
+		markdownStyle = styles.DarkStyle
+		return
+	}
+	markdownStyle = styles.LightStyle
+}
+
+// renderMarkdown renders markdown to ANSI-styled terminal text wrapped to width,
+// in the style resolved for this terminal at startup.
 func renderMarkdown(src string, width int) (string, error) {
 	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStandardStyle(markdownStyle),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
@@ -5925,6 +6000,10 @@ func styleStepType(t string) string {
 
 // Run starts the dashboard.
 func (a *App) Run() error {
+	// Before bubbletea takes over stdin: any terminal query made after this
+	// point never gets its answer back. See resolveMarkdownStyle.
+	resolveMarkdownStyle()
+
 	p := tea.NewProgram(a, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
