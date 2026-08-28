@@ -3,12 +3,20 @@ name: Deploy docs to GitHub Pages
 on:
   push:
     branches: [main]
+    # Everything whose content or logic ends up in the published site. A file
+    # that changes what this workflow publishes but is missing here stays
+    # unpublished until an unrelated change happens to trigger a deploy — which
+    # is how a broken deploy step went unnoticed until the next docs edit.
     paths:
-      - README.md
-      - DEVELOPMENT.md
+      - README.md          # copied to docs/index.md
+      - DEVELOPMENT.md     # copied to docs/development.md
+      - LICENSE            # served at /LICENSE
       - docs/**
       - mkdocs.yml
-      - registry/**
+      - registry/**                  # the entries the index is compiled from
+      - src/cmd/apiary-registry/**   # the compiler that produces the index
+      - sdk/conformance/**           # the kit whose verdicts the index carries
+      - .github/workflows/pages.yml  # this workflow itself
   release:
     types: [published]
   workflow_dispatch:
