@@ -99,6 +99,7 @@ func (a *App) openApprovalForm(req *db.ApprovalRequest) {
 	a.model.approvalErr = ""
 	a.model.approvalVals = map[string]any{}
 	a.model.approvalDraft = map[string]string{}
+	a.model.approvalMsg = renderApprovalMessage(req.Message)
 	for _, f := range approvalFields(req) {
 		switch f.Type {
 		case "boolean":
@@ -141,6 +142,7 @@ func (a *App) closeApprovalForm() {
 	a.model.approvalDraft = nil
 	a.model.approvalErr = ""
 	a.model.approvalIdx = 0
+	a.model.approvalMsg = nil
 }
 
 // handleApprovalFormKey owns every key while the form is open.
@@ -325,8 +327,8 @@ func (a *App) renderApprovalForm(view string) string {
 
 	rows := make([]string, 0, len(fields)+6)
 	rows = append(rows, StyleBoxTitle.Render(" Answer approval "))
-	if req.Message != "" {
-		rows = append(rows, StyleWarning.Render(wrapTo(req.Message, 52)))
+	if msg := a.approvalMessageLines(len(fields)); len(msg) > 0 {
+		rows = append(rows, msg...)
 	}
 	if len(req.Approvers) > 0 {
 		quorum := req.RequiredApprovals
@@ -413,22 +415,58 @@ func (a *App) renderApprovalValue(f approvalField, focused bool) string {
 	}
 }
 
-// wrapTo hard-wraps text at width on word boundaries, for the dialog's fixed
-// column. lipgloss wraps rendered blocks, but the message is styled per line.
-func wrapTo(s string, width int) string {
-	words := strings.Fields(s)
-	if len(words) == 0 {
-		return ""
+// approvalMessageWidth is the dialog's inner text column: the box is 58 wide
+// with 3 columns of padding on each side.
+const approvalMessageWidth = 52
+
+// renderApprovalMessage turns the request's message into display lines.
+//
+// The message is authored in the workflow config and routinely carries markdown
+// — lists of what is about to ship, links, inline code, fenced diffs. It used to
+// be squashed into a single yellow paragraph by a word-wrapper that split on
+// whitespace, which threw away every line break, list and code block: the
+// operator answering the gate saw less than the author wrote. It is rendered as
+// markdown instead, once when the form opens (glamour is far too slow for the
+// render path, which runs on every keystroke), and falls back to a plain wrap
+// when glamour fails so a message is never dropped.
+func renderApprovalMessage(msg string) []string {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return nil
 	}
-	var lines []string
-	line := words[0]
-	for _, w := range words[1:] {
-		if len(line)+1+len(w) > width {
-			lines = append(lines, line)
-			line = w
-			continue
-		}
-		line += " " + w
+	rendered, err := renderMarkdown(msg, approvalMessageWidth)
+	if err != nil {
+		return clampToWidth(wrapPlain(msg, approvalMessageWidth), approvalMessageWidth)
 	}
-	return strings.Join(append(lines, line), "\n")
+	lines := strings.Split(strings.Trim(rendered, "\n"), "\n")
+	return clampToWidth(lines, approvalMessageWidth)
+}
+
+// approvalMessageLines returns the rendered message trimmed to what the terminal
+// can show: a long message must not push the fields and the key hints off the
+// screen, since those are how the gate gets answered. What does not fit is
+// replaced by a count, and the full text stays available in
+// `apiary approvals <request-id>`.
+func (a *App) approvalMessageLines(fieldCount int) []string {
+	lines := a.model.approvalMsg
+	if len(lines) == 0 {
+		return nil
+	}
+	// The rest of the dialog: border + padding + title + approvers + spacers +
+	// error + key hints (7), two rows per field, and a line of breathing room.
+	budget := a.model.height - 9 - 2*fieldCount
+	if a.model.height <= 0 || len(lines) <= budget {
+		return lines
+	}
+	if budget < 2 {
+		budget = 2
+	}
+	kept := make([]string, 0, budget)
+	kept = append(kept, lines[:budget-1]...)
+	id := "<request-id>"
+	if a.model.approvalReq != nil {
+		id = a.model.approvalReq.ID
+	}
+	return append(kept, StyleFooterDim.Render(fmt.Sprintf(
+		"… %d more lines — apiary approvals %s", len(lines)-(budget-1), id)))
 }
