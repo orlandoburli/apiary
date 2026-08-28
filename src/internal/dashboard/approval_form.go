@@ -430,16 +430,24 @@ const approvalMessageWidth = 52
 // render path, which runs on every keystroke), and falls back to a plain wrap
 // when glamour fails so a message is never dropped.
 func renderApprovalMessage(msg string) []string {
-	msg = strings.TrimSpace(msg)
-	if msg == "" {
+	return markdownLines(msg, approvalMessageWidth)
+}
+
+// markdownLines renders markdown to display lines wrapped to width, falling back
+// to a plain wrap when glamour fails so text is never dropped.
+func markdownLines(src string, width int) []string {
+	src = strings.TrimSpace(src)
+	if src == "" {
 		return nil
 	}
-	rendered, err := renderMarkdown(msg, approvalMessageWidth)
-	if err != nil {
-		return clampToWidth(wrapPlain(msg, approvalMessageWidth), approvalMessageWidth)
+	if width < 8 {
+		width = 8
 	}
-	lines := strings.Split(strings.Trim(rendered, "\n"), "\n")
-	return clampToWidth(lines, approvalMessageWidth)
+	rendered, err := renderMarkdown(src, width)
+	if err != nil {
+		return clampToWidth(wrapPlain(src, width), width)
+	}
+	return clampToWidth(strings.Split(strings.Trim(rendered, "\n"), "\n"), width)
 }
 
 // approvalMessageLines returns the rendered message trimmed to what the terminal

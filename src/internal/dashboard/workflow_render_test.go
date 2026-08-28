@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/orlandoburli/apiary/internal/db"
 )
 
@@ -23,7 +25,7 @@ func TestRenderWorkflowSteps_CIPolls(t *testing.T) {
 			{StepID: "check-ci", Status: "failed", Detail: `{"build":"failure"}`, CheckedAt: base.Add(2 * time.Minute)},
 		},
 	}
-	out := stripANSI(renderWorkflowSteps(inst))
+	out := stripANSI(renderWorkflowSteps(inst, 80))
 	if !strings.Contains(out, "CI Polls (3)") {
 		t.Errorf("expected CI poll count header; got:\n%s", out)
 	}
@@ -42,7 +44,7 @@ func TestRenderWorkflowSteps_NoCIPolls(t *testing.T) {
 		State:    "done",
 		Steps:    []WorkflowStepItem{{StepID: "implement", Agent: "engineer", State: "passed"}},
 	}
-	out := stripANSI(renderWorkflowSteps(inst))
+	out := stripANSI(renderWorkflowSteps(inst, 80))
 	if strings.Contains(out, "CI Polls") {
 		t.Errorf("instance with no polls should not render a CI Polls section:\n%s", out)
 	}
@@ -61,7 +63,7 @@ func TestRenderWorkflowSteps(t *testing.T) {
 		},
 	}
 
-	out := stripANSI(renderWorkflowSteps(inst))
+	out := stripANSI(renderWorkflowSteps(inst, 80))
 
 	for _, want := range []string{"feature-development", "running", "Steps", "plan", "implement", "review", "(cached)"} {
 		if !strings.Contains(out, want) {
@@ -81,7 +83,7 @@ func TestRenderWorkflowSteps_ApprovalBanner(t *testing.T) {
 		},
 	}
 
-	out := stripANSI(renderWorkflowSteps(inst))
+	out := stripANSI(renderWorkflowSteps(inst, 80))
 	if !strings.Contains(out, "approval_waiting") {
 		t.Errorf("expected approval_waiting badge:\n%s", out)
 	}
@@ -92,7 +94,7 @@ func TestRenderWorkflowSteps_ApprovalBanner(t *testing.T) {
 
 func TestRenderWorkflowSteps_ApprovalActions(t *testing.T) {
 	inst := &WorkflowInstanceItem{ID: "wf-1", Workflow: "release", State: db.InstanceStateApprovalWaiting, Message: "Awaiting approval", Approval: &db.ApprovalRequest{ID: "wf-1:gate", Approvers: []string{"alice", "carol"}, RequiredApprovals: 2}}
-	out := stripANSI(renderWorkflowSteps(inst))
+	out := stripANSI(renderWorkflowSteps(inst, 80))
 	for _, want := range []string{"alice, carol", "Press y to approve or n to reject"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q:\n%s", want, out)
@@ -101,7 +103,7 @@ func TestRenderWorkflowSteps_ApprovalActions(t *testing.T) {
 	// With declared fields the answer is a form, not a keystroke — the detail
 	// panel points at it rather than sending the operator to the webhook.
 	inst.Approval.Fields = []map[string]any{{"name": "ticket", "required": true}}
-	out = stripANSI(renderWorkflowSteps(inst))
+	out = stripANSI(renderWorkflowSteps(inst, 80))
 	if !strings.Contains(out, "Press a to answer (1 fields)") {
 		t.Fatalf("structured-field guidance missing:\n%s", out)
 	}
@@ -112,7 +114,7 @@ func TestRenderWorkflowSteps_ApprovalActions(t *testing.T) {
 func TestRenderWorkflowSteps_OperatorGateOmitsApprovers(t *testing.T) {
 	inst := &WorkflowInstanceItem{ID: "wf-2", Workflow: "release", State: db.InstanceStateApprovalWaiting,
 		Message: "Ship it?", Approval: &db.ApprovalRequest{ID: "wf-2:gate"}}
-	out := stripANSI(renderWorkflowSteps(inst))
+	out := stripANSI(renderWorkflowSteps(inst, 80))
 	if strings.Contains(out, "Approvers:") {
 		t.Fatalf("unexpected approvers line for an operator gate:\n%s", out)
 	}
@@ -123,7 +125,7 @@ func TestRenderWorkflowSteps_OperatorGateOmitsApprovers(t *testing.T) {
 
 func TestRenderWorkflowSteps_NoSteps(t *testing.T) {
 	inst := &WorkflowInstanceItem{ID: "wf_3", Workflow: "single", State: "done"}
-	out := stripANSI(renderWorkflowSteps(inst))
+	out := stripANSI(renderWorkflowSteps(inst, 80))
 	if !strings.Contains(out, "single") || !strings.Contains(out, "done") {
 		t.Errorf("expected workflow id and state even with no steps:\n%s", out)
 	}
@@ -144,7 +146,7 @@ func TestRenderWorkflowSteps_FailedAfterPassedSteps(t *testing.T) {
 			{StepID: "implement", Agent: "engineer", State: "passed", Duration: "30s"},
 		},
 	}
-	out := stripANSI(renderWorkflowSteps(inst))
+	out := stripANSI(renderWorkflowSteps(inst, 80))
 	if !strings.Contains(out, "no further steps recorded") {
 		t.Errorf("expected a failure marker for an all-passed failed instance:\n%s", out)
 	}
@@ -165,7 +167,7 @@ func TestRenderWorkflowSteps_FailedStepVisible(t *testing.T) {
 			{StepID: "review", Agent: "reviewer", State: "failed", Duration: "12s"},
 		},
 	}
-	out := stripANSI(renderWorkflowSteps(inst))
+	out := stripANSI(renderWorkflowSteps(inst, 80))
 	if strings.Contains(out, "no further steps recorded") {
 		t.Errorf("should not add a marker when a failed step is already visible:\n%s", out)
 	}
@@ -174,7 +176,7 @@ func TestRenderWorkflowSteps_FailedStepVisible(t *testing.T) {
 // A failed instance with zero recorded steps still gets a marker.
 func TestRenderWorkflowSteps_FailedNoSteps(t *testing.T) {
 	inst := &WorkflowInstanceItem{ID: "wf_f3", Workflow: "implementation", State: "failed"}
-	out := stripANSI(renderWorkflowSteps(inst))
+	out := stripANSI(renderWorkflowSteps(inst, 80))
 	if !strings.Contains(out, "before any step completed") {
 		t.Errorf("expected a failure marker for a failed instance with no steps:\n%s", out)
 	}
@@ -239,7 +241,7 @@ func TestRenderWorkflowSteps_StepSpanAndTokens(t *testing.T) {
 				StartedAt: at("2026-06-08 13:42:01"), FinishedAt: at("2026-06-08 13:50:16"), TotalTokens: 42100},
 		},
 	}
-	out := stripANSI(renderWorkflowSteps(inst))
+	out := stripANSI(renderWorkflowSteps(inst, 80))
 	for _, want := range []string{
 		"STARTED", "ENDED", "DURATION", "TOKENS", "STATE", // column header
 		"06-08 13:42:01", "06-08 13:50:16", "42k", // step row cells (compact: no decimal above 10 units)
@@ -267,7 +269,7 @@ func TestRenderWorkflowSteps_WaitBetweenSteps(t *testing.T) {
 				StartedAt: at("2026-06-08 15:46:53")},
 		},
 	}
-	out := stripANSI(renderWorkflowSteps(inst))
+	out := stripANSI(renderWorkflowSteps(inst, 80))
 	if !strings.Contains(out, "↓ 1h54m42s waiting") {
 		t.Errorf("expected the long inter-step wait to be shown:\n%s", out)
 	}
@@ -284,8 +286,35 @@ func TestRenderWorkflowSteps_NoMarkerWhenDone(t *testing.T) {
 		State:    "done",
 		Steps:    []WorkflowStepItem{{StepID: "implement", Agent: "engineer", State: "passed"}},
 	}
-	out := stripANSI(renderWorkflowSteps(inst))
+	out := stripANSI(renderWorkflowSteps(inst, 80))
 	if strings.Contains(out, "workflow failed") {
 		t.Errorf("done instance should not show a failure marker:\n%s", out)
+	}
+}
+
+// The parked-gate banner carries the step's own question, which is markdown. It
+// used to be printed raw and unwrapped, so the markup showed as text and long
+// lines spilled past the panel border.
+func TestApprovalBannerRendersMarkdownWithinWidth(t *testing.T) {
+	inst := &WorkflowInstanceItem{
+		ID: "wf-1", Workflow: "release", State: db.InstanceStateApprovalWaiting,
+		Message: "Release 2.4 is staged.\n\n- migrations applied\n- " +
+			strings.Repeat("a very long line that must be wrapped rather than spilling past the border ", 3),
+		Approval: &db.ApprovalRequest{ID: "wf-1:gate"},
+	}
+	const width = 60
+
+	out := renderWorkflowSteps(inst, width)
+	for _, ln := range strings.Split(stripANSI(out), "\n") {
+		if lipgloss.Width(ln) > width {
+			t.Fatalf("line is %d wide, wider than the %d-column panel: %q", lipgloss.Width(ln), width, ln)
+		}
+	}
+	plain := stripANSI(out)
+	if !strings.Contains(plain, "migrations applied") {
+		t.Fatalf("banner lost the message:\n%s", plain)
+	}
+	if strings.Contains(plain, "- migrations applied") {
+		t.Fatalf("banner shows raw markdown instead of rendering it:\n%s", plain)
 	}
 }

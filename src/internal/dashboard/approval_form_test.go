@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/orlandoburli/apiary/internal/db"
@@ -269,5 +270,26 @@ func TestApprovalFormTruncatesLongMessage(t *testing.T) {
 	}
 	if got := lipgloss.Height(a.renderApprovalForm("")); got > a.model.height {
 		t.Fatalf("dialog is %d lines tall, taller than the %d-line terminal", got, a.model.height)
+	}
+}
+
+// The form's text fields must win over the global single-letter bindings. They
+// used to be checked after them, so typing a note ran q (quit the dashboard),
+// o (open the task in a browser), t or p instead of typing the character.
+func TestApprovalFormOwnsGlobalLetterKeys(t *testing.T) {
+	a := &App{model: &Model{width: 100, height: 40, tabs: []string{"Overview", "Tasks"}, activeTab: 1}}
+	a.openApprovalForm(fieldRequest())
+	a.model.approvalIdx = 1 // the string field
+
+	for _, key := range []string{"o", "k", "q", "t", "p"} {
+		if _, cmd := a.handleKeyMsg(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}); cmd != nil {
+			t.Fatalf("%q fired a global binding while the form was open", key)
+		}
+		if !a.model.approvalActive {
+			t.Fatalf("%q closed the form", key)
+		}
+	}
+	if got := a.model.approvalDraft["change_ticket"]; got != "okqtp" {
+		t.Fatalf("field got %q, want %q", got, "okqtp")
 	}
 }
