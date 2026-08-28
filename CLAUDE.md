@@ -42,3 +42,26 @@ This project is indexed by GitNexus as **apiary** (6306 symbols, 22913 relations
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## After running `gitnexus analyze`
+
+A **full** index build — a fresh clone, a **new git worktree**, or `--force` —
+rewrites all six `.claude/skills/gitnexus/*/SKILL.md` files from the tool's
+bundled copies, discarding what this repo commits there (measured on 1.6.3: 76
+insertions, 165 deletions). `--skip-agents-md` does **not** prevent it: it covers
+only the generated block above. An incremental analyze over an existing
+`.gitnexus/` leaves them alone, which is why this mostly bites in worktrees —
+every new one is a first analyze.
+
+Always restore them afterwards, and check the tree is clean:
+
+```bash
+gitnexus analyze --skip-agents-md && git checkout -- .claude/skills/gitnexus/
+git status --short
+```
+
+What the regenerated copies drop matters: the `node .gitnexus/run.cjs` runner
+instructions and the npm 11 `npx` crash workaround (#1939) — the very failure the
+line above tells you to route around.
+
+Tracked in #457; upstream at abhigyanpatwari/GitNexus#3080.
