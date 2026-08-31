@@ -205,6 +205,30 @@ the caller immediately rather than holding the connection open — and a respons
 persisted immediately before a crash is applied once the parked workflow is
 rehydrated.
 
+## A gate inside a rework loop
+
+A gate can sit inside a loop — `on_fail.goto` or `on_reject.restart_from` pointing
+at a step *before* the gate — and the workflow will re-enter it on every lap. Each
+visit opens its own request, so every lap is answerable on its own; answering lap 1
+never closes lap 2.
+
+The request id carries the lap. The first visit is `<instance>:<step>`, and each
+later one appends its attempt:
+
+```bash
+$ apiary approvals
+  REQUEST                            WORKFLOW         STEP           PARKED    EXPIRES
+  wf-8a31:pre-review@3               jira-implement   pre-review     4m        in 23h
+```
+
+Answer the id `apiary approvals` prints, not one remembered from an earlier lap —
+an id whose lap is already resolved is refused with `already approved`. The
+earlier laps' decisions stay in the store as their own rows, so the audit trail
+shows every answer the gate collected rather than only the last one.
+
+A timeout, `remind_after`, and `escalate_after` are all measured from the current
+lap's park, not from the first one.
+
 The execution timeline records `approval.requested`, `approval.reminder`,
 `approval.escalated`, `approval.granted`, `approval.rejected`, and
 `approval.timed_out`. Actor, channel, feedback, form values, request identity, and

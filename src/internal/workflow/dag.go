@@ -533,7 +533,16 @@ func (e *Engine) enterApproval(ctx context.Context, r *dagRun, step config.StepC
 	}
 	request := &db.ApprovalRequest{ID: requestID, WorkflowInstanceID: r.instID, TaskID: r.task.ID, WorkflowID: r.wf.ID, StepID: step.ID, Message: step.Message, Approvers: step.Approvers, Delegates: step.Delegates, RequiredApprovals: step.RequiredApprovals, Fields: fields, CreatedAt: r.parkedAt, ExpiresAt: expires}
 	if store, ok := e.store.(approvalRequestStore); ok {
-		_ = store.CreateApprovalRequest(ctx, request)
+		// The store owns the lap number: a rework loop re-enters this same step id
+		// on this same instance, and each visit needs its own answerable request.
+		// It rewrites request.ID for lap 2 and beyond, so everything below must use
+		// request.ID rather than the base id built above (#462). A failure here is
+		// worth saying out loud — it used to be swallowed, which is how a gate
+		// nobody could answer looked like a healthy park.
+		if err := store.CreateApprovalRequest(ctx, request); err != nil {
+			aplog.Error("workflow %s: persisting approval request for step %q on instance %s: %v", r.wf.ID, step.ID, r.instID, err)
+		}
+		requestID = request.ID
 	}
 	for _, provider := range e.approvalProviders {
 		if err := provider.RequestApproval(ctx, request); err != nil {
