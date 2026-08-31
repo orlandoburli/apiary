@@ -116,7 +116,8 @@ CREATE TABLE IF NOT EXISTS workflow_instances (
   workflow_id TEXT NOT NULL,
   cell_id TEXT NOT NULL,
   source_id TEXT,
-  state TEXT NOT NULL,            -- pending|running|approval_waiting|interrupted|done|failed
+  state TEXT NOT NULL,            -- queued|running|blocked|done|failed|canceled (see internal/state)
+  blocked_reason TEXT,            -- approval|ci|dependency|retry_backoff|interrupted, when state='blocked'
   parent_instance_id TEXT,       -- set for sub-workflow child instances
   resumed_from TEXT,             -- instance id this was resumed from
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -138,7 +139,9 @@ CREATE TABLE IF NOT EXISTS step_runs (
   workflow_instance_id TEXT NOT NULL,
   step_id TEXT NOT NULL,
   agent_id TEXT,
-  state TEXT NOT NULL,           -- pending|running|passed|failed|skipped|skipped_cached
+  state TEXT NOT NULL,           -- queued|running|blocked|done|failed|skipped (see internal/state)
+  blocked_reason TEXT,           -- approval|ci|dependency|interrupted, when state='blocked'
+  skipped_reason TEXT,           -- cached, when state='skipped'
   output TEXT,
   structured_output TEXT,        -- JSON-encoded structured output
   summary TEXT,
@@ -171,7 +174,8 @@ CREATE TABLE IF NOT EXISTS internal_tasks (
   title TEXT NOT NULL,
   description TEXT,
   input TEXT,                                   -- JSON: structured input from spawner
-  state TEXT NOT NULL DEFAULT 'registered',     -- registered|running|approval_waiting|done|failed
+  state TEXT NOT NULL DEFAULT 'queued',         -- queued|running|blocked|done|failed|canceled (see internal/state)
+  blocked_reason TEXT,                          -- approval|ci|dependency|retry_backoff|interrupted
   metadata TEXT,                                -- JSON: labels, priority, type, etc.
   outstanding_workflows INTEGER DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -501,6 +505,14 @@ var migrations = []string{
 	// constraint it belongs to is widened by rebuildApprovalRequestsAttempt,
 	// since SQLite cannot alter a table-level constraint in place.
 	`ALTER TABLE approval_requests ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1`,
+	// Canonical state model (#465): the reason a row is parked or was skipped is
+	// stored beside the state rather than encoded into it. This is what lets
+	// 'approval_waiting'/'waiting'/'interrupted' collapse to 'blocked', and
+	// 'skipped_cached' to 'skipped', without losing why.
+	`ALTER TABLE internal_tasks ADD COLUMN blocked_reason TEXT`,
+	`ALTER TABLE workflow_instances ADD COLUMN blocked_reason TEXT`,
+	`ALTER TABLE step_runs ADD COLUMN blocked_reason TEXT`,
+	`ALTER TABLE step_runs ADD COLUMN skipped_reason TEXT`,
 }
 
 // InitSchema creates all tables, indices, and additive columns. It is pure DDL:
@@ -552,6 +564,41 @@ func MigrateData(ctx context.Context, db *sql.DB) error {
 	}
 	if err := dropDispatcherState(ctx, db); err != nil {
 		return fmt.Errorf("drop dispatcher_state: %w", err)
+	}
+	if err := migrateStates(ctx, db); err != nil {
+		return fmt.Errorf("migrate states: %w", err)
+	}
+	return nil
+}
+
+// migrateStates converts stored states from the four legacy vocabularies to the
+// canonical one (#465) — but only for rows that are already terminal.
+//
+// This restriction is the whole safety argument. A task that is running, an
+// instance parked on a CI wait, and a job holding a lease are left exactly as
+// they are and convert on their next natural transition, so nothing is ever
+// rewritten underneath the engine. Normalize on the read path (internal/state)
+// means those un-migrated rows still display and compare correctly meanwhile.
+//
+// Deliberately not converted in bulk, because each is a live-row state:
+// registered, pending, approval_waiting, waiting, leased, interrupted.
+// 'interrupted' looks terminal but is the input to ReconcileOrphanWorkflowInstances
+// and to orphan propagation, so converting it here would race a daemon that is
+// mid-reconcile; reconcile rewrites those rows on every start anyway.
+//
+// Idempotent: converted rows stop matching.
+func migrateStates(ctx context.Context, db *sql.DB) error {
+	stmts := []string{
+		// Steps: 'passed' is 'done'; 'skipped_cached' is 'skipped' with a reason.
+		`UPDATE step_runs SET state = 'done' WHERE state = 'passed'`,
+		`UPDATE step_runs SET state = 'skipped', skipped_reason = 'cached' WHERE state = 'skipped_cached'`,
+		// Dispatch jobs: 'succeeded' is 'done'.
+		`UPDATE dispatch_jobs SET state = 'done' WHERE state = 'succeeded'`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("%s: %w", stmt, err)
+		}
 	}
 	return nil
 }

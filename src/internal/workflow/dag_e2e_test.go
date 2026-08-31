@@ -129,8 +129,8 @@ func TestE2E_ClassifyImplementReviewQA(t *testing.T) {
 	if last.StepID != "qa" {
 		t.Errorf("expected last step to be qa, got %q", last.StepID)
 	}
-	if last.State != "passed" {
-		t.Errorf("expected qa step state=passed, got %q", last.State)
+	if last.State != "done" {
+		t.Errorf("expected qa step state=done, got %q", last.State)
 	}
 
 	// classify and review must each appear at least once.

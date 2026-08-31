@@ -9,20 +9,30 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 func TestResumableState(t *testing.T) {
-	cases := map[string]bool{
-		db.InstanceStateFailed:          true,
-		db.InstanceStateInterrupted:     true,
-		db.InstanceStateDone:            false,
-		db.InstanceStateRunning:         false,
-		db.InstanceStateApprovalWaiting: false,
-		db.InstanceStatePending:         false,
+	// The canonical vocabulary files interruption, approval waits and CI waits
+	// all under "blocked", so the reason is what separates a resumable orphan
+	// from a live park (#465).
+	cases := []struct {
+		st     string
+		reason string
+		want   bool
+	}{
+		{db.InstanceStateFailed, "", true},
+		{db.InstanceStateBlocked, string(state.ReasonInterrupted), true},
+		{db.InstanceStateBlocked, string(state.ReasonApproval), false},
+		{db.InstanceStateBlocked, string(state.ReasonCI), false},
+		{db.InstanceStateBlocked, "", false},
+		{db.InstanceStateDone, "", false},
+		{db.InstanceStateRunning, "", false},
+		{db.InstanceStateQueued, "", false},
 	}
-	for state, want := range cases {
-		if got := resumableState(state); got != want {
-			t.Errorf("resumableState(%q) = %v, want %v", state, got, want)
+	for _, c := range cases {
+		if got := resumableState(c.st, c.reason); got != c.want {
+			t.Errorf("resumableState(%q, %q) = %v, want %v", c.st, c.reason, got, c.want)
 		}
 	}
 }

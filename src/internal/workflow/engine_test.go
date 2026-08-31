@@ -95,7 +95,7 @@ func (f *fakeStore) CreateWorkflowInstance(_ context.Context, inst *db.WorkflowI
 	f.mu.Unlock()
 	return nil
 }
-func (f *fakeStore) UpdateWorkflowInstanceState(_ context.Context, id, state string) error {
+func (f *fakeStore) UpdateWorkflowInstanceState(_ context.Context, id, state, reason string) error {
 	f.mu.Lock()
 	if inst, ok := f.instances[id]; ok {
 		inst.State = state
@@ -121,7 +121,7 @@ func (f *fakeStore) UpdateStepRun(_ context.Context, sr *db.StepRun) error {
 
 // UpdateStepRunState satisfies stepRunStateUpdater so the engine can correct a
 // step run's state after a post-execution gate, as *db.Client does.
-func (f *fakeStore) UpdateStepRunState(_ context.Context, id, state, output string) error {
+func (f *fakeStore) UpdateStepRunState(_ context.Context, id, state, reason, output string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	sr, ok := f.stepRuns[id]

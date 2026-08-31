@@ -12,6 +12,7 @@ import (
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/source"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // Resume error sentinels. They map to CLI exit codes / HTTP statuses:
@@ -57,8 +58,17 @@ type ResumePreview struct {
 // resumableState reports whether an instance in this state can be resumed.
 // Only failed and interrupted instances qualify; done/running/approval_waiting/
 // pending are rejected (approval_waiting resumes via the polling loop, not here).
-func resumableState(state string) bool {
-	return state == db.InstanceStateFailed || state == db.InstanceStateInterrupted
+// resumableState reports whether an instance in this state can be resumed.
+//
+// It takes the blocked reason because the canonical vocabulary collapses
+// approval waits, CI waits and interruption onto "blocked" (#465), and only the
+// last of those is resumable: a run parked on an approval is alive and will
+// continue when someone answers, so resuming it would double-run the workflow.
+func resumableState(st, reason string) bool {
+	if st == db.InstanceStateFailed {
+		return true
+	}
+	return st == db.InstanceStateBlocked && reason == string(state.ReasonInterrupted)
 }
 
 // workflowByID resolves a workflow definition by id, covering both declared
@@ -84,7 +94,7 @@ func (d *Dispatcher) ResumePreview(ctx context.Context, id string, opts ResumeOp
 	if inst == nil {
 		return nil, ErrInstanceNotFound
 	}
-	if !resumableState(inst.State) {
+	if !resumableState(inst.State, inst.BlockedReason) {
 		return nil, ErrInstanceNotResumable
 	}
 	wf, err := d.resumeWorkflow(ctx, inst, opts.ConfigMode)
@@ -162,7 +172,7 @@ func (d *Dispatcher) startResume(ctx context.Context, id string, opts ResumeOpti
 	if inst == nil {
 		return "", ErrInstanceNotFound
 	}
-	if !resumableState(inst.State) {
+	if !resumableState(inst.State, inst.BlockedReason) {
 		return "", ErrInstanceNotResumable
 	}
 	wf, err := d.resumeWorkflow(ctx, inst, opts.ConfigMode)

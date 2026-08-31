@@ -31,6 +31,7 @@ import (
 	runnerimpl "github.com/orlandoburli/apiary/internal/runner"
 	"github.com/orlandoburli/apiary/internal/source"
 	"github.com/orlandoburli/apiary/internal/source/pluginsource"
+	"github.com/orlandoburli/apiary/internal/state"
 	"github.com/orlandoburli/apiary/internal/version"
 	workerpkg "github.com/orlandoburli/apiary/internal/worker"
 	"github.com/orlandoburli/apiary/internal/workflow"
@@ -78,8 +79,8 @@ type Dispatcher struct {
 	// nil when no DB is configured (tests / dry-run without persistence).
 	binder source.SourceBinder
 
-	sem        chan struct{}            // poll concurrency (size 1)
-	agentSem   map[string]chan struct{} // per-agent dispatch concurrency
+	sem      chan struct{}            // poll concurrency (size 1)
+	agentSem map[string]chan struct{} // per-agent dispatch concurrency
 	// bg tracks every goroutine the dispatcher spawns to carry a dispatch
 	// forward off the poll loop (fan-out runs, PR-event runs, parked
 	// approval/wait advances, resumes). Waiting on it gives callers — chiefly
@@ -558,6 +559,17 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 			aplog.Warn("reconcile orphan task counters: %v", err)
 		} else if recounted > 0 || settled > 0 {
 			aplog.Info("reconciled outstanding counter on %d task(s), settled %d stranded task(s)", recounted, settled)
+		}
+
+		// Carry interruption up to the task, so a task whose every instance was
+		// orphaned reads as blocked/interrupted instead of sitting in the queued
+		// state and looking like it had just arrived (#465). Runs after the
+		// recount above, which is what makes the outstanding counter trustworthy
+		// enough to test here.
+		if n, err := d.db.PropagateInterruptedToTasks(ctx); err != nil {
+			aplog.Warn("propagate interrupted instances to tasks: %v", err)
+		} else if n > 0 {
+			aplog.Info("marked %d task(s) blocked after their workflow instances were interrupted", n)
 		}
 	}
 	if d.db != nil {
@@ -1142,9 +1154,12 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, ref string) (RestartResul
 			aplog.Error("force-restart %s: list workflow instances: %v", cellID, err)
 		} else {
 			for _, inst := range insts {
-				switch inst.State {
-				case db.InstanceStateRunning, db.InstanceStateApprovalWaiting, db.InstanceStateWaiting, db.InstanceStatePending:
-					if err := d.db.UpdateWorkflowInstanceState(ctx, inst.ID, db.InstanceStateInterrupted); err != nil {
+				// Anything not yet settled gets interrupted. A negative test
+				// rather than a list of live states: the canonical vocabulary
+				// collapses the three parked states onto one, and a positive
+				// list is what silently misses a state added later (#465).
+				if !state.State(inst.State).IsTerminal() {
+					if err := d.db.UpdateWorkflowInstanceState(ctx, inst.ID, db.InstanceStateBlocked, string(state.ReasonInterrupted)); err != nil {
 						aplog.Error("force-restart %s: interrupt instance %s: %v", cellID, inst.ID, err)
 					} else {
 						aplog.Info("force-restart %s: interrupted workflow instance %s (was %s)", cellID, inst.ID, inst.State)

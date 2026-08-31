@@ -12,6 +12,7 @@ import (
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/source"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // ErrTaskNotFound is returned by DeleteTask when no task, binding, or workflow
@@ -318,7 +319,7 @@ func (d *Dispatcher) StopInstance(ctx context.Context, instanceID string) error 
 	}
 
 	// Mark the instance itself interrupted.
-	if err := d.db.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateInterrupted); err != nil {
+	if err := d.db.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateBlocked, string(state.ReasonInterrupted)); err != nil {
 		aplog.Error("stop instance %s: update state: %v", instanceID, err)
 	}
 	aplog.Info("stopped instance %s (cell %s)", instanceID, inst.CellID)
@@ -592,7 +593,15 @@ func instanceSummary(v db.WorkflowInstanceView, now time.Time) InstanceSummary {
 // interrupted/pending where no meaningful span exists.
 func instanceDuration(inst db.WorkflowInstance, now time.Time) string {
 	switch inst.State {
-	case db.InstanceStateRunning, db.InstanceStateApprovalWaiting, db.InstanceStateWaiting:
+	case db.InstanceStateRunning:
+		return humanDuration(now.Sub(inst.CreatedAt))
+	case db.InstanceStateBlocked:
+		// A run parked on an approval or a CI wait is still accruing wall clock;
+		// an interrupted one stopped when the daemon died, and its elapsed time
+		// is not meaningful (#465).
+		if inst.BlockedReason == string(state.ReasonInterrupted) {
+			return "—"
+		}
 		return humanDuration(now.Sub(inst.CreatedAt))
 	case db.InstanceStateDone, db.InstanceStateFailed:
 		return humanDuration(inst.UpdatedAt.Sub(inst.CreatedAt))

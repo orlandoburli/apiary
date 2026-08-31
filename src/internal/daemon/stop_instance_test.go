@@ -59,7 +59,7 @@ func TestStopInstance_CancelsOnlyTheNamedInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get instance: %v", err)
 	}
-	if inst.State != db.InstanceStateInterrupted {
+	if inst.State != db.InstanceStateBlocked {
 		t.Errorf("stopped instance state = %q, want interrupted", inst.State)
 	}
 	keep, err := d.db.GetWorkflowInstance(ctx, "i-keep")

@@ -153,7 +153,7 @@ func (e *Engine) WakeWait(ctx context.Context, instanceID string) {
 	r.waitingChild = ""
 	r.state[step] = stPending // re-arm the wait_for (or parallel) step for re-dispatch
 
-	_ = e.store.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateRunning)
+	_ = e.store.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateRunning, "")
 	outcome := e.driveDAG(ctx, r)
 	e.settle(ctx, r, outcome)
 }

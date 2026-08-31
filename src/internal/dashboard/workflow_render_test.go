@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/orlandoburli/apiary/internal/db"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 func TestRenderWorkflowSteps_CIPolls(t *testing.T) {
@@ -76,7 +77,7 @@ func TestRenderWorkflowSteps_ApprovalBanner(t *testing.T) {
 	inst := &WorkflowInstanceItem{
 		ID:       "wf_2",
 		Workflow: "feature-development",
-		State:    "approval_waiting",
+		State:    "approval_waiting", // legacy value: reason encoded in the state
 		Message:  "Awaiting human approval — reply on the task to resume or abort.",
 		Steps: []WorkflowStepItem{
 			{StepID: "gate", Agent: "", State: "running", Duration: "—"},
@@ -84,8 +85,10 @@ func TestRenderWorkflowSteps_ApprovalBanner(t *testing.T) {
 	}
 
 	out := stripANSI(renderWorkflowSteps(inst, 80))
-	if !strings.Contains(out, "approval_waiting") {
-		t.Errorf("expected approval_waiting badge:\n%s", out)
+	// A legacy 'approval_waiting' row still reports what it is parked on, with
+	// the reason recovered from the state name (#465).
+	if !strings.Contains(out, "blocked:approval") {
+		t.Errorf("expected blocked:approval badge:\n%s", out)
 	}
 	if !strings.Contains(out, "Awaiting human approval") {
 		t.Errorf("expected approval message banner:\n%s", out)
@@ -93,7 +96,7 @@ func TestRenderWorkflowSteps_ApprovalBanner(t *testing.T) {
 }
 
 func TestRenderWorkflowSteps_ApprovalActions(t *testing.T) {
-	inst := &WorkflowInstanceItem{ID: "wf-1", Workflow: "release", State: db.InstanceStateApprovalWaiting, Message: "Awaiting approval", Approval: &db.ApprovalRequest{ID: "wf-1:gate", Approvers: []string{"alice", "carol"}, RequiredApprovals: 2}}
+	inst := &WorkflowInstanceItem{ID: "wf-1", Workflow: "release", State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonApproval), Message: "Awaiting approval", Approval: &db.ApprovalRequest{ID: "wf-1:gate", Approvers: []string{"alice", "carol"}, RequiredApprovals: 2}}
 	out := stripANSI(renderWorkflowSteps(inst, 80))
 	for _, want := range []string{"alice, carol", "Press y to approve or n to reject"} {
 		if !strings.Contains(out, want) {
@@ -112,7 +115,7 @@ func TestRenderWorkflowSteps_ApprovalActions(t *testing.T) {
 // A gate with no approvers is answered by whoever is at the keyboard, so the
 // panel must not print an empty "Approvers:" line.
 func TestRenderWorkflowSteps_OperatorGateOmitsApprovers(t *testing.T) {
-	inst := &WorkflowInstanceItem{ID: "wf-2", Workflow: "release", State: db.InstanceStateApprovalWaiting,
+	inst := &WorkflowInstanceItem{ID: "wf-2", Workflow: "release", State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonApproval),
 		Message: "Ship it?", Approval: &db.ApprovalRequest{ID: "wf-2:gate"}}
 	out := stripANSI(renderWorkflowSteps(inst, 80))
 	if strings.Contains(out, "Approvers:") {
@@ -297,7 +300,7 @@ func TestRenderWorkflowSteps_NoMarkerWhenDone(t *testing.T) {
 // lines spilled past the panel border.
 func TestApprovalBannerRendersMarkdownWithinWidth(t *testing.T) {
 	inst := &WorkflowInstanceItem{
-		ID: "wf-1", Workflow: "release", State: db.InstanceStateApprovalWaiting,
+		ID: "wf-1", Workflow: "release", State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonApproval),
 		Message: "Release 2.4 is staged.\n\n- migrations applied\n- " +
 			strings.Repeat("a very long line that must be wrapped rather than spilling past the border ", 3),
 		Approval: &db.ApprovalRequest{ID: "wf-1:gate"},

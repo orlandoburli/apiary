@@ -8,6 +8,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
 	"github.com/orlandoburli/apiary/internal/router"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // TestDropActiveMatches verifies the source-agnostic in-flight guard: a workflow
@@ -24,7 +25,7 @@ func TestDropActiveMatches(t *testing.T) {
 
 	// task T1: implementation parked at an approval step (the gap inFlight misses);
 	// triage already done.
-	_ = dbc.CreateWorkflowInstance(ctx, &db.WorkflowInstance{ID: "i1", WorkflowID: "implementation", CellID: "1948", TaskID: "T1", State: db.InstanceStateApprovalWaiting})
+	_ = dbc.CreateWorkflowInstance(ctx, &db.WorkflowInstance{ID: "i1", WorkflowID: "implementation", CellID: "1948", TaskID: "T1", State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonApproval)})
 	_ = dbc.CreateWorkflowInstance(ctx, &db.WorkflowInstance{ID: "i2", WorkflowID: "triage", CellID: "1948", TaskID: "T1", State: db.InstanceStateDone})
 
 	d := &Dispatcher{db: dbc}

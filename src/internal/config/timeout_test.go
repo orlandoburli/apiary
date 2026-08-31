@@ -56,8 +56,8 @@ func TestStallTimeoutParsing(t *testing.T) {
 		{"", 0},
 		{"0", 0},
 		{"20m", 20 * time.Minute},
-		{"-5m", 0},        // negative is meaningless; treat as disabled
-		{"nonsense", 0},   // unparseable must not silently enable a killer
+		{"-5m", 0},      // negative is meaningless; treat as disabled
+		{"nonsense", 0}, // unparseable must not silently enable a killer
 	}
 	for _, tc := range cases {
 		s := Settings{StallTimeout: tc.in}

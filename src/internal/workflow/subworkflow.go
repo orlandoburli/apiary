@@ -129,7 +129,7 @@ func (e *Engine) runChildInstance(ctx context.Context, parentInstID string, chil
 		return "", nil, false
 	}
 	if err := e.persistWorkflowSnapshot(ctx, childID, child); err != nil {
-		_ = e.store.UpdateWorkflowInstanceState(ctx, childID, db.InstanceStateFailed)
+		_ = e.store.UpdateWorkflowInstanceState(ctx, childID, db.InstanceStateFailed, "")
 		aplog.Error("sub-workflow %s: persist snapshot: %v", child.ID, err)
 		return childID, nil, false
 	}
@@ -161,7 +161,7 @@ func (e *Engine) runChildInstance(ctx context.Context, parentInstID string, chil
 			finalState = db.InstanceStateFailed
 		}
 	}
-	_ = e.store.UpdateWorkflowInstanceState(context.WithoutCancel(ctx), childID, finalState)
+	_ = e.store.UpdateWorkflowInstanceState(context.WithoutCancel(ctx), childID, finalState, "")
 	return childID, outputs, outcome == outcomeDone
 }
 

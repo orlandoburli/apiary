@@ -16,12 +16,13 @@ import (
 	"github.com/orlandoburli/apiary/internal/memory"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/source"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // Store persists workflow instances and step runs. *db.Client satisfies it.
 type Store interface {
 	CreateWorkflowInstance(ctx context.Context, inst *db.WorkflowInstance) error
-	UpdateWorkflowInstanceState(ctx context.Context, id, state string) error
+	UpdateWorkflowInstanceState(ctx context.Context, id, state, reason string) error
 	CreateStepRun(ctx context.Context, sr *db.StepRun) error
 	UpdateStepRun(ctx context.Context, sr *db.StepRun) error
 }
@@ -51,7 +52,7 @@ type ciPollRecorder interface {
 // *db.Client satisfies it; fake stores in tests that omit it simply keep the
 // state the runner wrote.
 type stepRunStateUpdater interface {
-	UpdateStepRunState(ctx context.Context, id, state, output string) error
+	UpdateStepRunState(ctx context.Context, id, state, reason, output string) error
 }
 
 type executionEventRecorder interface {
@@ -114,6 +115,34 @@ type TaskTracker interface {
 	HasFailedInstance(ctx context.Context, taskID string) (bool, error)
 	// SetTaskState transitions the InternalTask to a terminal lifecycle state.
 	SetTaskState(ctx context.Context, taskID string, state model.TaskState) error
+	// SetTaskStateReason transitions the InternalTask, recording why when the
+	// state is blocked (e.g. a pending retry).
+	SetTaskStateReason(ctx context.Context, taskID string, state model.TaskState, reason string) error
+	// CountConsecutiveFailedInstances reports how many of the most recent
+	// instances of (task, workflow) failed in a row. Used to tell a task that
+	// will be retried from one that has run out of attempts.
+	CountConsecutiveFailedInstances(ctx context.Context, taskID, workflowID string) (int, error)
+}
+
+// retryPending reports whether the dispatcher will try this workflow again,
+// i.e. the consecutive-failure count is still under settings.max_attempts. It
+// mirrors dropCappedMatches, which is what actually enforces the cap on the next
+// poll; this only decides how the task is labelled in the meantime.
+//
+// Fail-safe: on a count error, or with the cap disabled, it reports false so the
+// task settles as 'failed'. Over-reporting a retry would hide a genuinely dead
+// task from an operator, which is the failure mode worth avoiding.
+func (e *Engine) retryPending(ctx context.Context, r *dagRun) bool {
+	limit := e.cfg.Settings.MaxAttempts
+	if limit <= 0 || e.tracker == nil || r.task.ID == "" || r.wf.ID == "" {
+		return false
+	}
+	n, err := e.tracker.CountConsecutiveFailedInstances(ctx, r.task.ID, r.wf.ID)
+	if err != nil {
+		aplog.Error("task %s: consecutive-failure count: %v", r.task.ID, err)
+		return false
+	}
+	return n < limit
 }
 
 // StepRequest is the input to executing one agent step.
@@ -539,11 +568,15 @@ func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool
 		// rehydrateParkedWaits).
 		// (A parallel group parked on a wait_for child counts as a wait park —
 		// waitStepConfig resolves the governing step for both shapes, #425.)
-		waitState := db.InstanceStateApprovalWaiting
+		// Both park onto the canonical 'blocked' state; the reason is what tells
+		// the rehydration paths apart after a restart (approval →
+		// rehydrateParkedApprovals, ci → rehydrateParkedWaits) and what the
+		// dashboard shows the operator (#465).
+		waitReason := string(state.ReasonApproval)
 		if _, isWait := r.waitStepConfig(); isWait {
-			waitState = db.InstanceStateWaiting
+			waitReason = string(state.ReasonCI)
 		}
-		_ = e.store.UpdateWorkflowInstanceState(ctx, r.instID, waitState)
+		_ = e.store.UpdateWorkflowInstanceState(ctx, r.instID, db.InstanceStateBlocked, waitReason)
 		e.mu.Lock()
 		e.parked[r.instID] = r
 		e.mu.Unlock()
@@ -555,7 +588,7 @@ func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool
 	if failed {
 		finalState = db.InstanceStateFailed
 	}
-	_ = e.store.UpdateWorkflowInstanceState(ctx, r.instID, finalState)
+	_ = e.store.UpdateWorkflowInstanceState(ctx, r.instID, finalState, "")
 	e.mu.Lock()
 	delete(e.parked, r.instID)
 	e.mu.Unlock()
@@ -598,16 +631,29 @@ func (e *Engine) completeTask(ctx context.Context, r *dagRun, failed bool) {
 		}
 	}
 
+	// A failed task is only 'failed' once no attempt remains. While the
+	// dispatcher will pick it up again (settings.max_attempts), it is blocked
+	// waiting out a retry — which is what stops a healthily-retrying task from
+	// oscillating failed → running → failed and makes 'failed' mean "a human
+	// needs to look at this" (#465).
 	finalState := model.TaskStateDone
+	reason := ""
 	if anyFailed {
 		finalState = model.TaskStateFailed
+		if e.retryPending(ctx, r) {
+			finalState = model.TaskStateBlocked
+			reason = string(state.ReasonRetryBackoff)
+		}
 	}
-	if err := e.tracker.SetTaskState(ctx, r.task.ID, finalState); err != nil {
+	if err := e.tracker.SetTaskStateReason(ctx, r.task.ID, finalState, reason); err != nil {
 		aplog.Error("task %s: set state %s: %v", r.task.ID, finalState, err)
 	}
 	eventType := "task.completed"
 	if anyFailed {
 		eventType = "task.escalated"
+	}
+	if reason != "" {
+		eventType = "task.retry_pending"
 	}
 	e.recordExecutionEvent(ctx, r, eventType, map[string]any{"state": finalState})
 
@@ -727,7 +773,7 @@ func (e *Engine) markStepRunFailed(ctx context.Context, stepRunID, output string
 	if !ok {
 		return
 	}
-	if err := updater.UpdateStepRunState(ctx, stepRunID, db.StepStateFailed, output); err != nil {
+	if err := updater.UpdateStepRunState(ctx, stepRunID, db.StepStateFailed, "", output); err != nil {
 		aplog.Error("step run %s: mark failed: %v", stepRunID, err)
 	}
 }

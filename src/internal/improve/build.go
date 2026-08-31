@@ -13,12 +13,12 @@ import (
 
 // Options configures a single evidence-pack build.
 type Options struct {
-	DBPath  string
-	LogDir  string
-	Config  *config.Config
-	Window  Window
-	Scope   Scope
-	Clock   func() time.Time
+	DBPath string
+	LogDir string
+	Config *config.Config
+	Window Window
+	Scope  Scope
+	Clock  func() time.Time
 
 	// TranscriptsPerHotspot and HotspotLimit are 0 in the metrics-only path
 	// (`--dump-evidence` at low effort); the advisor sets them from its effort level.

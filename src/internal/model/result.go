@@ -3,13 +3,13 @@ package model
 import "time"
 
 type RunRequest struct {
-	Cell          SourceItem
-	WorkerID      string
-	Model         string
-	MaxTurns      int
-	SystemAppend  string
-	WorkingDir    string
-	Env           map[string]string
+	Cell         SourceItem
+	WorkerID     string
+	Model        string
+	MaxTurns     int
+	SystemAppend string
+	WorkingDir   string
+	Env          map[string]string
 	// Timeout bounds the whole invocation. The caller enforces it by cancelling
 	// the context it passes to Run; runners need not check it themselves.
 	Timeout time.Duration
@@ -17,7 +17,7 @@ type RunRequest struct {
 	// long, independent of Timeout. Zero disables it. Only meaningful for runners
 	// that stream output as they work — a runner that buffers everything until
 	// exit would look permanently stalled.
-	StallTimeout time.Duration
+	StallTimeout  time.Duration
 	AgentMetadata map[string]any
 
 	// SystemPrepend is injected at the very start of the prompt, before the cell

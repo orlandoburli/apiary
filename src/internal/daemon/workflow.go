@@ -13,6 +13,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/router"
 	"github.com/orlandoburli/apiary/internal/runner/execution"
 	"github.com/orlandoburli/apiary/internal/source"
+	"github.com/orlandoburli/apiary/internal/state"
 	"github.com/orlandoburli/apiary/internal/workflow"
 )
 
@@ -90,7 +91,7 @@ func (d *Dispatcher) rehydrateParkedApprovals(ctx context.Context) {
 	if d.db == nil {
 		return
 	}
-	instances, err := d.db.ListWorkflowInstancesByState(ctx, db.InstanceStateApprovalWaiting)
+	instances, err := d.db.ListWorkflowInstancesBlockedBy(ctx, string(state.ReasonApproval))
 	if err != nil {
 		aplog.Warn("rehydrate parked approvals: list instances: %v", err)
 		return
@@ -137,7 +138,7 @@ func (d *Dispatcher) rehydrateParkedWaits(ctx context.Context) {
 	if d.db == nil {
 		return
 	}
-	instances, err := d.db.ListWorkflowInstancesByState(ctx, db.InstanceStateWaiting)
+	instances, err := d.db.ListWorkflowInstancesBlockedBy(ctx, string(state.ReasonCI), string(state.ReasonDependency))
 	if err != nil {
 		aplog.Warn("rehydrate parked waits: list instances: %v", err)
 		return
@@ -207,6 +208,14 @@ func (t dbTaskTracker) HasFailedInstance(ctx context.Context, taskID string) (bo
 
 func (t dbTaskTracker) SetTaskState(ctx context.Context, taskID string, state model.TaskState) error {
 	return t.db.InternalTasks().UpdateTaskState(ctx, taskID, state)
+}
+
+func (t dbTaskTracker) SetTaskStateReason(ctx context.Context, taskID string, state model.TaskState, reason string) error {
+	return t.db.InternalTasks().UpdateTaskStateReason(ctx, taskID, state, reason)
+}
+
+func (t dbTaskTracker) CountConsecutiveFailedInstances(ctx context.Context, taskID, workflowID string) (int, error) {
+	return t.db.CountConsecutiveFailedInstances(ctx, taskID, workflowID)
 }
 
 // dispatchWorkflow runs a matched task through the workflow engine. The route is

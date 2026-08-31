@@ -130,10 +130,18 @@ func (s *InternalTaskStore) GetTask(ctx context.Context, id string) (*model.Inte
 }
 
 // UpdateTaskState transitions a task to a new state.
-func (s *InternalTaskStore) UpdateTaskState(ctx context.Context, id string, state model.TaskState) error {
+func (s *InternalTaskStore) UpdateTaskState(ctx context.Context, id string, st model.TaskState) error {
+	return s.UpdateTaskStateReason(ctx, id, st, "")
+}
+
+// UpdateTaskStateReason transitions a task, recording why when the state is
+// 'blocked'. A task blocked on an approval and one blocked because its last
+// attempt failed and another is due are the same state and differ only here
+// (#465).
+func (s *InternalTaskStore) UpdateTaskStateReason(ctx context.Context, id string, st model.TaskState, reason string) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE internal_tasks SET state = ?, updated_at = ? WHERE id = ?
-	`, string(state), time.Now(), id)
+		UPDATE internal_tasks SET state = ?, blocked_reason = ?, updated_at = ? WHERE id = ?
+	`, string(st), nullStr(reason), time.Now(), id)
 	return err
 }
 
@@ -173,15 +181,25 @@ func (s *InternalTaskStore) UpdateTaskMetadata(ctx context.Context, id, title, d
 // belong to a new round, so HasFailedInstance stops counting earlier rounds'
 // failures and a successful re-dispatch/escalation can settle the task as done.
 // Both CASEs read the pre-update state, so the bump and the flip agree.
+// taskReopenable matches a task that a new dispatch should reopen: one that has
+// settled, or one waiting out a retry backoff. A task blocked on an approval or
+// a CI wait must NOT match — it is alive, and reopening it would bump the
+// generation underneath a run that is still going (#465).
+const taskReopenable = `(
+	state IN ('done','failed','canceled')
+	OR (state = 'blocked' AND COALESCE(blocked_reason,'') = 'retry_backoff')
+)`
+
 func (s *InternalTaskStore) IncrementOutstanding(ctx context.Context, id string, delta int) (int, error) {
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE internal_tasks
 		SET outstanding_workflows = outstanding_workflows + ?,
-		    generation = CASE WHEN ? > 0 AND state IN ('done','failed') THEN generation + 1 ELSE generation END,
-		    state = CASE WHEN ? > 0 AND state IN ('done','failed') THEN 'running' ELSE state END,
+		    generation = CASE WHEN ? > 0 AND `+taskReopenable+` THEN generation + 1 ELSE generation END,
+		    state = CASE WHEN ? > 0 AND `+taskReopenable+` THEN 'running' ELSE state END,
+		    blocked_reason = CASE WHEN ? > 0 AND `+taskReopenable+` THEN NULL ELSE blocked_reason END,
 		    updated_at = ?
 		WHERE id = ?
-	`, delta, delta, delta, time.Now(), id); err != nil {
+	`, delta, delta, delta, delta, time.Now(), id); err != nil {
 		return 0, err
 	}
 	return s.outstanding(ctx, id)

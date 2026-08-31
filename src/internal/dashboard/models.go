@@ -173,8 +173,9 @@ type TasksTab struct {
 type WorkflowInstanceItem struct {
 	ID               string
 	Workflow         string
-	State            string // pending, running, approval_waiting, interrupted, done, failed
-	Message          string // approval message when State == approval_waiting
+	State            string // queued, running, blocked, done, failed, canceled
+	BlockedReason    string // approval, ci, dependency, interrupted — when State == blocked
+	Message          string // approval message when blocked on an approval gate
 	CellID           string // the task/cell this instance is bound to
 	ParentInstanceID string // set for sub-workflow instances
 	ResumedFrom      string // set when this instance resumed a prior one
@@ -243,7 +244,9 @@ type TaskLineageItem struct {
 type WorkflowStepItem struct {
 	StepID              string
 	Agent               string
-	State               string // pending, running, passed, failed, skipped, skipped_cached
+	State               string // queued, running, blocked, done, failed, skipped
+	BlockedReason       string // approval, ci, dependency, interrupted — when State == blocked
+	SkippedReason       string // cached — when State == skipped
 	Duration            string
 	Cached              bool
 	Output              string

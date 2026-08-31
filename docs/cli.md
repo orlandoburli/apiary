@@ -99,8 +99,12 @@ apiary instances <instance-id>
 apiary instances <instance-id> --cancel
 ```
 
-States: `pending`, `running`, `approval_waiting`, `interrupted`, `done`,
-`failed`.
+States: `queued`, `running`, `blocked`, `done`, `failed`, `canceled`.
+
+A `blocked` instance carries a reason saying what it is waiting on — `approval`,
+`ci`, `dependency` — or `interrupted` when a daemon died mid-run and left it
+orphaned. Only the last of those is resumable; the others are alive and will
+continue on their own.
 
 `--cancel` stops one running instance: its in-flight step is cancelled and the
 instance is marked `interrupted`, along with any queued or leased dispatch job

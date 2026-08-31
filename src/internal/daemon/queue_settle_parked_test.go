@@ -140,7 +140,7 @@ func TestReconcileTerminalQueueJobs_LeavesParkedInstanceAlone(t *testing.T) {
 	d1, dbc1 := newParkingWorkerDispatcher(t, dbPath, adapter)
 	stop1 := runWorker(t, d1)
 	d1.poll(ctx, d1.cfg.Sources[0], adapter, time.Time{})
-	if !waitForInstanceState(t, dbc1, "c1", "triage", db.InstanceStateApprovalWaiting, 15*time.Second) {
+	if !waitForInstanceState(t, dbc1, "c1", "triage", db.InstanceStateBlocked, 15*time.Second) {
 		t.Fatalf("workflow never parked at the approval gate:%s", queueDiagnostics(t, dbc1))
 	}
 	// The job that started the parked run goes terminal even though the run is
@@ -173,7 +173,7 @@ func TestReconcileTerminalQueueJobs_LeavesParkedInstanceAlone(t *testing.T) {
 			t.Errorf("startup reconcile wrote placeholder instance %s (workflow %s, state %s) for a run still parked at an approval",
 				instance.ID, instance.WorkflowID, instance.State)
 		}
-		if instance.State == db.InstanceStateApprovalWaiting {
+		if instance.State == db.InstanceStateBlocked {
 			parked++
 		}
 	}

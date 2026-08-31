@@ -73,12 +73,12 @@ type StepMetrics struct {
 	StepID     string `json:"step_id"`
 	AgentID    string `json:"agent_id,omitempty"`
 
-	Runs           int `json:"runs"`
-	Passed         int `json:"passed"`
-	Failed         int `json:"failed"`
-	Skipped        int `json:"skipped"`
-	SkippedCached  int `json:"skipped_cached"`
-	LowConfidence  bool `json:"low_confidence"`
+	Runs          int  `json:"runs"`
+	Passed        int  `json:"passed"`
+	Failed        int  `json:"failed"`
+	Skipped       int  `json:"skipped"`
+	SkippedCached int  `json:"skipped_cached"`
+	LowConfidence bool `json:"low_confidence"`
 
 	PassRate       float64 `json:"pass_rate"`
 	FailRate       float64 `json:"fail_rate"`
@@ -204,9 +204,9 @@ type WaitMetrics struct {
 // one recurring failure reads as a single line with a count rather than thirty
 // near-identical lines.
 type FailureCluster struct {
-	Normalized string `json:"normalized"`
-	Count      int    `json:"count"`
-	Exemplar   string `json:"exemplar"`
+	Normalized string   `json:"normalized"`
+	Count      int      `json:"count"`
+	Exemplar   string   `json:"exemplar"`
 	Agents     []string `json:"agents,omitempty"`
 }
 

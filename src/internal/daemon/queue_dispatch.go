@@ -285,7 +285,9 @@ func (d *Dispatcher) settleRemoteQueueJob(ctx context.Context, job queue.Job) er
 		state = db.InstanceStateDone
 	}
 	if job.State == queue.JobCanceled {
-		state = db.InstanceStateInterrupted
+		// Operator cancellation is its own terminal state now, rather than being
+		// recorded as an interruption it was never quite the same as (#465).
+		state = db.InstanceStateCanceled
 	}
 	if err := d.db.CreateWorkflowInstance(ctx, &db.WorkflowInstance{ID: instanceID, WorkflowID: job.WorkflowID, TaskID: job.TaskID, SourceID: job.SourceID, State: state}); err != nil {
 		return err

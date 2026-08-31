@@ -9,6 +9,7 @@ import (
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/router"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // autoResumeKey keys the in-memory guard that stops a poll from dispatching a
@@ -41,7 +42,7 @@ func (d *Dispatcher) resumeAutoInterrupted(ctx context.Context) {
 	if d.db == nil {
 		return
 	}
-	instances, err := d.db.ListWorkflowInstancesByState(ctx, db.InstanceStateInterrupted)
+	instances, err := d.db.ListWorkflowInstancesBlockedBy(ctx, string(state.ReasonInterrupted))
 	if err != nil {
 		aplog.Warn("auto-resume interrupted instances: list: %v", err)
 		return

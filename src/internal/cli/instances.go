@@ -17,6 +17,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/daemon"
 	"github.com/orlandoburli/apiary/internal/format"
+	apstate "github.com/orlandoburli/apiary/internal/state"
 )
 
 var (
@@ -314,43 +315,45 @@ func stateCell(state string, width int) string {
 	return stateColor(state).Render(state) + strings.Repeat(" ", pad)
 }
 
-func stateColor(state string) lipgloss.Style {
-	switch state {
-	case "passed", "done":
+func stateColor(st string) lipgloss.Style {
+	switch apstate.Normalize(st) {
+	case apstate.Done:
 		return instOK
-	case "failed":
+	case apstate.Failed:
 		return instErr
-	case "running", "approval_waiting":
+	case apstate.Running, apstate.Blocked:
 		return instWarn
 	default:
 		return instMuted
 	}
 }
 
-func stateGlyph(state string) string {
-	switch state {
-	case "done":
+func stateGlyph(st string) string {
+	switch apstate.Normalize(st) {
+	case apstate.Done:
 		return instOK.Render("✓")
-	case "failed":
+	case apstate.Failed:
 		return instErr.Render("✗")
-	case "running":
+	case apstate.Running:
 		return instWarn.Render("●")
-	case "approval_waiting":
+	case apstate.Blocked:
 		return instWarn.Render("⏸")
 	default:
 		return instMuted.Render("○")
 	}
 }
 
-func stepGlyph(state string) string {
-	switch state {
-	case "passed":
+func stepGlyph(st string) string {
+	switch apstate.Normalize(st) {
+	case apstate.Done:
 		return instOK.Render("✓")
-	case "failed":
+	case apstate.Failed:
 		return instErr.Render("✗")
-	case "running":
+	case apstate.Running:
 		return instWarn.Render("●")
-	case "skipped", "skipped_cached":
+	case apstate.Blocked:
+		return instWarn.Render("⏸")
+	case apstate.Skipped:
 		return instMuted.Render("⊘")
 	default:
 		return instMuted.Render("○")

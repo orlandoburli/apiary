@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/model"
+	apstate "github.com/orlandoburli/apiary/internal/state"
 )
 
 func newTestClient(t *testing.T) *Client {
@@ -29,7 +30,7 @@ func TestWorkflowInstance_CRUD(t *testing.T) {
 		WorkflowID: "feature-development",
 		CellID:     "PLANE-142",
 		SourceID:   "main-plane",
-		State:      InstanceStatePending,
+		State:      InstanceStateQueued,
 	}
 	if err := c.CreateWorkflowInstance(ctx, inst); err != nil {
 		t.Fatalf("create: %v", err)
@@ -42,14 +43,14 @@ func TestWorkflowInstance_CRUD(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected instance, got nil")
 	}
-	if got.WorkflowID != "feature-development" || got.CellID != "PLANE-142" || got.State != InstanceStatePending {
+	if got.WorkflowID != "feature-development" || got.CellID != "PLANE-142" || got.State != InstanceStateQueued {
 		t.Errorf("instance fields wrong: %+v", got)
 	}
 	if got.CreatedAt.IsZero() {
 		t.Error("created_at not set")
 	}
 
-	if err := c.UpdateWorkflowInstanceState(ctx, "wf_1", InstanceStateRunning); err != nil {
+	if err := c.UpdateWorkflowInstanceState(ctx, "wf_1", InstanceStateRunning, ""); err != nil {
 		t.Fatalf("update state: %v", err)
 	}
 	got, _ = c.GetWorkflowInstance(ctx, "wf_1")
@@ -62,7 +63,7 @@ func TestCIPollChecks_RecordAndList(t *testing.T) {
 	ctx := context.Background()
 	c := newTestClient(t)
 
-	inst := &WorkflowInstance{ID: "wf_ci", WorkflowID: "implementation", CellID: "42", State: InstanceStateWaiting}
+	inst := &WorkflowInstance{ID: "wf_ci", WorkflowID: "implementation", CellID: "42", State: InstanceStateBlocked, BlockedReason: string(apstate.ReasonCI)}
 	if err := c.CreateWorkflowInstance(ctx, inst); err != nil {
 		t.Fatalf("create instance: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestWorkflowInstance_ListByState(t *testing.T) {
 	ctx := context.Background()
 	c := newTestClient(t)
 
-	for i, st := range []string{InstanceStateApprovalWaiting, InstanceStateRunning, InstanceStateApprovalWaiting} {
+	for i, st := range []string{InstanceStateBlocked, InstanceStateRunning, InstanceStateBlocked} {
 		inst := &WorkflowInstance{
 			ID:         "wf_" + string(rune('a'+i)),
 			WorkflowID: "wf",
@@ -131,7 +132,7 @@ func TestWorkflowInstance_ListByState(t *testing.T) {
 		}
 	}
 
-	waiting, err := c.ListWorkflowInstancesByState(ctx, InstanceStateApprovalWaiting)
+	waiting, err := c.ListWorkflowInstancesByState(ctx, InstanceStateBlocked)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -150,7 +151,7 @@ func TestWorkflowInstance_ReconcileOrphans(t *testing.T) {
 
 	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "r1", WorkflowID: "w", CellID: "c", State: InstanceStateRunning})
 	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "r2", WorkflowID: "w", CellID: "c", State: InstanceStateRunning})
-	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "w1", WorkflowID: "w", CellID: "c", State: InstanceStateApprovalWaiting})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "w1", WorkflowID: "w", CellID: "c", State: InstanceStateBlocked, BlockedReason: string(apstate.ReasonApproval)})
 
 	n, err := c.ReconcileOrphanWorkflowInstances(ctx)
 	if err != nil {
@@ -162,11 +163,11 @@ func TestWorkflowInstance_ReconcileOrphans(t *testing.T) {
 
 	// approval_waiting is left untouched.
 	w1, _ := c.GetWorkflowInstance(ctx, "w1")
-	if w1.State != InstanceStateApprovalWaiting {
+	if w1.State != InstanceStateBlocked {
 		t.Errorf("approval_waiting should be untouched, got %s", w1.State)
 	}
 	r1, _ := c.GetWorkflowInstance(ctx, "r1")
-	if r1.State != InstanceStateInterrupted {
+	if r1.State != InstanceStateBlocked {
 		t.Errorf("running should become interrupted, got %s", r1.State)
 	}
 }
@@ -175,8 +176,8 @@ func TestHasResumeDescendant(t *testing.T) {
 	ctx := context.Background()
 	c := newTestClient(t)
 
-	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "a", WorkflowID: "w", CellID: "c", State: InstanceStateInterrupted})
-	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "b", WorkflowID: "w", CellID: "c", State: InstanceStateInterrupted})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "a", WorkflowID: "w", CellID: "c", State: InstanceStateBlocked, BlockedReason: string(apstate.ReasonInterrupted)})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "b", WorkflowID: "w", CellID: "c", State: InstanceStateBlocked, BlockedReason: string(apstate.ReasonInterrupted)})
 	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "a2", WorkflowID: "w", CellID: "c", State: InstanceStateRunning, ResumedFrom: "a"})
 
 	if got, err := c.HasResumeDescendant(ctx, "a"); err != nil || !got {
@@ -195,7 +196,7 @@ func TestHasActiveInstanceForRoute(t *testing.T) {
 	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t1-triage", WorkflowID: "triage", CellID: "1948", TaskID: "T1", State: InstanceStateDone})
 	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t1-impl", WorkflowID: "implementation", CellID: "1948", TaskID: "T1", State: InstanceStateRunning})
 	// task T2: implementation parked at an approval step.
-	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t2-impl", WorkflowID: "implementation", CellID: "2000", TaskID: "T2", State: InstanceStateApprovalWaiting})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t2-impl", WorkflowID: "implementation", CellID: "2000", TaskID: "T2", State: InstanceStateBlocked, BlockedReason: string(apstate.ReasonApproval)})
 	// task T3: implementation failed (terminal — eligible for retry, must NOT block).
 	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t3-impl", WorkflowID: "implementation", CellID: "3000", TaskID: "T3", State: InstanceStateFailed})
 
@@ -383,7 +384,7 @@ func TestUpdateStepRunState(t *testing.T) {
 		t.Fatalf("create step run: %v", err)
 	}
 
-	if err := c.UpdateStepRunState(ctx, "sr_g", StepStateFailed, "gate unevaluable"); err != nil {
+	if err := c.UpdateStepRunState(ctx, "sr_g", StepStateFailed, "", "gate unevaluable"); err != nil {
 		t.Fatalf("update step run state: %v", err)
 	}
 
@@ -412,7 +413,7 @@ func TestUpdateStepRunState(t *testing.T) {
 		t.Errorf("event step_id = %q, want review", events[0].StepID)
 	}
 
-	if err := c.UpdateStepRunState(ctx, "missing", StepStateFailed, ""); err == nil {
+	if err := c.UpdateStepRunState(ctx, "missing", StepStateFailed, "", ""); err == nil {
 		t.Error("expected an error updating an unknown step run")
 	}
 }
@@ -423,7 +424,7 @@ func TestStepRun_OrderedByInsertion(t *testing.T) {
 	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "wf_1", WorkflowID: "w", CellID: "c", State: InstanceStateRunning})
 
 	for _, id := range []string{"plan", "implement", "review"} {
-		if err := c.CreateStepRun(ctx, &StepRun{ID: "sr-" + id, WorkflowInstanceID: "wf_1", StepID: id, State: StepStatePending}); err != nil {
+		if err := c.CreateStepRun(ctx, &StepRun{ID: "sr-" + id, WorkflowInstanceID: "wf_1", StepID: id, State: StepStateQueued}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -442,7 +443,7 @@ func TestReconcileOrphanWorkflowInstances_Extended(t *testing.T) {
 	now := time.Now()
 	instances := []*WorkflowInstance{
 		{ID: "wf_running", WorkflowID: "w", CellID: "c", State: InstanceStateRunning, CreatedAt: now},
-		{ID: "wf_approval", WorkflowID: "w", CellID: "c", State: InstanceStateApprovalWaiting, CreatedAt: now},
+		{ID: "wf_approval", WorkflowID: "w", CellID: "c", State: InstanceStateBlocked, BlockedReason: string(apstate.ReasonApproval), CreatedAt: now},
 		{ID: "wf_done", WorkflowID: "w", CellID: "c", State: InstanceStateDone, CreatedAt: now},
 		{ID: "wf_failed", WorkflowID: "w", CellID: "c", State: InstanceStateFailed, CreatedAt: now},
 	}
@@ -465,10 +466,10 @@ func TestReconcileOrphanWorkflowInstances_Extended(t *testing.T) {
 
 	// Verify only running was changed to interrupted, others are untouched.
 	for id, expectedState := range map[string]string{
-		"wf_running":  InstanceStateInterrupted,     // running → interrupted
-		"wf_approval": InstanceStateApprovalWaiting, // approval_waiting (untouched, rehydrated separately)
-		"wf_done":     InstanceStateDone,            // done (unchanged)
-		"wf_failed":   InstanceStateFailed,          // failed (unchanged)
+		"wf_running":  InstanceStateBlocked, // running → interrupted
+		"wf_approval": InstanceStateBlocked, // approval_waiting (untouched, rehydrated separately)
+		"wf_done":     InstanceStateDone,    // done (unchanged)
+		"wf_failed":   InstanceStateFailed,  // failed (unchanged)
 	} {
 		inst, err := c.GetWorkflowInstance(ctx, id)
 		if err != nil {
@@ -488,7 +489,7 @@ func TestReconcileOrphanStepRuns(t *testing.T) {
 	// instance (a genuinely finished run). Only step_runs under the interrupted
 	// instance should be touched.
 	instances := []*WorkflowInstance{
-		{ID: "wf_interrupted", WorkflowID: "w", CellID: "c", State: InstanceStateInterrupted},
+		{ID: "wf_interrupted", WorkflowID: "w", CellID: "c", State: InstanceStateBlocked, BlockedReason: string(apstate.ReasonInterrupted)},
 		{ID: "wf_done", WorkflowID: "w", CellID: "c", State: InstanceStateDone},
 	}
 	for _, inst := range instances {
@@ -501,7 +502,7 @@ func TestReconcileOrphanStepRuns(t *testing.T) {
 	steps := []*StepRun{
 		// Under the interrupted parent: the two non-terminal ones are orphans.
 		{ID: "sr_run", WorkflowInstanceID: "wf_interrupted", StepID: "implement", State: StepStateRunning},
-		{ID: "sr_pend", WorkflowInstanceID: "wf_interrupted", StepID: "review", State: StepStatePending},
+		{ID: "sr_pend", WorkflowInstanceID: "wf_interrupted", StepID: "review", State: StepStateQueued},
 		{ID: "sr_pass", WorkflowInstanceID: "wf_interrupted", StepID: "classify", State: StepStatePassed},
 		// Under the done parent: a leftover 'running' here must NOT be touched,
 		// since its parent was not reconciled to interrupted.
@@ -523,10 +524,10 @@ func TestReconcileOrphanStepRuns(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"sr_run":      StepStateInterrupted, // running under interrupted → interrupted
-		"sr_pend":     StepStateInterrupted, // pending under interrupted → interrupted
-		"sr_pass":     StepStatePassed,      // terminal, unchanged
-		"sr_done_run": StepStateRunning,     // running but parent is done, untouched
+		"sr_run":      StepStateBlocked, // running under interrupted → interrupted
+		"sr_pend":     StepStateBlocked, // pending under interrupted → interrupted
+		"sr_pass":     StepStatePassed,  // terminal, unchanged
+		"sr_done_run": StepStateRunning, // running but parent is done, untouched
 	}
 	got := map[string]StepRun{}
 	for _, instID := range []string{"wf_interrupted", "wf_done"} {
@@ -585,7 +586,7 @@ func TestReconcileOrphanTaskCounters(t *testing.T) {
 	// T1 — the issue #198 leak: an interrupted instance never decremented, a
 	// later instance completed. Counter stuck at 1, task stuck 'running'.
 	mkTask("T1", model.TaskStateRunning, 2)
-	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t1-a", WorkflowID: "w", CellID: "1", TaskID: "T1", State: InstanceStateInterrupted})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t1-a", WorkflowID: "w", CellID: "1", TaskID: "T1", State: InstanceStateBlocked, BlockedReason: string(apstate.ReasonInterrupted)})
 	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t1-b", WorkflowID: "w", CellID: "1", TaskID: "T1", State: InstanceStateDone})
 	if _, err := ts.DecrementOutstanding(ctx, "T1"); err != nil { // completeTask of t1-b
 		t.Fatalf("decrement T1: %v", err)
@@ -593,7 +594,7 @@ func TestReconcileOrphanTaskCounters(t *testing.T) {
 
 	// T2 — same leak but the completed instance of the current generation failed.
 	mkTask("T2", model.TaskStateRunning, 2)
-	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t2-a", WorkflowID: "w", CellID: "2", TaskID: "T2", State: InstanceStateInterrupted})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t2-a", WorkflowID: "w", CellID: "2", TaskID: "T2", State: InstanceStateBlocked, BlockedReason: string(apstate.ReasonInterrupted)})
 	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t2-b", WorkflowID: "w", CellID: "2", TaskID: "T2", State: InstanceStateFailed})
 	if _, err := ts.DecrementOutstanding(ctx, "T2"); err != nil {
 		t.Fatalf("decrement T2: %v", err)
@@ -601,12 +602,12 @@ func TestReconcileOrphanTaskCounters(t *testing.T) {
 
 	// T3 — parked at approval: live instance, counter correct. Must be untouched.
 	mkTask("T3", model.TaskStateRunning, 1)
-	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t3-a", WorkflowID: "w", CellID: "3", TaskID: "T3", State: InstanceStateApprovalWaiting})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t3-a", WorkflowID: "w", CellID: "3", TaskID: "T3", State: InstanceStateBlocked, BlockedReason: string(apstate.ReasonApproval)})
 
 	// T4 — every current-generation instance interrupted: counter must drop to
 	// zero but the task stays 'running' for the next poll to re-dispatch.
 	mkTask("T4", model.TaskStateRunning, 1)
-	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t4-a", WorkflowID: "w", CellID: "4", TaskID: "T4", State: InstanceStateInterrupted})
+	_ = c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: "t4-a", WorkflowID: "w", CellID: "4", TaskID: "T4", State: InstanceStateBlocked, BlockedReason: string(apstate.ReasonInterrupted)})
 
 	// T5 — terminal task: out of scope, never touched even with a bogus counter.
 	mkTask("T5", model.TaskStateDone, 3)

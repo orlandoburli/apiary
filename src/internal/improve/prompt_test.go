@@ -116,7 +116,10 @@ func TestRenderTablesHandlesEmptyPack(t *testing.T) {
 }
 
 func TestDurRendersReadableUnits(t *testing.T) {
-	cases := []struct{ ms int64; want string }{
+	cases := []struct {
+		ms   int64
+		want string
+	}{
 		{0, "—"}, {-1, "—"}, {500, "500ms"}, {1500, "2s"},
 		{90_000, "2m"}, {3_600_000, "1.0h"}, {9_000_000, "2.5h"},
 	}

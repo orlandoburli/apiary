@@ -1955,7 +1955,7 @@ type workflowInstancesRefreshMsg struct {
 // whose request row is missing or carries no message, since an empty Message
 // hides the banner (and its key hints) entirely.
 func applyApprovalPrompt(ctx context.Context, dbConn *db.Client, item *WorkflowInstanceItem) {
-	if item == nil || item.State != db.InstanceStateApprovalWaiting {
+	if item == nil || !blockedOnApproval(item.State, item.BlockedReason) {
 		return
 	}
 	if dbConn != nil {
@@ -1972,11 +1972,12 @@ func applyApprovalPrompt(ctx context.Context, dbConn *db.Client, item *WorkflowI
 // usage) from a stored workflow instance, for the live monitor views.
 func buildWorkflowInstanceItem(ctx context.Context, dbConn *db.Client, inst *db.WorkflowInstance) *WorkflowInstanceItem {
 	item := &WorkflowInstanceItem{
-		ID:        inst.ID,
-		Workflow:  inst.WorkflowID,
-		State:     inst.State,
-		CellID:    inst.CellID,
-		CreatedAt: inst.CreatedAt,
+		ID:            inst.ID,
+		Workflow:      inst.WorkflowID,
+		State:         inst.State,
+		BlockedReason: inst.BlockedReason,
+		CellID:        inst.CellID,
+		CreatedAt:     inst.CreatedAt,
 	}
 	applyApprovalPrompt(ctx, dbConn, item)
 	steps, err := dbConn.ListStepRuns(ctx, inst.ID)
@@ -1985,15 +1986,17 @@ func buildWorkflowInstanceItem(ctx context.Context, dbConn *db.Client, inst *db.
 		now := time.Now()
 		for _, s := range steps {
 			si := WorkflowStepItem{
-				StepID:     s.StepID,
-				Agent:      s.AgentID,
-				State:      s.State,
-				Duration:   wfStepDuration(s, now),
-				Cached:     s.SkippedCached,
-				Output:     s.Output,
-				Summary:    s.Summary,
-				StartedAt:  s.StartedAt,
-				FinishedAt: s.FinishedAt,
+				StepID:        s.StepID,
+				Agent:         s.AgentID,
+				State:         s.State,
+				BlockedReason: s.BlockedReason,
+				SkippedReason: s.SkippedReason,
+				Duration:      wfStepDuration(s, now),
+				Cached:        s.SkippedCached,
+				Output:        s.Output,
+				Summary:       s.Summary,
+				StartedAt:     s.StartedAt,
+				FinishedAt:    s.FinishedAt,
 			}
 			si.InputTokens, si.OutputTokens, si.TotalTokens, si.NumTurns, si.NumToolCalls, si.CostUSD =
 				stepUsageFromMap(s, usage)
@@ -2752,6 +2755,7 @@ func mapInstances(ctx context.Context, dbConn *db.Client, insts []db.WorkflowIns
 			ID:               in.ID,
 			Workflow:         in.WorkflowID,
 			State:            in.State,
+			BlockedReason:    in.BlockedReason,
 			CellID:           in.CellID,
 			ParentInstanceID: in.ParentInstanceID,
 			ResumedFrom:      in.ResumedFrom,
@@ -2987,6 +2991,8 @@ func mapStepRuns(steps []db.StepRun, now time.Time) []WorkflowStepItem {
 			StepID:              s.StepID,
 			Agent:               s.AgentID,
 			State:               s.State,
+			BlockedReason:       s.BlockedReason,
+			SkippedReason:       s.SkippedReason,
 			Duration:            wfStepDuration(s, now),
 			Cached:              s.SkippedCached,
 			Output:              s.Output,
@@ -3883,7 +3889,7 @@ func renderTaskInstances(d *TaskItem) string {
 			dur = in.FinishedAt.Sub(*in.StartedAt).Round(time.Second).String()
 		}
 		b.WriteString(fmt.Sprintf("    %s %s %s %s %s %s%s\n",
-			pad(wfInstanceBadge(in.State), colState),
+			pad(wfInstanceBadge(in.State, in.BlockedReason), colState),
 			pad(truncate(in.Workflow, colWf), colWf),
 			StyleMuted.Render(pad(tsCell(in.StartedAt), colTime)),
 			StyleMuted.Render(pad(tsCell(in.FinishedAt), colTime)),
@@ -3960,13 +3966,13 @@ func renderWorkflowSteps(inst *WorkflowInstanceItem, width int) string {
 	var b strings.Builder
 	b.WriteString("\n  " + StyleLabel.Render("Workflow") + "      " +
 		StyleValueStrong.Render(valueOr(inst.Workflow, "—")) + "  " +
-		wfInstanceBadge(inst.State) + "\n")
+		wfInstanceBadge(inst.State, inst.BlockedReason) + "\n")
 
 	if summary := wfInstanceSummary(inst); summary != "" {
 		b.WriteString("              " + summary + "\n")
 	}
 
-	if inst.State == db.InstanceStateApprovalWaiting && inst.Message != "" {
+	if blockedOnApproval(inst.State, inst.BlockedReason) && inst.Message != "" {
 		b.WriteString(approvalBanner(inst.Message, width))
 		if inst.Approval != nil {
 			if len(inst.Approval.Approvers) > 0 {
@@ -4138,64 +4144,114 @@ func wfStepHeader() string {
 // step id, agent, started, ended, duration, tokens, state) without indentation or
 // trailing newline, aligned under wfStepHeader. Callers add the indent.
 func wfStepRow(s WorkflowStepItem) string {
-	state := s.State
-	if s.Cached {
-		state += " (cached)"
+	stateLabel := stepStateLabel(s.State, s.BlockedReason)
+	if s.Cached || s.SkippedReason == string(state.ReasonCached) {
+		stateLabel += " (cached)"
 	}
 	return fmt.Sprintf("%s %s %s %s %s %s %s  %s",
-		wfStepGlyph(s.State),
+		wfStepGlyph(s.State, s.BlockedReason),
 		pad(truncate(s.StepID, colStep), colStep),
 		pad(truncate(s.Agent, colAgent), colAgent),
 		StyleMuted.Render(pad(tsCell(s.StartedAt), colTime)),
 		StyleMuted.Render(pad(tsCell(s.FinishedAt), colTime)),
 		StyleMuted.Render(padLeft(valueOr(s.Duration, "—"), colDur)),
 		StyleMuted.Render(padLeft(fmtTokensShort(s.TotalTokens), colTok)),
-		wfStateStyle(s.State).Render(state),
+		wfStateStyle(s.State, s.BlockedReason).Render(stateLabel),
 	)
 }
 
-func wfInstanceBadge(state string) string {
-	switch state {
-	case db.InstanceStateDone:
+// blockedOnApproval reports whether an instance is parked on a human approval
+// gate, as opposed to a CI wait or an orphaning interrupt — all three of which
+// share the 'blocked' state and are told apart only by the reason (#465). The
+// legacy state is recognised so an un-migrated database still shows its banner.
+func blockedOnApproval(st, reason string) bool {
+	return st == "approval_waiting" ||
+		(state.Normalize(st) == state.Blocked && reason == string(state.ReasonApproval))
+}
+
+// stepStateLabel is the word shown for a step's state, expanded with its reason
+// when the state alone is ambiguous. "blocked" says a step is parked; only
+// "blocked:approval" says what it is parked on (#465).
+func stepStateLabel(st, reason string) string {
+	canon, implied := state.NormalizeWithReason(st)
+	if reason == "" {
+		reason = string(implied)
+	}
+	if canon == state.Blocked && reason != "" {
+		return "blocked:" + reason
+	}
+	return string(canon)
+}
+
+// wfInstanceBadge renders an instance's state. It takes the blocked reason
+// because the canonical vocabulary collapses approval waits, CI waits and
+// interruption onto "blocked" (#465) — and those three want different words and
+// different colours: two are healthy parks, the third is an orphan.
+func wfInstanceBadge(st, reason string) string {
+	canon, implied := state.NormalizeWithReason(st)
+	// A legacy row carries its reason inside the state name
+	// ('approval_waiting', 'waiting', 'interrupted') and has no reason column
+	// value. Recover it rather than rendering a bare "blocked" that says less
+	// than the old vocabulary did.
+	if reason == "" {
+		reason = string(implied)
+	}
+	switch canon {
+	case state.Done:
 		return StyleSuccess.Render("done")
-	case db.InstanceStateFailed:
+	case state.Failed:
 		return StyleError.Render("failed")
-	case db.InstanceStateRunning:
+	case state.Canceled:
+		return StyleMuted.Render("canceled")
+	case state.Running:
 		return StyleWarning.Render("running")
-	case db.InstanceStateApprovalWaiting:
-		return StyleWarning.Render("approval_waiting")
-	case db.InstanceStateWaiting:
-		return StyleWarning.Render("waiting")
-	case db.InstanceStateInterrupted:
-		return StyleError.Render("interrupted")
+	case state.Queued:
+		return StyleMuted.Render("queued")
+	case state.Blocked:
+		switch reason {
+		case string(state.ReasonInterrupted):
+			return StyleError.Render("interrupted")
+		case "":
+			return StyleWarning.Render("blocked")
+		default:
+			return StyleWarning.Render("blocked:" + reason)
+		}
 	default:
-		return StyleMuted.Render(state)
+		return StyleMuted.Render(st)
 	}
 }
 
-func wfStepGlyph(state string) string {
-	switch state {
-	case db.StepStatePassed:
+func wfStepGlyph(st, reason string) string {
+	switch state.Normalize(st) {
+	case state.Done:
 		return StyleSuccess.Render("✓")
-	case db.StepStateFailed:
+	case state.Failed:
 		return StyleError.Render("✗")
-	case db.StepStateRunning:
+	case state.Running:
 		return StyleWarning.Render("●")
-	case db.StepStateInterrupted:
-		return StyleError.Render("⊗")
-	case db.StepStateSkipped, db.StepStateSkippedCached:
+	case state.Blocked:
+		if reason == string(state.ReasonInterrupted) {
+			return StyleError.Render("⊗")
+		}
+		return StyleWarning.Render("⏸")
+	case state.Skipped:
 		return StyleMuted.Render("⊘")
 	default:
 		return StyleMuted.Render("○")
 	}
 }
 
-func wfStateStyle(state string) lipgloss.Style {
-	switch state {
-	case db.StepStatePassed:
+func wfStateStyle(st, reason string) lipgloss.Style {
+	switch state.Normalize(st) {
+	case state.Done:
 		return StyleSuccess
-	case db.StepStateFailed, db.StepStateInterrupted:
+	case state.Failed:
 		return StyleError
+	case state.Blocked:
+		if reason == string(state.ReasonInterrupted) {
+			return StyleError
+		}
+		return StyleWarning
 	case db.StepStateRunning:
 		return StyleWarning
 	default:
@@ -4349,7 +4405,7 @@ func (a *App) taskHistoryLines() []string {
 			out = append(out, "") // blank separator between instances
 		}
 		out = append(out, historySegmentHeader(seg.Instance))
-		if seg.Instance.State == db.InstanceStateApprovalWaiting && seg.Instance.Message != "" {
+		if blockedOnApproval(seg.Instance.State, seg.Instance.BlockedReason) && seg.Instance.Message != "" {
 			out = append(out, "  "+StyleWarning.Render("⏸ "+seg.Instance.Message))
 		}
 		if len(seg.Instance.Steps) > 0 {
@@ -4384,7 +4440,7 @@ func historySegmentHeader(in WorkflowInstanceItem) string {
 	if !in.CreatedAt.IsZero() {
 		when = StyleMuted.Render(" · " + in.CreatedAt.Format("01-02 15:04"))
 	}
-	return StyleMuted.Render("── ") + wfInstanceBadge(in.State) + " " +
+	return StyleMuted.Render("── ") + wfInstanceBadge(in.State, in.BlockedReason) + " " +
 		StyleValueStrong.Render(valueOr(in.Workflow, "—")) + when + StyleMuted.Render(" ──")
 }
 
@@ -5553,13 +5609,9 @@ func taskStatusBadge(status string) string {
 // "why is this parked" is the question an operator is actually asking; the bare
 // word "blocked" is the fallback for a reason with no short form.
 func badgeLabel(raw string, s state.State, reason state.Reason) string {
-	// "success" is the legacy execution status shown on the Agents tab. It
-	// normalizes to Done, but is kept verbatim so that tab's vocabulary does not
-	// shift underneath operators in a release that changes nothing else.
-	if raw == "success" {
-		return raw
-	}
-
+	// Every state now renders as its canonical name — the render-time renaming
+	// table this function replaced is gone (#465). The Agents tab's legacy
+	// "success" normalizes to "done" along with everything else.
 	switch s {
 	case state.Blocked:
 		switch reason {
@@ -5671,7 +5723,7 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 
 	leftW, rightW := a.wfMonitorPanelWidths()
 
-	label := "WORKFLOW  " + StyleValueStrong.Render(inst.Workflow) + "  " + wfInstanceBadge(inst.State)
+	label := "WORKFLOW  " + StyleValueStrong.Render(inst.Workflow) + "  " + wfInstanceBadge(inst.State, inst.BlockedReason)
 	// When the task fanned out to several workflows, show this one's chronological
 	// position (oldest = 1) and a hint that [ / ] switch between them.
 	if n := len(t.WorkflowInstances); n > 1 {
@@ -5720,7 +5772,7 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 	for i := start; i < end; i++ {
 		s := inst.Steps[i]
 		selected := i == t.WorkflowStepIdx
-		glyph := wfStepGlyph(s.State)
+		glyph := wfStepGlyph(s.State, s.BlockedReason)
 		stepName := truncate(s.StepID, 17)
 		agent := truncate(valueOr(s.Agent, "—"), 13)
 		state := truncate(s.State, 10)
@@ -5787,7 +5839,7 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 			right.WriteString("  " + StyleLabel.Render(pad(k+":", 12)) + " " + v + "\n")
 		}
 		right.WriteString(StyleTableHeader.Render(fitLine(" "+s.StepID, rightW)) + "\n")
-		row2("State", wfStepGlyph(s.State)+" "+wfStateStyle(s.State).Render(s.State))
+		row2("State", wfStepGlyph(s.State, s.BlockedReason)+" "+wfStateStyle(s.State, s.BlockedReason).Render(stepStateLabel(s.State, s.BlockedReason)))
 		row2("Agent", valueOr(s.Agent, "—"))
 		row2("Duration", valueOr(s.Duration, "—"))
 		if s.Cached {
@@ -5829,7 +5881,7 @@ func (a *App) renderWorkflowMonitor(t *TasksTab, height int) string {
 			}
 		}
 
-		if s.State == db.StepStateRunning || s.State == db.StepStatePassed || s.State == db.StepStateFailed || s.State == db.StepStateInterrupted {
+		if s.State == db.StepStateRunning || s.State == db.StepStatePassed || s.State == db.StepStateFailed || s.State == db.StepStateBlocked {
 			right.WriteString("\n  " + StyleMuted.Render("enter/l: logs  X: stop workflow  R: restart workflow") + "\n")
 		}
 	} else {

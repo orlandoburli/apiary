@@ -21,9 +21,11 @@ var (
 type JobState string
 
 const (
-	JobQueued    JobState = "queued"
-	JobLeased    JobState = "leased"
-	JobSucceeded JobState = "succeeded"
+	JobQueued JobState = "queued"
+	// JobLeased is 'running': a lease is granted so a worker can execute the
+	// job, so a leased job is work in progress, not work waiting (#465).
+	JobLeased    JobState = "running"
+	JobSucceeded JobState = "done"
 	JobFailed    JobState = "failed"
 	JobCanceled  JobState = "canceled"
 )

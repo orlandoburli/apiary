@@ -48,7 +48,7 @@ func TestDependencyWait_SuspendsWhileBlockerOpen(t *testing.T) {
 	if success {
 		t.Fatal("a dependency-parked instance should not report success")
 	}
-	if store.instances[instID].State != db.InstanceStateWaiting {
+	if store.instances[instID].State != db.InstanceStateBlocked {
 		t.Errorf("instance state = %q, want waiting", store.instances[instID].State)
 	}
 	if contains(executedIDs(exec.seen), "implement") {
@@ -77,7 +77,7 @@ func TestDependencyWait_AutoResumesWhenBlockerDone(t *testing.T) {
 
 	// Blocker still open → stays parked.
 	eng.CheckParkedWaits(context.Background())
-	if store.instances[instID].State != db.InstanceStateWaiting {
+	if store.instances[instID].State != db.InstanceStateBlocked {
 		t.Fatalf("expected still waiting, got %q", store.instances[instID].State)
 	}
 
@@ -121,7 +121,7 @@ func TestDependencyWait_SatisfiedWhenMergedOnly(t *testing.T) {
 
 	wait := &config.WaitForConfig{Kind: "dependency", SatisfiedWhen: []string{"merged"}}
 	instID, _, _ := eng.RunInstance(context.Background(), dependencyWorkflow(wait), model.InternalTask{ID: "c1"})
-	if store.instances[instID].State != db.InstanceStateWaiting {
+	if store.instances[instID].State != db.InstanceStateBlocked {
 		t.Fatalf("done-but-unmerged blocker should keep waiting under satisfied_when [merged], got %q", store.instances[instID].State)
 	}
 }
@@ -151,7 +151,7 @@ func TestDependencyWait_CheckerErrorKeepsWaiting(t *testing.T) {
 	eng := depWaitEngine(store, exec, &clock, dep)
 
 	instID, _, _ := eng.RunInstance(context.Background(), dependencyWorkflow(&config.WaitForConfig{Kind: "dependency"}), model.InternalTask{ID: "c1"})
-	if store.instances[instID].State != db.InstanceStateWaiting {
+	if store.instances[instID].State != db.InstanceStateBlocked {
 		t.Fatalf("a transient lookup error should park (retry next cycle), got %q", store.instances[instID].State)
 	}
 	if len(store.ciPolls) == 0 || store.ciPolls[len(store.ciPolls)-1].Status != "error" {
@@ -174,7 +174,7 @@ func TestDependencyWait_TimeoutHoldStaysParked(t *testing.T) {
 
 	clock = clock.Add(2 * time.Hour)
 	eng.CheckParkedWaits(context.Background())
-	if store.instances[instID].State != db.InstanceStateWaiting {
+	if store.instances[instID].State != db.InstanceStateBlocked {
 		t.Errorf("on_timeout hold should keep the instance parked, got %q", store.instances[instID].State)
 	}
 	if len(eng.ParkedWaits()) != 1 {

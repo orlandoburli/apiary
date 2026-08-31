@@ -112,7 +112,7 @@ func transcriptRefs(ctx context.Context, db source, logDir string, w Window, h H
 		      AND te.step_id = sr.step_id
 		WHERE wi.workflow_id = ? AND sr.step_id = ?
 		  AND sr.started_at >= ? AND sr.started_at < ?
-		  AND sr.state IN ('failed', 'passed')
+		  AND sr.state IN ('failed', 'passed', 'done')
 		GROUP BY sr.id
 		ORDER BY CASE sr.state WHEN 'failed' THEN 0 ELSE 1 END, sr.started_at DESC`,
 		h.WorkflowID, h.StepID, w.Start, w.End)

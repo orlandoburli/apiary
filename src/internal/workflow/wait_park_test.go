@@ -51,7 +51,7 @@ func TestWaitFor_SuspendsWhilePending(t *testing.T) {
 	if success {
 		t.Fatal("a poll-parked instance should not report success")
 	}
-	if store.instances[instID].State != db.InstanceStateWaiting {
+	if store.instances[instID].State != db.InstanceStateBlocked {
 		t.Errorf("instance state = %q, want poll_waiting", store.instances[instID].State)
 	}
 	// implement ran; review must not have.
@@ -80,7 +80,7 @@ func TestWaitFor_AdvancesWhenCIPasses(t *testing.T) {
 
 	// Still pending → stays parked.
 	eng.CheckParkedWaits(context.Background())
-	if store.instances[instID].State != db.InstanceStateWaiting {
+	if store.instances[instID].State != db.InstanceStateBlocked {
 		t.Fatalf("expected still poll_waiting, got %q", store.instances[instID].State)
 	}
 
@@ -119,7 +119,7 @@ func TestWaitFor_RedCILoopsBackToImplement(t *testing.T) {
 	eng := waitForEngine(baseCfg(), store, exec, &fakeSide{}, &clock, ci)
 
 	instID, _, _ := eng.RunInstance(context.Background(), waitForWorkflow(), model.InternalTask{ID: "c1"})
-	if got := store.instances[instID].State; got != db.InstanceStateWaiting {
+	if got := store.instances[instID].State; got != db.InstanceStateBlocked {
 		t.Fatalf("after red CI loop-back, want poll_waiting, got %q", got)
 	}
 	if n := countID(exec.seen, "implement"); n != 2 {
@@ -255,7 +255,7 @@ func TestWaitFor_TimesOut(t *testing.T) {
 			WaitFor: &config.WaitForConfig{Kind: "ci", MaxDuration: "2h"}},
 	}}
 	instID, _, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
-	if store.instances[instID].State != db.InstanceStateWaiting {
+	if store.instances[instID].State != db.InstanceStateBlocked {
 		t.Fatalf("expected poll_waiting, got %q", store.instances[instID].State)
 	}
 
@@ -280,7 +280,7 @@ func TestWaitFor_RehydrateSurvivesRestart(t *testing.T) {
 	ci1 := func() (source.CIStatus, error) { return source.CIStatus{Status: "pending"}, nil }
 	eng1 := waitForEngine(baseCfg(), store, exec1, &fakeSide{}, &clock, ci1)
 	instID, _, _ := eng1.RunInstance(context.Background(), waitForWorkflow(), model.InternalTask{ID: "c1"})
-	if store.instances[instID].State != db.InstanceStateWaiting {
+	if store.instances[instID].State != db.InstanceStateBlocked {
 		t.Fatalf("expected poll_waiting before restart, got %q", store.instances[instID].State)
 	}
 
@@ -422,7 +422,7 @@ func TestWaitFor_UnsupportedCapabilityFailsTerminally(t *testing.T) {
 	if success {
 		t.Fatal("a wait against a source without CI polling must not succeed")
 	}
-	if got := store.instances[instID].State; got == db.InstanceStateWaiting {
+	if got := store.instances[instID].State; got == db.InstanceStateBlocked {
 		t.Fatalf("the wait parked instead of failing: state %q", got)
 	}
 	if len(eng.ParkedWaits()) != 0 {

@@ -569,7 +569,7 @@ if: ${{ not (memory.track == "docs" or memory.track == "chore") }}
 ### Approval steps
 
 An approval step parks the workflow until a human answers it. The instance
-enters the `approval_waiting` state and survives daemon restarts.
+enters the `blocked` state with a `blocked_reason` of `approval`, and survives daemon restarts.
 
 The simplest form waits for whoever is running apiary — no approver list, no
 source signals:

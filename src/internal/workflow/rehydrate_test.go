@@ -7,6 +7,7 @@ import (
 
 	"github.com/orlandoburli/apiary/internal/db"
 	"github.com/orlandoburli/apiary/internal/model"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // stepRunsFor returns the persisted step runs for an instance in insertion order,
@@ -41,7 +42,7 @@ func TestRehydrateApproval_ResolvesAndSettlesTask(t *testing.T) {
 	if success {
 		t.Fatal("parked instance should not report success")
 	}
-	if store.instances[instID].State != db.InstanceStateApprovalWaiting {
+	if store.instances[instID].State != db.InstanceStateBlocked {
 		t.Fatalf("instance state = %q, want approval_waiting", store.instances[instID].State)
 	}
 
@@ -58,7 +59,7 @@ func TestRehydrateApproval_ResolvesAndSettlesTask(t *testing.T) {
 
 	// Without rehydration the approval check finds nothing to do.
 	eng2.CheckParkedApprovals(context.Background(), approvingPoll)
-	if store.instances[instID].State != db.InstanceStateApprovalWaiting {
+	if store.instances[instID].State != db.InstanceStateBlocked {
 		t.Fatal("pre-rehydration: instance must remain stranded in approval_waiting")
 	}
 
@@ -117,7 +118,7 @@ func TestRehydrateApproval_PreservesTimeout(t *testing.T) {
 	// Persist a plan step that already passed; the gate parked with a 48h timeout.
 	instID := "wf_rehydrate_timeout"
 	store.CreateWorkflowInstance(context.Background(), &db.WorkflowInstance{ //nolint:errcheck
-		ID: instID, WorkflowID: "feature", TaskID: "c1", CellID: "c1", State: db.InstanceStateApprovalWaiting})
+		ID: instID, WorkflowID: "feature", TaskID: "c1", CellID: "c1", State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonApproval)})
 	prior := []db.StepRun{
 		{ID: "sr-plan", WorkflowInstanceID: instID, StepID: "plan", State: db.StepStatePassed},
 	}
