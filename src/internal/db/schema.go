@@ -110,15 +110,6 @@ CREATE TABLE IF NOT EXISTS execution_events (
   metadata TEXT NOT NULL DEFAULT '{}'
 );
 
--- Dispatcher state
-CREATE TABLE IF NOT EXISTS dispatcher_state (
-  id INTEGER PRIMARY KEY,
-  status TEXT,                    -- healthy, degraded, error
-  uptime_seconds INTEGER,
-  version TEXT,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 -- Workflow instances: one execution of a workflow bound to a Cell.
 CREATE TABLE IF NOT EXISTS workflow_instances (
   id TEXT PRIMARY KEY,
@@ -559,7 +550,25 @@ func MigrateData(ctx context.Context, db *sql.DB) error {
 	if err := rebuildApprovalRequestsAttempt(ctx, db); err != nil {
 		return fmt.Errorf("widen approval_requests uniqueness: %w", err)
 	}
+	if err := dropDispatcherState(ctx, db); err != nil {
+		return fmt.Errorf("drop dispatcher_state: %w", err)
+	}
 	return nil
+}
+
+// dropDispatcherState removes the dispatcher_state table.
+//
+// It was created in every database and never written: UpdateDispatcherState had
+// no callers for its whole life. That made it worse than merely dead — it reads
+// as a daemon heartbeat, so the obvious way to guard a migration against a live
+// daemon is to check its updated_at, and that check would always pass. The
+// daemon's control socket is the real liveness signal (#468).
+//
+// Dropping is unconditional and safe precisely because the table was always
+// empty. IF EXISTS makes it idempotent.
+func dropDispatcherState(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS dispatcher_state`)
+	return err
 }
 
 // rebuildApprovalRequestsAttempt widens the approval_requests uniqueness from

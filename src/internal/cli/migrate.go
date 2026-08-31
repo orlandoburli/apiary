@@ -30,6 +30,11 @@ func newMigrateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
+			// Refuse rather than race a live daemon (#468).
+			if err := refuseIfDaemonRunning(ctx); err != nil {
+				return err
+			}
+
 			dbPath := getDBPath()
 			dbClient, err := db.New(ctx, dbPath)
 			if err != nil {

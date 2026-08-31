@@ -247,10 +247,10 @@ row changes value, so no live-row filter can miss it. Rules 2 and 3 close the re
 > command. Rules 1 and 2 above are therefore already in place — this change only has to put its
 > state migration in `MigrateData` alongside them.
 >
-> Rule 3 (refuse to run against a live hive) is **not** implemented: Apiary has no daemon
-> liveness signal to check. `dispatcher_state` exists but `UpdateDispatcherState` has no callers,
-> so nothing maintains it. Adding one is worth doing before this change's migration lands, since
-> two daemons on one database would otherwise still race.
+> Rule 3 (refuse to run against a live hive) is also in place, via #468: `MigrateData`'s callers
+> probe the daemon's control socket (`/health`) and refuse when it answers. All three rules are
+> therefore satisfied before this change's migration is written, and it inherits them by living
+> in `MigrateData`.
 
 ### 4. Hardcoded SQL literals
 

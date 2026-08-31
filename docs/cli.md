@@ -461,10 +461,12 @@ The daemon runs the data migrations itself at startup; `apiary migrate` exists
 for the operator who would rather apply them deliberately, with the daemon
 stopped and a copy of the database taken.
 
-**Stop the daemon first.** The migrations rewrite rows, and one of them recreates
-a table, so a concurrent writer can lose a row that lands mid-rebuild. Read-only
-commands (`apiary dashboard`, `apiary memory`) never run them, precisely so that
-opening the dashboard cannot rewrite data underneath a running hive.
+**Stop the daemon first** — the command refuses to run while one is answering on
+the control socket, and tells you so. The migrations rewrite rows, and one of
+them recreates a table, so a concurrent writer can lose a row that lands
+mid-rebuild. Read-only commands (`apiary dashboard`, `apiary memory`) never run
+them, precisely so that opening the dashboard cannot rewrite data underneath a
+running hive.
 
 Every step is idempotent — running it on an already-migrated database does
 nothing.

@@ -496,15 +496,3 @@ func (c *Client) UpdateAgentStatus(ctx context.Context, agentID, status, current
 	return err
 }
 
-// Dispatcher state
-
-func (c *Client) UpdateDispatcherState(ctx context.Context, status string, uptimeSecs int64, version string) error {
-	// Single row, ID=1
-	_, err := c.db.ExecContext(ctx, `
-		INSERT INTO dispatcher_state (id, status, uptime_seconds, version, updated_at)
-		VALUES (1, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET status = ?, uptime_seconds = ?, version = ?, updated_at = ?
-	`, status, uptimeSecs, version, time.Now(),
-		status, uptimeSecs, version, time.Now())
-	return err
-}
