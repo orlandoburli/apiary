@@ -512,7 +512,16 @@ var migrations = []string{
 	`ALTER TABLE approval_requests ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1`,
 }
 
-// InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).
+// InitSchema creates all tables, indices, and additive columns. It is pure DDL:
+// it creates what is missing and changes no row.
+//
+// That restriction is the point. Every process that opens the database runs
+// InitSchema — the daemon, the dashboard, `apiary memory` — and the dashboard
+// routinely runs against the same WAL file as a live daemon. Anything that
+// rewrites data therefore belongs in MigrateData, which only the daemon and the
+// explicit `apiary migrate` command call. See #467.
+//
+// Safe to call multiple times, concurrently, and from any process.
 func InitSchema(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("init schema: %w", err)
@@ -525,6 +534,22 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("migrate (%s): %w", m, err)
 		}
 	}
+	return nil
+}
+
+// MigrateData runs the one-shot repairs and rewrites that bring an existing
+// database up to date. Unlike InitSchema it mutates rows — and one step drops
+// and recreates a table — so it must run only where no other process is writing
+// concurrently.
+//
+// Call it from the daemon before it starts dispatching, or from `apiary
+// migrate`. Never from a read-only opener: a dashboard that triggered
+// rebuildApprovalRequestsAttempt while the daemon was minting an approval
+// request would drop that row along with the old table (#467).
+//
+// Every step is idempotent and self-guarding, so calling MigrateData on an
+// already-migrated database is a no-op.
+func MigrateData(ctx context.Context, db *sql.DB) error {
 	if err := normalizeLegacyTimestamps(ctx, db); err != nil {
 		return fmt.Errorf("normalize legacy timestamps: %w", err)
 	}

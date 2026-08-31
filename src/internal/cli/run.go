@@ -69,6 +69,14 @@ func newRunCmd() *cobra.Command {
 			}
 			defer dbClient.Close()
 
+			// The daemon owns data migrations: it is the only long-lived writer,
+			// and this runs before anything is dispatched. Read-only openers (the
+			// dashboard, `apiary memory`) deliberately do not, so they can never
+			// rewrite rows underneath a running hive (#467).
+			if err := dbClient.MigrateData(ctx); err != nil {
+				return fmt.Errorf("migrating database: %w", err)
+			}
+
 			logLevel := logging.LevelInfo
 			if debug {
 				logLevel = logging.LevelDebug

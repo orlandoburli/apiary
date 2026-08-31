@@ -447,6 +447,28 @@ Interactive commands also check for a new release at most once every 24 hours
 and print a short notice when one is available. Set `APIARY_NO_UPDATE_CHECK=1`
 to disable the check.
 
+### `apiary migrate`
+
+Apply pending database **data** migrations.
+
+```sh
+apiary migrate
+```
+
+Schema creation — tables, indices, new columns — happens automatically whenever
+any command opens the database, so this command is not part of a normal upgrade.
+The daemon runs the data migrations itself at startup; `apiary migrate` exists
+for the operator who would rather apply them deliberately, with the daemon
+stopped and a copy of the database taken.
+
+**Stop the daemon first.** The migrations rewrite rows, and one of them recreates
+a table, so a concurrent writer can lose a row that lands mid-rebuild. Read-only
+commands (`apiary dashboard`, `apiary memory`) never run them, precisely so that
+opening the dashboard cannot rewrite data underneath a running hive.
+
+Every step is idempotent — running it on an already-migrated database does
+nothing.
+
 ### `apiary version`
 
 Print the version.

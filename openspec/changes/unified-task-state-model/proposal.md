@@ -241,9 +241,16 @@ blind, which is the worst possible combination.
 Restricting the bulk migration to terminal rows (§3) removes the class of the problem: no live
 row changes value, so no live-row filter can miss it. Rules 2 and 3 close the remainder.
 
-> **Follow-up, out of scope here:** `InitSchema` mutating data on every DB open is a latent bug
-> in its own right. It should be split into `InitSchema` (DDL, any opener) and a migration entry
-> point reserved for the daemon. Worth its own issue.
+> **Resolved ahead of this change:** `InitSchema` mutating data on every DB open was filed as
+> #467 and fixed first. `InitSchema` is now DDL-only and safe for any opener; the data repairs
+> live in `db.MigrateData`, called by the daemon at startup and by the new `apiary migrate`
+> command. Rules 1 and 2 above are therefore already in place — this change only has to put its
+> state migration in `MigrateData` alongside them.
+>
+> Rule 3 (refuse to run against a live hive) is **not** implemented: Apiary has no daemon
+> liveness signal to check. `dispatcher_state` exists but `UpdateDispatcherState` has no callers,
+> so nothing maintains it. Adding one is worth doing before this change's migration lands, since
+> two daemons on one database would otherwise still race.
 
 ### 4. Hardcoded SQL literals
 
