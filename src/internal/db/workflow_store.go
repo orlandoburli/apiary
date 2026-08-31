@@ -475,8 +475,22 @@ func (c *Client) ReconcileOrphanStepRuns(ctx context.Context) (int64, error) {
 // interrupted) and before the rehydration passes.
 func (c *Client) ReconcileOrphanTaskCounters(ctx context.Context) (recounted, settled int64, err error) {
 	now := time.Now()
+	// Both vocabularies are accepted so this reconcile is correct against a
+	// database written by a newer binary (see internal/state). 'queued' is the
+	// canonical form of pending; 'blocked' is the canonical form of
+	// approval_waiting and waiting.
+	//
+	// 'blocked' is also the canonical form of *interrupted*, which the legacy
+	// list deliberately excludes, so including it here overcounts an interrupted
+	// instance as live. That is the safe direction to be wrong in: an
+	// overcounted task stays 'running' and is re-dispatched — exactly what the
+	// docstring says happens to an all-interrupted task anyway — whereas
+	// undercounting settles a task while work is still parked. The reason cannot
+	// be consulted here because blocked_reason does not exist in this release's
+	// schema; the query is refined to `blocked_reason <> 'interrupted'` once it
+	// does.
 	liveStates := `('` + InstanceStatePending + `','` + InstanceStateRunning + `','` +
-		InstanceStateApprovalWaiting + `','` + InstanceStateWaiting + `')`
+		InstanceStateApprovalWaiting + `','` + InstanceStateWaiting + `','queued','blocked')`
 
 	res, err := c.db.ExecContext(ctx, `
 		UPDATE internal_tasks
@@ -484,7 +498,7 @@ func (c *Client) ReconcileOrphanTaskCounters(ctx context.Context) (recounted, se
 		      SELECT COUNT(*) FROM workflow_instances wi
 		       WHERE wi.task_id = internal_tasks.id AND wi.state IN `+liveStates+`),
 		    updated_at = ?
-		WHERE state IN ('registered', 'running', 'approval_waiting')
+		WHERE state NOT IN ('done','failed','canceled')
 		  AND COALESCE(outstanding_workflows, 0) <> (
 		      SELECT COUNT(*) FROM workflow_instances wi
 		       WHERE wi.task_id = internal_tasks.id AND wi.state IN `+liveStates+`)
