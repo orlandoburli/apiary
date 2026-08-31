@@ -330,7 +330,12 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   feedback TEXT, responded_by TEXT, response_channel TEXT,
   idempotency_key TEXT UNIQUE, created_at DATETIME NOT NULL, expires_at DATETIME,
   reminded_at DATETIME, escalated_at DATETIME, responded_at DATETIME,
-  UNIQUE(workflow_instance_id, step_id)
+  -- attempt counts this step's visits within the instance. A rework loop
+  -- legitimately re-enters the same approval step on the same instance, and each
+  -- visit needs its own answerable request; keying uniqueness on the pair alone
+  -- resurfaced lap 1's already-resolved row forever (#462).
+  attempt INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(workflow_instance_id, step_id, attempt)
 );
 CREATE TABLE IF NOT EXISTS approval_responses (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -501,6 +506,10 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_improvement_findings_run ON improvement_findings(run_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_improvement_findings_scope ON improvement_findings(scope, state)`,
 	`CREATE INDEX IF NOT EXISTS idx_improvement_runs_created ON improvement_runs(created_at DESC)`,
+	// Per-lap approval requests (#462). The column is additive; the UNIQUE
+	// constraint it belongs to is widened by rebuildApprovalRequestsAttempt,
+	// since SQLite cannot alter a table-level constraint in place.
+	`ALTER TABLE approval_requests ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1`,
 }
 
 // InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).
@@ -522,7 +531,126 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	if err := repairSupersededFailedTasks(ctx, db); err != nil {
 		return fmt.Errorf("repair superseded failed tasks: %w", err)
 	}
+	if err := rebuildApprovalRequestsAttempt(ctx, db); err != nil {
+		return fmt.Errorf("widen approval_requests uniqueness: %w", err)
+	}
 	return nil
+}
+
+// rebuildApprovalRequestsAttempt widens the approval_requests uniqueness from
+// (workflow_instance_id, step_id) to (workflow_instance_id, step_id, attempt).
+//
+// A workflow that loops back past an approval step re-enters the same step id on
+// the same instance. Under the two-column key the engine could not mint a second
+// request for lap 2, so it kept resurfacing lap 1's already-resolved row and the
+// human's answer bounced off with "already approved" — wedging the instance
+// permanently (#462).
+//
+// SQLite cannot drop or alter a table-level UNIQUE constraint, so the table has
+// to be rebuilt. Foreign keys are off on our connections, and approval_responses
+// references approval_requests(id) — ids are preserved verbatim by the copy, so
+// the responses keep pointing at the right rows. Idempotent: once the widened
+// constraint is in place the detection below stops matching.
+func rebuildApprovalRequestsAttempt(ctx context.Context, db *sql.DB) error {
+	needs, err := hasLegacyApprovalUnique(ctx, db)
+	if err != nil || !needs {
+		return err
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmts := []string{
+		`CREATE TABLE approval_requests_new (
+		  id TEXT PRIMARY KEY,
+		  workflow_instance_id TEXT NOT NULL,
+		  task_id TEXT, workflow_id TEXT, step_id TEXT NOT NULL, message TEXT,
+		  approvers TEXT NOT NULL DEFAULT '[]', delegates TEXT NOT NULL DEFAULT '{}', required_approvals INTEGER NOT NULL DEFAULT 1, fields TEXT NOT NULL DEFAULT '[]',
+		  status TEXT NOT NULL DEFAULT 'pending', response_values TEXT NOT NULL DEFAULT '{}',
+		  feedback TEXT, responded_by TEXT, response_channel TEXT,
+		  idempotency_key TEXT UNIQUE, created_at DATETIME NOT NULL, expires_at DATETIME,
+		  reminded_at DATETIME, escalated_at DATETIME, responded_at DATETIME,
+		  attempt INTEGER NOT NULL DEFAULT 1,
+		  UNIQUE(workflow_instance_id, step_id, attempt)
+		)`,
+		`INSERT INTO approval_requests_new
+		  (id, workflow_instance_id, task_id, workflow_id, step_id, message, approvers, delegates, required_approvals, fields,
+		   status, response_values, feedback, responded_by, response_channel, idempotency_key, created_at, expires_at,
+		   reminded_at, escalated_at, responded_at, attempt)
+		 SELECT id, workflow_instance_id, task_id, workflow_id, step_id, message, approvers, delegates, required_approvals, fields,
+		   status, response_values, feedback, responded_by, response_channel, idempotency_key, created_at, expires_at,
+		   reminded_at, escalated_at, responded_at, COALESCE(attempt, 1)
+		 FROM approval_requests`,
+		`DROP TABLE approval_requests`,
+		`ALTER TABLE approval_requests_new RENAME TO approval_requests`,
+		`CREATE INDEX IF NOT EXISTS idx_approval_requests_status ON approval_requests(status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_approval_requests_instance ON approval_requests(workflow_instance_id)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("%s: %w", strings.SplitN(stmt, "\n", 2)[0], err)
+		}
+	}
+	return tx.Commit()
+}
+
+// hasLegacyApprovalUnique reports whether approval_requests still carries the
+// narrow two-column UNIQUE(workflow_instance_id, step_id) constraint. A brand-new
+// database is created from the schema const, which already carries the wide key,
+// so this reports false there.
+func hasLegacyApprovalUnique(ctx context.Context, db *sql.DB) (bool, error) {
+	rows, err := db.QueryContext(ctx, `PRAGMA index_list(approval_requests)`)
+	if err != nil {
+		return false, err
+	}
+	var uniques []string
+	for rows.Next() {
+		// seq, name, unique, origin, partial
+		var seq int
+		var name, origin string
+		var unique, partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			rows.Close()
+			return false, err
+		}
+		if unique == 1 && origin == "u" {
+			uniques = append(uniques, name)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	for _, name := range uniques {
+		cols, err := indexColumns(ctx, db, name)
+		if err != nil {
+			return false, err
+		}
+		if len(cols) == 2 && cols[0] == "workflow_instance_id" && cols[1] == "step_id" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// indexColumns returns the column names an index covers, in index order.
+func indexColumns(ctx context.Context, db *sql.DB, index string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`PRAGMA index_info(%q)`, index))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var seqno, cid int
+		var name sql.NullString
+		if err := rows.Scan(&seqno, &cid, &name); err != nil {
+			return nil, err
+		}
+		cols = append(cols, name.String)
+	}
+	return cols, rows.Err()
 }
 
 // repairSupersededFailedTasks corrects tasks stranded in 'failed' by builds

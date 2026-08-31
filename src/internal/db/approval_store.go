@@ -35,11 +35,15 @@ type ApprovalRequest struct {
 	RespondedBy        string              `json:"responded_by,omitempty"`
 	ResponseChannel    string              `json:"response_channel,omitempty"`
 	IdempotencyKey     string              `json:"idempotency_key,omitempty"`
-	CreatedAt          time.Time           `json:"created_at"`
-	ExpiresAt          *time.Time          `json:"expires_at,omitempty"`
-	RemindedAt         *time.Time          `json:"reminded_at,omitempty"`
-	EscalatedAt        *time.Time          `json:"escalated_at,omitempty"`
-	RespondedAt        *time.Time          `json:"responded_at,omitempty"`
+	// Attempt counts this step's visits within the instance, starting at 1. A
+	// rework loop re-enters the same approval step on the same instance and each
+	// lap gets its own answerable request (#462).
+	Attempt     int        `json:"attempt,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	RemindedAt  *time.Time `json:"reminded_at,omitempty"`
+	EscalatedAt *time.Time `json:"escalated_at,omitempty"`
+	RespondedAt *time.Time `json:"responded_at,omitempty"`
 }
 
 type ApprovalResponse struct {
@@ -52,6 +56,19 @@ type ApprovalResponse struct {
 	Values         map[string]any `json:"values,omitempty"`
 }
 
+// CreateApprovalRequest persists a request for one visit to an approval step.
+//
+// The caller supplies a base id (instance:step). When the step is re-entered by
+// a rework loop the previous lap's request is already terminally resolved, so a
+// fresh attempt is minted and the id is suffixed "@<attempt>" to keep it unique
+// — req.ID is rewritten in place, and callers must use it (not the id they
+// passed) for notifications and audit events. Reusing lap 1's resolved row
+// instead is what wedged looping workflows: every later lap dead-ended at an
+// approval that answered "already approved" (#462).
+//
+// It is still idempotent within a lap: while a request for the pair is
+// unresolved (pending or escalated), re-creating returns that row verbatim —
+// req is overwritten with the stored one — rather than opening a second gate.
 func (c *Client) CreateApprovalRequest(ctx context.Context, req *ApprovalRequest) error {
 	if req.ID == "" || req.WorkflowInstanceID == "" || req.StepID == "" {
 		return fmt.Errorf("approval id, instance, and step are required")
@@ -65,21 +82,58 @@ func (c *Client) CreateApprovalRequest(ctx context.Context, req *ApprovalRequest
 	if req.CreatedAt.IsZero() {
 		req.CreatedAt = time.Now().UTC()
 	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// An unresolved request for this step is the gate that is already open:
+	// hand it back instead of opening a second one.
+	open, err := c.scanApproval(tx.QueryRowContext(ctx, approvalSelect+
+		` WHERE workflow_instance_id=? AND step_id=? AND status IN (?,?) ORDER BY attempt DESC LIMIT 1`,
+		req.WorkflowInstanceID, req.StepID, ApprovalPending, ApprovalEscalated))
+	if err != nil {
+		return err
+	}
+	if open != nil {
+		*req = *open
+		return nil
+	}
+
+	if req.Attempt <= 0 {
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(attempt), 0) + 1 FROM approval_requests WHERE workflow_instance_id=? AND step_id=?`,
+			req.WorkflowInstanceID, req.StepID).Scan(&req.Attempt); err != nil {
+			return err
+		}
+	}
+	if req.Attempt > 1 {
+		req.ID = fmt.Sprintf("%s@%d", req.ID, req.Attempt)
+	}
+
 	approvers, _ := json.Marshal(req.Approvers)
 	delegates, _ := json.Marshal(req.Delegates)
 	fields, _ := json.Marshal(req.Fields)
-	_, err := c.db.ExecContext(ctx, `INSERT INTO approval_requests
-		(id, workflow_instance_id, task_id, workflow_id, step_id, message, approvers, delegates, required_approvals, fields, status, created_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workflow_instance_id, step_id) DO NOTHING`,
-		req.ID, req.WorkflowInstanceID, nullStr(req.TaskID), nullStr(req.WorkflowID), req.StepID, nullStr(req.Message), string(approvers), string(delegates), req.RequiredApprovals, string(fields), req.Status, req.CreatedAt, req.ExpiresAt)
-	return err
+	if _, err := tx.ExecContext(ctx, `INSERT INTO approval_requests
+		(id, workflow_instance_id, task_id, workflow_id, step_id, message, approvers, delegates, required_approvals, fields, status, created_at, expires_at, attempt)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workflow_instance_id, step_id, attempt) DO NOTHING`,
+		req.ID, req.WorkflowInstanceID, nullStr(req.TaskID), nullStr(req.WorkflowID), req.StepID, nullStr(req.Message), string(approvers), string(delegates), req.RequiredApprovals, string(fields), req.Status, req.CreatedAt, req.ExpiresAt, req.Attempt); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (c *Client) GetApprovalRequest(ctx context.Context, id string) (*ApprovalRequest, error) {
 	return c.scanApproval(c.db.QueryRowContext(ctx, approvalSelect+` WHERE id=?`, id))
 }
+
+// GetApprovalByInstance returns the instance's most recently minted request —
+// the one it is parked on. rowid breaks a created_at tie so a loop that re-enters
+// the same step twice inside one clock tick still returns the newer lap's row and
+// not the resolved one it supersedes (#462).
 func (c *Client) GetApprovalByInstance(ctx context.Context, id string) (*ApprovalRequest, error) {
-	return c.scanApproval(c.db.QueryRowContext(ctx, approvalSelect+` WHERE workflow_instance_id=? ORDER BY created_at DESC LIMIT 1`, id))
+	return c.scanApproval(c.db.QueryRowContext(ctx, approvalSelect+` WHERE workflow_instance_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1`, id))
 }
 func (c *Client) ListApprovalRequests(ctx context.Context, status string, limit int) ([]ApprovalRequest, error) {
 	if limit <= 0 || limit > 500 {
@@ -227,7 +281,7 @@ func (c *Client) updateApprovalStatus(ctx context.Context, id, status string, fr
 	return n == 1, nil
 }
 
-const approvalSelect = `SELECT id, workflow_instance_id, COALESCE(task_id,''), COALESCE(workflow_id,''), step_id, COALESCE(message,''), approvers, delegates, required_approvals, fields, status, response_values, COALESCE(feedback,''), COALESCE(responded_by,''), COALESCE(response_channel,''), COALESCE(idempotency_key,''), created_at, expires_at, reminded_at, escalated_at, responded_at FROM approval_requests`
+const approvalSelect = `SELECT id, workflow_instance_id, COALESCE(task_id,''), COALESCE(workflow_id,''), step_id, COALESCE(message,''), approvers, delegates, required_approvals, fields, status, response_values, COALESCE(feedback,''), COALESCE(responded_by,''), COALESCE(response_channel,''), COALESCE(idempotency_key,''), attempt, created_at, expires_at, reminded_at, escalated_at, responded_at FROM approval_requests`
 
 type approvalScanner interface{ Scan(...any) error }
 
@@ -241,7 +295,7 @@ func (c *Client) scanApproval(row approvalScanner) (*ApprovalRequest, error) {
 func scanApprovalRow(row approvalScanner) (*ApprovalRequest, error) {
 	var req ApprovalRequest
 	var approvers, delegates, fields, values string
-	err := row.Scan(&req.ID, &req.WorkflowInstanceID, &req.TaskID, &req.WorkflowID, &req.StepID, &req.Message, &approvers, &delegates, &req.RequiredApprovals, &fields, &req.Status, &values, &req.Feedback, &req.RespondedBy, &req.ResponseChannel, &req.IdempotencyKey, &req.CreatedAt, &req.ExpiresAt, &req.RemindedAt, &req.EscalatedAt, &req.RespondedAt)
+	err := row.Scan(&req.ID, &req.WorkflowInstanceID, &req.TaskID, &req.WorkflowID, &req.StepID, &req.Message, &approvers, &delegates, &req.RequiredApprovals, &fields, &req.Status, &values, &req.Feedback, &req.RespondedBy, &req.ResponseChannel, &req.IdempotencyKey, &req.Attempt, &req.CreatedAt, &req.ExpiresAt, &req.RemindedAt, &req.EscalatedAt, &req.RespondedAt)
 	if err != nil {
 		return nil, err
 	}
