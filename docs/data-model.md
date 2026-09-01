@@ -89,7 +89,8 @@ erDiagram
         TEXT workflow_id
         TEXT cell_id
         TEXT source_id
-        TEXT state "pending|running|approval_waiting|interrupted|done|failed"
+        TEXT state "queued|running|blocked|done|failed|canceled"
+        TEXT blocked_reason "approval|ci|dependency|interrupted"
         TEXT parent_instance_id "sub-workflow child"
         TEXT resumed_from
         TEXT task_id FK "-> internal_tasks.id"
@@ -102,7 +103,9 @@ erDiagram
         TEXT workflow_instance_id FK
         TEXT step_id "workflow step config id"
         TEXT agent_id
-        TEXT state "pending|running|passed|failed|skipped|skipped_cached"
+        TEXT state "queued|running|blocked|done|failed|skipped"
+        TEXT blocked_reason "approval|ci|dependency|interrupted"
+        TEXT skipped_reason "cached"
         TEXT output "agent output (output prompt)"
         TEXT structured_output "JSON (APIARY_OUTPUT)"
         TEXT summary
@@ -146,7 +149,8 @@ erDiagram
         TEXT description
         TEXT input "JSON from spawner"
         TEXT dedup_key "idempotent spawn: UNIQUE(parent_task_id, dedup_key)"
-        TEXT state "registered|running|approval_waiting|done|failed"
+        TEXT state "queued|running|blocked|done|failed|canceled"
+        TEXT blocked_reason "approval|ci|dependency|retry_backoff|interrupted"
         TEXT metadata "JSON: labels, priority, type"
         INTEGER outstanding_workflows
         TIMESTAMP created_at

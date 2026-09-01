@@ -142,8 +142,8 @@ func TestForceRestart_KnownCellStillRestarts(t *testing.T) {
 	if err != nil || inst == nil {
 		t.Fatalf("get instance: inst=%v err=%v", inst, err)
 	}
-	if inst.State != db.InstanceStateInterrupted {
-		t.Errorf("instance state = %q, want %q", inst.State, db.InstanceStateInterrupted)
+	if inst.State != db.InstanceStateBlocked {
+		t.Errorf("instance state = %q, want %q", inst.State, db.InstanceStateBlocked)
 	}
 	if len(fake.statesSet) != 1 || fake.statesSet[0] != "todo" {
 		t.Errorf("statesSet = %v, want [todo]", fake.statesSet)

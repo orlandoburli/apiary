@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/orlandoburli/apiary/internal/db"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 func newFormApp() *App {
@@ -168,7 +169,7 @@ func TestApprovalFormRendersOptions(t *testing.T) {
 func TestApprovalPromptShowsTheStepsQuestion(t *testing.T) {
 	item := &WorkflowInstanceItem{
 		ID:    "wf-1",
-		State: db.InstanceStateApprovalWaiting,
+		State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonApproval),
 		Approval: &db.ApprovalRequest{
 			ID:      "wf-1:gate",
 			Message: "Release 2.4 is staged. How should it go out?",
@@ -187,7 +188,7 @@ func TestApprovalPromptShowsTheStepsQuestion(t *testing.T) {
 // An empty Message hides the banner and its key hints, so a request without one
 // still needs a non-empty fallback — but not the misleading old text.
 func TestApprovalPromptFallsBackWithoutAMessage(t *testing.T) {
-	item := &WorkflowInstanceItem{ID: "wf-1", State: db.InstanceStateApprovalWaiting}
+	item := &WorkflowInstanceItem{ID: "wf-1", State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonApproval)}
 	applyApprovalPrompt(context.Background(), nil, item)
 	if item.Message == "" {
 		t.Fatal("an empty message would hide the approval banner entirely")

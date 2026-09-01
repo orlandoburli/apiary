@@ -71,7 +71,7 @@ func TestApproval_SuspendsAtApprovalStep(t *testing.T) {
 		t.Fatal("a parked instance should not report success")
 	}
 	// Instance is parked in approval_waiting.
-	if store.instances[instID].State != db.InstanceStateApprovalWaiting {
+	if store.instances[instID].State != db.InstanceStateBlocked {
 		t.Errorf("instance state = %q, want approval_waiting", store.instances[instID].State)
 	}
 	// The approval message was posted.
@@ -323,7 +323,7 @@ func TestApproval_CheckWaitsWhenNoSignal(t *testing.T) {
 	eng.CheckParkedApprovals(context.Background(), poll)
 
 	// Still parked, still approval_waiting.
-	if store.instances[instID].State != db.InstanceStateApprovalWaiting {
+	if store.instances[instID].State != db.InstanceStateBlocked {
 		t.Errorf("expected still approval_waiting, got %q", store.instances[instID].State)
 	}
 	if len(eng.ParkedApprovals()) != 1 {

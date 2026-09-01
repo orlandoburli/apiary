@@ -181,7 +181,7 @@ func (e *Engine) ResolveApprovalResponse(ctx context.Context, instanceID string,
 	r.contrib[stepID] = MemoryStep{StepID: stepID, WriteFields: write, Structured: structured, Summary: response.Feedback}
 
 	r.resolveApproval(decision)
-	_ = e.store.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateRunning)
+	_ = e.store.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateRunning, "")
 	outcome := e.driveDAG(ctx, r)
 	return e.settle(ctx, r, outcome), nil
 }

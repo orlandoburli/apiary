@@ -10,6 +10,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
 	"github.com/orlandoburli/apiary/internal/model"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // ResumeInstance creates an immutable descendant of a failed or interrupted
@@ -38,7 +39,7 @@ func (e *Engine) ResumeInstance(ctx context.Context, source *db.WorkflowInstance
 		return "", false, err
 	}
 	if err := e.persistWorkflowSnapshot(ctx, instID, wf); err != nil {
-		_ = e.store.UpdateWorkflowInstanceState(ctx, instID, db.InstanceStateFailed)
+		_ = e.store.UpdateWorkflowInstanceState(ctx, instID, db.InstanceStateFailed, "")
 		return "", false, err
 	}
 
@@ -49,7 +50,7 @@ func (e *Engine) ResumeInstance(ctx context.Context, source *db.WorkflowInstance
 		return "", false, err
 	}
 	if err := e.seedResume(ctx, r, selected); err != nil {
-		_ = e.store.UpdateWorkflowInstanceState(ctx, instID, db.InstanceStateFailed)
+		_ = e.store.UpdateWorkflowInstanceState(ctx, instID, db.InstanceStateFailed, "")
 		return "", false, err
 	}
 
@@ -68,6 +69,11 @@ func (e *Engine) seedResume(ctx context.Context, r *dagRun, priorSteps []db.Step
 		cached.ID = e.newID("sr")
 		cached.WorkflowInstanceID = r.instID
 		cached.SkippedCached = true
+		// The state is plain 'skipped'; why it was skipped lives in the reason
+		// column, which is what let 'skipped_cached' stop being a state (#465).
+		// The boolean is kept in step with it for existing consumers.
+		cached.State = db.StepStateSkipped
+		cached.SkippedReason = string(state.ReasonCached)
 		if err := e.store.CreateStepRun(ctx, &cached); err != nil {
 			return err
 		}
@@ -119,7 +125,10 @@ func (e *Engine) restoreCachedSteps(r *dagRun, priorSteps []db.StepRun) []db.Ste
 	var restored []db.StepRun
 	for i := range priorSteps {
 		sr := priorSteps[i]
-		if sr.State != db.StepStatePassed {
+		// Normalized rather than compared directly: a row written before the
+		// state migration still holds 'passed', and a resume that silently
+		// stopped reusing those rows would re-run completed work (#465).
+		if state.Normalize(sr.State) != state.Done {
 			continue // failed/running/pending steps re-run
 		}
 		step, ok := r.byID[sr.StepID]

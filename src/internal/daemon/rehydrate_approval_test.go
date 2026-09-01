@@ -12,6 +12,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/router"
 	runnerpkg "github.com/orlandoburli/apiary/internal/runner"
 	"github.com/orlandoburli/apiary/internal/source"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // approvingPoller is a poll-only source whose PollTask always reports an approving
@@ -109,7 +110,7 @@ func TestRehydrateParkedApprovals_ResumesAndSettlesTask(t *testing.T) {
 	instID := "wf-parked-1"
 	if err := dbc.CreateWorkflowInstance(ctx, &db.WorkflowInstance{
 		ID: instID, WorkflowID: "feature", TaskID: task.ID, CellID: cell.ID, SourceID: "src",
-		State: db.InstanceStateApprovalWaiting,
+		State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonApproval),
 	}); err != nil {
 		t.Fatalf("create instance: %v", err)
 	}

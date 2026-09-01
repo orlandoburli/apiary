@@ -46,16 +46,24 @@ func TestSpawnRequestZeroValue(t *testing.T) {
 }
 
 func TestTaskStateConstants(t *testing.T) {
-	cases := map[TaskState]string{
-		TaskStateRegistered:   "registered",
-		TaskStateRunning:      "running",
-		TaskStateApprovalWait: "approval_waiting",
-		TaskStateDone:         "done",
-		TaskStateFailed:       "failed",
+	// Canonical vocabulary (#465). TaskStateApprovalWait is 'blocked'; the fact
+	// that it is an approval lives in blocked_reason, not in the state.
+	cases := []struct {
+		got  TaskState
+		want string
+	}{
+		{TaskStateRegistered, "queued"},
+		{TaskStateQueued, "queued"},
+		{TaskStateRunning, "running"},
+		{TaskStateApprovalWait, "blocked"},
+		{TaskStateBlocked, "blocked"},
+		{TaskStateDone, "done"},
+		{TaskStateFailed, "failed"},
+		{TaskStateCanceled, "canceled"},
 	}
-	for got, want := range cases {
-		if string(got) != want {
-			t.Errorf("TaskState = %q, want %q", got, want)
+	for _, c := range cases {
+		if string(c.got) != c.want {
+			t.Errorf("TaskState = %q, want %q", c.got, c.want)
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	apstate "github.com/orlandoburli/apiary/internal/state"
 	"slices"
 	"sort"
 	"strings"
@@ -31,10 +32,10 @@ func hasColumn(ctx context.Context, db source, table, column string) bool {
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			cid                        int
-			name, ctype                string
-			notnull, pk                int
-			dflt                       sql.NullString
+			cid         int
+			name, ctype string
+			notnull, pk int
+			dflt        sql.NullString
 		)
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
 			return false
@@ -151,15 +152,21 @@ func StepMetricsFor(ctx context.Context, db source, w Window, sc Scope) ([]StepM
 		}
 
 		a.runs++
+		// Normalize so a database holding either vocabulary counts the same
+		// (#465): 'passed' and 'done' are one bucket, and 'skipped_cached'
+		// became 'skipped' plus a reason. The cached arm keeps its original
+		// precedence — the skipped_cached flag wins over the plain state — so
+		// the totals are unchanged for any existing database.
+		canon := apstate.Normalize(state)
 		switch {
-		case state == "passed":
+		case canon == apstate.Done:
 			a.passed++
-		case state == "failed":
+		case canon == apstate.Failed:
 			a.failed++
 		case state == "skipped_cached" || cachedFlag == 1:
 			a.cached++
 			a.skipped++
-		case state == "skipped":
+		case canon == apstate.Skipped:
 			a.skipped++
 		}
 
@@ -689,8 +696,17 @@ func FailureClustersFor(ctx context.Context, db source, w Window, sc Scope) ([]F
 	return out, nil
 }
 
+// isTerminal reports whether an instance state means "no more work will happen".
+//
+// Interruption counts: an orphaned instance never completes on its own, which is
+// why it sits alongside done and failed here even though the canonical
+// vocabulary files it under 'blocked' (#465).
 func isTerminal(state string) bool {
-	return state == "done" || state == "failed" || state == "interrupted"
+	switch apstate.Normalize(state) {
+	case apstate.Done, apstate.Failed, apstate.Canceled:
+		return true
+	}
+	return state == "interrupted"
 }
 
 func countKinds(concat string) map[string]int {

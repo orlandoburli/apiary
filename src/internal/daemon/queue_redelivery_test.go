@@ -8,6 +8,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/db"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/queue"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // redeliveredJob runs one poll, takes the job it enqueued for workflowID and
@@ -78,7 +79,7 @@ func TestExecuteQueuedJob_RedeliveryRunsWhenNothingIsLive(t *testing.T) {
 	job, task := redeliveredJob(t, d, dbc, "triage")
 	if err := dbc.CreateWorkflowInstance(ctx, &db.WorkflowInstance{
 		ID: "i-orphan", WorkflowID: "triage", CellID: "c1", SourceID: "src",
-		TaskID: task.ID, State: db.InstanceStateInterrupted,
+		TaskID: task.ID, State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonInterrupted),
 	}); err != nil {
 		t.Fatalf("create interrupted instance: %v", err)
 	}

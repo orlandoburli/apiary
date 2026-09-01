@@ -24,6 +24,12 @@ func (t dbTracker) HasFailedInstance(ctx context.Context, taskID string) (bool, 
 func (t dbTracker) SetTaskState(ctx context.Context, taskID string, state model.TaskState) error {
 	return t.c.InternalTasks().UpdateTaskState(ctx, taskID, state)
 }
+func (t dbTracker) SetTaskStateReason(ctx context.Context, taskID string, state model.TaskState, reason string) error {
+	return t.c.InternalTasks().UpdateTaskStateReason(ctx, taskID, state, reason)
+}
+func (t dbTracker) CountConsecutiveFailedInstances(ctx context.Context, taskID, workflowID string) (int, error) {
+	return t.c.CountConsecutiveFailedInstances(ctx, taskID, workflowID)
+}
 
 // generationTestEnv wires an engine to a real SQLite db.Client (Store and
 // TaskTracker both) with the tasks: completion hook configured.

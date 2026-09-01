@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/orlandoburli/apiary/internal/db"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // TestInstanceDetail_IncludesCIPolls verifies the wait_for CI poll history is
@@ -20,7 +21,7 @@ func TestInstanceDetail_IncludesCIPolls(t *testing.T) {
 	t.Cleanup(func() { _ = dbc.Close() })
 
 	mustCreateInstance(t, dbc, &db.WorkflowInstance{
-		ID: "wi_ci", WorkflowID: "implementation", CellID: "42", State: db.InstanceStateWaiting,
+		ID: "wi_ci", WorkflowID: "implementation", CellID: "42", State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonCI),
 	})
 	if err := dbc.CreateStepRun(ctx, &db.StepRun{
 		ID: "wi_ci-implement", WorkflowInstanceID: "wi_ci", StepID: "implement", AgentID: "engineer", State: db.StepStatePassed,

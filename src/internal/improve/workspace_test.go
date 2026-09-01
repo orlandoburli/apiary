@@ -98,7 +98,7 @@ func TestExcludedPaths(t *testing.T) {
 		{"/repo/.apiary/logs/apiary.log", true},
 		{"/repo/.apiary/logs/transcripts/t1/a.md", true},
 		{"/repo/.apiary/memory/MEMORY.md", true},
-		{"/etc/passwd", true},              // outside the root
+		{"/etc/passwd", true},               // outside the root
 		{"/repo/../elsewhere/x.yaml", true}, // escapes the root
 	}
 	for _, tc := range cases {

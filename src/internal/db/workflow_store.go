@@ -4,31 +4,44 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
-// Workflow instance states.
+// Workflow instance states — canonical values from internal/state (#465).
+//
+// The three parked states collapse onto 'blocked' and are told apart by
+// blocked_reason, so InstanceStateApprovalWaiting, InstanceStateWaiting and
+// InstanceStateInterrupted are all "blocked" and differ only in the reason
+// written alongside. Compare on the reason, never on these three names, when the
+// distinction matters — see ReconcileOrphanTaskCounters for the one place it does.
 const (
-	InstanceStatePending         = "pending"
-	InstanceStateRunning         = "running"
-	InstanceStateApprovalWaiting = "approval_waiting"
-	InstanceStateWaiting         = "waiting"
-	InstanceStateInterrupted     = "interrupted"
-	InstanceStateDone            = "done"
-	InstanceStateFailed          = "failed"
+	InstanceStateQueued   = "queued"
+	InstanceStateRunning  = "running"
+	InstanceStateBlocked  = "blocked"
+	InstanceStateDone     = "done"
+	InstanceStateFailed   = "failed"
+	InstanceStateCanceled = "canceled"
 )
+
+// InterruptedInstance reports whether an instance is an orphan: blocked because
+// execution stopped abnormally, rather than blocked awaiting something that will
+// arrive. The distinction used to be carried by a separate 'interrupted' state;
+// it is now the reason, and every caller that cared about it must say so
+// explicitly. The legacy value is still recognised for un-migrated rows.
+func InterruptedInstance(st, reason string) bool {
+	return st == "interrupted" ||
+		(st == InstanceStateBlocked && reason == string(state.ReasonInterrupted))
+}
 
 // Step run states.
 const (
-	StepStatePending       = "pending"
-	StepStateRunning       = "running"
-	StepStatePassed        = "passed"
-	StepStateFailed        = "failed"
-	StepStateSkipped       = "skipped"
-	StepStateSkippedCached = "skipped_cached"
-	// StepStateInterrupted marks a step left non-terminal (running/pending) by a
-	// previously-killed daemon. It is the step-level companion to
-	// InstanceStateInterrupted and is set by ReconcileOrphanStepRuns at startup.
-	StepStateInterrupted = "interrupted"
+	StepStateQueued  = "queued"
+	StepStateRunning = "running"
+	StepStateBlocked = "blocked"
+	StepStatePassed  = "done"
+	StepStateFailed  = "failed"
+	StepStateSkipped = "skipped"
 )
 
 // Publish states for a step run's APIARY_PUBLISH write-back.
@@ -42,12 +55,15 @@ const (
 // TaskID is the canonical link; CellID/SourceID are retained (and still populated
 // from the task's primary source binding) for the dashboard until a future change.
 type WorkflowInstance struct {
-	ID               string
-	WorkflowID       string
-	TaskID           string
-	CellID           string
-	SourceID         string
-	State            string
+	ID         string
+	WorkflowID string
+	TaskID     string
+	CellID     string
+	SourceID   string
+	State      string
+	// BlockedReason explains a State of "blocked": approval | ci | dependency |
+	// retry_backoff | interrupted. Empty for every other state.
+	BlockedReason    string
 	ParentInstanceID string
 	ResumedFrom      string
 	CreatedAt        time.Time
@@ -61,11 +77,15 @@ type StepRun struct {
 	StepID             string
 	AgentID            string
 	State              string
-	Output             string
-	StructuredOutput   string // JSON-encoded
-	Summary            string
-	ExitCode           int
-	SkippedCached      bool
+	// BlockedReason explains a State of "blocked"; SkippedReason explains
+	// "skipped" (currently only "cached"). Both empty otherwise.
+	BlockedReason    string
+	SkippedReason    string
+	Output           string
+	StructuredOutput string // JSON-encoded
+	Summary          string
+	ExitCode         int
+	SkippedCached    bool
 	// PublishPayload is the APIARY_PUBLISH text the step's agent emitted, if any.
 	PublishPayload string
 	// PublishState records the write-back outcome: sent | failed | skipped.
@@ -106,11 +126,12 @@ func (c *Client) CreateWorkflowInstance(ctx context.Context, inst *WorkflowInsta
 	inst.UpdatedAt = now
 	_, err := c.db.ExecContext(ctx, `
 		INSERT INTO workflow_instances
-		  (id, workflow_id, task_id, cell_id, source_id, state, parent_instance_id, resumed_from,
+		  (id, workflow_id, task_id, cell_id, source_id, state, blocked_reason, parent_instance_id, resumed_from,
 		   task_generation, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
 		        COALESCE((SELECT generation FROM internal_tasks WHERE id = ?), 0), ?, ?)
 	`, inst.ID, inst.WorkflowID, nullStr(inst.TaskID), inst.CellID, nullStr(inst.SourceID), inst.State,
+		nullStr(inst.BlockedReason),
 		nullStr(inst.ParentInstanceID), nullStr(inst.ResumedFrom), inst.TaskID, inst.CreatedAt, inst.UpdatedAt)
 	if err == nil {
 		c.recordWorkflowEvent(ctx, inst, "workflow.started", map[string]any{"state": inst.State})
@@ -121,19 +142,30 @@ func (c *Client) CreateWorkflowInstance(ctx context.Context, inst *WorkflowInsta
 	return err
 }
 
-// UpdateWorkflowInstanceState transitions an instance to a new state.
-func (c *Client) UpdateWorkflowInstanceState(ctx context.Context, id, state string) error {
+// UpdateWorkflowInstanceState transitions an instance to a new state, together
+// with the reason when that state is "blocked".
+//
+// The reason is a parameter rather than something the store infers because
+// "blocked" alone does not say whether the run is waiting on a human, on CI, or
+// was interrupted — and those three had distinct states before the vocabulary
+// was unified (#465). Pass "" for any state other than blocked.
+func (c *Client) UpdateWorkflowInstanceState(ctx context.Context, id, newState, reason string) error {
 	inst, _ := c.GetWorkflowInstance(ctx, id)
-	if inst != nil && inst.State == state {
+	if inst != nil && inst.State == newState && inst.BlockedReason == reason {
 		return nil
 	}
 	_, err := c.db.ExecContext(ctx, `
-		UPDATE workflow_instances SET state = ?, updated_at = ? WHERE id = ?
-	`, state, time.Now(), id)
+		UPDATE workflow_instances SET state = ?, blocked_reason = ?, updated_at = ? WHERE id = ?
+	`, newState, nullStr(reason), time.Now(), id)
 	if err == nil && inst != nil {
-		inst.State = state
-		if eventType := workflowStateEventType(state); eventType != "" {
-			c.recordWorkflowEvent(ctx, inst, eventType, map[string]any{"state": state})
+		inst.State = newState
+		inst.BlockedReason = reason
+		if eventType := workflowStateEventType(newState, reason); eventType != "" {
+			meta := map[string]any{"state": newState}
+			if reason != "" {
+				meta["reason"] = reason
+			}
+			c.recordWorkflowEvent(ctx, inst, eventType, meta)
 		}
 	}
 	return err
@@ -142,7 +174,7 @@ func (c *Client) UpdateWorkflowInstanceState(ctx context.Context, id, state stri
 // GetWorkflowInstance fetches an instance by ID, or (nil, nil) if not found.
 func (c *Client) GetWorkflowInstance(ctx context.Context, id string) (*WorkflowInstance, error) {
 	row := c.db.QueryRowContext(ctx, `
-		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
+		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state, COALESCE(blocked_reason,''),
 		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
 		FROM workflow_instances WHERE id = ?
 	`, id)
@@ -205,10 +237,19 @@ func (c *Client) CountConsecutiveFailedInstances(ctx context.Context, taskID, wo
 // states do not block — they remain eligible for retry or manual resume.
 func (c *Client) HasActiveInstanceForRoute(ctx context.Context, taskID, workflowID string) (bool, error) {
 	var n int
+	// Active means running or parked-and-alive. An interrupted instance is
+	// blocked but dead: it must NOT shadow a re-dispatch, or a daemon restart
+	// would strand the workflow forever. The legacy 'running'/'approval_waiting'
+	// /'waiting' values are still matched so an un-migrated database behaves the
+	// same (#465).
 	err := c.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM workflow_instances
-		WHERE task_id = ? AND workflow_id = ? AND state IN (?, ?, ?)
-	`, taskID, workflowID, InstanceStateRunning, InstanceStateApprovalWaiting, InstanceStateWaiting).Scan(&n)
+		WHERE task_id = ? AND workflow_id = ?
+		  AND (
+		        state IN ('running','approval_waiting','waiting')
+		     OR (state = 'blocked' AND COALESCE(blocked_reason,'') <> ?)
+		      )
+	`, taskID, workflowID, string(state.ReasonInterrupted)).Scan(&n)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -252,10 +293,67 @@ func (c *Client) HasResumeDescendant(ctx context.Context, instanceID string) (bo
 // ListWorkflowInstancesByState returns all instances in the given state, oldest first.
 func (c *Client) ListWorkflowInstancesByState(ctx context.Context, state string) ([]WorkflowInstance, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
+		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state, COALESCE(blocked_reason,''),
 		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
 		FROM workflow_instances WHERE state = ? ORDER BY created_at ASC
 	`, state)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanInstances(rows)
+}
+
+// ListWorkflowInstancesBlockedBy returns instances parked for any of the given
+// reasons, oldest first.
+//
+// Rehydration needs this rather than a state lookup: every park is 'blocked'
+// now, and an approval rehydrator that matched the state alone would also pick
+// up CI waits and orphans (#465). The legacy per-reason states are matched too,
+// so an un-migrated database rehydrates identically.
+func (c *Client) ListWorkflowInstancesBlockedBy(ctx context.Context, reasons ...string) ([]WorkflowInstance, error) {
+	if len(reasons) == 0 {
+		return nil, nil
+	}
+	args := []any{}
+	placeholders := ""
+	for i, r := range reasons {
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		args = append(args, r)
+	}
+	// Legacy state names carrying the same meaning as each reason.
+	legacy := map[string]string{
+		"approval":    "approval_waiting",
+		"ci":          "waiting",
+		"dependency":  "waiting",
+		"interrupted": "interrupted",
+	}
+	legacyPlaceholders := ""
+	seen := map[string]bool{}
+	for _, r := range reasons {
+		if l, ok := legacy[r]; ok && !seen[l] {
+			seen[l] = true
+			if legacyPlaceholders != "" {
+				legacyPlaceholders += ","
+			}
+			legacyPlaceholders += "?"
+			args = append(args, l)
+		}
+	}
+	if legacyPlaceholders == "" {
+		legacyPlaceholders = "NULL"
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state, COALESCE(blocked_reason,''),
+		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
+		FROM workflow_instances
+		WHERE (state = 'blocked' AND COALESCE(blocked_reason,'') IN (`+placeholders+`))
+		   OR state IN (`+legacyPlaceholders+`)
+		ORDER BY created_at ASC
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -269,7 +367,7 @@ func (c *Client) ListWorkflowInstances(ctx context.Context, limit int) ([]Workfl
 		limit = 20
 	}
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
+		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state, COALESCE(blocked_reason,''),
 		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
 		FROM workflow_instances ORDER BY created_at DESC LIMIT ?
 	`, limit)
@@ -284,7 +382,7 @@ func (c *Client) ListWorkflowInstances(ctx context.Context, limit int) ([]Workfl
 // cell, or (nil, nil) when the cell has no workflow instance.
 func (c *Client) GetLatestInstanceByCell(ctx context.Context, cellID string) (*WorkflowInstance, error) {
 	row := c.db.QueryRowContext(ctx, `
-		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
+		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state, COALESCE(blocked_reason,''),
 		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
 		FROM workflow_instances WHERE cell_id = ? ORDER BY created_at DESC LIMIT 1
 	`, cellID)
@@ -300,7 +398,7 @@ func (c *Client) GetLatestInstanceByCell(ctx context.Context, cellID string) (*W
 // written before task_id existed, which ListWorkflowInstancesByTask would miss.
 func (c *Client) ListWorkflowInstancesByCell(ctx context.Context, cellID string) ([]WorkflowInstance, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
+		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state, COALESCE(blocked_reason,''),
 		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
 		FROM workflow_instances WHERE cell_id = ? ORDER BY created_at DESC
 	`, cellID)
@@ -316,7 +414,7 @@ func (c *Client) ListWorkflowInstancesByCell(ctx context.Context, cellID string)
 // so the dashboard lists all of them per task. Backed by idx_wf_instances_task.
 func (c *Client) ListWorkflowInstancesByTask(ctx context.Context, taskID string) ([]WorkflowInstance, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
+		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state, COALESCE(blocked_reason,''),
 		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
 		FROM workflow_instances WHERE task_id = ? ORDER BY created_at DESC
 	`, taskID)
@@ -331,7 +429,7 @@ func (c *Client) ListWorkflowInstancesByTask(ctx context.Context, taskID string)
 // instance of a workflow, or (nil, nil) when none exists.
 func (c *Client) LatestResumableInstance(ctx context.Context, workflowID string) (*WorkflowInstance, error) {
 	row := c.db.QueryRowContext(ctx, `
-		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state,
+		SELECT id, workflow_id, cell_id, COALESCE(source_id,''), state, COALESCE(blocked_reason,''),
 		       COALESCE(parent_instance_id,''), COALESCE(resumed_from,''), created_at, updated_at, COALESCE(task_id,'')
 		FROM workflow_instances
 		WHERE workflow_id = ? AND state IN ('failed','interrupted')
@@ -414,9 +512,9 @@ func (c *Client) GetTaskTitle(ctx context.Context, id string) (string, error) {
 func (c *Client) ReconcileOrphanWorkflowInstances(ctx context.Context) (int64, error) {
 	res, err := c.db.ExecContext(ctx, `
 		UPDATE workflow_instances
-		SET state = ?, updated_at = ?
+		SET state = ?, blocked_reason = ?, updated_at = ?
 		WHERE state = ?
-	`, InstanceStateInterrupted, time.Now(), InstanceStateRunning)
+	`, InstanceStateBlocked, string(state.ReasonInterrupted), time.Now(), InstanceStateRunning)
 	if err != nil {
 		return 0, err
 	}
@@ -436,12 +534,54 @@ func (c *Client) ReconcileOrphanWorkflowInstances(ctx context.Context) (int64, e
 func (c *Client) ReconcileOrphanStepRuns(ctx context.Context) (int64, error) {
 	res, err := c.db.ExecContext(ctx, `
 		UPDATE step_runs
-		SET state = ?, finished_at = COALESCE(finished_at, ?)
+		SET state = ?, blocked_reason = ?, finished_at = COALESCE(finished_at, ?)
 		WHERE state IN (?, ?)
 		  AND workflow_instance_id IN (
-		    SELECT id FROM workflow_instances WHERE state = ?
+		    SELECT id FROM workflow_instances
+		    WHERE state = ? AND blocked_reason = ?
 		  )
-	`, StepStateInterrupted, time.Now(), StepStateRunning, StepStatePending, InstanceStateInterrupted)
+	`, StepStateBlocked, string(state.ReasonInterrupted), time.Now(),
+		StepStateRunning, StepStateQueued,
+		InstanceStateBlocked, string(state.ReasonInterrupted))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// PropagateInterruptedToTasks marks a task blocked/interrupted when it has no
+// live workflow instance left and at least one interrupted one.
+//
+// This is the fix for the oldest complaint about the Tasks view: a task whose
+// every instance was orphaned by a restart stayed in 'registered' and rendered
+// as "queued", indistinguishable from a task that arrived three seconds ago.
+// The information was always there in workflow_instances; nothing carried it up
+// to the task (#465).
+//
+// Scoped to non-terminal, non-running tasks with a zero outstanding counter, so
+// it runs after ReconcileOrphanTaskCounters has recounted and cannot disturb a
+// task that is genuinely working. Idempotent: flipped rows stop matching.
+func (c *Client) PropagateInterruptedToTasks(ctx context.Context) (int64, error) {
+	res, err := c.db.ExecContext(ctx, `
+		UPDATE internal_tasks
+		SET state = 'blocked', blocked_reason = ?, updated_at = ?
+		WHERE state NOT IN ('done','failed','canceled','running')
+		  AND COALESCE(blocked_reason,'') <> ?
+		  AND COALESCE(outstanding_workflows, 0) = 0
+		  AND EXISTS (
+		        SELECT 1 FROM workflow_instances wi
+		         WHERE wi.task_id = internal_tasks.id
+		           AND (wi.state = 'interrupted'
+		                OR (wi.state = 'blocked' AND COALESCE(wi.blocked_reason,'') = ?))
+		      )
+		  AND NOT EXISTS (
+		        SELECT 1 FROM workflow_instances wi
+		         WHERE wi.task_id = internal_tasks.id
+		           AND (wi.state IN ('running','pending','queued','approval_waiting','waiting')
+		                OR (wi.state = 'blocked' AND COALESCE(wi.blocked_reason,'') <> ?))
+		      )
+	`, string(state.ReasonInterrupted), time.Now(), string(state.ReasonInterrupted),
+		string(state.ReasonInterrupted), string(state.ReasonInterrupted))
 	if err != nil {
 		return 0, err
 	}
@@ -475,33 +615,32 @@ func (c *Client) ReconcileOrphanStepRuns(ctx context.Context) (int64, error) {
 // interrupted) and before the rehydration passes.
 func (c *Client) ReconcileOrphanTaskCounters(ctx context.Context) (recounted, settled int64, err error) {
 	now := time.Now()
-	// Both vocabularies are accepted so this reconcile is correct against a
-	// database written by a newer binary (see internal/state). 'queued' is the
-	// canonical form of pending; 'blocked' is the canonical form of
-	// approval_waiting and waiting.
+	// Live means queued, running, or blocked-for-a-reason-that-will-resolve.
+	// Interruption is the exception: a blocked_reason of 'interrupted' marks an
+	// orphan that will never complete on its own, so it must not count towards
+	// outstanding_workflows or the task can never settle.
 	//
-	// 'blocked' is also the canonical form of *interrupted*, which the legacy
-	// list deliberately excludes, so including it here overcounts an interrupted
-	// instance as live. That is the safe direction to be wrong in: an
-	// overcounted task stays 'running' and is re-dispatched — exactly what the
-	// docstring says happens to an all-interrupted task anyway — whereas
-	// undercounting settles a task while work is still parked. The reason cannot
-	// be consulted here because blocked_reason does not exist in this release's
-	// schema; the query is refined to `blocked_reason <> 'interrupted'` once it
-	// does.
-	liveStates := `('` + InstanceStatePending + `','` + InstanceStateRunning + `','` +
-		InstanceStateApprovalWaiting + `','` + InstanceStateWaiting + `','queued','blocked')`
+	// The legacy vocabulary is still accepted on the read side (a database not
+	// yet migrated, or written by an older binary) — see internal/state.
+	liveStates := `(
+		'queued','running','pending','approval_waiting','waiting'
+		)`
+	// Qualified with wi. deliberately: the enclosing UPDATE targets
+	// internal_tasks, which now has its own state and blocked_reason columns.
+	// SQLite would resolve the unqualified names to the inner scope, but an
+	// ambiguous-looking correlated subquery is not worth the risk.
+	liveBlocked := `(wi.state = 'blocked' AND COALESCE(wi.blocked_reason,'') <> '` + string(state.ReasonInterrupted) + `')`
 
 	res, err := c.db.ExecContext(ctx, `
 		UPDATE internal_tasks
 		SET outstanding_workflows = (
 		      SELECT COUNT(*) FROM workflow_instances wi
-		       WHERE wi.task_id = internal_tasks.id AND wi.state IN `+liveStates+`),
+		       WHERE wi.task_id = internal_tasks.id AND (wi.state IN `+liveStates+` OR `+liveBlocked+`)),
 		    updated_at = ?
 		WHERE state NOT IN ('done','failed','canceled')
 		  AND COALESCE(outstanding_workflows, 0) <> (
 		      SELECT COUNT(*) FROM workflow_instances wi
-		       WHERE wi.task_id = internal_tasks.id AND wi.state IN `+liveStates+`)
+		       WHERE wi.task_id = internal_tasks.id AND (wi.state IN `+liveStates+` OR `+liveBlocked+`))
 	`, now)
 	if err != nil {
 		return 0, 0, err
@@ -542,15 +681,16 @@ func StepRunHasUsage(s StepRun) bool {
 func (c *Client) CreateStepRun(ctx context.Context, sr *StepRun) error {
 	_, err := c.db.ExecContext(ctx, `
 		INSERT INTO step_runs
-		  (id, workflow_instance_id, step_id, agent_id, state, output, structured_output,
+		  (id, workflow_instance_id, step_id, agent_id, state, blocked_reason, skipped_reason, output, structured_output,
 		   summary, exit_code, skipped_cached, publish_payload, publish_state, spawned_task_id,
 		   input_prompt, input_tokens, output_tokens, total_tokens,
 		   cache_creation_tokens, cache_read_tokens, num_turns, num_tool_calls, cost_usd,
 		   time_thinking_ms, time_writing_ms, time_model_ms, time_tool_wait_ms,
 		   time_other_ms, time_background_ms, slow_tools,
 		   started_at, finished_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, sr.ID, sr.WorkflowInstanceID, sr.StepID, nullStr(sr.AgentID), sr.State,
+		nullStr(sr.BlockedReason), nullStr(sr.SkippedReason),
 		nullStr(sr.Output), nullStr(sr.StructuredOutput), nullStr(sr.Summary),
 		sr.ExitCode, sr.SkippedCached, nullStr(sr.PublishPayload), nullStr(sr.PublishState),
 		nullStr(sr.SpawnedTaskID), nullStr(sr.InputPrompt), sr.InputTokens, sr.OutputTokens,
@@ -558,7 +698,7 @@ func (c *Client) CreateStepRun(ctx context.Context, sr *StepRun) error {
 		sr.CostUSD, sr.ThinkingMS, sr.WritingMS, sr.ModelMS, sr.ToolWaitMS, sr.OtherMS,
 		sr.BackgroundMS, nullStr(sr.SlowTools), sr.StartedAt, sr.FinishedAt)
 	if err == nil {
-		c.recordStepEvent(ctx, sr, stepStateEventType(sr.State))
+		c.recordStepEvent(ctx, sr, stepStateEventType(sr.State, sr.BlockedReason))
 	}
 	return err
 }
@@ -570,7 +710,7 @@ func (c *Client) UpdateStepRun(ctx context.Context, sr *StepRun) error {
 	_ = c.db.QueryRowContext(ctx, `SELECT state FROM step_runs WHERE id = ?`, sr.ID).Scan(&previous)
 	_, err := c.db.ExecContext(ctx, `
 		UPDATE step_runs
-		SET state = ?, output = ?, structured_output = ?, summary = ?,
+		SET state = ?, blocked_reason = ?, skipped_reason = ?, output = ?, structured_output = ?, summary = ?,
 		    exit_code = ?, skipped_cached = ?, publish_payload = ?, publish_state = ?,
 		    spawned_task_id = ?, input_prompt = ?, input_tokens = ?, output_tokens = ?,
 		    total_tokens = ?, cache_creation_tokens = ?, cache_read_tokens = ?,
@@ -579,40 +719,56 @@ func (c *Client) UpdateStepRun(ctx context.Context, sr *StepRun) error {
 		    time_tool_wait_ms = ?, time_other_ms = ?, time_background_ms = ?, slow_tools = ?,
 		    started_at = ?, finished_at = ?
 		WHERE id = ?
-	`, sr.State, nullStr(sr.Output), nullStr(sr.StructuredOutput), nullStr(sr.Summary),
+	`, sr.State, nullStr(sr.BlockedReason), nullStr(sr.SkippedReason),
+		nullStr(sr.Output), nullStr(sr.StructuredOutput), nullStr(sr.Summary),
 		sr.ExitCode, sr.SkippedCached, nullStr(sr.PublishPayload), nullStr(sr.PublishState),
 		nullStr(sr.SpawnedTaskID), nullStr(sr.InputPrompt), sr.InputTokens, sr.OutputTokens,
 		sr.TotalTokens, sr.CacheCreationTokens, sr.CacheReadTokens, sr.NumTurns, sr.NumToolCalls,
 		sr.CostUSD, sr.ThinkingMS, sr.WritingMS, sr.ModelMS, sr.ToolWaitMS, sr.OtherMS,
 		sr.BackgroundMS, nullStr(sr.SlowTools), sr.StartedAt, sr.FinishedAt, sr.ID)
 	if err == nil && previous != sr.State {
-		c.recordStepEvent(ctx, sr, stepStateEventType(sr.State))
+		c.recordStepEvent(ctx, sr, stepStateEventType(sr.State, sr.BlockedReason))
 	}
 	return err
 }
 
-func workflowStateEventType(state string) string {
-	switch state {
+// workflowStateEventType maps a state transition to its lifecycle event.
+//
+// It takes the reason as well as the state because the canonical vocabulary
+// collapses approval waits, CI waits and interruption onto "blocked" (#465).
+// Only interruption is a cancellation; emitting workflow.cancelled when a run
+// merely parks on an approval gate would be wrong.
+func workflowStateEventType(st, reason string) string {
+	switch st {
 	case InstanceStateDone:
 		return "workflow.completed"
 	case InstanceStateFailed:
 		return "workflow.failed"
-	case InstanceStateInterrupted:
+	case InstanceStateCanceled:
 		return "workflow.cancelled"
+	case InstanceStateBlocked:
+		if reason == string(state.ReasonInterrupted) {
+			return "workflow.cancelled"
+		}
 	}
 	return ""
 }
 
-func stepStateEventType(state string) string {
-	switch state {
+// stepStateEventType is the step-level companion to workflowStateEventType, and
+// takes the reason for the same purpose: a step parked on an approval is blocked
+// but not cancelled.
+func stepStateEventType(st, reason string) string {
+	switch st {
 	case StepStateRunning:
 		return "step.started"
-	case StepStatePassed, StepStateSkipped, StepStateSkippedCached:
+	case StepStatePassed, StepStateSkipped:
 		return "step.completed"
 	case StepStateFailed:
 		return "step.failed"
-	case StepStateInterrupted:
-		return "step.cancelled"
+	case StepStateBlocked:
+		if reason == string(state.ReasonInterrupted) {
+			return "step.cancelled"
+		}
 	}
 	return ""
 }
@@ -643,7 +799,7 @@ func (c *Client) recordStepEvent(ctx context.Context, sr *StepRun, eventType str
 // (reject_when) or on_missing_output — fails a step whose runner exited 0, so
 // the persisted row matches the decision the workflow actually took (#390). A
 // state change emits the usual step.* execution event.
-func (c *Client) UpdateStepRunState(ctx context.Context, id, state, output string) error {
+func (c *Client) UpdateStepRunState(ctx context.Context, id, newState, reason, output string) error {
 	var previous, stepID, instanceID string
 	if err := c.db.QueryRowContext(ctx,
 		`SELECT state, step_id, workflow_instance_id FROM step_runs WHERE id = ?`, id).
@@ -651,12 +807,13 @@ func (c *Client) UpdateStepRunState(ctx context.Context, id, state, output strin
 		return err
 	}
 	if _, err := c.db.ExecContext(ctx,
-		`UPDATE step_runs SET state = ?, output = ? WHERE id = ?`, state, nullStr(output), id); err != nil {
+		`UPDATE step_runs SET state = ?, blocked_reason = ?, output = ? WHERE id = ?`,
+		newState, nullStr(reason), nullStr(output), id); err != nil {
 		return err
 	}
-	if previous != state {
-		c.recordStepEvent(ctx, &StepRun{ID: id, WorkflowInstanceID: instanceID, StepID: stepID, State: state},
-			stepStateEventType(state))
+	if previous != newState {
+		c.recordStepEvent(ctx, &StepRun{ID: id, WorkflowInstanceID: instanceID, StepID: stepID, State: newState, BlockedReason: reason},
+			stepStateEventType(newState, reason))
 	}
 	return nil
 }
@@ -665,6 +822,7 @@ func (c *Client) UpdateStepRunState(ctx context.Context, id, state, output strin
 func (c *Client) ListStepRuns(ctx context.Context, instanceID string) ([]StepRun, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT id, workflow_instance_id, step_id, COALESCE(agent_id,''), state,
+		       COALESCE(blocked_reason,''), COALESCE(skipped_reason,''),
 		       COALESCE(output,''), COALESCE(structured_output,''), COALESCE(summary,''),
 		       COALESCE(exit_code,0), COALESCE(skipped_cached,0),
 		       COALESCE(publish_payload,''), COALESCE(publish_state,''),
@@ -687,6 +845,7 @@ func (c *Client) ListStepRuns(ctx context.Context, instanceID string) ([]StepRun
 	for rows.Next() {
 		var sr StepRun
 		if err := rows.Scan(&sr.ID, &sr.WorkflowInstanceID, &sr.StepID, &sr.AgentID, &sr.State,
+			&sr.BlockedReason, &sr.SkippedReason,
 			&sr.Output, &sr.StructuredOutput, &sr.Summary, &sr.ExitCode, &sr.SkippedCached,
 			&sr.PublishPayload, &sr.PublishState, &sr.SpawnedTaskID, &sr.InputPrompt,
 			&sr.InputTokens, &sr.OutputTokens, &sr.TotalTokens,
@@ -757,7 +916,7 @@ type scanner interface {
 
 func scanInstance(s scanner) (*WorkflowInstance, error) {
 	var inst WorkflowInstance
-	err := s.Scan(&inst.ID, &inst.WorkflowID, &inst.CellID, &inst.SourceID, &inst.State,
+	err := s.Scan(&inst.ID, &inst.WorkflowID, &inst.CellID, &inst.SourceID, &inst.State, &inst.BlockedReason,
 		&inst.ParentInstanceID, &inst.ResumedFrom, &inst.CreatedAt, &inst.UpdatedAt, &inst.TaskID)
 	if err != nil {
 		return nil, err

@@ -19,6 +19,11 @@ type fakeTracker struct {
 	outstanding map[string]int
 	failed      map[string]bool
 	states      map[string]model.TaskState
+	reasons     map[string]string
+	// consecutiveFailed drives retryPending: with settings.max_attempts unset
+	// (the default in these tests) the cap is disabled and a failed task settles
+	// as 'failed', so this stays zero unless a test opts in.
+	consecutiveFailed int
 }
 
 func newFakeTracker() *fakeTracker {
@@ -26,6 +31,7 @@ func newFakeTracker() *fakeTracker {
 		outstanding: map[string]int{},
 		failed:      map[string]bool{},
 		states:      map[string]model.TaskState{},
+		reasons:     map[string]string{},
 	}
 }
 
@@ -180,5 +186,82 @@ func TestEngine_TaskHookNoTrackerIsNoOp(t *testing.T) {
 	}
 	if len(side.hooks) != 0 {
 		t.Errorf("tasks: hook applied without a tracker: %+v", side.hooks)
+	}
+}
+
+func (f *fakeTracker) SetTaskStateReason(ctx context.Context, id string, st model.TaskState, reason string) error {
+	f.mu.Lock()
+	f.reasons[id] = reason
+	f.mu.Unlock()
+	return f.SetTaskState(ctx, id, st)
+}
+
+func (f *fakeTracker) CountConsecutiveFailedInstances(_ context.Context, _, _ string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.consecutiveFailed, nil
+}
+
+// TestSettle_RetryPendingIsBlockedNotFailed covers the second defect the
+// canonical state model exists to fix (#465).
+//
+// settings.max_attempts re-dispatches a failed task, so 'failed' used to cover
+// both "will be retried" and "has given up" — a healthily-retrying task
+// oscillated failed → running → failed and looked exactly like a dead one.
+// Retry-pending is now blocked/retry_backoff, which is what makes 'failed' mean
+// "a human needs to look at this".
+func TestSettle_RetryPendingIsBlockedNotFailed(t *testing.T) {
+	cases := []struct {
+		name              string
+		maxAttempts       int
+		consecutiveFailed int
+		wantState         model.TaskState
+		wantReason        string
+	}{
+		{
+			name:              "attempts remain: blocked awaiting retry",
+			maxAttempts:       3,
+			consecutiveFailed: 1,
+			wantState:         model.TaskStateBlocked,
+			wantReason:        "retry_backoff",
+		},
+		{
+			name:              "attempts exhausted: terminal failure",
+			maxAttempts:       3,
+			consecutiveFailed: 3,
+			wantState:         model.TaskStateFailed,
+		},
+		{
+			name:              "cap disabled: nothing will retry, so terminal",
+			maxAttempts:       0,
+			consecutiveFailed: 9,
+			wantState:         model.TaskStateFailed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := newFakeTracker()
+			tr.outstanding["T1"] = 1
+			tr.consecutiveFailed = tc.consecutiveFailed
+
+			cfg := taskHookCfg()
+			cfg.Settings.MaxAttempts = tc.maxAttempts
+			e := trackerEngine(cfg, newFakeStore(), &fakeExecutor{results: map[string]StepResult{}}, &fakeSide{}, tr)
+
+			r := &dagRun{
+				instID: "i1",
+				task:   model.InternalTask{ID: "T1"},
+				wf:     config.WorkflowConfig{ID: "wf"},
+			}
+			e.completeTask(context.Background(), r, true)
+
+			if got := tr.states["T1"]; got != tc.wantState {
+				t.Errorf("task state = %q, want %q", got, tc.wantState)
+			}
+			if got := tr.reasons["T1"]; got != tc.wantReason {
+				t.Errorf("blocked reason = %q, want %q", got, tc.wantReason)
+			}
+		})
 	}
 }

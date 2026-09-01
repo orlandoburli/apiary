@@ -80,8 +80,8 @@ func TestCheckResolved_StopsInstance(t *testing.T) {
 	if len(adapter.asked) != 1 || len(adapter.asked[0]) != 1 || adapter.asked[0][0] != itemID {
 		t.Fatalf("adapter asked %v, want [[%s]]", adapter.asked, itemID)
 	}
-	if got := instanceState(ctx, t, dbc, instID); got != db.InstanceStateInterrupted {
-		t.Fatalf("instance state = %q, want %q", got, db.InstanceStateInterrupted)
+	if got := instanceState(ctx, t, dbc, instID); got != db.InstanceStateBlocked {
+		t.Fatalf("instance state = %q, want %q", got, db.InstanceStateBlocked)
 	}
 }
 
@@ -137,13 +137,13 @@ func TestCheckResolved_IgnoresOtherSources(t *testing.T) {
 
 // A parked instance is as pointless to keep alive as a running one.
 func TestCheckResolved_StopsParkedInstance(t *testing.T) {
-	for _, state := range []string{db.InstanceStateWaiting, db.InstanceStateApprovalWaiting} {
+	for _, state := range []string{db.InstanceStateBlocked, db.InstanceStateBlocked} {
 		t.Run(state, func(t *testing.T) {
 			ctx := context.Background()
 			dbc := openTestDB(ctx, t)
 			itemID := "fp:2026-01-01T00:00:00Z"
 			_, instID := seedBoundTask(ctx, t, dbc, "prod-alerts", itemID)
-			if err := dbc.UpdateWorkflowInstanceState(ctx, instID, state); err != nil {
+			if err := dbc.UpdateWorkflowInstanceState(ctx, instID, state, ""); err != nil {
 				t.Fatalf("park instance: %v", err)
 			}
 
@@ -151,8 +151,8 @@ func TestCheckResolved_StopsParkedInstance(t *testing.T) {
 			d := &Dispatcher{db: dbc, cfg: &config.Config{}}
 			d.checkResolved(ctx, srcCfg(true), adapter)
 
-			if got := instanceState(ctx, t, dbc, instID); got != db.InstanceStateInterrupted {
-				t.Fatalf("instance state = %q, want %q", got, db.InstanceStateInterrupted)
+			if got := instanceState(ctx, t, dbc, instID); got != db.InstanceStateBlocked {
+				t.Fatalf("instance state = %q, want %q", got, db.InstanceStateBlocked)
 			}
 		})
 	}
@@ -164,7 +164,7 @@ func TestCheckResolved_LeavesTerminalInstances(t *testing.T) {
 	dbc := openTestDB(ctx, t)
 	itemID := "fp:2026-01-01T00:00:00Z"
 	_, instID := seedBoundTask(ctx, t, dbc, "prod-alerts", itemID)
-	if err := dbc.UpdateWorkflowInstanceState(ctx, instID, db.InstanceStateDone); err != nil {
+	if err := dbc.UpdateWorkflowInstanceState(ctx, instID, db.InstanceStateDone, ""); err != nil {
 		t.Fatalf("finish instance: %v", err)
 	}
 

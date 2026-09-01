@@ -14,6 +14,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/queue"
 	"github.com/orlandoburli/apiary/internal/router"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // captureLogs redirects the global log sink for the duration of a test and
@@ -253,7 +254,7 @@ func TestDropActiveMatchesTreatsInterruptedAsTerminal(t *testing.T) {
 	ctx := context.Background()
 	dbc := openDropTestDB(t, "interrupted.db")
 
-	_ = dbc.CreateWorkflowInstance(ctx, &db.WorkflowInstance{ID: "i1", WorkflowID: "jira-implement", CellID: "297869", TaskID: "T2", State: db.InstanceStateInterrupted})
+	_ = dbc.CreateWorkflowInstance(ctx, &db.WorkflowInstance{ID: "i1", WorkflowID: "jira-implement", CellID: "297869", TaskID: "T2", State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonInterrupted)})
 
 	d := &Dispatcher{db: dbc}
 	kept, dropped := d.dropActiveMatches(ctx, "T2", []router.Match{{Route: config.RouteConfig{ID: "jira-implement"}}})

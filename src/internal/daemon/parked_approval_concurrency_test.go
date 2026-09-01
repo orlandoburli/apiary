@@ -140,7 +140,7 @@ func TestCheckApprovals_SlowAdvanceDoesNotStarveRecheck(t *testing.T) {
 
 	for _, id := range []string{instA, instB} {
 		inst, _ := dbc.GetWorkflowInstance(ctx, id)
-		if inst == nil || inst.State != db.InstanceStateApprovalWaiting {
+		if inst == nil || inst.State != db.InstanceStateBlocked {
 			t.Fatalf("instance %s not parked at approval (state=%v)", id, inst)
 		}
 	}
@@ -183,7 +183,7 @@ func TestCheckApprovals_SlowAdvanceDoesNotStarveRecheck(t *testing.T) {
 		t.Errorf("wedged instance A was re-evaluated (polls %d→%d) over %d cycles; it should be skipped via approvalAdvancing",
 			aWedged, got, cycles)
 	}
-	if inst, _ := dbc.GetWorkflowInstance(ctx, instB); inst == nil || inst.State != db.InstanceStateApprovalWaiting {
+	if inst, _ := dbc.GetWorkflowInstance(ctx, instB); inst == nil || inst.State != db.InstanceStateBlocked {
 		t.Errorf("instance B should still be parked (un-approved), got %v", inst)
 	}
 

@@ -78,7 +78,7 @@ func TestWaitCISource_NoLinkedPRStaysParked(t *testing.T) {
 	if success {
 		t.Fatal("instance reported success while no PR was linked yet")
 	}
-	if state := store.instances[instID].State; state != db.InstanceStateWaiting {
+	if state := store.instances[instID].State; state != db.InstanceStateBlocked {
 		t.Fatalf("instance state = %q, want waiting — an unlinked PR must not fail the wait", state)
 	}
 
@@ -104,7 +104,7 @@ func TestWaitCISource_UnsupportedFailsImmediately(t *testing.T) {
 	if success {
 		t.Fatal("a wait against an unusable ci_source must not pass")
 	}
-	if state := store.instances[instID].State; state == db.InstanceStateWaiting {
+	if state := store.instances[instID].State; state == db.InstanceStateBlocked {
 		t.Error("instance parked on a permanently unsupported ci_source; want a terminal failure")
 	}
 }

@@ -45,11 +45,11 @@ type AdvisorFlags struct {
 
 // ResolveAdvisor decides which agent performs the analysis, in this order:
 //
-//	1. --advisor <agent-id>
-//	2. --runner <id> --model <name>   (ad-hoc, no config entry needed)
-//	3. settings.improve.agent
-//	4. an agent whose id is "improver"
-//	5. error
+//  1. --advisor <agent-id>
+//  2. --runner <id> --model <name>   (ad-hoc, no config entry needed)
+//  3. settings.improve.agent
+//  4. an agent whose id is "improver"
+//  5. error
 //
 // It never invents a model. `agents[].model` is required config-wide and there
 // is no global default — daemon.New hard-errors with "agent %q: model is

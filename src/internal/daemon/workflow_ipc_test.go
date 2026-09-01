@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/db"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 func TestInstanceDuration(t *testing.T) {
@@ -23,7 +24,7 @@ func TestInstanceDuration(t *testing.T) {
 		},
 		{
 			name:    "approval_waiting uses now-created",
-			inst:    db.WorkflowInstance{State: db.InstanceStateApprovalWaiting, CreatedAt: base},
+			inst:    db.WorkflowInstance{State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonApproval), CreatedAt: base},
 			wantDur: "02:00",
 		},
 		{
@@ -38,7 +39,7 @@ func TestInstanceDuration(t *testing.T) {
 		},
 		{
 			name:    "interrupted has no span",
-			inst:    db.WorkflowInstance{State: db.InstanceStateInterrupted, CreatedAt: base},
+			inst:    db.WorkflowInstance{State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonInterrupted), CreatedAt: base},
 			wantDur: "—",
 		},
 	}

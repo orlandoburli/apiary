@@ -147,7 +147,7 @@ func TestTaskStatusBadge_InternalStates(t *testing.T) {
 		"done":             "done",
 		"running":          "running",
 		"failed":           "failed",
-		"success":          "success", // legacy, still supported
+		"success":          "done", // legacy execution status, now canonical
 	}
 	for state, want := range cases {
 		out := stripANSI(taskStatusBadge(state))

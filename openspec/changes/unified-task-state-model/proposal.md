@@ -372,7 +372,17 @@ understand the new vocabulary before any binary starts producing it.
 - **Recovering the true reason for historical `waiting` rows** — the data is not there (§3).
 - **Renaming `task_executions` legacy `success`/`failed` execution statuses** — that table is the
   agent-run log, a different axis from workflow lifecycle; folding it in would widen the diff
-  without clarifying anything.
+  without clarifying anything. (The dashboard normalizes it for display.)
+- **The DAG scheduler's in-memory vocabulary** (`internal/workflow/dag.go`: `stPending`,
+  `stRunning`, `stPassed`, `stFailed`, `stSkipped`, `stCondSkipped`, `stWaiting`) — a fifth
+  vocabulary found during implementation. It is deliberately left alone for two reasons: it never
+  reaches the database, and it *is* the user-facing expression API — `steps.lint.state ==
+  'passed'` in a workflow condition reads these values. Renaming them would break every deployed
+  config's conditions while changing nothing an operator sees.
+- **Vocabularies that merely share words.** GitHub CI statuses (`source.CIStatus`:
+  `passed|failed|pending|conflict`), approval-request statuses (`pending|approved|rejected|
+  timed_out`), and plugin conformance verdicts all use these words for unrelated domains. They are
+  untouched; a find-and-replace over the state strings would have corrupted every one.
 
 ---
 

@@ -495,4 +495,3 @@ func (c *Client) UpdateAgentStatus(ctx context.Context, agentID, status, current
 	`, status, currentTaskID, time.Now(), agentID)
 	return err
 }
-

@@ -78,7 +78,7 @@ func TestWorkflowAndStepLifecycleEvents(t *testing.T) {
 	if err := c.UpdateStepRun(ctx, step); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.UpdateWorkflowInstanceState(ctx, inst.ID, InstanceStateDone); err != nil {
+	if err := c.UpdateWorkflowInstanceState(ctx, inst.ID, InstanceStateDone, ""); err != nil {
 		t.Fatal(err)
 	}
 	events, _ := c.ListExecutionEvents(ctx, ExecutionEventFilter{TaskID: "task"})

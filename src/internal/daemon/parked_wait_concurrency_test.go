@@ -166,7 +166,7 @@ func TestCheckWaits_SlowAdvanceDoesNotStarveRecheck(t *testing.T) {
 
 	for _, id := range []string{instA, instB} {
 		inst, _ := dbc.GetWorkflowInstance(ctx, id)
-		if inst == nil || inst.State != db.InstanceStateWaiting {
+		if inst == nil || inst.State != db.InstanceStateBlocked {
 			t.Fatalf("instance %s not parked at wait_for (state=%v)", id, inst)
 		}
 	}
@@ -208,7 +208,7 @@ func TestCheckWaits_SlowAdvanceDoesNotStarveRecheck(t *testing.T) {
 		t.Errorf("wedged instance A was re-checked (polls %d→%d) over %d cycles; it should be skipped via waitAdvancing",
 			aWedged, got, cycles)
 	}
-	if inst, _ := dbc.GetWorkflowInstance(ctx, instB); inst == nil || inst.State != db.InstanceStateWaiting {
+	if inst, _ := dbc.GetWorkflowInstance(ctx, instB); inst == nil || inst.State != db.InstanceStateBlocked {
 		t.Errorf("instance B should still be parked (pending CI), got %v", inst)
 	}
 

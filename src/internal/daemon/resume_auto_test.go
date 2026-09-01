@@ -13,6 +13,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/router"
 	runnerpkg "github.com/orlandoburli/apiary/internal/runner"
 	"github.com/orlandoburli/apiary/internal/source"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // stepRecordingRunner records the step id of every run it is asked to perform,
@@ -71,7 +72,7 @@ func autoResumeFixture(t *testing.T, policy string) (*Dispatcher, *db.Client, *s
 
 	inst := &db.WorkflowInstance{
 		ID: "i-orphan", WorkflowID: "impl", CellID: "ISSUE-9", SourceID: "src",
-		TaskID: task.ID, State: db.InstanceStateInterrupted,
+		TaskID: task.ID, State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonInterrupted),
 	}
 	if err := dbc.CreateWorkflowInstance(ctx, inst); err != nil {
 		t.Fatalf("create instance: %v", err)
@@ -79,7 +80,7 @@ func autoResumeFixture(t *testing.T, policy string) (*Dispatcher, *db.Client, *s
 	for _, sr := range []db.StepRun{
 		{ID: "sr1", WorkflowInstanceID: inst.ID, StepID: "plan", AgentID: "a", State: db.StepStatePassed},
 		{ID: "sr2", WorkflowInstanceID: inst.ID, StepID: "implement", AgentID: "a", State: db.StepStatePassed},
-		{ID: "sr3", WorkflowInstanceID: inst.ID, StepID: "qa", AgentID: "a", State: db.StepStateInterrupted},
+		{ID: "sr3", WorkflowInstanceID: inst.ID, StepID: "qa", AgentID: "a", State: db.StepStateBlocked},
 	} {
 		sr := sr
 		if err := dbc.CreateStepRun(ctx, &sr); err != nil {
@@ -318,7 +319,7 @@ func TestPollDoesNotRestartWhileAutoResuming(t *testing.T) {
 	}
 	inst := &db.WorkflowInstance{
 		ID: "i-orphan", WorkflowID: "impl", CellID: item.ID, SourceID: "src",
-		TaskID: task.ID, State: db.InstanceStateInterrupted,
+		TaskID: task.ID, State: db.InstanceStateBlocked, BlockedReason: string(state.ReasonInterrupted),
 	}
 	if err := dbc.CreateWorkflowInstance(ctx, inst); err != nil {
 		t.Fatalf("create instance: %v", err)
@@ -326,7 +327,7 @@ func TestPollDoesNotRestartWhileAutoResuming(t *testing.T) {
 	for _, sr := range []db.StepRun{
 		{ID: "sr1", WorkflowInstanceID: inst.ID, StepID: "plan", AgentID: "a", State: db.StepStatePassed},
 		{ID: "sr2", WorkflowInstanceID: inst.ID, StepID: "implement", AgentID: "a", State: db.StepStatePassed},
-		{ID: "sr3", WorkflowInstanceID: inst.ID, StepID: "qa", AgentID: "a", State: db.StepStateInterrupted},
+		{ID: "sr3", WorkflowInstanceID: inst.ID, StepID: "qa", AgentID: "a", State: db.StepStateBlocked},
 	} {
 		sr := sr
 		if err := dbc.CreateStepRun(ctx, &sr); err != nil {

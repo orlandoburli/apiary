@@ -6,11 +6,19 @@ import "time"
 type TaskState string
 
 const (
-	TaskStateRegistered   TaskState = "registered"
+	// Canonical values (#465). The old names are kept so call sites do not
+	// churn, but they now hold the shared vocabulary from internal/state.
+	// TaskStateApprovalWait is 'blocked' with blocked_reason='approval'.
+	TaskStateRegistered   TaskState = "queued"
 	TaskStateRunning      TaskState = "running"
-	TaskStateApprovalWait TaskState = "approval_waiting"
+	TaskStateApprovalWait TaskState = "blocked"
 	TaskStateDone         TaskState = "done"
 	TaskStateFailed       TaskState = "failed"
+	TaskStateCanceled     TaskState = "canceled"
+	// TaskStateQueued is the canonical name for TaskStateRegistered; both are
+	// the same value and either reads correctly.
+	TaskStateQueued  TaskState = "queued"
+	TaskStateBlocked TaskState = "blocked"
 )
 
 // InternalTask is the canonical, source-independent unit of work. It may be

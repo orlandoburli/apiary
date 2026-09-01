@@ -7,6 +7,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/db"
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/source"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // liveInstanceStates are the states a workflow instance can be in while its
@@ -14,8 +15,19 @@ import (
 // that will never come once the item is gone.
 var liveInstanceStates = []string{
 	db.InstanceStateRunning,
-	db.InstanceStateWaiting,
-	db.InstanceStateApprovalWaiting,
+	// Legacy park states, for a database not yet migrated. Canonical parks are
+	// handled by the blocked-reason pass below (#465).
+	"waiting",
+	"approval_waiting",
+}
+
+// liveBlockedReasons are the reasons a 'blocked' instance is still alive: it is
+// waiting for something that can still arrive. Interruption is excluded — an
+// orphan is dead and stopping it again is meaningless.
+var liveBlockedReasons = []string{
+	string(state.ReasonApproval),
+	string(state.ReasonCI),
+	string(state.ReasonDependency),
 }
 
 // checkResolved stops workflow instances whose source item is no longer active

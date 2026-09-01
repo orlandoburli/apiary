@@ -53,8 +53,8 @@ func TestParallelWaitChild_ParksGroupAndReusesSiblingResult(t *testing.T) {
 	if success {
 		t.Fatal("a group parked on a pending CI wait should not report success")
 	}
-	if got := store.instances[instID].State; got != db.InstanceStateWaiting {
-		t.Fatalf("instance state = %q, want %q", got, db.InstanceStateWaiting)
+	if got := store.instances[instID].State; got != db.InstanceStateBlocked {
+		t.Fatalf("instance state = %q, want %q", got, db.InstanceStateBlocked)
 	}
 	// The park names the waiting CHILD, so the dispatcher re-checks the right wait.
 	parked := eng.ParkedWaits()
@@ -70,7 +70,7 @@ func TestParallelWaitChild_ParksGroupAndReusesSiblingResult(t *testing.T) {
 
 	// Still pending → stays parked, and the review is NOT re-run.
 	eng.CheckParkedWaits(context.Background())
-	if got := store.instances[instID].State; got != db.InstanceStateWaiting {
+	if got := store.instances[instID].State; got != db.InstanceStateBlocked {
 		t.Fatalf("expected still waiting, got %q", got)
 	}
 	if n := countExecuted(exec.seen, "review"); n != 1 {
@@ -106,7 +106,7 @@ func TestParallelWaitChild_FailedSiblingDecidesJoinWithoutParking(t *testing.T) 
 	if success {
 		t.Fatal("a group whose review failed must not report success")
 	}
-	if got := store.instances[instID].State; got == db.InstanceStateWaiting {
+	if got := store.instances[instID].State; got == db.InstanceStateBlocked {
 		t.Fatal("group parked on CI although join: all was already decided by the failed review")
 	}
 	if len(eng.ParkedWaits()) != 0 {
@@ -161,7 +161,7 @@ func TestParallelWaitChild_RehydrateSurvivesRestart(t *testing.T) {
 	ci1 := func() (source.CIStatus, error) { return source.CIStatus{Status: "pending"}, nil }
 	eng1 := waitForEngine(baseCfg(), store, exec1, &fakeSide{}, &clock, ci1)
 	instID, _, _ := eng1.RunInstance(context.Background(), parallelWaitWorkflow(""), model.InternalTask{ID: "c1"})
-	if got := store.instances[instID].State; got != db.InstanceStateWaiting {
+	if got := store.instances[instID].State; got != db.InstanceStateBlocked {
 		t.Fatalf("expected waiting before restart, got %q", got)
 	}
 

@@ -37,8 +37,8 @@ func TestForceRestart_InterruptsWorkflowInstance(t *testing.T) {
 	if err != nil || inst == nil {
 		t.Fatalf("get instance: inst=%v err=%v", inst, err)
 	}
-	if inst.State != db.InstanceStateInterrupted {
-		t.Fatalf("instance state = %q, want %q", inst.State, db.InstanceStateInterrupted)
+	if inst.State != db.InstanceStateBlocked {
+		t.Fatalf("instance state = %q, want %q", inst.State, db.InstanceStateBlocked)
 	}
 
 	// dropActiveMatches no longer shadows the workflow, so the next poll re-dispatches.
