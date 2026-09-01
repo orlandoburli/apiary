@@ -159,3 +159,47 @@ func TestTaskStatusBadge_InternalStates(t *testing.T) {
 		}
 	}
 }
+
+// TestTaskStatusBadge_AllLayerStates covers the states the badge previously did
+// not handle: workflow instance states, step states, and queue job states all
+// reach this badge, and before internal/state they fell through to a muted
+// badge showing the raw value — including "interrupted" (11 chars) and
+// "skipped_cached" (14), which overflowed the 8-char column and pushed the rest
+// of the row out of alignment.
+func TestTaskStatusBadge_AllLayerStates(t *testing.T) {
+	cases := map[string]string{
+		// Workflow instance states.
+		"pending":     "queued",
+		"waiting":     "waiting",
+		"interrupted": "halted",
+		// Step states.
+		"passed":         "done",
+		"skipped":        "skipped",
+		"skipped_cached": "skipped",
+		// Queue job states.
+		"leased":    "running",
+		"succeeded": "done",
+		"canceled":  "canceled",
+		// Canonical states, for the release that starts writing them.
+		"queued":  "queued",
+		"blocked": "blocked",
+	}
+	for st, want := range cases {
+		out := stripANSI(taskStatusBadge(st))
+		if !strings.Contains(out, want) {
+			t.Errorf("taskStatusBadge(%q) = %q, want it to contain %q", st, out, want)
+		}
+		if w := len([]rune(strings.TrimRight(out, " "))); w > 8 {
+			t.Errorf("taskStatusBadge(%q) label %q exceeds 8 chars", st, out)
+		}
+	}
+}
+
+// TestTaskStatusBadge_UnknownIsTruncated pins that an unrecognised state is
+// shown as stored rather than guessed at, but still cannot break the column.
+func TestTaskStatusBadge_UnknownIsTruncated(t *testing.T) {
+	out := stripANSI(taskStatusBadge("some_future_state"))
+	if w := len([]rune(strings.TrimRight(out, " "))); w > 8 {
+		t.Errorf("unknown state rendered %q, exceeding the 8-char column", out)
+	}
+}

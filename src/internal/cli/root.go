@@ -67,6 +67,7 @@ func init() {
 		newPluginsCmd(),
 		newWorkerCmd(),
 		newImproveCmd(),
+		newMigrateCmd(),
 	)
 }
 

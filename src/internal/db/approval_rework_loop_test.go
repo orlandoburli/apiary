@@ -97,7 +97,15 @@ func TestInitSchemaWidensLegacyApprovalUniqueness(t *testing.T) {
 		t.Fatalf("setup: legacy=%v err=%v", legacyKey, err)
 	}
 
+	// The rebuild lives in MigrateData, not InitSchema: it drops and recreates
+	// the table, so it must not run from a read-only opener (#467).
 	if err := InitSchema(ctx, c.db); err != nil {
+		t.Fatal(err)
+	}
+	if legacyKey, err := hasLegacyApprovalUnique(ctx, c.db); err != nil || !legacyKey {
+		t.Fatalf("InitSchema must not rebuild the table: legacy=%v err=%v", legacyKey, err)
+	}
+	if err := MigrateData(ctx, c.db); err != nil {
 		t.Fatal(err)
 	}
 	if legacyKey, err := hasLegacyApprovalUnique(ctx, c.db); err != nil || legacyKey {

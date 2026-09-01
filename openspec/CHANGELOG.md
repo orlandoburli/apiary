@@ -2,6 +2,10 @@
 
 ## Ativas
 
+- **unified-task-state-model** — One canonical state vocabulary (`queued` `running` `blocked` `done` `failed` `canceled` `skipped`) in a new `internal/state` package, replacing the four disjoint sets used by dispatch jobs, tasks, workflow instances and steps. Splits the conflated state/reason axes into `blocked_reason` and `skipped_reason` columns, so `approval_waiting`/`waiting`/`leased`/`interrupted` collapse to `blocked` + a reason and `skipped_cached` to `skipped` + a reason. Fixes two defects this exposed: a task whose instances were orphaned no longer sits in `registered` rendering as "queued" (it becomes `blocked`/`interrupted`), and `failed` becomes genuinely terminal with retry-pending represented as `blocked`/`retry_backoff`. Includes the one-shot data migration, rewrites of state literals hardcoded in SQL, and dropping the dashboard's render-time state-renaming table. Unblocks the kanban board view. GitHub issue #465.
+
+- **task-progress-and-board** — Dashboard Tasks tab: replaces the `AGENT` column (an attribute of a step hoisted onto a task, so it showed one arbitrary agent of many) with a step-progress column rendering `review 3/5`, and an explicit `⑂ 3 steps` marker when a task has concurrent instances instead of silently picking one. Adds a board sub-view (`TaskViewBoard`, key `b`) whose columns map one-to-one onto the canonical states — `QUEUED` `RUNNING` `BLOCKED` `DONE` — with `FAILED` as a full-width attention lane rather than a column, since terminal failure is an exception awaiting a human, not a stage work flows through. Progress is resolved by one batched query per visible page, not per row. Depends on **unified-task-state-model**. GitHub issue #466.
+
 - **step-wallclock-attribution** — Atribuição de wall-clock por step (thinking / writing / esperas de tool / tarefas em background) gravada em `task_executions` e `step_runs` ao lado das colunas de token, lista das chamadas mais lentas, payload do evento `system:task_started` no log, e comando `apiary profile <instance-id> [--json]`. GitHub issue #399.
 
 ## Arquivadas

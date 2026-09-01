@@ -110,15 +110,6 @@ CREATE TABLE IF NOT EXISTS execution_events (
   metadata TEXT NOT NULL DEFAULT '{}'
 );
 
--- Dispatcher state
-CREATE TABLE IF NOT EXISTS dispatcher_state (
-  id INTEGER PRIMARY KEY,
-  status TEXT,                    -- healthy, degraded, error
-  uptime_seconds INTEGER,
-  version TEXT,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 -- Workflow instances: one execution of a workflow bound to a Cell.
 CREATE TABLE IF NOT EXISTS workflow_instances (
   id TEXT PRIMARY KEY,
@@ -512,7 +503,16 @@ var migrations = []string{
 	`ALTER TABLE approval_requests ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1`,
 }
 
-// InitSchema creates all tables and indices. Safe to call multiple times (uses IF NOT EXISTS).
+// InitSchema creates all tables, indices, and additive columns. It is pure DDL:
+// it creates what is missing and changes no row.
+//
+// That restriction is the point. Every process that opens the database runs
+// InitSchema — the daemon, the dashboard, `apiary memory` — and the dashboard
+// routinely runs against the same WAL file as a live daemon. Anything that
+// rewrites data therefore belongs in MigrateData, which only the daemon and the
+// explicit `apiary migrate` command call. See #467.
+//
+// Safe to call multiple times, concurrently, and from any process.
 func InitSchema(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("init schema: %w", err)
@@ -525,6 +525,22 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("migrate (%s): %w", m, err)
 		}
 	}
+	return nil
+}
+
+// MigrateData runs the one-shot repairs and rewrites that bring an existing
+// database up to date. Unlike InitSchema it mutates rows — and one step drops
+// and recreates a table — so it must run only where no other process is writing
+// concurrently.
+//
+// Call it from the daemon before it starts dispatching, or from `apiary
+// migrate`. Never from a read-only opener: a dashboard that triggered
+// rebuildApprovalRequestsAttempt while the daemon was minting an approval
+// request would drop that row along with the old table (#467).
+//
+// Every step is idempotent and self-guarding, so calling MigrateData on an
+// already-migrated database is a no-op.
+func MigrateData(ctx context.Context, db *sql.DB) error {
 	if err := normalizeLegacyTimestamps(ctx, db); err != nil {
 		return fmt.Errorf("normalize legacy timestamps: %w", err)
 	}
@@ -534,7 +550,25 @@ func InitSchema(ctx context.Context, db *sql.DB) error {
 	if err := rebuildApprovalRequestsAttempt(ctx, db); err != nil {
 		return fmt.Errorf("widen approval_requests uniqueness: %w", err)
 	}
+	if err := dropDispatcherState(ctx, db); err != nil {
+		return fmt.Errorf("drop dispatcher_state: %w", err)
+	}
 	return nil
+}
+
+// dropDispatcherState removes the dispatcher_state table.
+//
+// It was created in every database and never written: UpdateDispatcherState had
+// no callers for its whole life. That made it worse than merely dead — it reads
+// as a daemon heartbeat, so the obvious way to guard a migration against a live
+// daemon is to check its updated_at, and that check would always pass. The
+// daemon's control socket is the real liveness signal (#468).
+//
+// Dropping is unconditional and safe precisely because the table was always
+// empty. IF EXISTS makes it idempotent.
+func dropDispatcherState(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS dispatcher_state`)
+	return err
 }
 
 // rebuildApprovalRequestsAttempt widens the approval_requests uniqueness from

@@ -31,6 +31,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/format"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/skills"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // refreshInterval controls how often the active tab re-queries the database.
@@ -5511,26 +5512,71 @@ func padLeft(s string, width int) string {
 	return s
 }
 
-// taskStatusBadge renders a colored, fixed-width status label. It handles both
-// legacy execution statuses (success/failed/running, used by the Agents tab) and
-// InternalTask lifecycle states (registered/running/approval_waiting/done/failed,
-// used by the Tasks tab since Phase 9). The longer internal states are shown with
-// short synonyms so the badge stays within its 8-char column.
+// taskStatusBadge renders a colored, fixed-width status label for a state from
+// any of Apiary's layers: legacy execution statuses (success/failed/running,
+// used by the Agents tab), InternalTask lifecycle states, workflow instance
+// states, and step states.
+//
+// Colour is chosen from the canonical state (see internal/state), so a value
+// written by any build is coloured correctly rather than falling through to
+// muted grey. The label is still chosen per-value, because several canonical
+// states need a shorter or more specific word to fit the 8-char column — and
+// because "success" is kept verbatim for the Agents tab, where it is the
+// execution status operators already know.
+//
+// The width is enforced by truncation, not just padding: before this, an
+// unhandled value such as "interrupted" (11 chars) or "skipped_cached" (14)
+// rendered at full length and pushed the row's remaining columns out of
+// alignment.
 func taskStatusBadge(status string) string {
-	label, style := status, StyleMuted
-	switch status {
-	case "success", "done":
+	canonical, reason := state.NormalizeWithReason(status)
+
+	style := StyleMuted
+	switch canonical {
+	case state.Done:
 		style = StyleSuccess
-	case "failed":
+	case state.Failed:
 		style = StyleError
-	case "running":
+	case state.Running, state.Blocked:
+		// Blocked shares Running's colour: both mean "in flight", and the
+		// operator's eye should separate them from settled work first, from
+		// each other second.
 		style = StyleWarning
-	case "approval_waiting":
-		label, style = "approval", StyleWarning
-	case "registered":
-		label, style = "queued", StyleMuted
 	}
-	return style.Render(pad(valueOr(label, "—"), 8))
+
+	return style.Render(pad(truncate(valueOr(badgeLabel(status, canonical, reason), "—"), 8), 8))
+}
+
+// badgeLabel picks the ≤8-char word shown in a status badge.
+//
+// Blocked states are labelled by their reason rather than by the state, because
+// "why is this parked" is the question an operator is actually asking; the bare
+// word "blocked" is the fallback for a reason with no short form.
+func badgeLabel(raw string, s state.State, reason state.Reason) string {
+	// "success" is the legacy execution status shown on the Agents tab. It
+	// normalizes to Done, but is kept verbatim so that tab's vocabulary does not
+	// shift underneath operators in a release that changes nothing else.
+	if raw == "success" {
+		return raw
+	}
+
+	switch s {
+	case state.Blocked:
+		switch reason {
+		case state.ReasonApproval:
+			return "approval"
+		case state.ReasonCI:
+			return "waiting"
+		case state.ReasonInterrupted:
+			return "halted"
+		}
+		return "blocked"
+	case state.Queued, state.Running, state.Done, state.Failed, state.Canceled, state.Skipped:
+		return string(s)
+	}
+
+	// An unrecognised value: show it as it was stored rather than guessing.
+	return raw
 }
 
 // taskWhen returns a short "when" description for a task list row.

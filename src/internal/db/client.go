@@ -80,7 +80,9 @@ func New(ctx context.Context, dbPath string) (*Client, error) {
 		return nil, fmt.Errorf("ping db: %w", err)
 	}
 
-	// Initialize schema
+	// Create anything missing. This is DDL only — data migrations are not run
+	// here, because every process that opens the database reaches this line,
+	// including the dashboard while a daemon is live. See MigrateData and #467.
 	if err := InitSchema(ctx, db); err != nil {
 		db.Close()
 		return nil, err
@@ -88,6 +90,13 @@ func New(ctx context.Context, dbPath string) (*Client, error) {
 
 	c := &Client{db: db}
 	return c, nil
+}
+
+// MigrateData runs the one-shot data repairs. Only the daemon and `apiary
+// migrate` should call it; see the package-level doc on db.MigrateData for why
+// a read-only opener must not.
+func (c *Client) MigrateData(ctx context.Context) error {
+	return MigrateData(ctx, c.db)
 }
 
 func (c *Client) Close() error {
@@ -487,15 +496,3 @@ func (c *Client) UpdateAgentStatus(ctx context.Context, agentID, status, current
 	return err
 }
 
-// Dispatcher state
-
-func (c *Client) UpdateDispatcherState(ctx context.Context, status string, uptimeSecs int64, version string) error {
-	// Single row, ID=1
-	_, err := c.db.ExecContext(ctx, `
-		INSERT INTO dispatcher_state (id, status, uptime_seconds, version, updated_at)
-		VALUES (1, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET status = ?, uptime_seconds = ?, version = ?, updated_at = ?
-	`, status, uptimeSecs, version, time.Now(),
-		status, uptimeSecs, version, time.Now())
-	return err
-}

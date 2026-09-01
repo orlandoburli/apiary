@@ -92,11 +92,17 @@ func TestNormalizeRealDBCopy(t *testing.T) {
 		t.Skip("set APIARY_TEST_DB to a DB copy to run")
 	}
 	ctx := context.Background()
-	c, err := New(ctx, path) // New runs InitSchema -> normalizeLegacyTimestamps
+	c, err := New(ctx, path) // New runs InitSchema (DDL only) since #467
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	defer c.Close()
+
+	// The backfill moved out of New into MigrateData, which only the daemon and
+	// `apiary migrate` call. Run it explicitly here.
+	if err := c.MigrateData(ctx); err != nil {
+		t.Fatalf("MigrateData: %v", err)
+	}
 
 	for _, col := range []struct{ table, column string }{
 		{"task_executions", "created_at"},
