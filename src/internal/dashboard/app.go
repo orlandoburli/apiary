@@ -89,8 +89,25 @@ type App struct {
 }
 
 func New(dbConn *db.Client, socketPath string, cfg *config.Config, logDir string) *App {
+	return NewWithView(dbConn, socketPath, cfg, logDir, "")
+}
+
+// NewWithView is New with an explicit starting view for the Tasks tab, so the
+// board can be selected per invocation (--view=board) or per hive
+// (settings.dashboard.default_view) rather than only by pressing `b`.
+//
+// An unrecognised value falls back to the list rather than erroring: a typo in a
+// config file should not stop an operator opening the dashboard.
+func NewWithView(dbConn *db.Client, socketPath string, cfg *config.Config, logDir, view string) *App {
+	m := NewModel()
+	if view == "" && cfg != nil {
+		view = cfg.Settings.Dashboard.DefaultView
+	}
+	if view == "board" && m.tasksTab != nil {
+		m.tasksTab.View = TaskViewBoard
+	}
 	return &App{
-		model:      NewModel(),
+		model:      m,
 		dbConn:     dbConn,
 		socketPath: socketPath,
 		cfg:        cfg,
@@ -244,6 +261,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.logMDCache[m] = lines
 			}
 		}
+
+	case boardApprovalMsg:
+		// The card had no waiting approval, or the lookup failed: say so rather
+		// than swallowing the keypress, so a mis-aimed y/n is visibly a no-op.
+		if msg.req == nil {
+			a.model.notice = msg.err
+			a.model.noticeIsErr = true
+			a.model.noticeUntil = time.Now().Add(noticeTTL)
+			return a, nil
+		}
+		return a.answerApproval(msg.req, msg.key)
 
 	case noticeMsg:
 		// Show the banner and refresh straight away: a restart that dispatched
@@ -712,6 +740,16 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.logsTab.HScroll += hStep
 			return a, nil
 		}
+		// On the board, ← / → move between columns — but only while there is a
+		// column to move to. At the last column the key falls through to the
+		// tab switch, so the board never traps the cursor.
+		if t := a.model.tasksTab; a.model.ActiveTab() == "Tasks" && t != nil && t.View == TaskViewBoard {
+			if t.BoardCol < a.boardColumnCount()-1 {
+				t.BoardCol++
+				t.BoardRow = 0
+				return a, nil
+			}
+		}
 		a.model.NextTab()
 		a.model.loading = true
 		return a, a.fetchActiveTab()
@@ -723,6 +761,13 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 		}
+		if t := a.model.tasksTab; a.model.ActiveTab() == "Tasks" && t != nil && t.View == TaskViewBoard {
+			if t.BoardCol > 0 {
+				t.BoardCol--
+				t.BoardRow = 0
+				return a, nil
+			}
+		}
 		a.model.PrevTab()
 		a.model.loading = true
 		return a, a.fetchActiveTab()
@@ -732,6 +777,19 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.logsTab.Wrap = !a.model.logsTab.Wrap
 			a.model.logsTab.HScroll = 0
 			a.model.logsTab.Scrolled = 0
+		}
+	case "b":
+		// Toggle the board. Scoped to the two views it moves between, so it does
+		// not fire from a detail/logs/monitor screen where it would be a
+		// surprising jump.
+		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil {
+			switch a.model.tasksTab.View {
+			case TaskViewList:
+				a.model.tasksTab.View = TaskViewBoard
+				a.model.tasksTab.BoardCol, a.model.tasksTab.BoardRow = 0, 0
+			case TaskViewBoard:
+				a.model.tasksTab.View = TaskViewList
+			}
 		}
 	case "r":
 		a.model.loading = true
@@ -784,6 +842,12 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up":
 		switch a.model.ActiveTab() {
 		case "Tasks":
+			if t := a.model.tasksTab; t != nil && t.View == TaskViewBoard {
+				if t.BoardRow > 0 {
+					t.BoardRow--
+				}
+				break
+			}
 			if a.model.tasksTab != nil && a.model.tasksTab.SelectedIdx > 0 {
 				a.model.tasksTab.SelectedIdx--
 			}
@@ -800,6 +864,10 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down":
 		switch a.model.ActiveTab() {
 		case "Tasks":
+			if t := a.model.tasksTab; t != nil && t.View == TaskViewBoard {
+				t.BoardRow++ // clamped on render, where the column sizes are known
+				break
+			}
 			if a.model.tasksTab != nil {
 				maxIdx := len(a.filteredTasks(a.model.tasksTab)) - 1
 				if a.model.tasksTab.SelectedIdx < maxIdx {
@@ -1237,6 +1305,13 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 		if t.View == TaskViewDetail && t.DetailInstance != nil && t.DetailInstance.Approval != nil {
 			return a.answerApproval(t.DetailInstance.Approval, key)
 		}
+		// On the board the card carries only the task, so the request is fetched
+		// first and answered when it arrives (see boardApprovalCmd).
+		if t.View == TaskViewBoard {
+			if card, ok := a.selectedTask(); ok {
+				return a, a.boardApprovalCmd(*card, key)
+			}
+		}
 	case "l", "enter":
 		if row, ok := a.selectedTask(); ok {
 			a.model.loading = true
@@ -1552,6 +1627,16 @@ func lastIndex(total int) int {
 func (a *App) selectedTask() (*TaskItem, bool) {
 	t := a.model.tasksTab
 	if t == nil {
+		return nil, false
+	}
+	// The board addresses a task by (column, row) rather than by list index.
+	// Resolving it here rather than in each key handler is what makes every
+	// existing action — detail, logs, approve, restart, stop — work on a card
+	// with the same key and no duplicated wiring.
+	if t.View == TaskViewBoard {
+		if card := a.selectedBoardTask(t); card != nil {
+			return card, true
+		}
 		return nil, false
 	}
 	rows := a.filteredTasks(t)
@@ -2424,6 +2509,10 @@ func (a *App) fetchOverview() tea.Cmd {
 
 func (a *App) fetchTasks() tea.Cmd {
 	dbConn := a.dbConn
+	var workflows []config.WorkflowConfig
+	if a.cfg != nil {
+		workflows = a.cfg.Workflows
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 		defer cancel()
@@ -2441,6 +2530,23 @@ func (a *App) fetchTasks() tea.Cmd {
 					prs, _ := dbConn.ListTaskPullRequests(ctx, tk.ID)
 					items = append(items, taskItemFromInternal(tk, bindings, prs))
 				}
+
+				// One query for the whole page, not one per row: this runs on a
+				// timer against the file the daemon is writing to.
+				ids := make([]string, 0, len(tasks))
+				for _, tk := range tasks {
+					ids = append(ids, tk.ID)
+				}
+				if rows, err := dbConn.ListStepProgressForTasks(ctx, ids); err == nil {
+					progress := resolveTaskProgress(rows, workflows)
+					for i := range items {
+						p := progress[items[i].InternalTaskID]
+						items[i].StepID = p.StepID
+						items[i].StepPosition = p.Position
+						items[i].StepTotal = p.Total
+						items[i].LiveInstances = p.Instances
+					}
+				}
 			}
 		}
 		return tasksDataMsg{items: items}
@@ -2457,6 +2563,7 @@ func taskItemFromInternal(t model.InternalTask, bindings []model.SourceBinding, 
 		TaskID:               drillKeyFor(t, bindings), // legacy machinery key (== DrillKey)
 		Title:                t.Title,
 		Status:               string(t.State),
+		BlockedReason:        t.BlockedReason,
 		StartedAt:            &created,
 		InternalTaskID:       t.ID,
 		DrillKey:             drillKeyFor(t, bindings),
@@ -3470,6 +3577,13 @@ func (a *App) renderTasksTab(height int) string {
 		return a.renderWorkflowMonitor(t, height)
 	case TaskViewTranscript:
 		return a.renderTaskTranscript(t, height)
+	case TaskViewBoard:
+		// Below the legibility floor the board declines to render and the list
+		// takes over, rather than producing an unreadable grid.
+		if out := a.renderBoard(t, height); out != "" {
+			return out
+		}
+		return a.renderTaskList(t, height)
 	default:
 		return a.renderTaskList(t, height)
 	}
@@ -3494,7 +3608,7 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 	const (
 		cursorW = 2
 		numW    = 10
-		agentW  = 16
+		agentW  = 16 // width of the progress column (formerly AGENT)
 		statusW = 8
 		whenW   = 11
 	)
@@ -3525,7 +3639,7 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 		title += " [" + strings.Join(parts, " ") + "]"
 	}
 
-	header := pad("", cursorW) + " " + pad("#", numW) + " " + pad("TASK", titleW) + " " + pad("AGENT", agentW) + " " + pad("STATUS", statusW) + " " + "WHEN"
+	header := pad("", cursorW) + " " + pad("#", numW) + " " + pad("TASK", titleW) + " " + pad("STEP", agentW) + " " + pad("STATUS", statusW) + " " + "WHEN"
 	b.WriteString(StyleTableHeader.Render(header) + "\n")
 
 	rowsAvail := height - 3 // borders + header
@@ -3552,7 +3666,11 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 		cursor := "  "
 		num := pad(truncate(valueOr(it.Number, "—"), numW), numW)
 		titleText := pad(truncate(valueOr(it.Title, it.TaskID), titleW), titleW)
-		agent := pad(truncate(valueOr(it.Agent, "—"), agentW), agentW)
+		// The agent column used to live here. An agent is a property of a step,
+		// not of a task, so for a task running several steps it showed one
+		// arbitrary agent of many; the step it is on is both true and more
+		// useful. The agent is still on the detail view, where it is accurate.
+		agent := progressCell(taskProgressOf(it), agentW)
 		status := taskStatusBadge(it.Status)
 		when := taskWhen(it)
 		if selected {

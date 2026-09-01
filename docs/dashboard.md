@@ -104,8 +104,25 @@ numbers.
 ### Tasks
 
 A list of recent tasks — both running and already finished — newest first. Each
-row shows the task title, the agent that handled it, its status (running /
-success / failed), and when it ran. Use `↑` / `↓` to move the `▶` marker.
+row shows the task title, **which step it is on**, its status, and when it ran.
+Use `↑` / `↓` to move the `▶` marker.
+
+```
+   #          TASK                            STEP           STATUS   WHEN
+▶  #412       Fix approval gate re-entry      review 3/5     running  4m ago
+   #401       Port pgsink to new columns      check-ci 4/6   blocked  1h ago
+   #396       Decompose the spec              ⑂ 3 steps      running  8m ago
+```
+
+The **STEP** column answers "where has it got to": the step now executing and
+its position in the workflow. A task running more than one workflow instance at
+once — `parallel`, `for_each`, or spawned children — shows `⑂ 3 steps` rather
+than picking one of them to display.
+
+There used to be an AGENT column here. An agent is a property of a *step*, not
+of a task, so for a task whose steps used three different agents it showed one
+arbitrary agent of the three. The agent is still shown per step in **Details**
+and in the workflow monitor, where it is accurate.
 
 From the list you can drill into the selected task:
 
@@ -117,6 +134,7 @@ From the list you can drill into the selected task:
 | `R` (Shift+R)          | **Force restart** — cancel and re-dispatch the task (with confirmation) |
 | `W` (Shift+W)          | **Start a workflow** on the task, ignoring triggers and guards |
 | `C`                    | **Clear logs** — delete all logs for the task (with confirmation) |
+| `b`                    | **Board** — the same tasks grouped into columns by state (see below) |
 | `Esc` / `Backspace` / `h` / `←` | Back to the list                          |
 
 The `#` column shows each task's human reference (e.g. `ERP-42`) so you can
@@ -269,6 +287,65 @@ runners:
 
 Apiary parses those events into the readable lines above. A CLI without
 structured output still streams — you just see its raw output instead.
+
+#### The board
+
+Press `b` for a board view of the same tasks, one column per state:
+
+```
+  QUEUED (1)              RUNNING (2)              BLOCKED (2)              DONE (12)
+  #418                  │ #412                   │ #401                   │ #390
+  Add plugin registry   │ Fix approval gate re-… │ Port pgsink to new co… │ Docs: plugins
+  —                     │ review 3/5             │ check-ci 4/6           │ —
+  2m ago                │ 4m ago                 │ ci 1h ago              │ 20m ago
+
+  FAILED (1) — needs attention
+    #407     Improve advisor evidence pack        build 2/7      3h ago
+```
+
+The columns are the task states themselves, so a card sits in `BLOCKED` because
+its state says blocked — nothing is inferred. A blocked card also shows *what*
+it is waiting on (`approval`, `ci`, `dependency`).
+
+**`FAILED` is a lane, not a column.** The columns are stages work passes
+through, and terminal failure is not one — it is an exception waiting for a
+person. The lane stays visible when it is empty, showing `FAILED (0)`, because
+"nothing needs attention" is worth seeing.
+
+The board is a working surface, not a wallboard. Every key does what it does
+elsewhere, acting on the selected card:
+
+| Key            | Action                                             |
+|----------------|----------------------------------------------------|
+| `←` `→`        | Move between columns (at the edges, switches tab)  |
+| `↑` `↓`        | Move within a column                               |
+| `Enter` / `l`  | Open the task                                      |
+| `a` / `y` / `n`| Answer the approval the card is blocked on         |
+| `R` (Shift+R)  | Force restart the task                             |
+| `b` / `Esc`    | Back to the list                                   |
+
+Answering approvals in place is the reason the view earns its keystroke: open
+the board, see `BLOCKED (4)`, clear four gates without drilling into four tasks.
+
+Cards cannot be dragged between columns. A card moves when the hive moves it —
+state is a consequence of what actually ran, and a board that let you drag a
+task into `DONE` would be asserting something that never happened.
+
+`DONE` is capped so finished work cannot squeeze out the columns that need
+attention; the header always shows the true count, with `+N` for what it did not
+fit. On a narrow terminal columns are dropped from the right (`DONE` first, then
+`QUEUED`) and their counts move into the header. Below about 40 columns the
+board declines to render and the list is shown instead.
+
+To open on the board every time, set it per hive:
+
+```yaml
+settings:
+  dashboard:
+    default_view: board   # list (default) | board
+```
+
+or per invocation with `apiary dashboard --view=board`.
 
 ### Agents
 

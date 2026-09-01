@@ -34,9 +34,17 @@ apiary run [--debug] [--once] [--dry-run] [--source id] [--worker id] [--profile
 
 ### `apiary dashboard`
 
-Open the [terminal dashboard](dashboard.md) — a read-only live view of tasks,
-agents, and logs. Run it in a second terminal, from the same directory as
-`apiary run` (they share the `.apiary/` state).
+Open the [terminal dashboard](dashboard.md) — a live view of tasks, agents, and
+logs. Run it in a second terminal, from the same directory as `apiary run` (they
+share the `.apiary/` state).
+
+```sh
+apiary dashboard [--view list|board]
+```
+
+`--view board` opens on the [board](dashboard.md#the-board) — tasks grouped into
+columns by state — instead of the list. Press `b` to switch either way at any
+time, or set `settings.dashboard.default_view` to make the choice stick.
 
 ### `apiary status`
 

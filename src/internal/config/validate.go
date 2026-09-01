@@ -121,6 +121,10 @@ func (c *Config) Validate() []error {
 		}
 	}
 
+	if v := c.Settings.Dashboard.DefaultView; v != "" && v != "list" && v != "board" {
+		errs = append(errs, fmt.Errorf("settings.dashboard.default_view %q: must be \"list\" or \"board\"", v))
+	}
+
 	if c.Version == "" {
 		errs = append(errs, fmt.Errorf("version is required"))
 	}

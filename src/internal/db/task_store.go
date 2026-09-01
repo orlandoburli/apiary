@@ -98,7 +98,7 @@ func (s *InternalTaskStore) FindChildByDedupKey(ctx context.Context, parentTaskI
 	}
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
-		       COALESCE(input,''), state, COALESCE(metadata,''),
+		       COALESCE(input,''), state, COALESCE(blocked_reason,''), COALESCE(metadata,''),
 		       COALESCE(outstanding_workflows,0), created_at, updated_at
 		FROM internal_tasks
 		WHERE parent_task_id = ? AND dedup_key = ?
@@ -118,7 +118,7 @@ func (s *InternalTaskStore) FindChildByDedupKey(ctx context.Context, parentTaskI
 func (s *InternalTaskStore) GetTask(ctx context.Context, id string) (*model.InternalTask, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
-		       COALESCE(input,''), state, COALESCE(metadata,''),
+		       COALESCE(input,''), state, COALESCE(blocked_reason,''), COALESCE(metadata,''),
 		       COALESCE(outstanding_workflows,0), created_at, updated_at
 		FROM internal_tasks WHERE id = ?
 	`, id)
@@ -280,7 +280,7 @@ func (s *InternalTaskStore) DeleteTask(ctx context.Context, id string) error {
 func (s *InternalTaskStore) ListTasksByState(ctx context.Context, state model.TaskState) ([]model.InternalTask, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
-		       COALESCE(input,''), state, COALESCE(metadata,''),
+		       COALESCE(input,''), state, COALESCE(blocked_reason,''), COALESCE(metadata,''),
 		       COALESCE(outstanding_workflows,0), created_at, updated_at
 		FROM internal_tasks WHERE state = ? ORDER BY created_at ASC
 	`, string(state))
@@ -309,7 +309,7 @@ func (s *InternalTaskStore) ListTasks(ctx context.Context, limit int) ([]model.I
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
-		       COALESCE(input,''), state, COALESCE(metadata,''),
+		       COALESCE(input,''), state, COALESCE(blocked_reason,''), COALESCE(metadata,''),
 		       COALESCE(outstanding_workflows,0), created_at, updated_at
 		FROM internal_tasks ORDER BY created_at DESC LIMIT ?
 	`, limit)
@@ -334,7 +334,7 @@ func (s *InternalTaskStore) ListTasks(ctx context.Context, limit int) ([]model.I
 func (s *InternalTaskStore) ListChildTasks(ctx context.Context, parentTaskID string) ([]model.InternalTask, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
-		       COALESCE(input,''), state, COALESCE(metadata,''),
+		       COALESCE(input,''), state, COALESCE(blocked_reason,''), COALESCE(metadata,''),
 		       COALESCE(outstanding_workflows,0), created_at, updated_at
 		FROM internal_tasks WHERE parent_task_id = ? ORDER BY created_at ASC
 	`, parentTaskID)
@@ -367,20 +367,20 @@ func (c *Client) GetTaskAncestors(ctx context.Context, id string) ([]model.Inter
 // the slice has a single element (the task). Empty if the id is unknown.
 func (s *InternalTaskStore) GetTaskAncestors(ctx context.Context, id string) ([]model.InternalTask, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		WITH RECURSIVE anc(id, parent_task_id, title, description, input, state,
+		WITH RECURSIVE anc(id, parent_task_id, title, description, input, state, blocked_reason,
 		                    metadata, outstanding_workflows, created_at, updated_at, depth) AS (
-			SELECT id, parent_task_id, title, description, input, state,
+			SELECT id, parent_task_id, title, description, input, state, blocked_reason,
 			       metadata, outstanding_workflows, created_at, updated_at, 0
 			FROM internal_tasks WHERE id = ?
 			UNION ALL
-			SELECT t.id, t.parent_task_id, t.title, t.description, t.input, t.state,
+			SELECT t.id, t.parent_task_id, t.title, t.description, t.input, t.state, t.blocked_reason,
 			       t.metadata, t.outstanding_workflows, t.created_at, t.updated_at, anc.depth + 1
 			FROM internal_tasks t
 			JOIN anc ON t.id = anc.parent_task_id
 			WHERE anc.depth < 32
 		)
 		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
-		       COALESCE(input,''), state, COALESCE(metadata,''),
+		       COALESCE(input,''), state, COALESCE(blocked_reason,''), COALESCE(metadata,''),
 		       COALESCE(outstanding_workflows,0), created_at, updated_at
 		FROM anc ORDER BY depth DESC
 	`, id)
@@ -408,7 +408,7 @@ func scanTask(s scanner) (*model.InternalTask, error) {
 		state     string
 	)
 	if err := s.Scan(&task.ID, &task.ParentTaskID, &task.Title, &task.Description,
-		&inputJSON, &state, &metaJSON, &task.OutstandingWorkflows,
+		&inputJSON, &state, &task.BlockedReason, &metaJSON, &task.OutstandingWorkflows,
 		&task.CreatedAt, &task.UpdatedAt); err != nil {
 		return nil, err
 	}
