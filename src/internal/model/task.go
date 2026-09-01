@@ -34,8 +34,11 @@ type InternalTask struct {
 	// a parent, derived from the spawn request (or the caller-supplied SpawnRequest.Key).
 	// A re-run of the same decomposition resolves to the existing child instead of
 	// creating a duplicate. Empty for source-bound (non-spawned) tasks.
-	DedupKey             string
-	State                TaskState
+	DedupKey string
+	State    TaskState
+	// BlockedReason explains a State of blocked: approval | ci | dependency |
+	// retry_backoff | interrupted. Empty for every other state.
+	BlockedReason        string
 	Metadata             TaskMetadata
 	OutstandingWorkflows int
 	CreatedAt            time.Time

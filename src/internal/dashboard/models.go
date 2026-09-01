@@ -91,6 +91,7 @@ const (
 	TaskViewLogs
 	TaskViewWorkflow   // live workflow instance monitor
 	TaskViewTranscript // rendered markdown transcript of an agent session
+	TaskViewBoard      // tasks grouped into columns by canonical state
 )
 
 // TasksTab shows task history with detail and log sub-views.
@@ -98,7 +99,12 @@ type TasksTab struct {
 	History     []TaskItem // running + past tasks, newest first
 	SelectedIdx int
 
-	View            TaskView
+	View TaskView
+	// Board cursor (View == TaskViewBoard): column index within the *visible*
+	// columns, and row within that column. Both are clamped on every render,
+	// since columns resize as work moves between them.
+	BoardCol        int
+	BoardRow        int
 	Detail          *TaskItem                // populated when View == TaskViewDetail
 	DetailInstance  *WorkflowInstanceItem    // workflow instance for Detail, if any
 	DetailScroll    int                      // first visible content line in the detail view
@@ -270,39 +276,49 @@ type WorkflowStepItem struct {
 // It is also reused by the Agents tab, where it is built from a TaskHistoryItem
 // (taskItemFromHistory) and the InternalTask fields are left zero.
 type TaskItem struct {
-	TaskID       string
-	Number       string // human reference, e.g. "ERP-42"
-	URL          string // link to the task in its source UI
-	Title        string
-	Agent        string
-	Model        string
-	Runner       string
-	Status       string // execution status (running/success/failed) or InternalTask state
-	Attempt      int
-	Duration     time.Duration
-	StartedAt    *time.Time
-	CompletedAt  *time.Time
-	Error        string
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
-	NumTurns     int
-	NumToolCalls int
-	CostUSD      float64
+	TaskID string
+	Number string // human reference, e.g. "ERP-42"
+	URL    string // link to the task in its source UI
+	Title  string
+	Agent  string
+	Model  string
+	Runner string
+	Status string // execution status (running/success/failed) or InternalTask state
+	// BlockedReason explains a blocked Status: approval, ci, dependency,
+	// retry_backoff, interrupted. Empty otherwise.
+	BlockedReason string
+	Attempt       int
+	Duration      time.Duration
+	StartedAt     *time.Time
+	CompletedAt   *time.Time
+	Error         string
+	InputTokens   int
+	OutputTokens  int
+	TotalTokens   int
+	NumTurns      int
+	NumToolCalls  int
+	CostUSD       float64
 
 	// Internal task model (Phase 9). Populated when the row/detail comes from an
 	// InternalTask; zero-valued for legacy/Agents-tab rows.
-	InternalTaskID       string                 // canonical internal_tasks.id (primary identity)
-	DrillKey             string                 // legacy cell_id for executions/logs/monitor
-	ParentTaskID         string                 // empty for root tasks
-	ParentTitle          string                 // resolved parent title, for the breadcrumb
-	OutstandingWorkflows int                    // workflows still running for this task
-	Bindings             []SourceBindingItem    // source items bound to this task
-	Lineage              []TaskLineageItem      // ancestors root-first incl. self (detail only)
-	Children             []TaskLineageItem      // direct children / spawned tasks (detail only)
-	Instances            []WorkflowInstanceItem // all workflow instances for this task (detail only)
-	PullRequests         []PullRequestItem      // persisted PRs, oldest first; last = most recent
-	Events               []db.ExecutionEvent    // structured task timeline, oldest first
+	InternalTaskID       string // canonical internal_tasks.id (primary identity)
+	DrillKey             string // legacy cell_id for executions/logs/monitor
+	ParentTaskID         string // empty for root tasks
+	ParentTitle          string // resolved parent title, for the breadcrumb
+	OutstandingWorkflows int    // workflows still running for this task
+	// Step progress across the task's live instances, resolved by one batched
+	// query per visible page (see progress.go). Zero for legacy Agents-tab rows.
+	StepID        string // current step id; empty when not resolvable
+	StepPosition  int    // 1-based position in the workflow; 0 when unknown
+	StepTotal     int    // steps in the workflow; 0 when unknown
+	LiveInstances int    // live instances; >1 renders a fan-out marker
+
+	Bindings     []SourceBindingItem    // source items bound to this task
+	Lineage      []TaskLineageItem      // ancestors root-first incl. self (detail only)
+	Children     []TaskLineageItem      // direct children / spawned tasks (detail only)
+	Instances    []WorkflowInstanceItem // all workflow instances for this task (detail only)
+	PullRequests []PullRequestItem      // persisted PRs, oldest first; last = most recent
+	Events       []db.ExecutionEvent    // structured task timeline, oldest first
 }
 
 // PullRequestItem is one pull request linked to a task, persisted by the daemon

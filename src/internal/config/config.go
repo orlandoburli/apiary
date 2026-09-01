@@ -405,6 +405,7 @@ type Settings struct {
 	Telemetry     Telemetry          `yaml:"telemetry"`
 	CursorCost    CursorCostSettings `yaml:"cursor_cost"`
 	Improve       ImproveSettings    `yaml:"improve"`
+	Dashboard     DashboardSettings  `yaml:"dashboard,omitempty"`
 	GitHooks      GitHooksSettings   `yaml:"git_hooks"`
 	Queue         QueueSettings      `yaml:"queue"`
 	// DefaultFallbacks is a fallback chain applied to every agent that does not
@@ -486,6 +487,15 @@ func queueDuration(value string, fallback time.Duration) time.Duration {
 type ApprovalSettings struct {
 	WebhookSecret string   `yaml:"webhook_secret,omitempty"`
 	RequireFor    []string `yaml:"require_for,omitempty"`
+}
+
+// DashboardSettings holds per-hive terminal dashboard preferences.
+type DashboardSettings struct {
+	// DefaultView is the Tasks tab view the dashboard opens on: "list"
+	// (default) or "board". The list stays the default for a new hive because it
+	// degrades to any terminal size and carries the full history; the board
+	// earns its space once a hive runs enough concurrent work to need grouping.
+	DefaultView string `yaml:"default_view,omitempty"`
 }
 
 // EventSettings controls persisted structured execution events. Events are

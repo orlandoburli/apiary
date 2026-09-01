@@ -14,7 +14,8 @@ import (
 )
 
 func newDashboardCmd() *cobra.Command {
-	return &cobra.Command{
+	var view string
+	cmd := &cobra.Command{
 		Use:   "dashboard",
 		Short: "Open the dashboard TUI (requires running dispatcher)",
 		Long: `Open the Apiary dashboard to monitor task execution, agent status, and logs.
@@ -22,12 +23,14 @@ func newDashboardCmd() *cobra.Command {
 The dashboard reads from the SQLite database populated by a running dispatcher.
 Run 'apiary run' in another terminal first.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDashboard(cmd.Context())
+			return runDashboard(cmd.Context(), view)
 		},
 	}
+	cmd.Flags().StringVar(&view, "view", "", "Tasks tab view to open on: list or board (default: settings.dashboard.default_view, else list)")
+	return cmd
 }
 
-func runDashboard(ctx context.Context) error {
+func runDashboard(ctx context.Context, view string) error {
 	dbPath := getDBPath()
 	if _, err := os.Stat(dbPath); err != nil {
 		return fmt.Errorf("database not found at %s\nRun 'apiary run' in another terminal first", dbPath)
@@ -45,7 +48,7 @@ func runDashboard(ctx context.Context) error {
 	}
 
 	socketPath := daemon.SocketPath(config.DataDir(configFile))
-	app := dashboard.New(dbConn, socketPath, cfg, getLogDir())
+	app := dashboard.NewWithView(dbConn, socketPath, cfg, getLogDir(), view)
 	if err := app.Run(); err != nil {
 		return fmt.Errorf("dashboard error: %w", err)
 	}

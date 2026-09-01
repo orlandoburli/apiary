@@ -389,6 +389,7 @@ settings:
 | `log_max_size_mb` | 50 | Rotate `apiary.log` past this size (MB); negative disables rotation |
 | `log_max_backups` | 5 | Rotated files kept as `apiary.log.1` … `.N`, oldest dropped; negative keeps none |
 | `log_max_age_days` | 30 | Prune rotated backups, per-task logs (`logs/tasks/*.log`) **and** SQLite log rows (`service_logs`/`task_logs`) older than this; negative disables |
+| `dashboard.default_view` | `list` | Which Tasks view the [dashboard](dashboard.md#the-board) opens on: `list` or `board`. Overridden per invocation by `apiary dashboard --view=` |
 
 ### Log rotation
 

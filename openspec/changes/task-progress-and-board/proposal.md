@@ -80,9 +80,14 @@ Replaces `AGENT`, keeping the same fixed width so the row layout is unchanged.
 | No live instance, task terminal | `5/5` or `2/5` | where it stopped, no step name |
 | No live instance, task never dispatched | `—` | |
 
-`position` is the 1-based index of the step in the instance's step sequence; `total` is the
-sequence length. Both come from the workflow definition snapshot the instance already stores, so a
-workflow edited after dispatch does not retroactively change a historical row's denominator.
+`position` is the 1-based index of the step in the workflow's step sequence; `total` is the
+sequence length.
+
+**Implementation note:** the sequence is read from the live configuration, not from the instance's
+stored definition snapshot as first proposed. Reading the snapshot would cost a query and a JSON
+parse per visible instance to produce a denominator that differs only when someone edited the
+workflow while a run was in flight. When the step is no longer in the definition — the workflow was
+edited mid-flight — the column shows `gone ?/5`: the scale, without a position that would be a lie.
 
 Truncation: step ids are user-authored and can be long. The column truncates the step id, never
 the `n/m` suffix — losing the position is worse than losing the tail of a name.
