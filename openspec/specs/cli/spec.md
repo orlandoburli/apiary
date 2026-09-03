@@ -264,6 +264,49 @@ apiary logs [--run-id id] [--instance-id id] [--step id] [--follow] [--level deb
 
 ---
 
+### `apiary export`
+
+Export Apiary's own records to files for analysis elsewhere. Every subcommand
+opens the database read-only, runs no migration, and is safe with the daemon
+running.
+
+#### `apiary export usage`
+
+One row per runner attempt (`task_executions`) joined to its workflow instance.
+
+```
+apiary export usage [--format csv|json] [-o path] [--since bound] [--until bound]
+                    [--workflow id]... [--agent id]... [--model name]... [--source id]...
+                    [--status s]... [--include-transcripts] [--include-slow-tools]
+```
+
+| Flag | Description |
+|---|---|
+| `--format` | `csv` (default) or `json` (one array of objects, every key present, `null` for missing) |
+| `-o`, `--output` | Target file; default stdout. Written via temp file + rename |
+| `--since`, `--until` | Bounds on `started_at`: duration (`7d`, `24h`), date (`2026-09-01`) or RFC3339. Default: unbounded / now |
+| `--workflow`, `--agent`, `--model`, `--source`, `--status` | Repeatable filters, `IN` semantics. `--status pending` is the only way to include attempts with no `started_at` |
+| `--include-transcripts` | Add `input_prompt`, `output_text` |
+| `--include-slow-tools` | Add `slow_tools` |
+
+Ordering: `started_at` ascending, never-started rows last. Columns are a
+contract (append-only): `execution_id, task_id, task_number, title, task_url,
+source_id, workflow_id, workflow_instance_id, instance_state, step_id,
+agent_id, runner, model, attempt, status, failure_kind, credit_exhausted,
+started_at, completed_at, duration_ms, input_tokens, output_tokens,
+cache_creation_tokens, cache_read_tokens, total_tokens, num_turns,
+num_tool_calls, cost_usd, time_thinking_ms, time_writing_ms, time_model_ms,
+time_tool_wait_ms, time_other_ms, time_background_ms, error_message`, then the
+opt-in `slow_tools, input_prompt, output_text`. A column the database lacks
+(older schema) is exported empty. `task_executions` columns deliberately not
+exported: `pid, heartbeat_at, heartbeat_count, can_retry, next_retry_at,
+created_at`; a test fails when the schema gains a column in neither list.
+
+Exit codes: `0` success, `1` error (including a bad `--since`/`--until`).
+The row count and elapsed time go to stderr; stdout carries only the export.
+
+---
+
 ### `apiary init`
 
 Interactively scaffold a new `apiary.yaml`.

@@ -198,6 +198,67 @@ apiary improve effect <run-id>
 See [Self-Improvement](improve.md) for the evidence pack, effort levels, the
 validation gate and what applying does.
 
+### `apiary export usage`
+
+Export per-attempt usage and cost as a file a spreadsheet can open. One row per
+runner attempt from `task_executions`, joined to the workflow instance it ran
+in, so spend can be pivoted by workflow, step, model, agent or ticket without
+querying `.apiary/apiary.db` by hand. Read-only, no migration, safe with the
+daemon running.
+
+```sh
+apiary export usage -o usage.csv                       # all history, CSV
+apiary export usage --since 30d --format json          # last 30 days to stdout
+apiary export usage --since 2026-09-01 --until 2026-09-02 --status failed
+apiary export usage --workflow implementation --model claude-fable-5-1
+apiary export usage --include-transcripts -o full.csv  # prompts and outputs too
+```
+
+| Flag | Description |
+|---|---|
+| `--format` | `csv` (default) or `json` |
+| `-o`, `--output` | Write to this file; default stdout. Written to a temp file and renamed on success, so an interrupted export never leaves a truncated file |
+| `--since` | Window start on `started_at`: a duration (`7d`, `24h`), a date (`2026-09-01`, midnight UTC) or RFC3339. Default: all history |
+| `--until` | Window end, same forms. Default: now |
+| `--workflow`, `--agent`, `--model`, `--source`, `--status` | Filters, each repeatable; a repeated flag means "any of". `--model` is an exact match. Status values: `success`, `failed`, `running`, `pending` |
+| `--include-transcripts` | Add `input_prompt` and `output_text`. Off by default: they dominate the file size and are not needed for cost analysis |
+| `--include-slow-tools` | Add `slow_tools`, the per-attempt slowest tool calls as a JSON string |
+
+Rows are ordered oldest first. Attempts that never started (no `started_at`)
+are excluded unless `--status pending` is given, in which case they come last.
+A database written by an older Apiary exports the columns it has and leaves
+the rest empty.
+
+**Columns**, in order. Timestamps are RFC3339 UTC; `cost_usd` has six
+decimals; `credit_exhausted` is `true`/`false`; an empty cell (CSV) or `null`
+(JSON) is a value the database does not hold.
+
+| Column | Meaning |
+|---|---|
+| `execution_id` | Row id in `task_executions` |
+| `task_id`, `task_number`, `title`, `task_url` | The task at dispatch time; `task_number` is the human reference (`ERP-42`, `#1948`) |
+| `source_id`, `workflow_id`, `workflow_instance_id`, `instance_state`, `step_id` | Where the attempt ran. Empty for attempts from before the workflow engine |
+| `agent_id`, `runner`, `model`, `attempt`, `status`, `failure_kind`, `credit_exhausted` | Who ran it and how it ended |
+| `started_at`, `completed_at`, `duration_ms` | Wall clock |
+| `input_tokens`, `output_tokens`, `cache_creation_tokens`, `cache_read_tokens`, `total_tokens`, `num_turns`, `num_tool_calls`, `cost_usd` | Usage as reported by the runner |
+| `time_thinking_ms`, `time_writing_ms`, `time_model_ms`, `time_tool_wait_ms`, `time_other_ms`, `time_background_ms` | Wall-clock attribution (see `apiary profile`) |
+| `error_message` | Single line in CSV |
+| `slow_tools`, `input_prompt`, `output_text` | Opt-in, see the flags above |
+
+Three questions the export answers in a spreadsheet:
+
+- **Spend by workflow.** Pivot `cost_usd` by `workflow_id`, then by `step_id`
+  within it. The step that dominates is the one to look at with `apiary
+  improve`.
+- **Duplicate dispatches.** Group by `task_number` and `step_id` and count
+  rows. A ticket with the same step run many times in a short window is a
+  retry loop or a dedup fault, and the timestamps show which.
+- **One ticket's full cost.** Filter `task_number`, sum `cost_usd`, and read
+  `attempt` and `failure_kind` down the rows to see where the money went.
+
+The column list is a contract: columns are appended, never removed or
+reordered, so a saved spreadsheet keeps working across upgrades.
+
 ## Intervening
 
 ### `apiary approvals` / `approve` / `reject`

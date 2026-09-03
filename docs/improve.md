@@ -281,6 +281,20 @@ depth and delivery
   --transcript-bytes <n>         override the per-excerpt budget
 ```
 
+## Getting the raw rows
+
+The evidence pack is aggregated on purpose. When the question is one the pack
+does not ask, such as spend by ticket, a cost trend over weeks, or which
+attempts of one step ran twice on the same day, export the rows and pivot them
+yourself:
+
+```bash
+apiary export usage --since 30d -o usage.csv
+```
+
+One row per runner attempt with workflow, step, model, tokens, cost and the
+wall-clock split; see [`apiary export usage`](cli.md#apiary-export-usage).
+
 ## What it will not do
 
 - Change Go source, or anything outside the config workspace

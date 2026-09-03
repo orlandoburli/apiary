@@ -2,7 +2,7 @@
 
 Companion to [proposal.md](proposal.md). GitHub issue #485.
 
-**Status: Phase 1 implemented.** Two deviations from the plan below, both made
+**Status: complete.** Phase 1 shipped in PR #487, Phase 2 in PR #488. Two deviations from the plan below, both made
 on contact with the code: the query lives in a new `internal/export` package
 rather than `internal/db`, because `db.New` migrates on open and the export
 must run read-only against a live daemon (it reuses `improve.OpenReadOnly`
@@ -98,15 +98,15 @@ changes are expected; if one turns out to be needed it goes in the idempotent
 
 ### 2.1 Documentation
 
-- [ ] `docs/cli.md`: "Exporting usage" section with the flag table, the
+- [x] `docs/cli.md`: "Exporting usage" section with the flag table, the
       column table, and three worked examples (spend by workflow in a
       spreadsheet, duplicate-dispatch detection by `task_number`, one ticket's
       full cost).
-- [ ] `docs/improve.md`: one paragraph pointing readers who want the raw rows
+- [x] `docs/improve.md`: one paragraph pointing readers who want the raw rows
       to `apiary export usage`.
-- [ ] `openspec/specs/cli/spec.md`: new `### apiary export` section.
-- [ ] Regenerate anything derived from the CLI flag set, if such a generator
-      exists for docs; otherwise none.
+- [x] `openspec/specs/cli/spec.md`: new `### apiary export` section.
+- [x] Regenerate anything derived from the CLI flag set, if such a generator
+      exists for docs; otherwise none. None exists; nothing to regenerate.
 
 ### 2.2 Schema-drift guard
 
@@ -118,5 +118,5 @@ changes are expected; if one turns out to be needed it goes in the idempotent
 
 ### 2.3 Close out
 
-- [ ] Archive this change in `openspec/CHANGELOG.md` with the PR numbers.
-- [ ] Close #485 from the Phase 2 PR.
+- [x] Archive this change in `openspec/CHANGELOG.md` with the PR numbers.
+- [x] Close #485 from the Phase 2 PR.
