@@ -181,13 +181,45 @@ func listInstances(workflow, state string, limit int, asJSON bool) error {
 		return nil
 	}
 
-	fmt.Println(instHeader.Render(fmt.Sprintf("%-26s  %-22s  %-12s  %-18s  %-13s  %s",
-		"ID", "WORKFLOW", "CELL", "STATE", "STARTED", "DURATION")))
+	// The CELL column used to be a fixed 12 chars, truncated from the tail —
+	// fine for short references like "ERP-42" or "#412", but a routine
+	// occurrence id ("<routine>@<RFC3339 instant>", issue #472) is 29+ chars
+	// and its distinguishing part is the timestamp suffix that head-preserving
+	// truncation cuts off first. Size the column to the widest reference
+	// actually present (capped, so one huge outlier can't blow up the table),
+	// stealing the room from WORKFLOW, which is the most compressible column
+	// here: a truncated workflow id is still readable, unlike a truncated
+	// occurrence reference with its distinguishing half missing.
+	const (
+		baseCellW     = 12
+		maxCellW      = 40
+		baseWorkflowW = 22
+		minWorkflowW  = 12
+	)
+	cellW := baseCellW
 	for _, in := range resp.Instances {
-		fmt.Printf("%-26s  %-22s  %-12s  %s  %-13s  %s\n",
+		if n := len(in.CellID); n > cellW {
+			cellW = n
+		}
+	}
+	if cellW > maxCellW {
+		cellW = maxCellW
+	}
+	workflowW := baseWorkflowW
+	if extra := cellW - baseCellW; extra > 0 {
+		workflowW -= extra
+		if workflowW < minWorkflowW {
+			workflowW = minWorkflowW
+		}
+	}
+
+	fmt.Println(instHeader.Render(fmt.Sprintf("%-26s  %-*s  %-*s  %-18s  %-13s  %s",
+		"ID", workflowW, "WORKFLOW", cellW, "CELL", "STATE", "STARTED", "DURATION")))
+	for _, in := range resp.Instances {
+		fmt.Printf("%-26s  %-*s  %-*s  %s  %-13s  %s\n",
 			in.ID,
-			truncate(in.Workflow, 22),
-			truncate(in.CellID, 12),
+			workflowW, truncate(in.Workflow, workflowW),
+			cellW, format.TruncateMiddle(in.CellID, cellW),
 			stateCell(in.State, 18),
 			in.Started,
 			in.Duration,

@@ -3606,12 +3606,30 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 	}
 
 	const (
-		cursorW = 2
-		numW    = 10
-		agentW  = 16 // width of the progress column (formerly AGENT)
-		statusW = 8
-		whenW   = 11
+		cursorW  = 2
+		baseNumW = 10
+		maxNumW  = 40 // cap so one long reference can't collapse TASK to its floor
+		agentW   = 16 // width of the progress column (formerly AGENT)
+		statusW  = 8
+		whenW    = 11
 	)
+	// The # column used to be a fixed 10 chars, truncated from the tail. That
+	// is fine for short references ("#412", "ERP-42") but a routine occurrence
+	// id ("<routine>@<RFC3339 instant>", issue #472) is 29+ chars, and its
+	// distinguishing part — the timestamp — is exactly what a tail-truncated
+	// column cuts off. Size the column to the widest reference actually on
+	// screen; the room comes out of TASK below, which already has its own
+	// floor and is the more compressible of the two (a truncated title is
+	// still readable; a routine reference missing its occurrence is not).
+	numW := baseNumW
+	for _, it := range items {
+		if n := len([]rune(valueOr(it.Number, "—"))); n > numW {
+			numW = n
+		}
+	}
+	if numW > maxNumW {
+		numW = maxNumW
+	}
 	inner := a.model.width - 2
 	titleW := inner - cursorW - numW - agentW - statusW - whenW - 5
 	if titleW < 10 {
@@ -3664,7 +3682,7 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 		it := items[i]
 		selected := i == t.SelectedIdx
 		cursor := "  "
-		num := pad(truncate(valueOr(it.Number, "—"), numW), numW)
+		num := pad(format.TruncateMiddle(valueOr(it.Number, "—"), numW), numW)
 		titleText := pad(truncate(valueOr(it.Title, it.TaskID), titleW), titleW)
 		// The agent column used to live here. An agent is a property of a step,
 		// not of a task, so for a task running several steps it showed one
