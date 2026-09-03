@@ -42,7 +42,7 @@ jobs:
           ISSUE: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
         run: |
-          gh issue edit $ISSUE --repo $REPO --add-label needs-triage || true
+          gh issue edit $ISSUE --repo $REPO --add-label needs-triage
 
       - name: Post triage notice
         env:
