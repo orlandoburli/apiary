@@ -109,9 +109,12 @@ Use `↑` / `↓` to move the `▶` marker.
 
 The list opens with the newest 100 tasks. When older ones exist, a hint appears
 under the last row; press `↓`, `PgDn` or `End` while on that row to load the
-next 100 below it. Loaded pages stay put across the periodic refresh, and the
-`/` filter and the tickets-only / approvals toggles apply to everything loaded,
-so keep loading to search further back.
+next 100 below it. Loaded pages stay put across the periodic refresh.
+
+The `/` filter and the tickets-only (`T`) / approvals (`A`) toggles run in the
+query, not on the loaded rows: they search every task ever recorded, and the
+matches page the same way. The filter matches the title, the task id, the
+state, and the source reference (`#412`, `ERP-42`) of any binding.
 
 ```
    #          TASK                            STEP           STATUS   WHEN

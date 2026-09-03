@@ -521,7 +521,7 @@ func titleAt(ts []model.InternalTask, i int) string {
 	return ""
 }
 
-func TestInternalTask_ListTasksBefore(t *testing.T) {
+func TestInternalTask_ListTasksPage_Walk(t *testing.T) {
 	ctx := context.Background()
 	store := newTestClient(t).InternalTasks()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -554,9 +554,9 @@ func TestInternalTask_ListTasksBefore(t *testing.T) {
 			seen = append(seen, tk.Title)
 		}
 		last := page[len(page)-1]
-		page, err = store.ListTasksBefore(ctx, last.CreatedAt, last.ID, 2)
+		page, err = store.ListTasksPage(ctx, TaskListFilter{}, TaskCursor{CreatedAt: last.CreatedAt, ID: last.ID}, 2)
 		if err != nil {
-			t.Fatalf("ListTasksBefore: %v", err)
+			t.Fatalf("ListTasksPage: %v", err)
 		}
 	}
 	want := []string{"t4", "t3", "t2", "t1", "t0"}
@@ -565,11 +565,100 @@ func TestInternalTask_ListTasksBefore(t *testing.T) {
 	}
 
 	// Past the oldest row there is nothing left.
-	empty, err := store.ListTasksBefore(ctx, base, "tk_0", 2)
+	empty, err := store.ListTasksPage(ctx, TaskListFilter{}, TaskCursor{CreatedAt: base, ID: "tk_0"}, 2)
 	if err != nil {
-		t.Fatalf("ListTasksBefore(oldest): %v", err)
+		t.Fatalf("ListTasksPage(oldest): %v", err)
 	}
 	if len(empty) != 0 {
 		t.Errorf("page past the oldest row = %v, want empty", titles(empty))
+	}
+}
+
+// The filters run in the query, so they match rows far beyond the first page.
+func TestInternalTask_ListTasksPage_Filters(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+	store := c.InternalTasks()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	mk := func(id, title string, st model.TaskState, reason string, offset int) {
+		task := &model.InternalTask{ID: id, Title: title, State: st, BlockedReason: reason, CreatedAt: base.Add(time.Duration(offset) * time.Minute)}
+		if err := store.CreateTask(ctx, task); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	// Oldest first so the interesting rows sit at the tail of an unfiltered list.
+	mk("tk_old", "Fix login 100% of the time", model.TaskStateDone, "", 0)
+	mk("tk_gate", "Ship it", model.TaskStateBlocked, "approval", 1)
+	// CreateTask does not persist blocked_reason; park the gate the way the engine does.
+	if err := store.UpdateTaskStateReason(ctx, "tk_gate", model.TaskStateBlocked, "approval"); err != nil {
+		t.Fatalf("park tk_gate: %v", err)
+	}
+	mk("tk_routine", "nightly sweep", model.TaskStateDone, "", 2)
+	for i := 0; i < 5; i++ {
+		mk("tk_fill"+string(rune('0'+i)), "filler", model.TaskStateRunning, "", 10+i)
+	}
+	bind := func(taskID, sourceID, itemID, number string) {
+		if err := c.SourceBindings().CreateBinding(ctx, &model.SourceBinding{TaskID: taskID, SourceID: sourceID, SourceItemID: itemID, SourceItemNumber: number}); err != nil {
+			t.Fatalf("bind %s: %v", taskID, err)
+		}
+	}
+	bind("tk_old", "github", "ISSUE-9", "#9")
+	bind("tk_routine", "cron", "nightly@2026-01-01", "")
+
+	list := func(f TaskListFilter) []string {
+		t.Helper()
+		got, err := store.ListTasksPage(ctx, f, TaskCursor{}, 2) // a page smaller than the table
+		if err != nil {
+			t.Fatalf("ListTasksPage(%+v): %v", f, err)
+		}
+		return titles(got)
+	}
+	if got := list(TaskListFilter{}); strings.Join(got, " ") != "filler filler" {
+		t.Fatalf("unfiltered first page = %v, want two fillers", got)
+	}
+	// Text: title, case-insensitive, beyond the first page; LIKE wildcards literal.
+	if got := list(TaskListFilter{Text: "LOGIN"}); strings.Join(got, " ") != "Fix login 100% of the time" {
+		t.Errorf("text(title) = %v", got)
+	}
+	if got := list(TaskListFilter{Text: "100%"}); len(got) != 1 {
+		t.Errorf("text with %% should be literal, got %v", got)
+	}
+	if got := list(TaskListFilter{Text: "0_o"}); len(got) != 0 {
+		t.Errorf("text with _ should be literal, got %v", got)
+	}
+	// Text: binding item id / number, task id, state.
+	if got := list(TaskListFilter{Text: "#9"}); strings.Join(got, " ") != "Fix login 100% of the time" {
+		t.Errorf("text(number) = %v", got)
+	}
+	if got := list(TaskListFilter{Text: "issue-9"}); len(got) != 1 {
+		t.Errorf("text(item id) = %v", got)
+	}
+	if got := list(TaskListFilter{Text: "tk_gate"}); strings.Join(got, " ") != "Ship it" {
+		t.Errorf("text(task id) = %v", got)
+	}
+	if got := list(TaskListFilter{Text: "blocked"}); strings.Join(got, " ") != "Ship it" {
+		t.Errorf("text(state) = %v", got)
+	}
+	// Approvals only.
+	if got := list(TaskListFilter{ApprovalsOnly: true}); strings.Join(got, " ") != "Ship it" {
+		t.Errorf("approvals = %v", got)
+	}
+	// Tickets only: bound to a source that is not on the non-ticket list.
+	if got := list(TaskListFilter{TicketsOnly: true, NonTicketSources: []string{"cron"}}); strings.Join(got, " ") != "Fix login 100% of the time" {
+		t.Errorf("tickets(excluding cron) = %v", got)
+	}
+	if got := list(TaskListFilter{TicketsOnly: true}); strings.Join(got, " ") != "nightly sweep Fix login 100% of the time" {
+		t.Errorf("tickets(no exclusions) = %v", got)
+	}
+	// Filters combine, and the cursor applies within the filtered set.
+	got, err := store.ListTasksPage(ctx, TaskListFilter{Text: "filler"}, TaskCursor{}, 3)
+	if err != nil || len(got) != 3 {
+		t.Fatalf("filtered page: %v %v", got, err)
+	}
+	last := got[2]
+	next, err := store.ListTasksPage(ctx, TaskListFilter{Text: "filler"}, TaskCursor{CreatedAt: last.CreatedAt, ID: last.ID}, 3)
+	if err != nil || len(next) != 2 || next[0].ID == last.ID {
+		t.Errorf("filtered next page = %v (%v), want the remaining two fillers", titles(next), err)
 	}
 }

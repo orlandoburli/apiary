@@ -560,3 +560,13 @@ func (m *Model) SetActiveTab(name string) bool {
 	}
 	return false
 }
+
+// resetListPages forgets the loaded pages and the older-page cursor so the
+// next fetch starts again from the newest row (used when the filter changes).
+func (t *TasksTab) resetListPages() {
+	t.ListWindow = 0
+	t.ListOldestAt = time.Time{}
+	t.ListOldestID = ""
+	t.ListHasMore = false
+	t.ListLoadingMore = false
+}

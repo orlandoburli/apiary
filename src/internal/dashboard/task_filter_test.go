@@ -26,9 +26,15 @@ func TestTaskFilterTypingOwnsKeyboard(t *testing.T) {
 	}
 
 	// "q" must append to the filter, not quit; "r"/"s"/"d" likewise inert.
+	// The only command an edit may produce is the list re-query the filter
+	// itself triggers (it runs in SQL), never the key's global binding.
 	for _, k := range []string{"q", "r", "s", "d"} {
-		if _, cmd := a.handleKeyMsg(rune_(k)); cmd != nil {
-			t.Fatalf("key %q produced a command while filtering", k)
+		_, cmd := a.handleKeyMsg(rune_(k))
+		if cmd == nil {
+			t.Fatalf("key %q should re-query the filtered list", k)
+		}
+		if _, isRefetch := cmd().(tasksDataMsg); !isRefetch {
+			t.Fatalf("key %q produced a command other than the list re-query while filtering", k)
 		}
 	}
 	if got := a.model.tasksTab.FilterText; got != "qrsd" {

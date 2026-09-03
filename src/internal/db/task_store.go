@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/model"
@@ -300,23 +301,85 @@ func (s *InternalTaskStore) ListTasksByState(ctx context.Context, state model.Ta
 	return out, rows.Err()
 }
 
+// TaskListFilter narrows a task listing. The zero value matches every task.
+// It is evaluated in SQL so the dashboard's filters see the whole table, not
+// only the page it has loaded.
+type TaskListFilter struct {
+	// Text is a case-insensitive substring matched against the task title, id
+	// and state, and against the source item id / number of any binding.
+	Text string
+	// ApprovalsOnly keeps only tasks parked on a human approval gate.
+	ApprovalsOnly bool
+	// TicketsOnly keeps only tasks bound to a ticket-tracker source item.
+	// NonTicketSources lists the configured source ids that are NOT ticket
+	// trackers (routines, monitoring...); a binding to any other source counts
+	// as a ticket, matching the dashboard's isTicketSource fallback for sources
+	// the config does not know.
+	TicketsOnly      bool
+	NonTicketSources []string
+}
+
+// TaskCursor marks the last row of a page so the next page can continue after
+// it. The zero value means "from the newest row".
+type TaskCursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
 // ListTasks returns the most recent internal tasks across all states, newest
 // first. limit <= 0 defaults to 100. It backs the dashboard Tasks tab, which
 // surfaces the InternalTask as the primary unit (not per-execution rows).
-//
-// Ties on created_at break on id (a ULID, so also time-ordered) so the order is
-// total and ListTasksBefore can continue from the last row without skipping or
-// repeating one.
 func (s *InternalTaskStore) ListTasks(ctx context.Context, limit int) ([]model.InternalTask, error) {
+	return s.ListTasksPage(ctx, TaskListFilter{}, TaskCursor{}, limit)
+}
+
+// ListTasksPage returns one page of internal tasks matching filter, newest
+// first, starting immediately after cursor (or from the newest row for the zero
+// cursor). limit <= 0 defaults to 100.
+//
+// Rows order by (created_at DESC, id DESC): ties break on id (a ULID, so also
+// time-ordered), which makes the order total so consecutive pages neither skip
+// nor repeat a row while new tasks keep arriving at the head of the list.
+func (s *InternalTaskStore) ListTasksPage(ctx context.Context, filter TaskListFilter, cursor TaskCursor, limit int) ([]model.InternalTask, error) {
 	if limit <= 0 {
 		limit = 100
 	}
+	where := []string{"1=1"}
+	var args []any
+	if cursor.ID != "" {
+		where = append(where, "(t.created_at < ? OR (t.created_at = ? AND t.id < ?))")
+		args = append(args, cursor.CreatedAt, cursor.CreatedAt, cursor.ID)
+	}
+	if filter.ApprovalsOnly {
+		where = append(where, "(t.state = 'approval_waiting' OR (t.state = 'blocked' AND t.blocked_reason = 'approval'))")
+	}
+	if filter.TicketsOnly {
+		clause := "EXISTS (SELECT 1 FROM source_bindings b WHERE b.task_id = t.id"
+		if len(filter.NonTicketSources) > 0 {
+			clause += " AND b.source_id NOT IN (" + placeholders(len(filter.NonTicketSources)) + ")"
+			for _, id := range filter.NonTicketSources {
+				args = append(args, id)
+			}
+		}
+		where = append(where, clause+")")
+	}
+	if filter.Text != "" {
+		pat := "%" + escapeLike(strings.ToLower(filter.Text)) + "%"
+		where = append(where, `(LOWER(t.title) LIKE ? ESCAPE '\' OR LOWER(t.id) LIKE ? ESCAPE '\' OR LOWER(t.state) LIKE ? ESCAPE '\'
+		   OR EXISTS (SELECT 1 FROM source_bindings b WHERE b.task_id = t.id
+		              AND (LOWER(b.source_item_id) LIKE ? ESCAPE '\' OR LOWER(COALESCE(b.source_item_number,'')) LIKE ? ESCAPE '\')))`)
+		args = append(args, pat, pat, pat, pat, pat)
+	}
+	args = append(args, limit)
+
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
-		       COALESCE(input,''), state, COALESCE(blocked_reason,''), COALESCE(metadata,''),
-		       COALESCE(outstanding_workflows,0), created_at, updated_at
-		FROM internal_tasks ORDER BY created_at DESC, id DESC LIMIT ?
-	`, limit)
+		SELECT t.id, COALESCE(t.parent_task_id,''), t.title, COALESCE(t.description,''),
+		       COALESCE(t.input,''), t.state, COALESCE(t.blocked_reason,''), COALESCE(t.metadata,''),
+		       COALESCE(t.outstanding_workflows,0), t.created_at, t.updated_at
+		FROM internal_tasks t
+		WHERE `+strings.Join(where, " AND ")+`
+		ORDER BY t.created_at DESC, t.id DESC LIMIT ?
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -324,27 +387,16 @@ func (s *InternalTaskStore) ListTasks(ctx context.Context, limit int) ([]model.I
 	return collectTasks(rows)
 }
 
-// ListTasksBefore returns the page of internal tasks immediately older than the
-// (createdAt, id) cursor, in the same newest-first order as ListTasks. The cursor
-// is the last row of the previous page, so paging stays stable while new tasks
-// keep arriving at the head of the list. limit <= 0 defaults to 100.
-func (s *InternalTaskStore) ListTasksBefore(ctx context.Context, createdAt time.Time, id string, limit int) ([]model.InternalTask, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
-		       COALESCE(input,''), state, COALESCE(blocked_reason,''), COALESCE(metadata,''),
-		       COALESCE(outstanding_workflows,0), created_at, updated_at
-		FROM internal_tasks
-		WHERE created_at < ? OR (created_at = ? AND id < ?)
-		ORDER BY created_at DESC, id DESC LIMIT ?
-	`, createdAt, createdAt, id, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return collectTasks(rows)
+// placeholders returns n comma-separated SQL placeholders.
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// escapeLike escapes the LIKE wildcards in a literal so it matches itself
+// under ESCAPE '\'.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 // collectTasks scans every remaining row of a task query.
