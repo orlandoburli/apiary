@@ -2,6 +2,14 @@
 
 Companion to [proposal.md](proposal.md). GitHub issue #485.
 
+**Status: Phase 1 implemented.** Two deviations from the plan below, both made
+on contact with the code: the query lives in a new `internal/export` package
+rather than `internal/db`, because `db.New` migrates on open and the export
+must run read-only against a live daemon (it reuses `improve.OpenReadOnly`
+and probes columns the way `improve` does, so an older database exports with
+NULLs instead of failing). And the schema-drift guard (2.2) landed in Phase 1,
+since the real schema was already under test.
+
 Two phases, each a shippable PR. Phase 1 delivers the whole user-facing
 feature; Phase 2 is documentation and the schema-drift guard, split out so the
 first PR stays reviewable.
@@ -16,23 +24,23 @@ changes are expected; if one turns out to be needed it goes in the idempotent
 
 ## Phase 1 — Query and command
 
-### 1.1 Read path — `internal/db/usage_export.go`
+### 1.1 Read path — `internal/export/usage.go` (was `internal/db`)
 
-- [ ] `UsageFilter` struct: `Since`, `Until time.Time`; `Workflows`, `Agents`,
+- [x] `UsageFilter` struct: `Since`, `Until time.Time`; `Workflows`, `Agents`,
       `Models`, `Sources`, `Statuses []string`; `IncludeTranscripts`,
       `IncludeSlowTools bool`.
-- [ ] `UsageRow` struct mirroring the proposal's column table, with
+- [x] `UsageRow` struct mirroring the proposal's column table, with
       `sql.Null*` fields for everything that can be NULL.
-- [ ] `ListUsageRows(ctx, UsageFilter, func(UsageRow) error) error`, a
+- [x] `ListUsageRows(ctx, UsageFilter, func(UsageRow) error) error`, a
       callback-per-row API so the CLI streams. Single query:
       `task_executions te LEFT JOIN workflow_instances wi ON wi.id =
       te.workflow_instance_id`, ordered by `te.started_at, te.id`. Filters
       compile to `WHERE` clauses with bound parameters; repeatable flags become
       `IN (...)`.
-- [ ] NULL `started_at` rows excluded unless `Statuses` contains `pending`.
-- [ ] Transcript and slow-tools columns are only selected when requested, so
+- [x] NULL `started_at` rows excluded unless `Statuses` contains `pending`.
+- [x] Transcript and slow-tools columns are only selected when requested, so
       the default export never reads the blob columns off disk.
-- [ ] Tests against a seeded in-memory store: every filter individually, the
+- [x] Tests against a seeded in-memory store: every filter individually, the
       pending rule, pre-workflow rows (NULL instance) surviving the join,
       ordering, and that a default export does not touch `input_prompt`
       (assert via a column-projection helper or `EXPLAIN`-free approach:
@@ -40,44 +48,49 @@ changes are expected; if one turns out to be needed it goes in the idempotent
 
 ### 1.2 Window parsing
 
-- [ ] Extend or wrap `improve.ParseWindow` so `--since` accepts an absolute
-      date (`2026-09-01`, RFC3339) in addition to durations. Decide by
-      `impact` whether to touch `ParseWindow` in place or add
-      `ParseSinceUntil` next to it; the improve callers must be unaffected.
-- [ ] `--until` parses the same forms and defaults to now.
+- [x] `export.ParseBound` accepts a duration (`7d`, `24h`), a date
+      (`2026-09-01`) or RFC3339. `improve.ParseWindow` was left untouched
+      rather than widened; the two packages do not share code.
+- [x] `--until` parses the same forms and defaults to now.
 
-### 1.3 Writers — `internal/cli/export_usage.go`
+### 1.3 Writers — `internal/export/writers.go`
 
-- [ ] `csvWriter`: header row from the fixed column list, `encoding/csv`,
+- [x] `csvWriter`: header row from the fixed column list, `encoding/csv`,
       RFC3339 UTC timestamps, six-decimal `cost_usd`, `true`/`false` for
       `credit_exhausted`, `error_message` newlines collapsed to spaces.
-- [ ] `jsonWriter`: streams `[`, comma-separated objects, `]` so the file is
+- [x] `jsonWriter`: streams `[`, comma-separated objects, `]` so the file is
       valid JSON without buffering; explicit `null` for NULL columns.
-- [ ] Both writers take an `io.Writer`; `-o` opens the file, default stdout.
+- [x] Both writers take an `io.Writer`; `-o` opens the file, default stdout.
       Write to a temp file and rename when `-o` is given, so an interrupted
       export never leaves a truncated file at the target path.
 
 ### 1.4 Command wiring — `internal/cli/export.go`
 
-- [ ] `apiary export` parent command with `usage` subcommand and the flag set
+- [x] `apiary export` parent command with `usage` subcommand and the flag set
       from the proposal. Register in `root.go`.
-- [ ] Open the store read-only the same way `improve.go` does (no migration;
+- [x] Open the store read-only the same way `improve.go` does (no migration;
       probe for post-release columns rather than assuming them).
-- [ ] Row count and elapsed time on stderr at the end; nothing else on
+- [x] Row count and elapsed time on stderr at the end; nothing else on
       stderr in a clean run so `apiary export usage | ...` pipelines stay quiet.
 - [ ] Exit codes: 0 on success, 1 on any error, 2 on flag misuse (matches the
-      CLI spec).
-- [ ] Tests: golden CSV and JSON for a small seeded store, transcript opt-in,
-      `-o` atomic write, filter flags reaching the query.
+      CLI spec). Not done: cobra exits 1 on flag errors for every command;
+      an export-only exit 2 would be inconsistent. Revisit CLI-wide.
+- [x] Tests: CSV and JSON writer formatting, transcript opt-in, `-o` atomic
+      write (`openOutput`), every filter against the real schema. No golden
+      files: the writer tests assert per-cell so a column addition does not
+      churn a fixture.
 
 ### 1.5 Verify
 
-- [ ] `make check`.
-- [ ] Run against a copy of a real hive database with the daemon running;
-      confirm no lock contention and that a 100k-row export streams under
-      constant memory (`/usr/bin/time -l`).
-- [ ] `detect_changes()` shows only `internal/db`, `internal/cli`, and the
-      improve window parser if touched.
+- [x] `go build ./... && go test ./...` clean.
+- [x] Run against a copy of a real hive database, padded to 100k rows:
+      streams under constant memory (`/usr/bin/time -l`). Found and fixed on
+      the way: `improve.OpenReadOnly` sets `journal_mode(WAL)`, which fails
+      on any non-WAL file (a `VACUUM INTO` backup), so the export has its own
+      `export.OpenReadOnly` without it. The same latent failure remains in
+      `apiary improve`.
+- [x] `detect_changes()`: no indexed symbol changed; the only edit to existing
+      code is the `AddCommand` list in `root.go`.
 
 ---
 
@@ -97,7 +110,7 @@ changes are expected; if one turns out to be needed it goes in the idempotent
 
 ### 2.2 Schema-drift guard
 
-- [ ] Test in `internal/db` that reads the `task_executions` column list from
+- [x] Test in `internal/db` that reads the `task_executions` column list from
       the live schema and asserts every column is either in the export
       column set or in an explicit `unexported` allowlist (`pid`,
       `heartbeat_at`, `heartbeat_count`, `can_retry`, `next_retry_at`,
