@@ -706,6 +706,30 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// Jump to (or toggle) the approvals-only Tasks filter (Shift+A): from
+	// anywhere it switches to the Tasks list showing only instances parked on
+	// a human approval gate (blockedOnApproval), so "what needs my approval"
+	// does not require scanning the whole — possibly routine-noisy — task
+	// list by hand (#476). Pressed again from that filtered list, it turns
+	// the filter back off.
+	if key == "A" {
+		if t := a.model.tasksTab; t != nil {
+			alreadyThere := a.model.ActiveTab() == "Tasks" && t.View == TaskViewList
+			if alreadyThere {
+				t.ApprovalsOnly = !t.ApprovalsOnly
+			} else {
+				t.View = TaskViewList
+				t.ApprovalsOnly = true
+			}
+			t.SelectedIdx = 0
+			t.ScrollOffset = 0
+			a.model.SetActiveTab("Tasks")
+			a.model.loading = true
+			return a, a.fetchActiveTab()
+		}
+		return a, nil
+	}
+
 	// While a Tasks sub-view (detail/logs/workflow) is open, keys are scoped to it.
 	if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.View != TaskViewList {
 		return a.handleTaskSubViewKey(key)
@@ -3459,7 +3483,7 @@ func (a *App) renderOverviewTab(height int) string {
 	// and dimmed to a plain zero otherwise.
 	approvals := StyleMuted.Render("0")
 	if o.PendingApprovals > 0 {
-		approvals = StyleWarning.Render(fmt.Sprintf("%d ⏸ — press a on the task to answer", o.PendingApprovals))
+		approvals = StyleWarning.Render(fmt.Sprintf("%d ⏸ — Shift+A to list, a on the task to answer", o.PendingApprovals))
 	}
 
 	fmt.Fprintf(&b,
@@ -3593,10 +3617,15 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 	items := a.filteredTasks(t)
 	if len(items) == 0 {
 		msg := "No tasks yet — start the dispatcher and give it work."
-		if t.FilterText != "" {
+		if t.ApprovalsOnly {
+			msg = "Nothing is waiting on approval right now"
+		} else if t.FilterText != "" {
 			msg = "No tasks match filter"
 		}
 		title := "TASKS"
+		if t.ApprovalsOnly {
+			title += " [⏸ approvals]"
+		}
 		if t.FilterActive {
 			title += " [/" + t.FilterText + "▌]"
 		} else if t.FilterText != "" {
@@ -3641,6 +3670,9 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 	// Box title with sort/filter indicators
 	title := "TASKS"
 	parts := []string{}
+	if t.ApprovalsOnly {
+		parts = append(parts, "⏸ approvals")
+	}
 	if t.FilterActive {
 		parts = append(parts, "/"+t.FilterText+"▌")
 	} else if t.FilterText != "" {
@@ -3732,6 +3764,15 @@ func compareTimePtr(a, b *time.Time) int {
 // filteredTasks returns the task list after applying filter and sort.
 func (a *App) filteredTasks(t *TasksTab) []TaskItem {
 	out := t.History
+	if t.ApprovalsOnly {
+		var filtered []TaskItem
+		for _, it := range out {
+			if blockedOnApproval(it.Status, it.BlockedReason) {
+				filtered = append(filtered, it)
+			}
+		}
+		out = filtered
+	}
 	if t.FilterText != "" {
 		filter := strings.ToLower(t.FilterText)
 		var filtered []TaskItem
@@ -5541,7 +5582,7 @@ func (a *App) footerKeys() []fkey {
 				return []fkey{{"type", "filter"}, {"enter", "apply"}, {"esc", "cancel"}}
 			}
 		}
-		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"/", "filter"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"W", "run wf"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
+		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"/", "filter"}, {"A", "approvals"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"W", "run wf"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
 	case "Workflows":
 		if wt := a.model.workflowsTab; wt != nil && wt.Focus == WorkflowsViewSteps {
 			return []fkey{{"↑/↓", "step"}, {"esc/←", "back"}, {"tab", "next tab"}, {"q", "quit"}}
@@ -5578,7 +5619,7 @@ func (a *App) footerKeys() []fkey {
 		}
 		return []fkey{{"w", wrap}, {"←/→", "scroll"}, {"↑/↓", "lines"}, {"pgup/dn", "page"}, {"home/end", "ends"}, {"tab", "switch"}, {"q", "quit"}}
 	default: // Overview
-		return []fkey{{"tab", "next"}, {"⇧tab", "prev"}, {"W", "run wf"}, {"r", "refresh"}, {"q", "quit"}}
+		return []fkey{{"tab", "next"}, {"⇧tab", "prev"}, {"A", "approvals"}, {"W", "run wf"}, {"r", "refresh"}, {"q", "quit"}}
 	}
 }
 

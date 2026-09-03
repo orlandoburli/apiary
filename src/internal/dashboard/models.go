@@ -172,6 +172,12 @@ type TasksTab struct {
 	FilterActive bool   // true while typing a filter
 	SortField    string // "time" | "status" | "agent"  (default "time")
 	SortAsc      bool
+
+	// ApprovalsOnly narrows the list to tasks parked on a human approval gate
+	// (blockedOnApproval), so "what needs my approval" does not require hunting
+	// through routine/scheduled noise. Toggled with Shift+A; jumping here from
+	// the Overview badge (also Shift+A) turns it on (#476).
+	ApprovalsOnly bool
 }
 
 // WorkflowInstanceItem is a workflow instance bound to a task, with its steps,
@@ -525,4 +531,17 @@ func (m *Model) PrevTab() {
 	if m.activeTab < 0 {
 		m.activeTab = len(m.tabs) - 1
 	}
+}
+
+// SetActiveTab jumps directly to the named tab (e.g. from a cross-tab
+// shortcut like the Overview approvals badge). Returns false, leaving the
+// active tab unchanged, if name is not one of m.tabs.
+func (m *Model) SetActiveTab(name string) bool {
+	for i, t := range m.tabs {
+		if t == name {
+			m.activeTab = i
+			return true
+		}
+	}
+	return false
 }
