@@ -3622,12 +3622,49 @@ func (a *App) renderTasksTab(height int) string {
 	}
 }
 
+// approvalsEmptyMessage explains why the approvals-only view (Shift+A) has
+// nothing to show. "Nothing is waiting on approval right now" is only true
+// when that is actually the case — TicketsOnly (Shift+T) and the text filter
+// both compose with ApprovalsOnly as a strict AND in filteredTasks, so a
+// leftover toggle from earlier in the session can hide a real pending
+// approval while this view claims there is none. That is the one thing this
+// view exists to never do (#476), so when the unfiltered history has
+// approval-waiting tasks that some other active filter is hiding, say so
+// instead.
+func (a *App) approvalsEmptyMessage(t *TasksTab) string {
+	waiting := 0
+	for _, it := range t.History {
+		if blockedOnApproval(it.Status, it.BlockedReason) {
+			waiting++
+		}
+	}
+	if waiting == 0 {
+		return "Nothing is waiting on approval right now"
+	}
+	plural := "s"
+	if waiting == 1 {
+		plural = ""
+	}
+	switch {
+	case t.TicketsOnly && t.FilterText != "":
+		return fmt.Sprintf("%d task%s waiting on approval, hidden by tickets-only and the filter — Shift+T and esc to show them", waiting, plural)
+	case t.TicketsOnly:
+		return fmt.Sprintf("%d task%s waiting on approval, hidden by tickets-only — Shift+T to include routine/plugin-sourced runs", waiting, plural)
+	case t.FilterText != "":
+		return fmt.Sprintf("%d task%s waiting on approval, hidden by the filter — esc to clear it", waiting, plural)
+	default:
+		// Every other active filter was ruled out above, so filteredTasks and
+		// this count should agree — fall back rather than assert a mismatch.
+		return "Nothing is waiting on approval right now"
+	}
+}
+
 func (a *App) renderTaskList(t *TasksTab, height int) string {
 	items := a.filteredTasks(t)
 	if len(items) == 0 {
 		msg := "No tasks yet — start the dispatcher and give it work."
 		if t.ApprovalsOnly {
-			msg = "Nothing is waiting on approval right now"
+			msg = a.approvalsEmptyMessage(t)
 		} else if t.FilterText != "" {
 			msg = "No tasks match filter"
 		} else if t.TicketsOnly {
