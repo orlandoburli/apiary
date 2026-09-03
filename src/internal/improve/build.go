@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net/url"
 	"sort"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/config"
+	"github.com/orlandoburli/apiary/internal/export"
 )
 
 // Options configures a single evidence-pack build.
@@ -30,19 +30,13 @@ type Options struct {
 // OpenReadOnly opens the Apiary database for analysis without touching it. The
 // improve command must never migrate, write or lock the database a running
 // daemon depends on, so it opens its own read-only connection rather than going
-// through db.Client (which initialises schema on open).
+// through db.Client (which initialises schema on open). It shares the export
+// opener, which deliberately sets no journal mode: setting journal_mode(WAL)
+// is a write, and it made opening any non-WAL file (a backup taken with VACUUM
+// INTO, a copy made with the daemon stopped) fail with "attempt to write a
+// readonly database".
 func OpenReadOnly(dbPath string) (*sql.DB, error) {
-	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_time_format=sqlite",
-		url.PathEscape(dbPath))
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
-	}
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("open database %s: %w", dbPath, err)
-	}
-	return db, nil
+	return export.OpenReadOnly(dbPath)
 }
 
 // Build assembles the complete evidence pack. Every number in the result is
