@@ -99,6 +99,15 @@ type TasksTab struct {
 	History     []TaskItem // running + past tasks, newest first
 	SelectedIdx int
 
+	// List pagination: the tab loads the newest taskPageSize tasks and appends
+	// an older page when the cursor is pushed past the last row. The periodic
+	// refresh re-queries the whole loaded window so appended pages survive it.
+	ListWindow      int       // rows the refresh re-queries (0 = taskPageSize)
+	ListOldestAt    time.Time // created_at of the oldest loaded task (older-page cursor)
+	ListOldestID    string    // id of the oldest loaded task (cursor tie-breaker)
+	ListHasMore     bool      // an older page may exist (last load filled the page)
+	ListLoadingMore bool      // an older-page fetch is in flight (de-dupe guard)
+
 	View TaskView
 	// Board cursor (View == TaskViewBoard): column index within the *visible*
 	// columns, and row within that column. Both are clamped on every render,
@@ -550,4 +559,14 @@ func (m *Model) SetActiveTab(name string) bool {
 		}
 	}
 	return false
+}
+
+// resetListPages forgets the loaded pages and the older-page cursor so the
+// next fetch starts again from the newest row (used when the filter changes).
+func (t *TasksTab) resetListPages() {
+	t.ListWindow = 0
+	t.ListOldestAt = time.Time{}
+	t.ListOldestID = ""
+	t.ListHasMore = false
+	t.ListLoadingMore = false
 }
