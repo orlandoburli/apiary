@@ -2,7 +2,7 @@
 
 Companion to [proposal.md](proposal.md). GitHub issue #485.
 
-**Status: complete.** Phase 1 shipped in PR #487, Phase 2 in the docs PR that archived this change. Two deviations from the plan below, both made
+**Status: complete.** Phase 1 shipped in PR #487, Phase 2 in PR #488. Two deviations from the plan below, both made
 on contact with the code: the query lives in a new `internal/export` package
 rather than `internal/db`, because `db.New` migrates on open and the export
 must run read-only against a live daemon (it reuses `improve.OpenReadOnly`
