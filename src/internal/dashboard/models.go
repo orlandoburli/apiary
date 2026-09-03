@@ -173,6 +173,12 @@ type TasksTab struct {
 	SortField    string // "time" | "status" | "agent"  (default "time")
 	SortAsc      bool
 
+	// TicketsOnly hides rows with no real ticket behind them — scheduled
+	// routine runs and other plugin-sourced work items — keeping only tasks
+	// bound to a source item from a ticket-tracker source (issue #475).
+	// Toggled in place; default off keeps today's unfiltered list.
+	TicketsOnly bool
+
 	// ApprovalsOnly narrows the list to tasks parked on a human approval gate
 	// (blockedOnApproval), so "what needs my approval" does not require hunting
 	// through routine/scheduled noise. Toggled with Shift+A; jumping here from

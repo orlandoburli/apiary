@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/state"
@@ -451,9 +452,19 @@ type WorkflowInstanceView struct {
 
 // ListWorkflowInstanceViews returns recent instances (newest first) joined with
 // the cell title, optionally filtered by state and/or workflow id.
-func (c *Client) ListWorkflowInstanceViews(ctx context.Context, state, workflowID string, limit int) ([]WorkflowInstanceView, error) {
+//
+// ticketSourceIDs, when non-nil, restricts the result to instances whose
+// source_id is in that set — the ticket-tracker allow-list computed from
+// config.Config.TicketSourceIDs, used by `apiary instances --tickets-only` and
+// the dashboard's equivalent toggle (issue #475) to exclude routine/plugin-
+// sourced runs. A non-nil empty slice (no ticket-tracker sources configured)
+// correctly yields no rows. Pass nil to keep today's unfiltered behavior.
+func (c *Client) ListWorkflowInstanceViews(ctx context.Context, state, workflowID string, ticketSourceIDs []string, limit int) ([]WorkflowInstanceView, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	if ticketSourceIDs != nil && len(ticketSourceIDs) == 0 {
+		return nil, nil
 	}
 	q := `
 		SELECT wi.id, wi.workflow_id, wi.cell_id, COALESCE(wi.source_id,''), wi.state,
@@ -470,6 +481,12 @@ func (c *Client) ListWorkflowInstanceViews(ctx context.Context, state, workflowI
 	if workflowID != "" {
 		q += " AND wi.workflow_id = ?"
 		args = append(args, workflowID)
+	}
+	if ticketSourceIDs != nil {
+		q += " AND wi.source_id IN (" + strings.TrimSuffix(strings.Repeat("?,", len(ticketSourceIDs)), ",") + ")"
+		for _, id := range ticketSourceIDs {
+			args = append(args, id)
+		}
 	}
 	q += " ORDER BY wi.created_at DESC LIMIT ?"
 	args = append(args, limit)

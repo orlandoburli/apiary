@@ -92,6 +92,47 @@ func (s SourceConfig) ParsedPollInterval() (time.Duration, error) {
 	return time.ParseDuration(s.PollInterval)
 }
 
+// ticketSourceTypes are the registered source types that track a real,
+// human-filed ticket or issue — as opposed to a source that mints synthetic
+// work items with no ticket behind them (a cron occurrence, a monitoring
+// alert). This is deliberately an allow-list, not a block-list on "plugin":
+// dynatrace and prometheus are their own registered types (see
+// internal/source/{dynatrace,prometheus}), not "plugin", so a block-list on
+// "plugin" alone would count their alerts as ticket-bound. An allow-list fails
+// safe instead — a new non-ticket adapter is excluded by default until someone
+// deliberately adds its type here, rather than silently included.
+var ticketSourceTypes = map[string]bool{
+	"jira":   true,
+	"github": true,
+	"plane":  true,
+}
+
+// IsTicketSourceType reports whether a source of the given config type is an
+// external ticket/issue tracker (jira, github, plane) as opposed to a source
+// — plugin-bridged (type "plugin") or a built-in monitoring adapter
+// (dynatrace, prometheus) — that mints work items with no real ticket behind
+// them. It is the structural signal behind the "ticket-bound vs.
+// routine/alert-sourced" split in the task list (#475).
+func IsTicketSourceType(sourceType string) bool {
+	return ticketSourceTypes[sourceType]
+}
+
+// TicketSourceIDs returns the ids of every configured source whose type is a
+// ticket tracker per IsTicketSourceType — the allow-list used to filter the
+// task/instance list down to ticket-bound work (issue #475).
+func (c *Config) TicketSourceIDs() []string {
+	if c == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(c.Sources))
+	for _, s := range c.Sources {
+		if IsTicketSourceType(s.Type) {
+			ids = append(ids, s.ID)
+		}
+	}
+	return ids
+}
+
 type SourceFilters struct {
 	States []string `yaml:"states"`
 	Labels []string `yaml:"labels"`

@@ -30,11 +30,12 @@ var (
 
 func newInstancesCmd() *cobra.Command {
 	var (
-		workflow string
-		state    string
-		limit    int
-		asJSON   bool
-		cancel   bool
+		workflow    string
+		state       string
+		limit       int
+		asJSON      bool
+		cancel      bool
+		ticketsOnly bool
 	)
 
 	cmd := &cobra.Command{
@@ -45,7 +46,10 @@ func newInstancesCmd() *cobra.Command {
 			"and the instance is marked interrupted, without touching the source item's\n" +
 			"labels or state (unlike `apiary restart`, which acts on the whole cell).\n" +
 			"Queued or leased dispatch jobs for the same task and workflow are cancelled\n" +
-			"with it. A cancelled instance can be continued later with `apiary resume`.",
+			"with it. A cancelled instance can be continued later with `apiary resume`.\n\n" +
+			"--tickets-only hides instances with no real ticket behind them — scheduled\n" +
+			"routine runs and other plugin-sourced work items — keeping only instances\n" +
+			"bound to a source item from a ticket-tracker source (jira, github, plane, ...).",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cancel {
@@ -57,7 +61,7 @@ func newInstancesCmd() *cobra.Command {
 			if len(args) == 1 {
 				return showInstance(args[0], asJSON)
 			}
-			return listInstances(workflow, state, limit, asJSON)
+			return listInstances(workflow, state, limit, asJSON, ticketsOnly)
 		},
 	}
 
@@ -66,6 +70,8 @@ func newInstancesCmd() *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 20, "max rows")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output as JSON")
 	cmd.Flags().BoolVar(&cancel, "cancel", false, "stop this instance and mark it interrupted")
+	cmd.Flags().BoolVar(&ticketsOnly, "tickets-only", false,
+		"only show instances bound to a real ticket/issue (excludes scheduled routine and other plugin-sourced runs)")
 	cmd.AddCommand(newInstancesCompareCmd())
 	return cmd
 }
@@ -153,13 +159,16 @@ func cancelInstance(id string, asJSON bool) error {
 	return nil
 }
 
-func listInstances(workflow, state string, limit int, asJSON bool) error {
+func listInstances(workflow, state string, limit int, asJSON, ticketsOnly bool) error {
 	q := url.Values{}
 	if workflow != "" {
 		q.Set("workflow", workflow)
 	}
 	if state != "" {
 		q.Set("state", state)
+	}
+	if ticketsOnly {
+		q.Set("tickets_only", "1")
 	}
 	q.Set("limit", fmt.Sprintf("%d", limit))
 

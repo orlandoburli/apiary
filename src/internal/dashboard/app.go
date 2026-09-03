@@ -815,6 +815,15 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.model.tasksTab.View = TaskViewList
 			}
 		}
+	case "T":
+		// Toggle hiding routine/plugin-sourced runs with no real ticket behind
+		// them, keeping only tasks bound to a ticket-tracker source item
+		// (issue #475). Off by default, so the unfiltered list is unchanged.
+		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.View == TaskViewList {
+			t := a.model.tasksTab
+			t.TicketsOnly = !t.TicketsOnly
+			t.SelectedIdx = 0
+		}
 	case "r":
 		a.model.loading = true
 		return a, a.fetchActiveTab()
@@ -3621,8 +3630,13 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 			msg = "Nothing is waiting on approval right now"
 		} else if t.FilterText != "" {
 			msg = "No tasks match filter"
+		} else if t.TicketsOnly {
+			msg = "No ticket-bound tasks (Shift+T to show routine/plugin-sourced runs too)"
 		}
 		title := "TASKS"
+		if t.TicketsOnly {
+			title += " [tickets-only]"
+		}
 		if t.ApprovalsOnly {
 			title += " [⏸ approvals]"
 		}
@@ -3670,6 +3684,9 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 	// Box title with sort/filter indicators
 	title := "TASKS"
 	parts := []string{}
+	if t.TicketsOnly {
+		parts = append(parts, "tickets-only")
+	}
 	if t.ApprovalsOnly {
 		parts = append(parts, "⏸ approvals")
 	}
@@ -3761,9 +3778,49 @@ func compareTimePtr(a, b *time.Time) int {
 	}
 }
 
-// filteredTasks returns the task list after applying filter and sort.
+// isTicketSource reports whether sourceID is configured as a ticket-tracker
+// source (config.IsTicketSourceType), as opposed to a plugin-bridged
+// scheduler/monitoring source. An id not found in config — a stale binding
+// from a source that was since removed — is treated as ticket-bound so the
+// filter never hides a row it cannot classify.
+func (a *App) isTicketSource(sourceID string) bool {
+	if a.cfg == nil {
+		return true
+	}
+	for _, s := range a.cfg.Sources {
+		if s.ID == sourceID {
+			return config.IsTicketSourceType(s.Type)
+		}
+	}
+	return true
+}
+
+// hasTicket reports whether a task row is bound to a ticket-tracker source
+// item, as opposed to being a scheduled routine or other plugin-sourced run
+// with no real ticket behind it (issue #475). A task with no bindings at all
+// (a spawned/internal task) is not ticket-bound either.
+func (a *App) hasTicket(it TaskItem) bool {
+	for _, b := range it.Bindings {
+		if a.isTicketSource(b.SourceID) {
+			return true
+		}
+	}
+	return false
+}
+
+// filteredTasks returns the task list after applying the tickets-only toggle,
+// the text filter, and sort.
 func (a *App) filteredTasks(t *TasksTab) []TaskItem {
 	out := t.History
+	if t.TicketsOnly {
+		var ticketed []TaskItem
+		for _, it := range out {
+			if a.hasTicket(it) {
+				ticketed = append(ticketed, it)
+			}
+		}
+		out = ticketed
+	}
 	if t.ApprovalsOnly {
 		var filtered []TaskItem
 		for _, it := range out {
@@ -5582,7 +5639,7 @@ func (a *App) footerKeys() []fkey {
 				return []fkey{{"type", "filter"}, {"enter", "apply"}, {"esc", "cancel"}}
 			}
 		}
-		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"/", "filter"}, {"A", "approvals"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"W", "run wf"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
+		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"/", "filter"}, {"T", "tickets-only"}, {"A", "approvals"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"W", "run wf"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
 	case "Workflows":
 		if wt := a.model.workflowsTab; wt != nil && wt.Focus == WorkflowsViewSteps {
 			return []fkey{{"↑/↓", "step"}, {"esc/←", "back"}, {"tab", "next tab"}, {"q", "quit"}}

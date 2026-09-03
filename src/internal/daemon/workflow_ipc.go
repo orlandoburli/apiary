@@ -327,12 +327,18 @@ func (d *Dispatcher) StopInstance(ctx context.Context, instanceID string) error 
 }
 
 // Instances returns workflow instances for the IPC list endpoint, optionally
-// filtered by state and/or workflow id.
-func (d *Dispatcher) Instances(ctx context.Context, state, workflowID string, limit int) (InstancesResponse, error) {
+// filtered by state and/or workflow id. ticketsOnly excludes instances whose
+// source is not a ticket-tracker per config.IsTicketSourceType — routine and
+// other plugin-sourced runs with no real ticket behind them (issue #475).
+func (d *Dispatcher) Instances(ctx context.Context, state, workflowID string, limit int, ticketsOnly bool) (InstancesResponse, error) {
 	if d.db == nil {
 		return InstancesResponse{}, nil
 	}
-	views, err := d.db.ListWorkflowInstanceViews(ctx, state, workflowID, limit)
+	var ticketSourceIDs []string
+	if ticketsOnly {
+		ticketSourceIDs = d.cfg.TicketSourceIDs()
+	}
+	views, err := d.db.ListWorkflowInstanceViews(ctx, state, workflowID, ticketSourceIDs, limit)
 	if err != nil {
 		return InstancesResponse{}, err
 	}
