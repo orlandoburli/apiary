@@ -162,6 +162,22 @@ func confirm(prompt string) bool {
 	return line == "y" || line == "yes"
 }
 
+// confirmDefault is confirm with a default answer: a bare Enter returns def
+// instead of always reading as "no". Use it only where the default path is the
+// safe, common one to assume for the action at hand — e.g. approving a request
+// that context was just printed for — never for a destructive or terminal
+// action like rejecting one, which should keep requiring explicit, unambiguous
+// input (#473).
+func confirmDefault(prompt string, def bool) bool {
+	fmt.Print(prompt)
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	line = strings.ToLower(strings.TrimSpace(line))
+	if line == "" {
+		return def
+	}
+	return line == "y" || line == "yes"
+}
+
 // ipcDo performs an HTTP request against the daemon's Unix socket and decodes a
 // JSON response into out (when non-nil). It returns the HTTP status code (0 on
 // transport failure) so callers can map distinct exit codes.
