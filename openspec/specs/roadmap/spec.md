@@ -54,10 +54,10 @@ Ordered by intended sequence.
    to workflow/step context, CSV/JSON, transcripts opt-in. GitHub issue #485.
 2. [ ] **Code signing and notarization** — macOS notarization and Windows
    signing in the GoReleaser pipeline. Blocked on obtaining certificates.
-3. [ ] **Plugin SDK conformance kit** — language-agnostic golden-file corpus so
-   every SDK and the documented Python/Rust/Bash examples validate against the
-   same fixtures. First deliverable of GitHub issue #367; language packages
-   (Python, TypeScript, Rust) follow on demand.
+3. [ ] **Plugin SDKs beyond Go and Python** — `sdk/python` and the
+   conformance kit in `sdk/conformance` already exist; TypeScript and Rust
+   packages follow on demand, validated against the same fixtures. GitHub
+   issue #367.
 4. [ ] **Stable config schema (1.0)** — freeze `apiary.yaml` and the plugin
    protocol; breaking changes require a major version afterwards.
 
