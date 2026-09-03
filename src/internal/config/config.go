@@ -92,16 +92,29 @@ func (s SourceConfig) ParsedPollInterval() (time.Duration, error) {
 	return time.ParseDuration(s.PollInterval)
 }
 
+// ticketSourceTypes are the registered source types that track a real,
+// human-filed ticket or issue — as opposed to a source that mints synthetic
+// work items with no ticket behind them (a cron occurrence, a monitoring
+// alert). This is deliberately an allow-list, not a block-list on "plugin":
+// dynatrace and prometheus are their own registered types (see
+// internal/source/{dynatrace,prometheus}), not "plugin", so a block-list on
+// "plugin" alone would count their alerts as ticket-bound. An allow-list fails
+// safe instead — a new non-ticket adapter is excluded by default until someone
+// deliberately adds its type here, rather than silently included.
+var ticketSourceTypes = map[string]bool{
+	"jira":   true,
+	"github": true,
+	"plane":  true,
+}
+
 // IsTicketSourceType reports whether a source of the given config type is an
-// external ticket/issue tracker (jira, github, plane, ...) as opposed to a
-// plugin-bridged source (type "plugin") such as the scheduled-routines or
-// monitoring adapters, which mint work items with no real ticket behind them
-// (a cron occurrence, an alert). It is the structural signal behind the
-// "ticket-bound vs. routine/plugin-sourced" split in the task list (#475):
-// checking the configured kind, not a specific source id, so any future
-// plugin-sourced routine is excluded the same way without special-casing it.
+// external ticket/issue tracker (jira, github, plane) as opposed to a source
+// — plugin-bridged (type "plugin") or a built-in monitoring adapter
+// (dynatrace, prometheus) — that mints work items with no real ticket behind
+// them. It is the structural signal behind the "ticket-bound vs.
+// routine/alert-sourced" split in the task list (#475).
 func IsTicketSourceType(sourceType string) bool {
-	return sourceType != "" && sourceType != "plugin"
+	return ticketSourceTypes[sourceType]
 }
 
 // TicketSourceIDs returns the ids of every configured source whose type is a

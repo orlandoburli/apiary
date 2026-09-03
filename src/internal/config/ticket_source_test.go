@@ -3,17 +3,22 @@ package config
 import "testing"
 
 // TestIsTicketSourceType checks the structural signal behind the ticket-vs-
-// routine split in the task list (issue #475): any type other than "plugin"
-// (a plugin-bridged scheduler/monitoring source) counts as a ticket tracker,
-// so a future ticket-tracker type needs no special-casing here, and a future
-// plugin-sourced routine is excluded the same way as today's.
+// routine split in the task list (issue #475): jira/github/plane are
+// ticket trackers, while "plugin" (the routines/scheduler bridge) and the
+// built-in monitoring adapters (dynatrace, prometheus) — which mint synthetic
+// work items with no real ticket behind them, same as a routine occurrence —
+// are not. This is an allow-list on purpose: a block-list on "plugin" alone
+// would wrongly count dynatrace/prometheus alerts as ticket-bound, since they
+// register under their own type, not "plugin".
 func TestIsTicketSourceType(t *testing.T) {
 	cases := map[string]bool{
-		"jira":   true,
-		"github": true,
-		"plane":  true,
-		"plugin": false,
-		"":       false,
+		"jira":       true,
+		"github":     true,
+		"plane":      true,
+		"plugin":     false,
+		"dynatrace":  false,
+		"prometheus": false,
+		"":           false,
 	}
 	for typ, want := range cases {
 		if got := IsTicketSourceType(typ); got != want {
