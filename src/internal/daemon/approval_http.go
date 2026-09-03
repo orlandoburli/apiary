@@ -31,8 +31,44 @@ func (d *Dispatcher) handleApprovals(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	for i := range requests {
+		d.enrichApprovalContext(r.Context(), &requests[i])
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(requests)
+}
+
+// enrichApprovalContext fills in TicketRef/TicketURL/PRNumber/PRURL from the
+// request's TaskID, so an operator sees what ticket and PR they are answering
+// for instead of just the internal workflow/step ids (#473).
+//
+// It is best-effort: a task with no source binding (or none yet) is common (an
+// operator gate on a workflow with no source item) and is not an error, just an
+// approval with no ticket context to show. It shares its resolution with
+// `apiary approve`/`apiary approvals <id>`, both of which reach it indirectly —
+// they fetch the same GET /approvals list and filter to the id they want, so a
+// second resolution path was never needed.
+func (d *Dispatcher) enrichApprovalContext(ctx context.Context, req *db.ApprovalRequest) {
+	if req.TaskID == "" || d.db == nil {
+		return
+	}
+	if bindings, err := d.db.ListBindingsByTask(ctx, req.TaskID); err == nil && len(bindings) > 0 {
+		b := bindings[0]
+		ref := b.SourceItemNumber
+		if ref == "" {
+			ref = b.SourceItemID
+		}
+		if ref != "" {
+			req.TicketRef = b.SourceID + "/" + ref
+		}
+		req.TicketURL = b.SourceItemURL
+	}
+	if prs, err := d.db.ListTaskPullRequests(ctx, req.TaskID); err == nil && len(prs) > 0 {
+		// The tail is the most recent PR (see ListTaskPullRequests).
+		pr := prs[len(prs)-1]
+		req.PRNumber = pr.PRNumber
+		req.PRURL = pr.PRURL
+	}
 }
 
 // handleApprovalResponse records one response to an approval request and, when
