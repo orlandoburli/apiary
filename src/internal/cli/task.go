@@ -42,11 +42,11 @@ func newTaskCmd() *cobra.Command {
 
 			var resp daemon.TaskHistoryResponse
 			if err := ipcGetJSON("/tasks/history?"+q.Encode(), &resp); err != nil {
-				if strings.Contains(err.Error(), "not found") {
-					fmt.Println(instErr.Render("No task history found."))
-					os.Exit(2)
+				if isDaemonDown(err) {
+					return daemonDownHint()
 				}
-				return daemonDownHint()
+				fmt.Println(instErr.Render(taskHistoryErrorMessage(err)))
+				os.Exit(2)
 			}
 
 			if asJSON {
@@ -60,9 +60,25 @@ func newTaskCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&source, "source", "", "resolve the task by source id (with --item), e.g. github")
-	cmd.Flags().StringVar(&item, "item", "", "resolve the task by source item id/number (with --source), e.g. 1948")
+	cmd.Flags().StringVar(&item, "item", "", "resolve the task by source item's human reference or cell id (with --source), e.g. PSP-278, #1948, or 1948")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output as JSON")
 	return cmd
+}
+
+// taskHistoryErrorMessage turns a non-2xx /tasks/history response into what the
+// user should see. ipcGetJSON prefixes the raw HTTP status onto the body
+// ("404 Not Found: <body>"), which is noise once isDaemonDown has already ruled
+// out a transport failure — the caller wants to know the reference did not
+// resolve or had no history, not that the wire status word was "Not Found".
+func taskHistoryErrorMessage(err error) string {
+	msg := err.Error()
+	if _, body, ok := strings.Cut(msg, ": "); ok && body != "" {
+		msg = body
+	}
+	if msg == "task history not found" {
+		return "No task history found."
+	}
+	return msg
 }
 
 // renderTaskHistory prints the per-instance history top-to-bottom (oldest first):

@@ -2,11 +2,14 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/db"
+	"github.com/orlandoburli/apiary/internal/model"
 )
 
 func mustCreateInstance(t *testing.T, dbc *db.Client, inst *db.WorkflowInstance) {
@@ -83,5 +86,83 @@ func TestTaskHistory_NoInstancesReturnsNil(t *testing.T) {
 	}
 	if resp != nil {
 		t.Errorf("expected nil for a task with no instances, got %+v", resp)
+	}
+}
+
+// TestResolveHistoryTaskID_AcceptsHumanReference is the #471 regression case:
+// /tasks/history's ?source=&item= used to match only the exact source_item_id
+// (GetBindingBySourceItem straight-up), so a Jira key — the only form of the
+// reference that ever appears in Jira's UI — resolved to nothing and the CLI
+// reported "Daemon is not running" for a daemon that was up. The item must
+// resolve through the same vocabulary dispatch/restart use (resolveCellRef).
+func TestResolveHistoryTaskID_AcceptsHumanReference(t *testing.T) {
+	ctx := context.Background()
+	dbc := openTestDB(ctx, t)
+	taskID := seedJiraTask(ctx, t, dbc, "300966", "PSP-278")
+
+	d := &Dispatcher{db: dbc}
+
+	got, err := d.resolveHistoryTaskID(ctx, "jira", "PSP-278")
+	if err != nil {
+		t.Fatalf("resolveHistoryTaskID(PSP-278): %v", err)
+	}
+	if got != taskID {
+		t.Errorf("resolved task = %q, want %q", got, taskID)
+	}
+
+	// The cell id form (what the old code required) must keep working too.
+	got, err = d.resolveHistoryTaskID(ctx, "jira", "300966")
+	if err != nil {
+		t.Fatalf("resolveHistoryTaskID(300966): %v", err)
+	}
+	if got != taskID {
+		t.Errorf("resolved task by cell id = %q, want %q", got, taskID)
+	}
+}
+
+// TestResolveHistoryTaskID_UnresolvedReferenceIsNotFound covers the second half
+// of #471: an item that does not resolve — wrong key, wrong source, or a bound
+// item with no history yet — must fail with a message naming the reference, not
+// a generic error the CLI could mistake for the daemon being unreachable.
+func TestResolveHistoryTaskID_UnresolvedReferenceIsNotFound(t *testing.T) {
+	ctx := context.Background()
+	dbc := openTestDB(ctx, t)
+	seedJiraTask(ctx, t, dbc, "300966", "PSP-278")
+
+	d := &Dispatcher{db: dbc}
+
+	_, err := d.resolveHistoryTaskID(ctx, "jira", "PSP-999")
+	if err == nil {
+		t.Fatal("expected an error for an unbound reference, got nil")
+	}
+	if !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("error = %v, want it to wrap ErrTaskNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "PSP-999") || !strings.Contains(err.Error(), "jira") {
+		t.Errorf("error %q should name the unresolved reference and source", err)
+	}
+}
+
+// TestResolveHistoryTaskID_AmbiguousReferenceIsRejected: a reference that matches
+// items in two different sources must not be guessed at (same #377 guard restart
+// uses), and must surface as ErrAmbiguousRef rather than a plain not-found. It
+// only triggers when source is left unscoped (?source= empty), since a caller
+// who names the source is asking to be scoped to it.
+func TestResolveHistoryTaskID_AmbiguousReferenceIsRejected(t *testing.T) {
+	ctx := context.Background()
+	dbc := openTestDB(ctx, t)
+
+	for _, s := range []struct{ source, itemID string }{{"jira", "10042"}, {"github", "77"}} {
+		task := &model.InternalTask{Title: "dup", State: model.TaskStateRunning}
+		binding := &model.SourceBinding{SourceID: s.source, SourceItemID: s.itemID, SourceItemNumber: "DUP-1"}
+		if err := dbc.CreateTaskWithBinding(ctx, task, binding); err != nil {
+			t.Fatalf("seed %s: %v", s.source, err)
+		}
+	}
+
+	d := &Dispatcher{db: dbc}
+	_, err := d.resolveHistoryTaskID(ctx, "", "DUP-1")
+	if !errors.Is(err, ErrAmbiguousRef) {
+		t.Fatalf("error = %v, want it to wrap ErrAmbiguousRef", err)
 	}
 }

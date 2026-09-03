@@ -153,16 +153,20 @@ func listApprovals(status string, limit int, asJSON bool) error {
 	// into `apiary approve`, and an elided one cannot be typed back. The column
 	// is sized to the widest id present so the rest of the table still lines up.
 	idWidth := len("REQUEST")
+	forWidth := len("FOR")
 	for _, r := range requests {
 		idWidth = max(idWidth, len(r.ID))
+		forWidth = max(forWidth, len(approvalContextLabel(r)))
 	}
+	forWidth = min(forWidth, 28)
 
 	fmt.Println()
-	fmt.Printf("  %s\n", instHeader.Render(fmt.Sprintf("%-*s %-16s %-14s %-9s %s",
-		idWidth, "REQUEST", "WORKFLOW", "STEP", "PARKED", "EXPIRES")))
+	fmt.Printf("  %s\n", instHeader.Render(fmt.Sprintf("%-*s %-*s %-16s %-14s %-9s %s",
+		idWidth, "REQUEST", forWidth, "FOR", "WORKFLOW", "STEP", "PARKED", "EXPIRES")))
 	for _, r := range requests {
-		fmt.Printf("  %-*s %-16s %-14s %-9s %s\n",
+		fmt.Printf("  %-*s %-*s %-16s %-14s %-9s %s\n",
 			idWidth, r.ID,
+			forWidth, truncate(approvalContextLabel(r), forWidth),
 			truncate(r.WorkflowID, 16),
 			truncate(r.StepID, 14),
 			shortDuration(time.Since(r.CreatedAt)),
@@ -196,6 +200,7 @@ func showApproval(id string, asJSON bool) error {
 		fmt.Println("  " + request.Message)
 	}
 	fmt.Println()
+	printApprovalContext(request)
 	fmt.Printf("  %-12s %s\n", instMuted.Render("workflow"), request.WorkflowID)
 	fmt.Printf("  %-12s %s\n", instMuted.Render("step"), request.StepID)
 	fmt.Printf("  %-12s %s\n", instMuted.Render("status"), request.Status)
@@ -243,6 +248,21 @@ func respondToApproval(id, decision string, fieldFlags []string, comment string,
 		os.Exit(4)
 	}
 
+	// Show what this request is actually for before asking anything else —
+	// including before any field prompt below — so an operator never answers
+	// blind. This used to run after field collection and right before the
+	// (default-no) confirmation, which is exactly backwards (#473).
+	if !asJSON {
+		fmt.Println()
+		fmt.Println("  " + instHeader.Render(request.ID))
+		printApprovalContext(request)
+		fmt.Printf("  %-12s %s\n", instMuted.Render("step"), request.StepID)
+		if request.Message != "" {
+			fmt.Println()
+			fmt.Println("  " + request.Message)
+		}
+	}
+
 	supplied, err := parseFieldFlags(fieldFlags)
 	if err != nil {
 		return err
@@ -258,10 +278,6 @@ func respondToApproval(id, decision string, fieldFlags []string, comment string,
 	}
 
 	if !yes && !asJSON && isInteractive() {
-		if request.Message != "" {
-			fmt.Println()
-			fmt.Println("  " + request.Message)
-		}
 		if len(values) > 0 {
 			fmt.Println()
 			for _, name := range sortedKeys(values) {
@@ -269,13 +285,67 @@ func respondToApproval(id, decision string, fieldFlags []string, comment string,
 			}
 		}
 		fmt.Println()
-		if !confirm(fmt.Sprintf("  %s %s? [y/N] ", strings.ToUpper(decision[:1])+decision[1:], id)) {
-			fmt.Println(instMuted.Render("  Cancelled."))
-			return nil
+		verb := strings.ToUpper(decision[:1]) + decision[1:]
+		if decision == "approve" {
+			// Approving is the common case an operator reaches for this command
+			// to do, so a bare Enter takes it — the context printed above is
+			// what makes that safe to assume.
+			if !confirmDefault(fmt.Sprintf("  %s %s? [Y/n] ", verb, id), true) {
+				fmt.Println(instMuted.Render("  Cancelled."))
+				return nil
+			}
+		} else {
+			// Rejection ends the gate and fails the workflow immediately, so it
+			// keeps requiring explicit, unambiguous input — a bare Enter here
+			// must never be read as "reject".
+			if !confirm(fmt.Sprintf("  %s %s? [y/N] ", verb, id)) {
+				fmt.Println(instMuted.Render("  Cancelled."))
+				return nil
+			}
 		}
 	}
 
 	return postApprovalResponse(request, decision, values, comment, asJSON)
+}
+
+// printApprovalContext prints the ticket/PR this request resolves to, when
+// known — TicketRef/TicketURL/PRNumber/PRURL are resolved by the daemon via the
+// request's TaskID (Dispatcher.enrichApprovalContext in internal/daemon) and
+// travel on db.ApprovalRequest itself. Shared by `apiary approvals <id>` and
+// the pre-decision context in `apiary approve`/`apiary reject`, so there is one
+// place that knows how to render it (#473).
+func printApprovalContext(request *db.ApprovalRequest) {
+	if request.TicketRef != "" {
+		line := request.TicketRef
+		if request.TicketURL != "" {
+			line += "  " + instMuted.Render(request.TicketURL)
+		}
+		fmt.Printf("  %-12s %s\n", instMuted.Render("ticket"), line)
+	}
+	if request.PRNumber != 0 {
+		line := fmt.Sprintf("#%d", request.PRNumber)
+		if request.PRURL != "" {
+			line += "  " + instMuted.Render(request.PRURL)
+		}
+		fmt.Printf("  %-12s %s\n", instMuted.Render("pr"), line)
+	}
+}
+
+// approvalContextLabel condenses TicketRef/PRNumber into the `apiary approvals`
+// table's FOR column: "source/ref" and/or "PR #n", joined; "—" when the
+// request's task resolved to neither (or has no task at all).
+func approvalContextLabel(r db.ApprovalRequest) string {
+	var parts []string
+	if r.TicketRef != "" {
+		parts = append(parts, r.TicketRef)
+	}
+	if r.PRNumber != 0 {
+		parts = append(parts, fmt.Sprintf("PR #%d", r.PRNumber))
+	}
+	if len(parts) == 0 {
+		return "—"
+	}
+	return strings.Join(parts, " · ")
 }
 
 // postApprovalResponse sends the answer and maps the outcome onto an exit code.

@@ -706,6 +706,30 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// Jump to (or toggle) the approvals-only Tasks filter (Shift+A): from
+	// anywhere it switches to the Tasks list showing only instances parked on
+	// a human approval gate (blockedOnApproval), so "what needs my approval"
+	// does not require scanning the whole — possibly routine-noisy — task
+	// list by hand (#476). Pressed again from that filtered list, it turns
+	// the filter back off.
+	if key == "A" {
+		if t := a.model.tasksTab; t != nil {
+			alreadyThere := a.model.ActiveTab() == "Tasks" && t.View == TaskViewList
+			if alreadyThere {
+				t.ApprovalsOnly = !t.ApprovalsOnly
+			} else {
+				t.View = TaskViewList
+				t.ApprovalsOnly = true
+			}
+			t.SelectedIdx = 0
+			t.ScrollOffset = 0
+			a.model.SetActiveTab("Tasks")
+			a.model.loading = true
+			return a, a.fetchActiveTab()
+		}
+		return a, nil
+	}
+
 	// While a Tasks sub-view (detail/logs/workflow) is open, keys are scoped to it.
 	if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.View != TaskViewList {
 		return a.handleTaskSubViewKey(key)
@@ -3468,7 +3492,7 @@ func (a *App) renderOverviewTab(height int) string {
 	// and dimmed to a plain zero otherwise.
 	approvals := StyleMuted.Render("0")
 	if o.PendingApprovals > 0 {
-		approvals = StyleWarning.Render(fmt.Sprintf("%d ⏸ — press a on the task to answer", o.PendingApprovals))
+		approvals = StyleWarning.Render(fmt.Sprintf("%d ⏸ — Shift+A to list, a on the task to answer", o.PendingApprovals))
 	}
 
 	fmt.Fprintf(&b,
@@ -3602,7 +3626,9 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 	items := a.filteredTasks(t)
 	if len(items) == 0 {
 		msg := "No tasks yet — start the dispatcher and give it work."
-		if t.FilterText != "" {
+		if t.ApprovalsOnly {
+			msg = "Nothing is waiting on approval right now"
+		} else if t.FilterText != "" {
 			msg = "No tasks match filter"
 		} else if t.TicketsOnly {
 			msg = "No ticket-bound tasks (Shift+T to show routine/plugin-sourced runs too)"
@@ -3610,6 +3636,9 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 		title := "TASKS"
 		if t.TicketsOnly {
 			title += " [tickets-only]"
+		}
+		if t.ApprovalsOnly {
+			title += " [⏸ approvals]"
 		}
 		if t.FilterActive {
 			title += " [/" + t.FilterText + "▌]"
@@ -3620,12 +3649,30 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 	}
 
 	const (
-		cursorW = 2
-		numW    = 10
-		agentW  = 16 // width of the progress column (formerly AGENT)
-		statusW = 8
-		whenW   = 11
+		cursorW  = 2
+		baseNumW = 10
+		maxNumW  = 40 // cap so one long reference can't collapse TASK to its floor
+		agentW   = 16 // width of the progress column (formerly AGENT)
+		statusW  = 8
+		whenW    = 11
 	)
+	// The # column used to be a fixed 10 chars, truncated from the tail. That
+	// is fine for short references ("#412", "ERP-42") but a routine occurrence
+	// id ("<routine>@<RFC3339 instant>", issue #472) is 29+ chars, and its
+	// distinguishing part — the timestamp — is exactly what a tail-truncated
+	// column cuts off. Size the column to the widest reference actually on
+	// screen; the room comes out of TASK below, which already has its own
+	// floor and is the more compressible of the two (a truncated title is
+	// still readable; a routine reference missing its occurrence is not).
+	numW := baseNumW
+	for _, it := range items {
+		if n := len([]rune(valueOr(it.Number, "—"))); n > numW {
+			numW = n
+		}
+	}
+	if numW > maxNumW {
+		numW = maxNumW
+	}
 	inner := a.model.width - 2
 	titleW := inner - cursorW - numW - agentW - statusW - whenW - 5
 	if titleW < 10 {
@@ -3639,6 +3686,9 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 	parts := []string{}
 	if t.TicketsOnly {
 		parts = append(parts, "tickets-only")
+	}
+	if t.ApprovalsOnly {
+		parts = append(parts, "⏸ approvals")
 	}
 	if t.FilterActive {
 		parts = append(parts, "/"+t.FilterText+"▌")
@@ -3681,7 +3731,7 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 		it := items[i]
 		selected := i == t.SelectedIdx
 		cursor := "  "
-		num := pad(truncate(valueOr(it.Number, "—"), numW), numW)
+		num := pad(format.TruncateMiddle(valueOr(it.Number, "—"), numW), numW)
 		titleText := pad(truncate(valueOr(it.Title, it.TaskID), titleW), titleW)
 		// The agent column used to live here. An agent is a property of a step,
 		// not of a task, so for a task running several steps it showed one
@@ -3770,6 +3820,15 @@ func (a *App) filteredTasks(t *TasksTab) []TaskItem {
 			}
 		}
 		out = ticketed
+	}
+	if t.ApprovalsOnly {
+		var filtered []TaskItem
+		for _, it := range out {
+			if blockedOnApproval(it.Status, it.BlockedReason) {
+				filtered = append(filtered, it)
+			}
+		}
+		out = filtered
 	}
 	if t.FilterText != "" {
 		filter := strings.ToLower(t.FilterText)
@@ -5580,7 +5639,7 @@ func (a *App) footerKeys() []fkey {
 				return []fkey{{"type", "filter"}, {"enter", "apply"}, {"esc", "cancel"}}
 			}
 		}
-		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"/", "filter"}, {"T", "tickets-only"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"W", "run wf"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
+		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"/", "filter"}, {"T", "tickets-only"}, {"A", "approvals"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"W", "run wf"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
 	case "Workflows":
 		if wt := a.model.workflowsTab; wt != nil && wt.Focus == WorkflowsViewSteps {
 			return []fkey{{"↑/↓", "step"}, {"esc/←", "back"}, {"tab", "next tab"}, {"q", "quit"}}
@@ -5617,7 +5676,7 @@ func (a *App) footerKeys() []fkey {
 		}
 		return []fkey{{"w", wrap}, {"←/→", "scroll"}, {"↑/↓", "lines"}, {"pgup/dn", "page"}, {"home/end", "ends"}, {"tab", "switch"}, {"q", "quit"}}
 	default: // Overview
-		return []fkey{{"tab", "next"}, {"⇧tab", "prev"}, {"W", "run wf"}, {"r", "refresh"}, {"q", "quit"}}
+		return []fkey{{"tab", "next"}, {"⇧tab", "prev"}, {"A", "approvals"}, {"W", "run wf"}, {"r", "refresh"}, {"q", "quit"}}
 	}
 }
 

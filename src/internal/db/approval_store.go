@@ -44,6 +44,18 @@ type ApprovalRequest struct {
 	RemindedAt  *time.Time `json:"reminded_at,omitempty"`
 	EscalatedAt *time.Time `json:"escalated_at,omitempty"`
 	RespondedAt *time.Time `json:"responded_at,omitempty"`
+
+	// TicketRef/TicketURL/PRNumber/PRURL surface what the request's task is
+	// actually for: the source item (Jira key / GitHub issue) it is bound to,
+	// and the most recently linked pull request. Neither is a column — they are
+	// resolved via TaskID (source_bindings, task_pull_requests) and stitched on
+	// by the daemon's /approvals HTTP handler for display only. Never set by
+	// CreateApprovalRequest/ResolveApprovalRequest/scanApproval, and never
+	// round-tripped back into the store (#473).
+	TicketRef string `json:"ticket_ref,omitempty"`
+	TicketURL string `json:"ticket_url,omitempty"`
+	PRNumber  int    `json:"pr_number,omitempty"`
+	PRURL     string `json:"pr_url,omitempty"`
 }
 
 type ApprovalResponse struct {

@@ -1074,6 +1074,30 @@ func (d *Dispatcher) resolveCellRef(ctx context.Context, ref, sourceID string) (
 	return b.SourceItemID, b.SourceItemNumber, nil
 }
 
+// resolveHistoryTaskID resolves the /tasks/history ?source=&item= pair to a task
+// id. item is accepted in either form resolveCellRef understands — the internal
+// cell id, or a human reference (Jira key, GitHub issue number, ...) — so this
+// endpoint agrees with dispatch/restart instead of only matching the exact
+// source_item_id (#471: a caller who only has the human reference, which for
+// several sources is the only form ever visible in the UI, used to be told the
+// daemon was not running). Returns a wrapped ErrTaskNotFound naming the reference
+// when nothing binds to it, rather than the earlier generic "no task bound to"
+// message keyed on the unresolved raw item.
+func (d *Dispatcher) resolveHistoryTaskID(ctx context.Context, source, item string) (string, error) {
+	cellID, _, err := d.resolveCellRef(ctx, item, source)
+	if err != nil {
+		return "", err
+	}
+	binding, err := d.db.SourceBindings().GetBindingBySourceItem(ctx, source, cellID)
+	if err != nil {
+		return "", err
+	}
+	if binding == nil {
+		return "", fmt.Errorf("%w: %q in source %s", ErrTaskNotFound, item, source)
+	}
+	return binding.TaskID, nil
+}
+
 // ForceRestart cancels a running dispatch for the given cell, removes it from
 // tracking maps, marks the execution as interrupted in the DB, resets the source
 // state, strips the cell's control labels — and then re-routes and dispatches the
@@ -1615,16 +1639,19 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 				http.Error(w, "no database", http.StatusServiceUnavailable)
 				return
 			}
-			binding, err := d.db.SourceBindings().GetBindingBySourceItem(r.Context(), source, item)
+			resolved, err := d.resolveHistoryTaskID(r.Context(), source, item)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				switch {
+				case errors.Is(err, ErrAmbiguousRef):
+					http.Error(w, err.Error(), http.StatusConflict)
+				case errors.Is(err, ErrTaskNotFound):
+					http.Error(w, err.Error(), http.StatusNotFound)
+				default:
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
 				return
 			}
-			if binding == nil {
-				http.Error(w, "no task bound to "+source+"/"+item, http.StatusNotFound)
-				return
-			}
-			taskID = binding.TaskID
+			taskID = resolved
 		}
 		hist, err := d.TaskHistory(r.Context(), taskID)
 		if err != nil {
