@@ -303,6 +303,10 @@ func (s *InternalTaskStore) ListTasksByState(ctx context.Context, state model.Ta
 // ListTasks returns the most recent internal tasks across all states, newest
 // first. limit <= 0 defaults to 100. It backs the dashboard Tasks tab, which
 // surfaces the InternalTask as the primary unit (not per-execution rows).
+//
+// Ties on created_at break on id (a ULID, so also time-ordered) so the order is
+// total and ListTasksBefore can continue from the last row without skipping or
+// repeating one.
 func (s *InternalTaskStore) ListTasks(ctx context.Context, limit int) ([]model.InternalTask, error) {
 	if limit <= 0 {
 		limit = 100
@@ -311,13 +315,40 @@ func (s *InternalTaskStore) ListTasks(ctx context.Context, limit int) ([]model.I
 		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
 		       COALESCE(input,''), state, COALESCE(blocked_reason,''), COALESCE(metadata,''),
 		       COALESCE(outstanding_workflows,0), created_at, updated_at
-		FROM internal_tasks ORDER BY created_at DESC LIMIT ?
+		FROM internal_tasks ORDER BY created_at DESC, id DESC LIMIT ?
 	`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return collectTasks(rows)
+}
 
+// ListTasksBefore returns the page of internal tasks immediately older than the
+// (createdAt, id) cursor, in the same newest-first order as ListTasks. The cursor
+// is the last row of the previous page, so paging stays stable while new tasks
+// keep arriving at the head of the list. limit <= 0 defaults to 100.
+func (s *InternalTaskStore) ListTasksBefore(ctx context.Context, createdAt time.Time, id string, limit int) ([]model.InternalTask, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, COALESCE(parent_task_id,''), title, COALESCE(description,''),
+		       COALESCE(input,''), state, COALESCE(blocked_reason,''), COALESCE(metadata,''),
+		       COALESCE(outstanding_workflows,0), created_at, updated_at
+		FROM internal_tasks
+		WHERE created_at < ? OR (created_at = ? AND id < ?)
+		ORDER BY created_at DESC, id DESC LIMIT ?
+	`, createdAt, createdAt, id, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectTasks(rows)
+}
+
+// collectTasks scans every remaining row of a task query.
+func collectTasks(rows *sql.Rows) ([]model.InternalTask, error) {
 	var out []model.InternalTask
 	for rows.Next() {
 		task, err := scanTask(rows)

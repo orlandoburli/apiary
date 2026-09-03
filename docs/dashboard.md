@@ -107,6 +107,12 @@ A list of recent tasks — both running and already finished — newest first. E
 row shows the task title, **which step it is on**, its status, and when it ran.
 Use `↑` / `↓` to move the `▶` marker.
 
+The list opens with the newest 100 tasks. When older ones exist, a hint appears
+under the last row; press `↓`, `PgDn` or `End` while on that row to load the
+next 100 below it. Loaded pages stay put across the periodic refresh, and the
+`/` filter and the tickets-only / approvals toggles apply to everything loaded,
+so keep loading to search further back.
+
 ```
    #          TASK                            STEP           STATUS   WHEN
 ▶  #412       Fix approval gate re-entry      review 3/5     running  4m ago

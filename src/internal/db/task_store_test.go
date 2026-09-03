@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -518,4 +519,57 @@ func titleAt(ts []model.InternalTask, i int) string {
 		return ts[i].Title
 	}
 	return ""
+}
+
+func TestInternalTask_ListTasksBefore(t *testing.T) {
+	ctx := context.Background()
+	store := newTestClient(t).InternalTasks()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Five tasks: t0..t4 with increasing created_at, except t3 and t4 share a
+	// timestamp so the id tie-breaker is exercised.
+	for i := 0; i < 5; i++ {
+		at := base.Add(time.Duration(i) * time.Minute)
+		if i == 4 {
+			at = base.Add(3 * time.Minute)
+		}
+		task := &model.InternalTask{ID: "tk_" + string(rune('0'+i)), Title: "t" + string(rune('0'+i)), CreatedAt: at}
+		if err := store.CreateTask(ctx, task); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+	}
+
+	// Walk the whole list two rows at a time, continuing from each page's last row.
+	first, err := store.ListTasks(ctx, 2)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(first) != 2 || first[0].Title != "t4" || first[1].Title != "t3" {
+		t.Fatalf("first page = %v, want [t4 t3] (tie broken by id desc)", titles(first))
+	}
+	var seen []string
+	page := first
+	for len(page) > 0 {
+		for _, tk := range page {
+			seen = append(seen, tk.Title)
+		}
+		last := page[len(page)-1]
+		page, err = store.ListTasksBefore(ctx, last.CreatedAt, last.ID, 2)
+		if err != nil {
+			t.Fatalf("ListTasksBefore: %v", err)
+		}
+	}
+	want := []string{"t4", "t3", "t2", "t1", "t0"}
+	if strings.Join(seen, " ") != strings.Join(want, " ") {
+		t.Errorf("paged walk = %v, want %v (no gaps, no repeats)", seen, want)
+	}
+
+	// Past the oldest row there is nothing left.
+	empty, err := store.ListTasksBefore(ctx, base, "tk_0", 2)
+	if err != nil {
+		t.Fatalf("ListTasksBefore(oldest): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("page past the oldest row = %v, want empty", titles(empty))
+	}
 }

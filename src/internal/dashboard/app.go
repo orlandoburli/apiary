@@ -52,6 +52,10 @@ const noticeTTL = 8 * time.Second
 // fetchOlderTaskLogs).
 const taskLogTailLimit = 1000
 
+// taskPageSize is how many tasks the Tasks tab loads per page: the newest page
+// on open, then one more each time the cursor is pushed past the last row.
+const taskPageSize = 100
+
 // maxGlamourBytes caps which log messages get glamour-styled markdown. Above
 // this, plain wrapping is used unconditionally: giant agent dumps gain little
 // from styling and are exactly the messages that cost the most to render (#175).
@@ -127,7 +131,13 @@ type spinnerTickMsg time.Time
 // commands (goroutines) and consumed by Update (event loop), never sharing
 // memory with the model directly.
 type overviewDataMsg struct{ data OverviewTab }
-type tasksDataMsg struct{ items []TaskItem }
+type tasksDataMsg struct {
+	items    []TaskItem
+	limit    int       // rows asked for (the refresh window)
+	oldestAt time.Time // created_at of the last row (older-page cursor)
+	oldestID string    // id of the last row (cursor tie-breaker)
+	hasMore  bool      // an older page may exist
+}
 type taskDetailMsg struct {
 	taskID   string
 	detail   *TaskItem
@@ -138,6 +148,15 @@ type taskDetailMsg struct {
 // persisted a task's pull requests, so the open detail can reload and pick them up.
 type taskPullsRefreshedMsg struct {
 	internalTaskID string
+}
+
+// olderTasksMsg carries an older page of the Tasks list, appended below the
+// rows already loaded.
+type olderTasksMsg struct {
+	items    []TaskItem
+	oldestAt time.Time
+	oldestID string
+	hasMore  bool
 }
 type taskLogsMsg struct {
 	taskID   string
@@ -301,14 +320,34 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.model.lastRefresh = time.Now()
 
 	case tasksDataMsg:
-		if a.model.tasksTab != nil {
-			a.model.tasksTab.History = msg.items
-			if a.model.tasksTab.SelectedIdx >= len(msg.items) {
-				a.model.tasksTab.SelectedIdx = 0
+		if t := a.model.tasksTab; t != nil {
+			// A refresh that started before an older page was appended asked for
+			// a smaller window than what is now loaded; applying it would drop
+			// the page again. Skip it — the next tick re-queries the full window.
+			if msg.limit < t.ListWindow {
+				break
+			}
+			t.History = msg.items
+			t.ListWindow = msg.limit
+			t.ListOldestAt, t.ListOldestID = msg.oldestAt, msg.oldestID
+			t.ListHasMore = msg.hasMore
+			if t.SelectedIdx >= len(msg.items) {
+				t.SelectedIdx = 0
 			}
 		}
 		a.model.loading = false
 		a.model.lastRefresh = time.Now()
+
+	case olderTasksMsg:
+		if t := a.model.tasksTab; t != nil {
+			t.ListLoadingMore = false
+			t.ListHasMore = msg.hasMore
+			if len(msg.items) > 0 {
+				t.History = append(t.History, msg.items...)
+				t.ListWindow = len(t.History)
+				t.ListOldestAt, t.ListOldestID = msg.oldestAt, msg.oldestID
+			}
+		}
 
 	case taskDetailMsg:
 		if a.model.tasksTab != nil {
@@ -901,10 +940,12 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				t.BoardRow++ // clamped on render, where the column sizes are known
 				break
 			}
-			if a.model.tasksTab != nil {
-				maxIdx := len(a.filteredTasks(a.model.tasksTab)) - 1
-				if a.model.tasksTab.SelectedIdx < maxIdx {
-					a.model.tasksTab.SelectedIdx++
+			if t := a.model.tasksTab; t != nil {
+				maxIdx := len(a.filteredTasks(t)) - 1
+				if t.SelectedIdx < maxIdx {
+					t.SelectedIdx++
+				} else if cmd := a.loadOlderTasksCmd(t); cmd != nil {
+					return a, cmd // pushed past the last row: fetch the next page
 				}
 			}
 		case "Agents":
@@ -935,8 +976,14 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "end":
 		switch a.model.ActiveTab() {
 		case "Tasks":
-			if a.model.tasksTab != nil {
-				a.model.tasksTab.SelectedIdx = len(a.filteredTasks(a.model.tasksTab)) - 1
+			if t := a.model.tasksTab; t != nil {
+				maxIdx := len(a.filteredTasks(t)) - 1
+				if t.SelectedIdx == maxIdx {
+					if cmd := a.loadOlderTasksCmd(t); cmd != nil {
+						return a, cmd // already at the end: fetch the next page
+					}
+				}
+				t.SelectedIdx = maxIdx
 			}
 		case "Agents":
 			if a.model.agentsTab != nil {
@@ -973,11 +1020,16 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgdown", "ctrl+d", " ":
 		switch a.model.ActiveTab() {
 		case "Tasks":
-			if a.model.tasksTab != nil {
-				a.model.tasksTab.SelectedIdx += a.pageSize()
-				maxIdx := len(a.filteredTasks(a.model.tasksTab)) - 1
-				if a.model.tasksTab.SelectedIdx > maxIdx {
-					a.model.tasksTab.SelectedIdx = maxIdx
+			if t := a.model.tasksTab; t != nil {
+				maxIdx := len(a.filteredTasks(t)) - 1
+				if t.SelectedIdx == maxIdx {
+					if cmd := a.loadOlderTasksCmd(t); cmd != nil {
+						return a, cmd // already at the end: fetch the next page
+					}
+				}
+				t.SelectedIdx += a.pageSize()
+				if t.SelectedIdx > maxIdx {
+					t.SelectedIdx = maxIdx
 				}
 			}
 		case "Agents":
@@ -2540,50 +2592,114 @@ func (a *App) fetchOverview() tea.Cmd {
 	}
 }
 
+// fetchTasks re-queries the Tasks list for the periodic refresh. It asks for
+// the whole loaded window (the first page plus every older page appended since)
+// so a refresh never collapses the list back to the newest page.
 func (a *App) fetchTasks() tea.Cmd {
-	dbConn := a.dbConn
-	var workflows []config.WorkflowConfig
-	if a.cfg != nil {
-		workflows = a.cfg.Workflows
+	limit := taskPageSize
+	if t := a.model.tasksTab; t != nil && t.ListWindow > limit {
+		limit = t.ListWindow
 	}
+	dbConn := a.dbConn
+	workflows := a.configuredWorkflows()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 		defer cancel()
 
-		items := make([]TaskItem, 0)
+		msg := tasksDataMsg{items: make([]TaskItem, 0), limit: limit}
 		if dbConn != nil {
-			// Phase 9: the Tasks tab is keyed on the canonical InternalTask, not
-			// per-execution rows. Each row carries the internal id (for lineage /
-			// bindings / instances) plus a drill key (the primary binding's source
-			// item id, or the task id when binding-less) that the legacy
-			// detail/logs/monitor machinery resolves.
-			if tasks, err := dbConn.InternalTasks().ListTasks(ctx, 100); err == nil {
-				for _, tk := range tasks {
-					bindings, _ := dbConn.ListBindingsByTask(ctx, tk.ID)
-					prs, _ := dbConn.ListTaskPullRequests(ctx, tk.ID)
-					items = append(items, taskItemFromInternal(tk, bindings, prs))
-				}
-
-				// One query for the whole page, not one per row: this runs on a
-				// timer against the file the daemon is writing to.
-				ids := make([]string, 0, len(tasks))
-				for _, tk := range tasks {
-					ids = append(ids, tk.ID)
-				}
-				if rows, err := dbConn.ListStepProgressForTasks(ctx, ids); err == nil {
-					progress := resolveTaskProgress(rows, workflows)
-					for i := range items {
-						p := progress[items[i].InternalTaskID]
-						items[i].StepID = p.StepID
-						items[i].StepPosition = p.Position
-						items[i].StepTotal = p.Total
-						items[i].LiveInstances = p.Instances
-					}
-				}
+			if tasks, err := dbConn.InternalTasks().ListTasks(ctx, limit); err == nil {
+				msg.items = buildTaskItems(ctx, dbConn, workflows, tasks)
+				msg.oldestAt, msg.oldestID, msg.hasMore = taskPageCursor(tasks, limit)
 			}
 		}
-		return tasksDataMsg{items: items}
+		return msg
 	}
+}
+
+// loadOlderTasksCmd starts a fetch of the next older page of the Tasks list when
+// the cursor is pushed past the last row and an older page may exist. Returns nil
+// when there is nothing to load (not the list/board view, no cursor, already
+// loading, or no more pages).
+func (a *App) loadOlderTasksCmd(t *TasksTab) tea.Cmd {
+	if (t.View != TaskViewList && t.View != TaskViewBoard) ||
+		t.ListOldestID == "" || !t.ListHasMore || t.ListLoadingMore {
+		return nil
+	}
+	t.ListLoadingMore = true
+	return a.fetchOlderTasks(t.ListOldestAt, t.ListOldestID)
+}
+
+// fetchOlderTasks loads the page of tasks immediately older than the
+// (createdAt, id) cursor, for the load-more pagination of the Tasks list.
+func (a *App) fetchOlderTasks(createdAt time.Time, id string) tea.Cmd {
+	dbConn := a.dbConn
+	workflows := a.configuredWorkflows()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+
+		msg := olderTasksMsg{}
+		if dbConn != nil {
+			if tasks, err := dbConn.InternalTasks().ListTasksBefore(ctx, createdAt, id, taskPageSize); err == nil {
+				msg.items = buildTaskItems(ctx, dbConn, workflows, tasks)
+				msg.oldestAt, msg.oldestID, msg.hasMore = taskPageCursor(tasks, taskPageSize)
+			}
+		}
+		return msg
+	}
+}
+
+// configuredWorkflows returns the workflows from config (nil without one), used
+// to resolve step progress for the Tasks list rows.
+func (a *App) configuredWorkflows() []config.WorkflowConfig {
+	if a.cfg == nil {
+		return nil
+	}
+	return a.cfg.Workflows
+}
+
+// taskPageCursor returns the older-page cursor for a page of tasks (its last,
+// oldest row) and whether an older page may exist: a full page implies more.
+func taskPageCursor(tasks []model.InternalTask, limit int) (time.Time, string, bool) {
+	if len(tasks) == 0 {
+		return time.Time{}, "", false
+	}
+	last := tasks[len(tasks)-1]
+	return last.CreatedAt, last.ID, len(tasks) == limit
+}
+
+// buildTaskItems converts a page of InternalTasks into Tasks-tab rows.
+func buildTaskItems(ctx context.Context, dbConn *db.Client, workflows []config.WorkflowConfig, tasks []model.InternalTask) []TaskItem {
+	items := make([]TaskItem, 0, len(tasks))
+	// Phase 9: the Tasks tab is keyed on the canonical InternalTask, not
+	// per-execution rows. Each row carries the internal id (for lineage /
+	// bindings / instances) plus a drill key (the primary binding's source
+	// item id, or the task id when binding-less) that the legacy
+	// detail/logs/monitor machinery resolves.
+	for _, tk := range tasks {
+		bindings, _ := dbConn.ListBindingsByTask(ctx, tk.ID)
+		prs, _ := dbConn.ListTaskPullRequests(ctx, tk.ID)
+		items = append(items, taskItemFromInternal(tk, bindings, prs))
+	}
+
+	// One query for the whole page, not one per row: this runs on a
+	// timer against the file the daemon is writing to.
+	ids := make([]string, 0, len(tasks))
+	for _, tk := range tasks {
+		ids = append(ids, tk.ID)
+	}
+	if rows, err := dbConn.ListStepProgressForTasks(ctx, ids); err == nil {
+		progress := resolveTaskProgress(rows, workflows)
+		for i := range items {
+			p := progress[items[i].InternalTaskID]
+			items[i].StepID = p.StepID
+			items[i].StepPosition = p.Position
+			items[i].StepTotal = p.Total
+			items[i].LiveInstances = p.Instances
+		}
+	}
+	return items
 }
 
 // taskItemFromInternal converts an InternalTask (plus its source bindings) into a
@@ -3789,6 +3905,20 @@ func (a *App) renderTaskList(t *TasksTab, height int) string {
 			when = StyleMuted.Render(when)
 		}
 		b.WriteString(cursor + " " + num + " " + titleText + " " + agent + " " + status + " " + when + "\n")
+	}
+	// A "load more" hint takes the row under the last task when the window
+	// reaches the end of the loaded list and an older page is available (or
+	// being fetched). Fetching is triggered by pushing the cursor past the end.
+	if end == len(items) {
+		hint := ""
+		if t.ListLoadingMore {
+			hint = "↓ loading older tasks…"
+		} else if t.ListHasMore {
+			hint = "↓ older tasks — press ↓/PgDn/End at the last row to load"
+		}
+		if hint != "" {
+			b.WriteString(StyleMuted.Render(hint) + "\n")
+		}
 	}
 
 	return a.box(title, b.String(), height)

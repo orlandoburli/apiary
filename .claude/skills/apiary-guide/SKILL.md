@@ -470,6 +470,7 @@ Terminal UI for watching live state:
 | `s` | Toggle sort direction (asc/desc) |
 | `S` | Cycle to next sort field |
 | `/` | Open filter bar (type query, `Esc` to exit, `Backspace` to delete) |
+| `↓` / `PgDn` / `End` on the last row | Load the next 100 older tasks (list opens with the newest 100) |
 | `d` | Task detail view |
 | `Enter` / `l` | Task logs view |
 | `o` | Open task URL in browser |
