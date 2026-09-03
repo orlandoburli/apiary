@@ -92,6 +92,34 @@ func (s SourceConfig) ParsedPollInterval() (time.Duration, error) {
 	return time.ParseDuration(s.PollInterval)
 }
 
+// IsTicketSourceType reports whether a source of the given config type is an
+// external ticket/issue tracker (jira, github, plane, ...) as opposed to a
+// plugin-bridged source (type "plugin") such as the scheduled-routines or
+// monitoring adapters, which mint work items with no real ticket behind them
+// (a cron occurrence, an alert). It is the structural signal behind the
+// "ticket-bound vs. routine/plugin-sourced" split in the task list (#475):
+// checking the configured kind, not a specific source id, so any future
+// plugin-sourced routine is excluded the same way without special-casing it.
+func IsTicketSourceType(sourceType string) bool {
+	return sourceType != "" && sourceType != "plugin"
+}
+
+// TicketSourceIDs returns the ids of every configured source whose type is a
+// ticket tracker per IsTicketSourceType — the allow-list used to filter the
+// task/instance list down to ticket-bound work (issue #475).
+func (c *Config) TicketSourceIDs() []string {
+	if c == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(c.Sources))
+	for _, s := range c.Sources {
+		if IsTicketSourceType(s.Type) {
+			ids = append(ids, s.ID)
+		}
+	}
+	return ids
+}
+
 type SourceFilters struct {
 	States []string `yaml:"states"`
 	Labels []string `yaml:"labels"`

@@ -1548,7 +1548,8 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 				limit = n
 			}
 		}
-		resp, err := d.Instances(r.Context(), q.Get("state"), q.Get("workflow"), limit)
+		ticketsOnly := q.Get("tickets_only") == "1" || q.Get("tickets_only") == "true"
+		resp, err := d.Instances(r.Context(), q.Get("state"), q.Get("workflow"), limit, ticketsOnly)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

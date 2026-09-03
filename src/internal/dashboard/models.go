@@ -172,6 +172,12 @@ type TasksTab struct {
 	FilterActive bool   // true while typing a filter
 	SortField    string // "time" | "status" | "agent"  (default "time")
 	SortAsc      bool
+
+	// TicketsOnly hides rows with no real ticket behind them — scheduled
+	// routine runs and other plugin-sourced work items — keeping only tasks
+	// bound to a source item from a ticket-tracker source (issue #475).
+	// Toggled in place; default off keeps today's unfiltered list.
+	TicketsOnly bool
 }
 
 // WorkflowInstanceItem is a workflow instance bound to a task, with its steps,
