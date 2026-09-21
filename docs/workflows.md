@@ -355,6 +355,12 @@ When `reject_when` evaluates true the step is treated as failed and the
 engine restarts from `restart_from`, up to `max` times. The reviewer's
 `feedback` is in memory, so the implementer sees *why* it was rejected.
 
+This holds for a rejecting `parallel:` group too: the `memory.write` fields of
+its children (say `qa_verdict` and `qa_reason`) stay in the memory document for
+the `restart_from` target and everything that re-runs after it. The rejected
+attempt's values are replaced once the gating step finishes again, so a later
+pass never carries a stale rejection downstream.
+
 **Gates fail closed.** A gate that cannot be evaluated is never a pass. If the
 gate reads a memory key the step itself declared in `memory.write` and the
 agent did not emit a value for it — typically because it skipped its
