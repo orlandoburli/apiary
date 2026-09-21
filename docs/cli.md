@@ -490,16 +490,83 @@ signing key or turning the registry off.
 
 ### `apiary service`
 
-Manage Apiary as a system service — systemd (Linux), launchd (macOS), or
-Windows Service — so the daemon starts at boot and restarts on failure:
+Run the daemon for the current project as a **per-user** background service — a
+launchd LaunchAgent on macOS (`~/Library/LaunchAgents/<name>.plist`), a systemd
+user unit on Linux (`~/.config/systemd/user/<name>.service`) — so it starts at
+login and restarts after a crash:
 
 ```sh
+cd /path/to/project        # the directory holding apiary.yaml and .env
+apiary validate            # a config that cannot load would just respawn
 apiary service install
 apiary service start
-apiary service status
+apiary service status      # running | stopped | not installed
+apiary service restart
 apiary service stop
 apiary service uninstall
 ```
+
+The service manager starts the daemon with none of your shell's context, so
+`install` captures what `apiary run` needs and writes it into the definition:
+
+| Captured | Default | Override |
+|---|---|---|
+| Config file, as an absolute path (`run --config <path>`) | `apiary.yaml` resolved from the current directory | `--config` |
+| Working directory — `.env` is loaded relative to it | the current directory | `--workdir` |
+| `PATH`, which must resolve the agent CLIs (`claude`, `gh`, `codex`, …). The service manager's default `PATH` has no nvm, Homebrew or `~/.local/bin` | the current `$PATH`, de-duplicated | `--path` |
+| The apiary binary | the running binary | `--executable` — use a stable path (e.g. `/opt/homebrew/bin/apiary`) if the running one is version-specific |
+| `.env` file | the daemon's default, `.env` in the working directory | `--env-file` |
+| Runner profile | none | `--profile` |
+| Drain window before the service manager kills the daemon | `10m` | `--stop-timeout` |
+
+Re-run `apiary service install --force` after moving the project, changing your
+`PATH`, or to change any of the above; it stops the running service first.
+
+The service runs **as you, never as root**: agent CLIs need your `HOME`,
+keychain and credentials, and `install` refuses to run under `sudo` (see
+[`refuse_root`](configuration.md)). It restarts only after an *unsuccessful*
+exit, throttled to once every 30 seconds — a clean stop stays stopped. On
+macOS the daemon's stdout/stderr go to `.apiary/logs/<name>.{out,err}.log`; on
+Linux, to the journal (`journalctl --user -u <name>`). On Linux, run
+`loginctl enable-linger $USER` once if the daemon should keep running while you
+are logged out.
+
+`stop`, `restart` and `uninstall` **wait for the graceful drain**: the service
+manager sends SIGTERM, the daemon finishes its active runs before exiting —
+which can legitimately take minutes — and the command returns only once the
+process is gone (`--timeout`, default `11m`). After `--stop-timeout` the service
+manager kills whatever is left.
+
+To run several projects on one machine, give each its own name and pass it to
+every subcommand: `apiary service --name apiary-erp install`.
+
+Windows is not supported: a Windows Service must speak the service-control
+protocol, which `apiary run` does not. Run `apiary run` under Task Scheduler or
+NSSM instead.
+
+#### Migrating from the old `apiary-dispatcher` install
+
+Releases up to v0.24.1 installed a **system-level** service named
+`apiary-dispatcher` (`/Library/LaunchDaemons/apiary-dispatcher.plist` on macOS,
+`/etc/systemd/system/apiary-dispatcher.service` on Linux). It never worked: the
+definition had no arguments, so it ran a bare `apiary` — which prints help and
+exits — as root, in a respawn loop, and `apiary service start` failed with
+`Expecting a LaunchAgents path` / `Load failed: 5`. `apiary service
+install`, `start` and `status` print a warning while that file exists. Removing
+it needs root, so apiary never does it for you:
+
+```sh
+# macOS
+sudo launchctl bootout system/apiary-dispatcher
+sudo rm /Library/LaunchDaemons/apiary-dispatcher.plist
+
+# Linux
+sudo systemctl disable --now apiary-dispatcher
+sudo rm /etc/systemd/system/apiary-dispatcher.service
+sudo systemctl daemon-reload
+```
+
+Then run `apiary service install` from the project directory, without `sudo`.
 
 ### `apiary update`
 
@@ -513,8 +580,11 @@ apiary update --check  # only report whether a newer version exists
 Downloads are validated against the release's `checksums.txt` before the swap.
 Installs managed by Homebrew or Scoop are detected and redirected to
 `brew upgrade --cask apiary` / `scoop update apiary` instead of self-updating.
-After an update, restart the daemon (`apiary service stop && apiary service start`)
-to pick up the new version.
+After an update, restart the daemon to pick up the new version:
+`apiary service restart` if it runs as a [service](#apiary-service); for a
+foreground `apiary run`, stop it with Ctrl+C (or SIGTERM), wait for it to drain,
+and start it again — `apiary service` commands do not affect a daemon you
+started by hand.
 
 Interactive commands also check for a new release at most once every 24 hours
 and print a short notice when one is available. Set `APIARY_NO_UPDATE_CHECK=1`
