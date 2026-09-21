@@ -21,6 +21,7 @@ apiary.yaml.local
 **/.apiary/memory/
 # installed plugins (binaries, fetched per host) and the state they keep
 **/.apiary/plugins/
+**/.apiary/slack-state.json
 **/.apiary/routines-state.json
 **/.apiary/backups/
 **/.apiary/*.bak
