@@ -61,16 +61,16 @@ type dagRun struct {
 	retries         map[string]int    // on_fail.goto loop counter per failing step
 	conflictRetries map[string]int    // on_conflict.goto loop counter per conflicting step
 
-	stepStates  map[string]StepState  // terminal states for expression context
-	contrib     map[string]MemoryStep // memory contribution per passed step
+	stepStates map[string]StepState  // terminal states for expression context
+	contrib    map[string]MemoryStep // memory contribution per passed step
 	// feedback holds the contributions of a step that FAILED and looped back
 	// (on_fail.goto / restart_from), keyed by the failing step id. A failed step
 	// never enters contrib, so without this the loop target re-ran with a prompt
 	// identical to its first attempt and no way to learn why it was sent back —
 	// e.g. a rejected gate's qa_reason never reached the implement step (#495).
 	// An entry lives until its step reaches a terminal pass or fails again.
-	feedback map[string][]MemoryStep
-	passedOrder []string              // step ids in the order they passed
+	feedback    map[string][]MemoryStep
+	passedOrder []string // step ids in the order they passed
 
 	waitingStep string    // id of the approval/wait_for step currently parked, if any
 	parkedAt    time.Time // when the current approval parked (for timeout)
