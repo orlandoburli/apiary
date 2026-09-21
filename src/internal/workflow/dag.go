@@ -61,9 +61,16 @@ type dagRun struct {
 	retries         map[string]int    // on_fail.goto loop counter per failing step
 	conflictRetries map[string]int    // on_conflict.goto loop counter per conflicting step
 
-	stepStates  map[string]StepState  // terminal states for expression context
-	contrib     map[string]MemoryStep // memory contribution per passed step
-	passedOrder []string              // step ids in the order they passed
+	stepStates map[string]StepState  // terminal states for expression context
+	contrib    map[string]MemoryStep // memory contribution per passed step
+	// feedback holds the contributions of a step that FAILED and looped back
+	// (on_fail.goto / restart_from), keyed by the failing step id. A failed step
+	// never enters contrib, so without this the loop target re-ran with a prompt
+	// identical to its first attempt and no way to learn why it was sent back —
+	// e.g. a rejected gate's qa_reason never reached the implement step (#495).
+	// An entry lives until its step reaches a terminal pass or fails again.
+	feedback    map[string][]MemoryStep
+	passedOrder []string // step ids in the order they passed
 
 	waitingStep string    // id of the approval/wait_for step currently parked, if any
 	parkedAt    time.Time // when the current approval parked (for timeout)
@@ -112,6 +119,7 @@ func (e *Engine) initDAG(instID string, wf config.WorkflowConfig, task model.Int
 		conflictRetries: map[string]int{},
 		stepStates:      map[string]StepState{},
 		contrib:         map[string]MemoryStep{},
+		feedback:        map[string][]MemoryStep{},
 		parallelDone:    map[string]map[string]StepResult{},
 		childByID:       map[string]config.StepConfig{},
 		parentOfChild:   map[string]string{},
@@ -410,6 +418,7 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 
 		if res.Success {
 			r.state[step.ID] = stPassed
+			delete(r.feedback, step.ID)
 			if step.StepType() == config.StepTypeParallel {
 				// Merge children's contributions into the outer DAG memory.
 				for _, c := range wr.parallelContribs {
@@ -460,6 +469,8 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 			// Mark the step as pending so it can re-run after the loop reset.
 			r.state[step.ID] = stPending
 			loopTarget = step.OnFail.Goto
+			// Keep what the failed attempt reported visible to the loop target.
+			r.feedback[step.ID] = failedContribs(step, res, wr.parallelContribs)
 			// Drain remaining in-flight before resetting.
 			continue
 		}
@@ -877,6 +888,10 @@ func (r *dagRun) resetLoop(target string) {
 		r.state[id] = stPending
 		delete(r.stepStates, id)
 		delete(r.contrib, id)
+		// A parallel group's children contribute under their own ids.
+		for _, child := range r.byID[id].SubSteps {
+			delete(r.contrib, child.ID)
+		}
 	}
 	// Rebuild passedOrder in declaration order excluding reset steps.
 	r.passedOrder = r.passedOrder[:0]
@@ -897,8 +912,37 @@ func (r *dagRun) memSteps() []MemoryStep {
 		if c, ok := r.contrib[id]; ok {
 			out = append(out, c)
 		}
+		// A parallel group's children are not graph nodes, so they never appear
+		// in r.order: emit their contributions right after the group, in
+		// declaration order. Skipping them made every child's memory.write
+		// invisible to later steps even after the group passed (#495).
+		for _, child := range r.byID[id].SubSteps {
+			if c, ok := r.contrib[child.ID]; ok {
+				out = append(out, c)
+			}
+		}
+		// Feedback of a failed attempt that looped back (see dagRun.feedback).
+		out = append(out, r.feedback[id]...)
 	}
 	return out
+}
+
+// failedContribs returns the memory contributions of a step that failed and is
+// about to loop back: the children's for a parallel group, the step's own
+// otherwise. Steps that reported nothing structured contribute nothing.
+func failedContribs(step config.StepConfig, res StepResult, parallelContribs []MemoryStep) []MemoryStep {
+	if step.StepType() == config.StepTypeParallel {
+		return append([]MemoryStep(nil), parallelContribs...)
+	}
+	if len(res.StructuredOutput) == 0 {
+		return nil
+	}
+	return []MemoryStep{{
+		StepID:      step.ID,
+		WriteFields: step.MemoryWriteFields(),
+		Structured:  res.StructuredOutput,
+		Summary:     res.Summary,
+	}}
 }
 
 // contribSnapshot returns a shallow copy of the contrib map for safe use from
