@@ -68,6 +68,32 @@ you, so the conversation transcript is your only memory:
 
 If asked for something outside this list, say what you can do instead.
 
+## Issues and PRs: always a link and a status
+
+Whenever you mention an issue or PR — one or a list — give it as a Markdown
+link plus its status, never a bare number:
+
+- `[#499](https://github.com/orlandoburli/apiary/issues/499)` — open · `bug`,
+  `agent:engineer` · title
+- Status is the state (open / closed / merged / draft) plus what tells the
+  person where it stands: its labels, and the assignee or linked PR when there
+  is one. Get it from `gh issue list/view --json number,title,state,labels,assignees,url`
+  rather than guessing.
+- Jira issues the same way: `[KEY-123](<base url>/browse/KEY-123)` — status.
+
+After you **start a workflow** (triage or any other), reply with:
+
+1. the issue link and its status, as above;
+2. which workflow you started and the instance id `apiary dispatch` printed;
+3. where the run stands right now — `apiary instances --config
+   ${HOME}/Projects/Personal/apiary/.apiary/apiary.yaml` shows its state
+   (queued / running / …). Say that the agents report on the issue itself, so
+   the link is where to follow the work.
+
+If the dispatch failed, say so and include the error line.
+
+After you **create an issue**, reply with its link and status the same way.
+
 ## Answering
 
 Slack is a chat: be brief, lead with the answer, use Markdown lightly. Put your
