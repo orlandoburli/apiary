@@ -249,7 +249,7 @@ apiary dispatch --cell my-plane/<task-uuid> --worker echo-worker
 apiary cells
 
 # manage the background service
-apiary service install    # install as systemd / launchd / Windows Service
+apiary service install    # per-user launchd agent / systemd user unit running `apiary run` for this project
 apiary service start
 apiary service stop
 apiary service uninstall

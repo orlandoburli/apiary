@@ -7,7 +7,7 @@
 | Runtime | **Go** | Single static binary, cross-platform, easy OSS distribution, excellent subprocess management |
 | TUI | **Bubble Tea** + Lip Gloss + Bubbles (Charmbracelet) | Elm-architecture TUI framework; composable, beautiful, purpose-built for this kind of tool |
 | CLI | **Cobra** + **Viper** | Industry standard; used by kubectl, gh, Hugo; pairs naturally with Viper for config |
-| Service install | **kardianos/service** | One API → systemd (Linux), launchd (macOS), Windows Service |
+| Service install | **kardianos/service** | Writes and controls the per-user definition: systemd user unit (Linux), launchd LaunchAgent (macOS). The supervised process is a plain `apiary run`; Windows is unsupported |
 | Job scheduler | **gocron v2** | Human-friendly DSL, built on robfig/cron v3 |
 | Daemon IPC | Unix domain socket + net/http | Simple, fast; gRPC if multi-language clients are needed later |
 | Config format | YAML | Familiar to DevOps users, rich tooling ecosystem |

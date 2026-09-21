@@ -136,8 +136,9 @@ apiary run --once     # poll once, process everything pending, then exit
 apiary run --dry-run  # poll and match, but never invoke a runner
 ```
 
-To keep Apiary running permanently, install it as a system service
-(systemd / launchd / Windows Service):
+To keep Apiary running permanently, install it as a per-user service (launchd
+on macOS, systemd user unit on Linux) from the project directory, without
+`sudo` — see [`apiary service`](cli.md#apiary-service):
 
 ```sh
 apiary service install
