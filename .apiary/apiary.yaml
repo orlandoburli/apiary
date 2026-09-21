@@ -52,6 +52,17 @@ runners:
     config:
       permission_mode: plan
 
+  # Runner for the Slack concierge. It acts on Slack messages — it can run
+  # `apiary dispatch` and `gh issue create` — so it keeps the claude preset's
+  # default bypass posture: a tool allow-list was tried first and did not
+  # contain the agent. What bounds it is its soul, `allowed_users` on the Slack
+  # plugin, and the confirmation turn before anything is created.
+  - id: claude-concierge
+    type: cli
+    provider: claude
+    models:
+      - claude-sonnet-5
+
 default_runner: codex
 
 # ── Sources ────────────────────────────────────────────────────────────────────
@@ -76,6 +87,14 @@ sources:
     poll_interval: 30s
     config:
       plugin: dev.apiary.routines
+
+  # Slack conversations, via the dev.apiary.slack plugin. Each human turn —
+  # a mention, a thread reply, a DM — becomes a work item; slack-chat answers it.
+  - id: slack
+    type: plugin
+    poll_interval: 15s
+    config:
+      plugin: dev.apiary.slack
 
 # ── Agents ─────────────────────────────────────────────────────────────────────
 # Roster is deliberately Go-shaped: no backend/frontend split, because this repo
@@ -132,6 +151,15 @@ agents:
     runner: claude-readonly
     model: claude-opus-5
     max_workers: 1
+
+  - id: concierge
+    description: "Answers Slack messages; can dispatch workflows and, after a confirmation turn, create issues"
+    soul_file: .apiary/souls/concierge.md
+    runner: claude-concierge
+    model: claude-sonnet-5
+    working_dir: ${HOME}/Projects/Personal/apiary
+    max_workers: 1
+    max_turns: 25
 
 # ── Workflows ──────────────────────────────────────────────────────────────────
 workflows:
@@ -283,6 +311,26 @@ workflows:
       add_labels: [needs-attention]
       remove_labels: [apiary:auto]
 
+  # Slack: every human turn is its own item (plugin sources cannot resume a
+  # parked task), carrying the thread so far as a transcript. `source: slack` is
+  # pinned for the same reason as the routines below. The agent publishes its
+  # own reply; result_comment is kept for failures only, because the full result
+  # comment ("Workflow: … ✓ Done" + workflow memory) is noise in a chat.
+  - id: slack-chat
+    description: "Answer a Slack message; dispatch workflows or create issues when asked."
+    trigger:
+      priority: 5
+      once: true
+      match:
+        source: slack
+        labels: [slack]
+    result_comment: on_fail
+    steps:
+      - id: answer
+        agent: concierge
+        prompt: |
+          Handle the latest Slack message in the task body, following your soul.
+
   # Scheduled routine: a daily read-only health report.
   #
   # `source: routines` is pinned deliberately. The capability check only rejects
@@ -421,6 +469,22 @@ plugin_dirs:
   - ${HOME}/Projects/Personal/apiary/.apiary/plugins
 
 plugins:
+  # Slack workspace ids live in .env (SLACK_CHANNEL_ID, SLACK_OPERATOR_USER)
+  # next to SLACK_BOT_TOKEN: this file is public, the workspace is not.
+  - id: dev.apiary.slack
+    timeout: 30s
+    config:
+      state_file: ${HOME}/Projects/Personal/apiary/.apiary/slack-state.json
+      channels:
+        - id: "${SLACK_CHANNEL_ID}"
+          mode: mentions
+      direct_messages: true
+      # The concierge can start workflows and create issues. Only the operator
+      # may talk to it.
+      allowed_users:
+        - "${SLACK_OPERATOR_USER}"
+      ack_reaction: eyes
+
   - id: dev.apiary.routines
     config:
       state_file: ${HOME}/Projects/Personal/apiary/.apiary/routines-state.json
