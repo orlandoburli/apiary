@@ -26,6 +26,12 @@ runners:
       - name: gitnexus
         command: npx
         args: ["-y", "gitnexus@latest", "mcp"]
+    config:
+      # Appended after the preset's `exec --sandbox workspace-write`. The
+      # sandbox stays on; this only lets it reach the network. Without it the
+      # engineer cannot `git push` or `gh pr create` — its first real run
+      # (#499) ended with a commit it could only save as a patch file.
+      args: ["-c", "sandbox_workspace_write.network_access=true"]
 
   # Available as a fallback / alternative. Since v0.13.0 the claude-cli preset
   # bypasses the permission prompt by default (#370); narrow it here with
@@ -117,6 +123,10 @@ agents:
     soul_file: .apiary/souls/engineer.md
     model: gpt-5.5
     max_workers: 2
+    # The repo, not .apiary/: codex's workspace-write sandbox only lets the agent
+    # write under its working directory, so without this it clones to /tmp and
+    # cannot commit on the real checkout.
+    working_dir: ${HOME}/Projects/Personal/apiary
 
   - id: docs
     description: "Writes and fixes the mkdocs site under docs/"
