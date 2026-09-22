@@ -281,25 +281,37 @@ workflows:
             goto: implement
 
       # 3) Exactly one of these runs — whichever the split activates.
+      #
+      # `seq_depends_on: [route]` on every target is a workaround for the
+      # released daemon (≤ 0.24.1): implicit sequencing chained these targets
+      # to each other, so once the split skipped `design` every later target
+      # was cascade-skipped and triage ended after classify, reporting done.
+      # Fixed upstream (targets now sequence on their split); drop these lines
+      # after the next release.
       - id: design
         agent: staff
+        seq_depends_on: [route]
         prompt: "Design the change and decompose it into smaller sub-issues."
         materialize: sub_issue
 
       - id: implement
         agent: engineer
+        seq_depends_on: [route]
         prompt: "Implement the change following the repo's conventions, and open a PR."
 
       - id: document
         agent: docs
+        seq_depends_on: [route]
         prompt: "Write or correct the documentation this issue asks for, and open a PR."
 
       - id: review
         agent: reviewer
+        seq_depends_on: [route]
         prompt: "Review the referenced PR for correctness and repo conventions."
 
       - id: validate
         agent: qa
+        seq_depends_on: [route]
         prompt: "Validate the implementation against its acceptance criteria."
 
     # The issue is NOT auto-closed: on this repo a change lands through a PR, and
