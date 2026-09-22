@@ -1,11 +1,13 @@
 package execution
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/orlandoburli/apiary/internal/model"
 )
@@ -18,6 +20,9 @@ var gitnexusMCP = model.MCPServer{
 }
 
 func TestSetupMCP_ClaudeWritesFileAndFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
 	r := &CliRunner{mcpFormat: "claude", mcps: []model.MCPServer{gitnexusMCP}}
 	args, err := r.setupMCP()
 	if err != nil {
@@ -27,7 +32,9 @@ func TestSetupMCP_ClaudeWritesFileAndFlag(t *testing.T) {
 		t.Fatalf("expected [--mcp-config <path>], got %v", args)
 	}
 	path := args[1]
-	t.Cleanup(func() { _ = os.Remove(path) })
+	if !strings.HasPrefix(path, filepath.Join(home, ".apiary", "mcp", "claude-")) {
+		t.Fatalf("claude MCP config should be stored under ~/.apiary/mcp with a content hash, got %q", path)
+	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -49,6 +56,41 @@ func TestSetupMCP_ClaudeWritesFileAndFlag(t *testing.T) {
 	}
 	if gn.Command != "npx" || len(gn.Args) != 3 || gn.Env["GITNEXUS_REPO"] != "project-erp" {
 		t.Fatalf("unexpected server entry: %+v", gn)
+	}
+}
+
+func TestRun_RecreatesMissingClaudeMCPConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	r := &CliRunner{
+		command:        "/bin/sh",
+		args:           []string{"-c", "printf ok"},
+		mcpFormat:      "claude",
+		mcps:           []model.MCPServer{gitnexusMCP},
+		promptFlag:     "",
+		mcpRunArgs:     nil,
+		permissionArgs: nil,
+	}
+	args, err := r.setupMCP()
+	if err != nil {
+		t.Fatalf("setupMCP: %v", err)
+	}
+	r.mcpRunArgs = args
+	path := args[1]
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove claude mcp config: %v", err)
+	}
+
+	res, err := r.Run(context.Background(), model.RunRequest{Timeout: time.Minute})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.Success {
+		t.Fatalf("Run success = false, error: %v", res.Error)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("claude mcp config was not recreated before run: %v", err)
 	}
 }
 

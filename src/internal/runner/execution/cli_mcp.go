@@ -1,6 +1,8 @@
 package execution
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,8 +18,9 @@ import (
 // Each provider differs in both the on-disk format and how the CLI is told to
 // load it:
 //
-//   - claude   → a temp `{"mcpServers":{…}}` file, activated per run with the
-//     trusted `--mcp-config <path>` flag (no approval prompt, no workdir mutation).
+//   - claude   → a stable `~/.apiary/mcp/claude-<hash>.json` file,
+//     activated per run with the trusted `--mcp-config <path>` flag (no
+//     approval prompt, no workdir mutation).
 //   - cursor   → merged into the user's global `~/.cursor/mcp.json` (mcpServers
 //     format), activated with `--approve-mcps`.
 //   - opencode → merged into the global `~/.config/opencode/opencode.json` under
@@ -46,22 +49,54 @@ func (r *CliRunner) setupMCP() ([]string, error) {
 	}
 }
 
-// setupClaudeMCP writes a temp .mcp.json and returns the --mcp-config flag.
+// setupClaudeMCP writes a content-addressed .mcp.json and returns the
+// --mcp-config flag.
 func (r *CliRunner) setupClaudeMCP() ([]string, error) {
 	doc := map[string]any{"mcpServers": mcpServersObject(r.mcps)}
 	raw, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal claude mcp: %w", err)
 	}
-	f, err := os.CreateTemp("", "apiary-mcp-*.json")
+	path, err := claudeMCPConfigPath(raw)
 	if err != nil {
-		return nil, fmt.Errorf("create claude mcp file: %w", err)
+		return nil, err
 	}
-	defer f.Close()
-	if _, err := f.Write(raw); err != nil {
+
+	if data, err := os.ReadFile(path); err == nil && string(data) == string(raw) {
+		return []string{"--mcp-config", path}, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, fmt.Errorf("create claude mcp dir: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".claude-*.json")
+	if err != nil {
+		return nil, fmt.Errorf("create claude mcp temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return nil, fmt.Errorf("write claude mcp file: %w", err)
 	}
-	return []string{"--mcp-config", f.Name()}, nil
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return nil, fmt.Errorf("close claude mcp file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return nil, fmt.Errorf("install claude mcp file: %w", err)
+	}
+	return []string{"--mcp-config", path}, nil
+}
+
+func claudeMCPConfigPath(raw []byte) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	name := "claude-" + hex.EncodeToString(sum[:]) + ".json"
+	return filepath.Join(home, ".apiary", "mcp", name), nil
 }
 
 // setupCursorMCP merges the servers into ~/.cursor/mcp.json and returns the
