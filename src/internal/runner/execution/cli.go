@@ -244,10 +244,19 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	start := time.Now()
 	prompt := buildPrompt(req)
 
+	mcpRunArgs := r.mcpRunArgs
+	if r.mcpFormat == "claude" && len(r.mcps) > 0 {
+		args, err := r.setupClaudeMCP()
+		if err != nil {
+			return model.RunResult{}, fmt.Errorf("cli runner: refresh MCP config: %w", err)
+		}
+		mcpRunArgs = args
+	}
+
 	argv := append([]string{}, r.args...)
 	// Inject MCP activation args (e.g. claude's "--mcp-config <path>") before the
 	// model/prompt flags; the provider config itself was written by setupMCP.
-	argv = append(argv, r.mcpRunArgs...)
+	argv = append(argv, mcpRunArgs...)
 	// Tool-permission posture. Emitted after r.args so an explicit
 	// permission_mode wins over anything a user pinned in the raw args list.
 	argv = append(argv, r.permissionArgs...)
