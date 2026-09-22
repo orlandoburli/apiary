@@ -333,19 +333,21 @@ workflows:
       add_labels: [needs-attention]
       remove_labels: [apiary:auto]
 
-  # Slack: every human turn is its own item (plugin sources cannot resume a
-  # parked task), carrying the thread so far as a transcript. `source: slack` is
-  # pinned for the same reason as the routines below. The agent publishes its
-  # own reply; result_comment is kept for failures only, because the full result
-  # comment ("Workflow: … ✓ Done" + workflow memory) is noise in a chat.
+  # Slack: the item is the thread (or the DM), not the message, so every human
+  # turn lands on the SAME task, one instance per turn. The plugin marks the
+  # item `pending` while a turn awaits an answer and `answered` once the host
+  # acknowledges the dispatch — hence `states: [pending]` and no `once` (the
+  # same item is dispatched again on every turn). `source: slack` is pinned for
+  # the same reason as the routines below. The agent publishes its own reply;
+  # result_comment is kept for failures only, because the full result comment
+  # ("Workflow: … ✓ Done" + workflow memory) is noise in a chat.
   - id: slack-chat
-    description: "Answer a Slack message; dispatch workflows or create issues when asked."
+    description: "Answer a Slack conversation; dispatch workflows or create issues when asked."
     trigger:
       priority: 5
-      once: true
       match:
         source: slack
-        labels: [slack]
+        states: [pending]
     result_comment: on_fail
     steps:
       - id: answer
