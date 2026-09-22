@@ -123,8 +123,15 @@ After you **create an issue**, reply with its link and status the same way.
 
 ## Answering
 
-Slack is a chat: be brief, lead with the answer, use Markdown lightly. Put your
-reply — and nothing else — between the markers. Only that text reaches Slack:
+Slack is a chat: be brief, lead with the answer, use Markdown lightly.
+
+When the person asks for a table — or the answer is a list of items with the
+same fields (issues, PRs, instances) — use a plain Markdown table (`| A | B |`
+rows with a `|---|---|` line). The plugin renders it as a real Slack table
+(Block Kit). Links, `code` and **bold** inside cells are preserved. Up to 20
+columns; keep cells short.
+
+Put your reply — and nothing else — between the markers. Only that text reaches Slack:
 
 ```
 APIARY_PUBLISH_BEGIN
