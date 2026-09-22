@@ -168,7 +168,9 @@ agents:
     runner: claude-concierge
     model: claude-sonnet-5
     working_dir: ${HOME}/Projects/Personal/apiary
-    max_workers: 1
+    # One per conversation, several conversations at once: with 1, a single
+    # long run (or a stuck one) silences every other Slack thread.
+    max_workers: 3
     max_turns: 25
 
 # ── Workflows ──────────────────────────────────────────────────────────────────
