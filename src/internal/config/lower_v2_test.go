@@ -540,3 +540,39 @@ func TestLowerV2_LeafIfStepRefRewritesAndAutoWires(t *testing.T) {
 		t.Errorf("classify.Memory.Write = %v, want it to contain %q", classify.MemoryWriteFields(), "track")
 	}
 }
+
+func TestLowerV2_ImplicitSequencing_SplitTargetsDependOnTheSplit(t *testing.T) {
+	// The hive triage shape: classify → split → several goto targets declared
+	// one after another. Chaining the targets to each other made every target
+	// but the first unreachable (the split skips the ones it did not choose,
+	// and a skipped sequential predecessor cascades).
+	wf := WorkflowConfig{
+		ID: "triage",
+		Steps: []StepConfig{
+			{ID: "classify", Agent: "ag"},
+			{ID: "route", Type: StepTypeSplit, Branches: []SplitBranch{
+				{If: `memory.agent == "staff"`, Goto: "design"},
+				{Else: true, Goto: "implement"},
+			}},
+			{ID: "design", Agent: "ag"},
+			{ID: "implement", Agent: "ag"},
+			{ID: "wrap-up", Agent: "ag"},
+		},
+	}
+	out, err := LowerV2Workflow(wf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[string][]string{
+		"classify":  nil,
+		"route":     {"classify"},
+		"design":    {"route"},
+		"implement": {"route"},
+		"wrap-up":   {"implement"}, // not a target: plain declaration order
+	}
+	for _, s := range out.Steps {
+		if got := s.SeqDependsOn; !reflect.DeepEqual(got, want[s.ID]) {
+			t.Errorf("step %s seq_depends_on = %v, want %v", s.ID, got, want[s.ID])
+		}
+	}
+}

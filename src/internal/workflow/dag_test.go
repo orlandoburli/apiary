@@ -334,3 +334,46 @@ func TestDAG_LinearChainOrder(t *testing.T) {
 		t.Errorf("expected order %v, got %v", want, ids)
 	}
 }
+
+func TestDAG_SplitLaterTargetRunsWhenLoweredFromFlatYAML(t *testing.T) {
+	// A flat (v1) split workflow gets its implicit sequencing from
+	// config.LowerV2Workflow, the way the daemon loads it. Before the targets
+	// were sequenced on the split, the else branch — declared after another
+	// target — was cascade-skipped and the instance still reported done.
+	cfg := baseCfg()
+	store := newFakeStore()
+	exec := &fakeExecutor{results: map[string]StepResult{
+		"classify": {Success: true, StructuredOutput: map[string]any{"agent": "engineer"}},
+	}}
+	eng := testEngine(cfg, store, exec, &fakeSide{})
+
+	wf, err := config.LowerV2Workflow(config.WorkflowConfig{ID: "triage", Steps: []config.StepConfig{
+		{
+			ID: "classify", Agent: "architect",
+			OutputSchema: &config.OutputSchema{Type: "object",
+				Properties: map[string]config.SchemaField{"agent": {Type: "string"}}},
+			Memory: &config.MemoryConfig{Write: []string{"agent"}},
+		},
+		{ID: "route", Type: config.StepTypeSplit, Branches: []config.SplitBranch{
+			{If: `memory.agent == "staff"`, Goto: "design"},
+			{Else: true, Goto: "implement"},
+		}},
+		{ID: "design", Agent: "architect"},
+		{ID: "implement", Agent: "backend-dev"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, success, _ := eng.RunInstance(context.Background(), wf, model.InternalTask{ID: "c1"})
+	if !success {
+		t.Fatal("expected success")
+	}
+	ids := executedIDs(exec.seen)
+	if !contains(ids, "implement") {
+		t.Errorf("else branch never ran, got %v", ids)
+	}
+	if contains(ids, "design") {
+		t.Errorf("unchosen branch ran, got %v", ids)
+	}
+}

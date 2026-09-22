@@ -93,13 +93,42 @@ func buildStepIndex(steps []StepConfig) map[string]StepConfig {
 //
 // It is idempotent, and it never overrides an edge a step already carries, so it
 // is safe on an already-lowered workflow.
+//
+// A split's goto targets are the exception to "depends on the step before it":
+// they are alternatives, not a sequence, so each one declared after the split
+// depends on the split that chooses it. Chaining them to each other made every target but the first
+// unreachable — the split skips the targets it did not choose, a skipped
+// sequential predecessor cascades, and the chosen branch was quietly skipped
+// with it while the instance still reported done.
 func sequenceSteps(steps []StepConfig) []StepConfig {
+	// Only targets declared after their split count: a goto back to an earlier
+	// step is a loop, and that step keeps its place in the sequence.
+	index := map[string]int{}
+	for i, s := range steps {
+		index[s.ID] = i
+	}
+	splitFor := map[string]string{} // goto target → the split that names it
+	for i, s := range steps {
+		if s.StepType() != StepTypeSplit {
+			continue
+		}
+		for _, b := range s.Branches {
+			if _, seen := splitFor[b.Goto]; b.Goto != "" && !seen && index[b.Goto] > i {
+				splitFor[b.Goto] = s.ID
+			}
+		}
+	}
+
 	out := make([]StepConfig, len(steps))
 	prevID := ""
 	for i, s := range steps {
 		out[i] = s
-		if prevID != "" && len(s.DependsOn) == 0 && len(s.SeqDependsOn) == 0 {
-			out[i].SeqDependsOn = []string{prevID}
+		if len(s.DependsOn) == 0 && len(s.SeqDependsOn) == 0 {
+			if split, ok := splitFor[s.ID]; ok {
+				out[i].SeqDependsOn = []string{split}
+			} else if prevID != "" {
+				out[i].SeqDependsOn = []string{prevID}
+			}
 		}
 		if s.ID != "" {
 			prevID = s.ID

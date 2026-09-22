@@ -467,6 +467,13 @@ hand-tuned graphs:
       goto: implement
 ```
 
+A split's `goto` targets are alternatives, not a sequence: each target declared
+after the split runs once the split chooses it, whatever is declared between
+them. A step after the targets that is not itself a target follows normal
+declaration order — it depends on the step right before it, so if that step is
+an unchosen branch the step is skipped with it. Give it `seq_depends_on:
+[<split>]` when it must run after any branch.
+
 `on_fail: {goto: <ancestor-step>, max_retries: N}` loops back on failure with
 its own retry budget.
 
