@@ -237,3 +237,69 @@ func TestPollCIStatus_LegacyStatusesGreen(t *testing.T) {
 		t.Errorf("status = %q, want passed (legacy statuses all green)", got.Status)
 	}
 }
+
+// The regression behind the 2026-09-25 stall of issue 5797: a DIFFERENT open PR
+// (an e2e suite on chore/e2e-chat) cited the issue after the agent opened its
+// own PR on agent/task-1958. Picking the most recently referenced open PR parked
+// the task on a PR whose CI never ran. The PR whose head branch names the issue
+// must win over a newer open PR that merely mentions it.
+func TestPollCIStatus_PrefersOpenPRWhoseBranchNamesTheIssue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pulls/1958"):
+			http.NotFound(w, r)
+		case strings.HasSuffix(r.URL.Path, "/issues/1958/timeline"):
+			// The issue's own PR (1961) referenced first, the unrelated open one
+			// (1962) referenced later (= most recent).
+			_, _ = w.Write([]byte(`[
+				{"event":"cross-referenced","source":{"type":"issue",
+					"issue":{"number":1961,"pull_request":{"url":"https://api/pulls/1961"}}}},
+				{"event":"cross-referenced","source":{"type":"issue",
+					"issue":{"number":1962,"pull_request":{"url":"https://api/pulls/1962"}}}}]`))
+		case strings.HasSuffix(r.URL.Path, "/pulls/1962"):
+			_, _ = w.Write([]byte(`{"number":1962,"state":"open","html_url":"https://gh/pr/1962","head":{"sha":"other","ref":"chore/e2e-chat"},"mergeable":true,"mergeable_state":"clean"}`))
+		case strings.HasSuffix(r.URL.Path, "/pulls/1961"):
+			_, _ = w.Write([]byte(`{"number":1961,"state":"open","html_url":"https://gh/pr/1961","head":{"sha":"abc","ref":"agent/task-1958"},"mergeable":true,"mergeable_state":"clean"}`))
+		case strings.HasSuffix(r.URL.Path, "/commits/abc/status"):
+			_, _ = w.Write([]byte(`{"state":"success","total_count":1,"statuses":[{"context":"ci","state":"success"}]}`))
+		case strings.HasSuffix(r.URL.Path, "/commits/abc/check-runs"):
+			_, _ = w.Write([]byte(`{"check_runs":[]}`))
+		case strings.Contains(r.URL.Path, "/commits/other/"):
+			t.Errorf("CI polled on the unrelated PR's head %q — the issue's own PR should have been picked", r.URL.Path)
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	a := &Adapter{id: "gh", owner: "o", repo: "r", client: newClient(srv.URL, "")}
+
+	got, err := a.PollCIStatus(context.Background(), "1958")
+	if err != nil {
+		t.Fatalf("PollCIStatus: %v", err)
+	}
+	if got.Status != "passed" {
+		t.Errorf("status = %q, want passed (from #1961 on agent/task-1958, not the newer unrelated #1962)", got.Status)
+	}
+}
+
+func TestBranchReferencesIssue(t *testing.T) {
+	cases := []struct {
+		ref, issue string
+		want       bool
+	}{
+		{"agent/task-1958", "1958", true},
+		{"1958-fix-login", "1958", true},
+		{"fix/issue_1958_retry", "1958", true},
+		{"agent/task-19580", "1958", false},
+		{"agent/task-21958", "1958", false},
+		{"chore/e2e-chat", "1958", false},
+		{"agent/task-219580-1958", "1958", true},
+		{"", "1958", false},
+	}
+	for _, c := range cases {
+		if got := branchReferencesIssue(c.ref, c.issue); got != c.want {
+			t.Errorf("branchReferencesIssue(%q, %q) = %v, want %v", c.ref, c.issue, got, c.want)
+		}
+	}
+}
