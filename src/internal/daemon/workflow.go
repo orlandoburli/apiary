@@ -357,10 +357,19 @@ func (d *Dispatcher) checkWaits(ctx context.Context) {
 	}
 	for _, w := range d.engine.ParkedWaits() {
 		w := w
+		// Honour an explicit check_interval: checkWaits runs on every poll cycle of
+		// every source (a 15s Slack source included), so without this each parked CI
+		// wait queried the forge several times a minute and a handful of them could
+		// exhaust the GitHub REST rate limit. Without check_interval every cycle
+		// re-checks, as before.
+		if !d.waitCheckDue(w) {
+			continue
+		}
 		// Skip an instance already being re-checked/advanced by an earlier cycle.
 		if _, busy := d.waitAdvancing.LoadOrStore(w.InstanceID, struct{}{}); busy {
 			continue
 		}
+		d.waitLastCheck.Store(w.InstanceID, time.Now())
 		agentCh := d.agentSem[w.AgentID]
 		d.goBackground(func() {
 			defer d.waitAdvancing.Delete(w.InstanceID)
@@ -369,6 +378,7 @@ func (d *Dispatcher) checkWaits(ctx context.Context) {
 			if !d.engine.RecheckWait(ctx, w.InstanceID) {
 				return
 			}
+			d.waitLastCheck.Delete(w.InstanceID)
 
 			// Terminal: admit the advance through the agent's semaphore (held for
 			// the whole advance, just like fanOut) so a follow-on agent step honours
@@ -1047,3 +1057,16 @@ var (
 	_ workflow.StepExecutor = (*wfStepExecutor)(nil)
 	_ workflow.SideEffects  = (*wfSideEffects)(nil)
 )
+
+// waitCheckDue reports whether a parked wait is due for another re-check. A step
+// without an explicit check_interval is always due (re-checked every poll cycle).
+func (d *Dispatcher) waitCheckDue(w workflow.ParkedWait) bool {
+	if w.Step.WaitFor == nil || w.Step.WaitFor.CheckInterval == "" {
+		return true
+	}
+	last, ok := d.waitLastCheck.Load(w.InstanceID)
+	if !ok {
+		return true
+	}
+	return time.Since(last.(time.Time)) >= w.Step.WaitFor.ParsedCheckInterval()
+}
