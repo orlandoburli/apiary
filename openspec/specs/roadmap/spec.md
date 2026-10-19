@@ -60,6 +60,12 @@ Ordered by intended sequence.
    issue #367.
 4. [ ] **Stable config schema (1.0)** — freeze `apiary.yaml` and the plugin
    protocol; breaking changes require a major version afterwards.
+5. [ ] **Apiary 2.0 — node-graph workflows (n8n-style)** — one workflow IR,
+   typed pluggable nodes, per-node run data, triggers as nodes, a web UI for
+   executions, then a canvas editor. Milestones M0–M6 in
+   `openspec/changes/2026-10-18-apiary-2-0/`. Revisits three Retired items
+   (webhooks, routines in core, shell script) with evidence from the
+   `n8n-agents` hub.
 
 ## Open, undecided
 
