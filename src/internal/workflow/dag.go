@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	aplog "github.com/orlandoburli/apiary/internal/log"
@@ -31,6 +32,7 @@ const (
 	outcomeDone dagOutcome = iota
 	outcomeFailed
 	outcomeWaiting // suspended at an approval step
+	outcomeStopped // abandoned by Engine.StopParked; the stop owns the persisted state
 )
 
 // dagRun holds the mutable state of one workflow instance's step graph as the
@@ -88,6 +90,11 @@ type dagRun struct {
 	// CI (set when the wait first parks, preserved across re-checks, cleared once
 	// the wait produces a terminal pass/fail). Zero means "no deadline yet".
 	waitDeadline time.Time
+
+	// stopped is set by Engine.StopParked when the operator stops an instance whose
+	// wake is already under way. driveDAG then launches nothing further and discards
+	// whatever is still in flight, and settle leaves the persisted state alone.
+	stopped atomic.Bool
 }
 
 // waitTarget is the run's work item as a wait_for step addresses it.
@@ -303,13 +310,16 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 	}
 
 	for {
-		// Dispatch only when not draining for a loop-back or terminal failure.
-		if !termFail && loopTarget == "" {
+		// Dispatch only when not draining for a loop-back, a terminal failure or a stop.
+		if !termFail && loopTarget == "" && !r.stopped.Load() {
 			dispatch()
 		}
 
 		// Nothing in-flight: resolve pending control-flow or break.
 		if inFlight == 0 {
+			if r.stopped.Load() {
+				return outcomeStopped
+			}
 			if termFail {
 				return outcomeFailed
 			}
@@ -332,6 +342,11 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 		// Wait for one worker to finish.
 		wr := <-resultCh
 		inFlight--
+		// A stopped run only drains: a result processed now could advance it, or
+		// route a cancelled step through on_fail and start it again.
+		if r.stopped.Load() {
+			continue
+		}
 		step := wr.step
 
 		// Approval path: all in-flight drained by the time we get here since

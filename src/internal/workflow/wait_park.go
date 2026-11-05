@@ -9,6 +9,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/db"
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
+	"github.com/orlandoburli/apiary/internal/state"
 )
 
 // ParkedWait describes an instance suspended at a wait_for step waiting for an
@@ -72,6 +73,112 @@ func representativeAgent(wf config.WorkflowConfig) string {
 	return wf.ID
 }
 
+// IsParked reports whether the instance is currently in the parked set, at a
+// wait_for or an approval step.
+func (e *Engine) IsParked(instanceID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, ok := e.parked[instanceID]
+	return ok
+}
+
+// StopParked takes a stopped instance out of the engine, so no later re-check or
+// approval decision can advance it, and reports whether the engine held it. Call it
+// BEFORE persisting the interrupted state: settle and claimParked rely on that order.
+//
+// A parked run is simply dropped. A run whose wake is already under way cannot be
+// dropped, so it is flagged instead: driveDAG launches nothing further and settle
+// leaves the persisted state to the stop. An instance the engine does not hold (a
+// fresh run still on its first drive, or an unknown id) is left alone.
+//
+// Either way the run will never settle, so its slot in the task's outstanding count
+// is released here. The completion hooks do not fire: a stopped run neither passed
+// nor failed, and an interrupted instance does not count as live.
+func (e *Engine) StopParked(ctx context.Context, instanceID string) bool {
+	e.mu.Lock()
+	r, parked := e.parked[instanceID]
+	resuming := false
+	if parked {
+		delete(e.parked, instanceID)
+	} else if r, resuming = e.resuming[instanceID]; resuming {
+		r.stopped.Store(true)
+		delete(e.resuming, instanceID)
+	}
+	e.mu.Unlock()
+	if !parked && !resuming {
+		return false
+	}
+	if parked {
+		// A run still being driven keeps this until it settles: its workers need it.
+		e.instWF.Delete(instanceID)
+	}
+	e.releaseOutstanding(ctx, r)
+	aplog.Info("workflow %s: dropped stopped instance %s (was at step %q)", r.wf.ID, instanceID, r.waitingStep)
+	return true
+}
+
+// releaseOutstanding gives back a run's slot in its task's outstanding-workflow
+// count without settling the task.
+func (e *Engine) releaseOutstanding(ctx context.Context, r *dagRun) {
+	if e.tracker == nil || r.task.ID == "" {
+		return
+	}
+	if _, err := e.tracker.DecrementOutstanding(ctx, r.task.ID); err != nil {
+		aplog.Error("task %s: decrement outstanding: %v", r.task.ID, err)
+	}
+}
+
+// claimParked moves a parked run into e.resuming and persists it as running, or
+// reports false when it must not resume. The whole claim holds e.mu, so a stop lands
+// either before it (the run is gone) or after it (the run is in e.resuming and gets
+// flagged) — never between the state check and the running write, which would
+// overwrite the stop's interrupted state.
+func (e *Engine) claimParked(ctx context.Context, instanceID string) (*dagRun, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r, ok := e.parked[instanceID]
+	if !ok || !e.stillParkedLocked(ctx, r) {
+		return nil, false
+	}
+	delete(e.parked, instanceID)
+	e.resuming[instanceID] = r
+	_ = e.store.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateRunning, "")
+	return r, true
+}
+
+// stillParkedLocked re-reads a parked run's persisted state and reports whether it
+// is still parked, dropping the run when it is not: the row is the record of what
+// the operator asked for, and a stale in-memory entry must never outrank it. This
+// also catches the stop that StopParked cannot see, one that reached a fresh run
+// just before it parked. A failed read says nothing either way, so the run stays
+// parked for the next cycle. The caller holds e.mu.
+func (e *Engine) stillParkedLocked(ctx context.Context, r *dagRun) bool {
+	reader, ok := e.store.(instanceReader)
+	if !ok {
+		return true
+	}
+	inst, err := reader.GetWorkflowInstance(ctx, r.instID)
+	if err != nil {
+		aplog.Warn("workflow %s: read parked instance %s: %v", r.wf.ID, r.instID, err)
+		return false
+	}
+	if inst == nil {
+		return true
+	}
+	st, reason := state.NormalizeWithReason(inst.State)
+	if reason == "" {
+		reason = state.Reason(inst.BlockedReason)
+	}
+	if st == state.Blocked && reason != state.ReasonInterrupted {
+		return true
+	}
+	aplog.Info("workflow %s: dropping parked instance %s: persisted state is %s %s", r.wf.ID, r.instID, inst.State, reason)
+	delete(e.parked, r.instID)
+	e.instWF.Delete(r.instID)
+	e.releaseOutstanding(ctx, r)
+	return false
+}
+
 // CheckParkedWaits re-checks every instance suspended at a wait_for step by waking
 // it: the woken run re-executes the wait_for step (a single CI query via the
 // engine's CIStatusChecker) and either advances past it (CI passed), fails it (CI
@@ -108,7 +215,7 @@ func (e *Engine) CheckParkedWaits(ctx context.Context) {
 func (e *Engine) RecheckWait(ctx context.Context, instanceID string) (terminal bool) {
 	e.mu.Lock()
 	r, ok := e.parked[instanceID]
-	if !ok {
+	if !ok || !e.stillParkedLocked(ctx, r) {
 		e.mu.Unlock()
 		return false
 	}
@@ -129,19 +236,15 @@ func (e *Engine) RecheckWait(ctx context.Context, instanceID string) (terminal b
 // to its next terminal or suspended state and settles it. A pending check re-parks
 // the instance (via enterWait, preserving its deadline); a pass/fail advances or
 // loops the workflow through the normal result-processing path. It is a no-op if
-// the instance is no longer parked — the claim (delete from e.parked) is atomic, so
-// two concurrent wakes of the same instance are safe: the loser returns early.
+// the instance is no longer parked — the claim (claimParked) is atomic, so two
+// concurrent wakes of the same instance are safe: the loser returns early. It is
+// equally a no-op for an instance stopped since it parked.
 //
 // The dispatcher runs this on its own goroutine, admitted through the per-agent
 // semaphore, so a slow follow-on agent step here neither blocks the poll loop nor
 // exceeds the agent's max_workers.
 func (e *Engine) WakeWait(ctx context.Context, instanceID string) {
-	e.mu.Lock()
-	r, ok := e.parked[instanceID]
-	if ok {
-		delete(e.parked, instanceID)
-	}
-	e.mu.Unlock()
+	r, ok := e.claimParked(ctx, instanceID)
 	if !ok {
 		return
 	}
@@ -153,7 +256,6 @@ func (e *Engine) WakeWait(ctx context.Context, instanceID string) {
 	r.waitingChild = ""
 	r.state[step] = stPending // re-arm the wait_for (or parallel) step for re-dispatch
 
-	_ = e.store.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateRunning, "")
 	outcome := e.driveDAG(ctx, r)
 	e.settle(ctx, r, outcome)
 }

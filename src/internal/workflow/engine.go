@@ -59,6 +59,13 @@ type executionEventRecorder interface {
 	RecordExecutionEvent(context.Context, *db.ExecutionEvent) error
 }
 
+// instanceReader is the optional capability the engine uses to confirm a parked
+// run's persisted state before resuming it. *db.Client satisfies it; fake stores in
+// tests that omit it are trusted to agree with the in-memory parked set.
+type instanceReader interface {
+	GetWorkflowInstance(ctx context.Context, id string) (*db.WorkflowInstance, error)
+}
+
 type approvalRequestStore interface {
 	CreateApprovalRequest(context.Context, *db.ApprovalRequest) error
 	GetApprovalByInstance(context.Context, string) (*db.ApprovalRequest, error)
@@ -363,8 +370,11 @@ type Engine struct {
 	now   func() time.Time
 	newID func(prefix string) string
 
-	mu     sync.Mutex         // guards parked
+	mu     sync.Mutex         // guards parked and resuming
 	parked map[string]*dagRun // instances suspended at an approval step, by id
+	// resuming holds runs claimed out of parked and not yet settled, so a stop that
+	// arrives after the claim can still reach the run (see StopParked).
+	resuming map[string]*dagRun
 
 	// instWF maps a live instance ID to its workflow ID, for memory provenance in
 	// code paths (parallel / foreach workers) that do not carry the dagRun.
@@ -421,11 +431,12 @@ func WithApprovalProvider(provider ApprovalProvider) Option {
 // NewEngine builds an Engine. cfg, store, and exec are required.
 func NewEngine(cfg *config.Config, store Store, exec StepExecutor, opts ...Option) *Engine {
 	e := &Engine{
-		cfg:    cfg,
-		store:  store,
-		exec:   exec,
-		now:    time.Now,
-		parked: map[string]*dagRun{},
+		cfg:      cfg,
+		store:    store,
+		exec:     exec,
+		now:      time.Now,
+		parked:   map[string]*dagRun{},
+		resuming: map[string]*dagRun{},
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -560,8 +571,20 @@ func sourceItemView(task model.InternalTask, bindings []model.SourceBinding) mod
 // settle persists the terminal state of a run and applies completion hooks, or
 // parks the run when it suspended at an approval step. It returns whether the
 // instance completed successfully (false for failed or waiting).
+//
+// A run stopped while it was being driven settles nothing: StopParked already
+// released it and the stop owns its persisted state. The check and the waiting
+// write share e.mu with StopParked, so a stop lands either before the check (and is
+// seen) or after the re-park (and finds the run parked) — it cannot be overwritten.
 func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool {
+	e.mu.Lock()
+	if r.stopped.Load() {
+		e.mu.Unlock()
+		e.instWF.Delete(r.instID)
+		return false
+	}
 	if outcome == outcomeWaiting {
+		defer e.mu.Unlock()
 		// A run suspends at either an approval step or a wait_for step; persist the
 		// matching waiting state so the right rehydration path picks it up after a
 		// restart (approval_waiting → rehydrateParkedApprovals, waiting →
@@ -577,11 +600,13 @@ func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool
 			waitReason = string(state.ReasonCI)
 		}
 		_ = e.store.UpdateWorkflowInstanceState(ctx, r.instID, db.InstanceStateBlocked, waitReason)
-		e.mu.Lock()
 		e.parked[r.instID] = r
-		e.mu.Unlock()
+		delete(e.resuming, r.instID)
 		return false
 	}
+	delete(e.parked, r.instID)
+	delete(e.resuming, r.instID)
+	e.mu.Unlock()
 
 	failed := outcome == outcomeFailed
 	finalState := db.InstanceStateDone
@@ -589,9 +614,6 @@ func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool
 		finalState = db.InstanceStateFailed
 	}
 	_ = e.store.UpdateWorkflowInstanceState(ctx, r.instID, finalState, "")
-	e.mu.Lock()
-	delete(e.parked, r.instID)
-	e.mu.Unlock()
 	e.instWF.Delete(r.instID)
 	e.applyCompletion(ctx, r, failed)
 	e.completeTask(ctx, r, failed)
