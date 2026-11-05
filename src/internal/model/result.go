@@ -166,19 +166,19 @@ type RunResult struct {
 	// when present. Empty otherwise. The markers are stripped from Output.
 	Summary string
 	// PublishPayload is the text extracted from the APIARY_PUBLISH_BEGIN/END
-	// block, when present. Empty otherwise. The markers are stripped from
-	// Output. The workflow engine writes this back to the task's source
+	// blocks, when present, with several blocks joined as paragraphs. Empty
+	// otherwise. The markers are stripped from Output. The workflow engine writes this back to the task's source
 	// bindings as a comment (the agent-driven replacement for result_comment).
 	PublishPayload string
-	// SpawnRequest is the parsed APIARY_SPAWN_BEGIN/END block when it carries a
-	// single JSON object. Nil otherwise. The markers are stripped from Output. The
+	// SpawnRequest is the parsed APIARY_SPAWN_BEGIN/END block when the output has
+	// exactly one and it carries a single JSON object. Nil otherwise. The markers are stripped from Output. The
 	// workflow engine creates a child InternalTask and dispatches the named
 	// workflow against it.
 	SpawnRequest *SpawnRequest
-	// SpawnRequests is the parsed APIARY_SPAWN block when it carries a JSON array
-	// of requests — one agent step fanning out into several children (e.g. a spec
-	// decomposed into sub-issues). Empty for a single-object or absent block. The
-	// engine treats SpawnRequest and SpawnRequests uniformly: each request becomes
+	// SpawnRequests holds the parsed requests when a block carries a JSON array or
+	// the output has several blocks — one agent step fanning out into several
+	// children (e.g. a spec decomposed into sub-issues). Empty for a lone
+	// single-object block or when there is none. The engine treats SpawnRequest and SpawnRequests uniformly: each request becomes
 	// one deduped child.
 	SpawnRequests []SpawnRequest
 	// TimedOut marks a run the caller cut off — either at Timeout or at
@@ -186,16 +186,18 @@ type RunResult struct {
 	// reports only "signal: killed", so without this a bound firing is
 	// indistinguishable from a crash in the run history.
 	TimedOut bool
-	// SpawnError is set when an APIARY_SPAWN block was present but its body was
-	// not valid JSON. The workflow executor turns this into a failed step.
+	// SpawnError is set when any APIARY_SPAWN block's body was not valid JSON. It
+	// names every malformed block, and SpawnRequest and SpawnRequests stay empty:
+	// one bad block spawns nothing. The workflow executor turns this into a failed
+	// step and appends the message to the step's output.
 	SpawnError error
-	// MemorizeRequests are the parsed APIARY_MEMORIZE_BEGIN/END requests (a single
-	// object or a JSON array). The markers are stripped from Output. The workflow
+	// MemorizeRequests are the parsed APIARY_MEMORIZE_BEGIN/END requests (each
+	// block a single object or a JSON array). The markers are stripped from Output. The workflow
 	// engine persists each request to the memory store when memory is enabled.
 	MemorizeRequests []MemorizeRequest
-	// MemorizeError is set when an APIARY_MEMORIZE block was present but its body
-	// was not valid JSON. Unlike SpawnError it never fails the step — the engine
-	// surfaces it as a warning and the run's outcome is untouched.
+	// MemorizeError is set when any APIARY_MEMORIZE block's body was not valid
+	// JSON. Unlike SpawnError it never fails the step and the valid blocks are kept
+	// — the engine surfaces it as a warning and the run's outcome is untouched.
 	MemorizeError error
 
 	// RateLimited is true when the provider rejected the run because of a

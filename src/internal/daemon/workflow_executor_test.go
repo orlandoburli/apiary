@@ -239,7 +239,7 @@ func TestWfStepExecutor_SpawnPropagationAndError(t *testing.T) {
 	}
 
 	// Malformed spawn block → failed step with the error surfaced.
-	badRes := newExec(model.RunResult{Success: true, SpawnError: errors.New("invalid JSON")}).
+	badRes := newExec(model.RunResult{Success: true, Output: "agent prose", SpawnError: errors.New("APIARY_SPAWN: invalid JSON")}).
 		ExecuteStep(ctx, workflow.StepRequest{InstanceID: "wf_2", Cell: model.SourceItem{ID: "c1"}, Step: step})
 	if badRes.Success {
 		t.Error("expected failed step for malformed spawn block")
@@ -249,5 +249,17 @@ func TestWfStepExecutor_SpawnPropagationAndError(t *testing.T) {
 	}
 	if badRes.SpawnRequest != nil {
 		t.Errorf("malformed spawn should yield no request, got %+v", badRes.SpawnRequest)
+	}
+	// The engine persists Output and drops Err, so the cause must ride on Output
+	// or the step run shows an unexplained failure (#494).
+	if want := "agent prose\n\nAPIARY_SPAWN: invalid JSON"; badRes.Output != want {
+		t.Errorf("Output = %q, want %q", badRes.Output, want)
+	}
+
+	// An agent that printed nothing else still leaves the cause on the step run.
+	emptyRes := newExec(model.RunResult{Success: true, SpawnError: errors.New("APIARY_SPAWN: invalid JSON")}).
+		ExecuteStep(ctx, workflow.StepRequest{InstanceID: "wf_3", Cell: model.SourceItem{ID: "c1"}, Step: step})
+	if emptyRes.Output != "APIARY_SPAWN: invalid JSON" {
+		t.Errorf("Output = %q, want the bare error", emptyRes.Output)
 	}
 }

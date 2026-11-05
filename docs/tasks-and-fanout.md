@@ -52,6 +52,9 @@ Mitigation is in progress; a follow-up task collects diagnostics.
 APIARY_PUBLISH_END
 ```
 
+Several publish blocks in one output are posted as a single comment, one
+paragraph per block.
+
 The step-level `publish` field controls this: `auto` (default — write back
 when the agent emits a payload) or `off` (never write back, even if a payload
 is present).
@@ -75,6 +78,25 @@ APIARY_SPAWN_END
 | `title` | Child task title |
 | `input` | Arbitrary JSON handed to the child's steps as task input |
 | `key` | Optional idempotency key — see [Spawn deduplication](#spawn-deduplication) |
+
+To spawn several children, put a JSON array in one block or emit one block per
+child. Both forms can be mixed, and every request keeps its own `key`:
+
+```
+APIARY_SPAWN_BEGIN
+[
+  {"workflow": "collect-logs", "title": "Backend logs", "key": "incident/logs/backend"},
+  {"workflow": "collect-logs", "title": "Frontend logs", "key": "incident/logs/frontend"}
+]
+APIARY_SPAWN_END
+```
+
+A block that is not valid JSON fails the step and **no child is created**, even
+if other blocks in the same output are valid. The step run's output ends with
+the parse error, naming each bad block (`APIARY_SPAWN: block 2 of 5: invalid
+JSON: ...`). Nothing is spawned because a retry re-emits every block, and a
+request without a `key` is deduplicated by its title and input, which an agent
+may reword between attempts.
 
 The parent is always the spawning task — lineage cannot be forged from agent
 output.

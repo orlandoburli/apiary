@@ -631,10 +631,16 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 
 	// A malformed APIARY_SPAWN block is a step-level error so the workflow fails
 	// with a descriptive message rather than silently dropping the request. The
-	// step's memorize requests still travel — persisted knowledge should survive
-	// an unrelated spawn failure.
+	// message rides on Output because that is what the step run persists and what
+	// an on_fail retry sees; Err never reaches either. The step's memorize requests
+	// still travel — persisted knowledge should survive an unrelated spawn failure.
 	if res.SpawnError != nil {
-		return workflow.StepResult{Success: false, Output: res.Output, Usage: usage, Timing: timing, InputPrompt: res.InputPrompt,
+		aplog.Error("[%s] step %q: %v", req.Cell.LogLabel(), req.Step.ID, res.SpawnError)
+		output := res.SpawnError.Error()
+		if res.Output != "" {
+			output = res.Output + "\n\n" + output
+		}
+		return workflow.StepResult{Success: false, Output: output, Usage: usage, Timing: timing, InputPrompt: res.InputPrompt,
 			MemorizeRequests: memorizeRequests, MemorizeError: memorizeError, Err: res.SpawnError}
 	}
 
