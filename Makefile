@@ -86,6 +86,21 @@ vet: ## Run go vet (both modules)
 	cd $(SDK) && go vet ./...
 	cd $(SRC) && go vet ./...
 
+# ── gitnexus ───────────────────────────────────────────────────────────────────
+
+# A full analyze installs gitnexus's bundled skills over the committed ones (#457).
+# --skip-skills prevents that but only exists from 1.6.5, and older versions reject
+# it, so ask the installed binary. The restore covers the versions without it.
+.PHONY: gitnexus
+gitnexus: ## Rebuild the GitNexus index, keeping the committed skills intact
+	@test -z "$$(git status --porcelain -- .claude/skills/gitnexus/)" || \
+		{ echo "uncommitted changes in .claude/skills/gitnexus/: commit them first, the restore would discard them"; exit 1; }
+	@skip=""; \
+	if gitnexus analyze --help | grep -q -e '--skip-skills'; then skip="--skip-skills"; fi; \
+	gitnexus analyze --skip-agents-md $$skip
+	@git checkout -- .claude/skills/gitnexus/
+	@git status --short
+
 # ── clean ──────────────────────────────────────────────────────────────────────
 
 .PHONY: clean

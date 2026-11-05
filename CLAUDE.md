@@ -43,25 +43,37 @@ This project is indexed by GitNexus as **apiary** (6306 symbols, 22913 relations
 
 <!-- gitnexus:end -->
 
-## After running `gitnexus analyze`
+## Rebuilding the index
+
+Run this instead of a bare `gitnexus analyze`:
+
+```bash
+make gitnexus
+```
 
 A **full** index build — a fresh clone, a **new git worktree**, or `--force` —
-rewrites all six `.claude/skills/gitnexus/*/SKILL.md` files from the tool's
-bundled copies, discarding what this repo commits there (measured on 1.6.3: 76
-insertions, 165 deletions). `--skip-agents-md` does **not** prevent it: it covers
+installs the tool's bundled skills over what this repo commits in
+`.claude/skills/gitnexus/`. `--skip-agents-md` does **not** prevent it: it covers
 only the generated block above. An incremental analyze over an existing
 `.gitnexus/` leaves them alone, which is why this mostly bites in worktrees —
 every new one is a first analyze.
 
-Always restore them afterwards, and check the tree is clean:
+What a full build does to the tree depends on the version:
 
-```bash
-gitnexus analyze --skip-agents-md && git checkout -- .claude/skills/gitnexus/
-git status --short
-```
+| gitnexus | Effect of `analyze --skip-agents-md` | `--skip-skills` |
+|----------|--------------------------------------|-----------------|
+| up to 1.6.4 | rewrites all six `SKILL.md` files (1.6.3: 76 insertions, 165 deletions), dropping the `node .gitnexus/run.cjs` runner instructions and the npm 11 `npx` crash workaround (#1939) | not available |
+| 1.6.5 to 1.6.9 | not measured; no flat-layout code yet, so expect the in-place rewrite | available |
+| 1.6.10 and later | adds six untracked `.claude/skills/gitnexus-*/` directories and deletes any nested skill identical to the bundled copy (1.6.12: `gitnexus-guide`, 138 deletions) | available |
 
-What the regenerated copies drop matters: the `node .gitnexus/run.cjs` runner
-instructions and the npm 11 `npx` crash workaround (#1939) — the very failure the
-line above tells you to route around.
+`make gitnexus` passes `--skip-skills` when the installed version has it, restores
+`.claude/skills/gitnexus/` either way, and prints `git status --short`, which should
+be empty. It stops first if that directory has uncommitted edits, because the
+restore would discard them.
 
-Tracked in #457; upstream at abhigyanpatwari/GitNexus#3080.
+If a bare analyze on 1.6.10 or later already dirtied the tree, restore the nested
+skills with `git checkout -- .claude/skills/gitnexus/`, then delete the six untracked
+`.claude/skills/gitnexus-{cli,debugging,exploring,guide,impact-analysis,refactoring}/`
+directories. `gitnexus-codebase` is tracked: keep it.
+
+Upstream: abhigyanpatwari/GitNexus#3080.
