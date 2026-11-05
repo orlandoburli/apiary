@@ -33,7 +33,8 @@ With memory disabled (the default) nothing is persisted or injected, and any
 
 An agent saves a memory by emitting a marker block in its step output, exactly
 like `APIARY_PUBLISH` and `APIARY_SPAWN`. The block carries one JSON object or
-an array of them:
+an array of them, and a step may emit several blocks. A malformed block is
+logged as a warning and skipped; the valid ones are still saved:
 
 ```
 APIARY_MEMORIZE_BEGIN

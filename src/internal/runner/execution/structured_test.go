@@ -430,3 +430,223 @@ func TestBuildPrompt_IncludesOutputInstruction(t *testing.T) {
 		t.Errorf("prompt missing output instruction:\n%s", got)
 	}
 }
+
+// fiveSpawnBlocks is the output shape from issue #494: one APIARY_SPAWN block
+// per child, each with its own dedup key, separated by blank lines and prose.
+const fiveSpawnBlocks = `Found five stale tasks.
+
+APIARY_SPAWN_BEGIN
+{"workflow": "unblock", "title": "Unblock #4450", "input": {"issue": 4450}, "key": "unblock/needs_human_stale/4450"}
+APIARY_SPAWN_END
+
+APIARY_SPAWN_BEGIN
+{"workflow": "unblock", "title": "Unblock #4940", "input": {"issue": 4940}, "key": "unblock/needs_human_stale/4940"}
+APIARY_SPAWN_END
+
+APIARY_SPAWN_BEGIN
+{"workflow": "unblock", "title": "Unblock #5001", "input": {"issue": 5001}, "key": "unblock/needs_human_stale/5001"}
+APIARY_SPAWN_END
+
+Two more:
+
+APIARY_SPAWN_BEGIN
+{"workflow": "unblock", "title": "Unblock #5002", "input": {"issue": 5002}, "key": "unblock/needs_human_stale/5002"}
+APIARY_SPAWN_END
+
+APIARY_SPAWN_BEGIN
+{"workflow": "unblock", "title": "Unblock #5003", "input": {"issue": 5003}, "key": "unblock/needs_human_stale/5003"}
+APIARY_SPAWN_END`
+
+// TestApplyStructured_SpawnMultipleBlocks is the #494 regression: several
+// blocks used to be concatenated into one payload, which failed as invalid JSON
+// and created no child at all.
+func TestApplyStructured_SpawnMultipleBlocks(t *testing.T) {
+	result := model.RunResult{Output: fiveSpawnBlocks}
+	applyStructured(&result)
+
+	if result.SpawnError != nil {
+		t.Fatalf("unexpected spawn error: %v", result.SpawnError)
+	}
+	if result.SpawnRequest != nil {
+		t.Errorf("multiple blocks must not populate single SpawnRequest, got %#v", result.SpawnRequest)
+	}
+	wantKeys := []string{
+		"unblock/needs_human_stale/4450",
+		"unblock/needs_human_stale/4940",
+		"unblock/needs_human_stale/5001",
+		"unblock/needs_human_stale/5002",
+		"unblock/needs_human_stale/5003",
+	}
+	if len(result.SpawnRequests) != len(wantKeys) {
+		t.Fatalf("expected %d spawn requests, got %d: %#v", len(wantKeys), len(result.SpawnRequests), result.SpawnRequests)
+	}
+	for i, want := range wantKeys {
+		req := result.SpawnRequests[i]
+		if req.Key != want {
+			t.Errorf("request %d key = %q, want %q", i, req.Key, want)
+		}
+		if req.WorkflowID != "unblock" {
+			t.Errorf("request %d workflow = %q, want unblock", i, req.WorkflowID)
+		}
+	}
+	if want := "Found five stale tasks.\n\n\n\n\nTwo more:"; result.Output != want {
+		t.Errorf("prose between blocks must survive, markers must not: %q", result.Output)
+	}
+}
+
+// TestApplyStructured_SpawnMixedObjectAndArrayBlocks: each block keeps its own
+// form, so an object block and an array block add up.
+func TestApplyStructured_SpawnMixedObjectAndArrayBlocks(t *testing.T) {
+	result := model.RunResult{Output: `APIARY_SPAWN_BEGIN
+{"title": "One", "key": "one"}
+APIARY_SPAWN_END
+APIARY_SPAWN_BEGIN
+[{"title": "Two", "key": "two"}, {"title": "Three", "key": "three"}]
+APIARY_SPAWN_END`}
+	applyStructured(&result)
+
+	if result.SpawnError != nil {
+		t.Fatalf("unexpected spawn error: %v", result.SpawnError)
+	}
+	var keys []string
+	for _, req := range result.SpawnRequests {
+		keys = append(keys, req.Key)
+	}
+	if got := strings.Join(keys, ","); got != "one,two,three" {
+		t.Errorf("keys = %q, want one,two,three", got)
+	}
+}
+
+// TestApplyStructured_SpawnOneBadBlockSpawnsNothing pins the partial-validity
+// rule: one malformed block fails the whole spawn. A retry re-emits every
+// block, and a request with no explicit key derives its dedup key from a title
+// the agent may reword, so spawning the valid part first risks duplicates.
+func TestApplyStructured_SpawnOneBadBlockSpawnsNothing(t *testing.T) {
+	result := model.RunResult{Output: `APIARY_SPAWN_BEGIN
+{"workflow": "unblock", "key": "a"}
+APIARY_SPAWN_END
+APIARY_SPAWN_BEGIN
+{not valid json}
+APIARY_SPAWN_END
+APIARY_SPAWN_BEGIN
+{"workflow": "unblock", "key": "c"}
+APIARY_SPAWN_END`}
+	applyStructured(&result)
+
+	if result.SpawnRequest != nil || len(result.SpawnRequests) != 0 {
+		t.Errorf("no request may survive a malformed block: %#v %#v", result.SpawnRequest, result.SpawnRequests)
+	}
+	if result.SpawnError == nil {
+		t.Fatal("expected spawn error")
+	}
+	if msg := result.SpawnError.Error(); !strings.Contains(msg, "APIARY_SPAWN") || !strings.Contains(msg, "block 2 of 3") {
+		t.Errorf("error must name the marker and the bad block, got %q", msg)
+	}
+}
+
+// TestApplyStructured_SpawnEveryBadBlockReported: an agent fixing its output
+// should learn about all the bad blocks from one failure.
+func TestApplyStructured_SpawnEveryBadBlockReported(t *testing.T) {
+	result := model.RunResult{Output: `APIARY_SPAWN_BEGIN
+{bad}
+APIARY_SPAWN_END
+APIARY_SPAWN_BEGIN
+[{bad}]
+APIARY_SPAWN_END`}
+	applyStructured(&result)
+
+	if result.SpawnError == nil {
+		t.Fatal("expected spawn error")
+	}
+	msg := result.SpawnError.Error()
+	for _, want := range []string{"block 1 of 2: invalid JSON", "block 2 of 2: invalid JSON array"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error missing %q: %q", want, msg)
+		}
+	}
+}
+
+// TestApplyStructured_SpawnEmptyBlockIgnored: an empty block carries no request
+// and is not an error, alone or next to a real one.
+func TestApplyStructured_SpawnEmptyBlockIgnored(t *testing.T) {
+	alone := model.RunResult{Output: "APIARY_SPAWN_BEGIN\n\nAPIARY_SPAWN_END"}
+	applyStructured(&alone)
+	if alone.SpawnError != nil || alone.SpawnRequest != nil || len(alone.SpawnRequests) != 0 {
+		t.Errorf("empty block must be a no-op: %+v", alone)
+	}
+
+	withReal := model.RunResult{Output: "APIARY_SPAWN_BEGIN\nAPIARY_SPAWN_END\nAPIARY_SPAWN_BEGIN\n{\"key\": \"a\"}\nAPIARY_SPAWN_END"}
+	applyStructured(&withReal)
+	if withReal.SpawnError != nil {
+		t.Fatalf("unexpected spawn error: %v", withReal.SpawnError)
+	}
+	if withReal.SpawnRequest == nil || withReal.SpawnRequest.Key != "a" {
+		t.Errorf("one real block keeps the single form: %+v", withReal)
+	}
+}
+
+// TestApplyStructured_MemorizeMultipleBlocks: APIARY_MEMORIZE shared the #494
+// concatenation, so two blocks lost both memories to a parse warning.
+func TestApplyStructured_MemorizeMultipleBlocks(t *testing.T) {
+	result := model.RunResult{Output: `APIARY_MEMORIZE_BEGIN
+{"content": "first"}
+APIARY_MEMORIZE_END
+APIARY_MEMORIZE_BEGIN
+[{"content": "second"}, {"content": "third"}]
+APIARY_MEMORIZE_END`}
+	applyStructured(&result)
+
+	if result.MemorizeError != nil {
+		t.Fatalf("unexpected error: %v", result.MemorizeError)
+	}
+	if len(result.MemorizeRequests) != 3 {
+		t.Fatalf("expected 3 requests, got %d", len(result.MemorizeRequests))
+	}
+	if result.MemorizeRequests[2].Content != "third" {
+		t.Errorf("requests parsed incorrectly: %+v", result.MemorizeRequests)
+	}
+}
+
+// TestApplyStructured_MemorizeBadBlockKeepsTheRest: unlike spawn, memorize keeps
+// the valid blocks. Entries are independent and a bad block only ever warns, so
+// dropping good knowledge alongside it would help nobody.
+func TestApplyStructured_MemorizeBadBlockKeepsTheRest(t *testing.T) {
+	result := model.RunResult{Output: `APIARY_MEMORIZE_BEGIN
+{"content": "kept"}
+APIARY_MEMORIZE_END
+APIARY_MEMORIZE_BEGIN
+{not valid json}
+APIARY_MEMORIZE_END`}
+	applyStructured(&result)
+
+	if result.MemorizeError == nil || !strings.Contains(result.MemorizeError.Error(), "block 2 of 2") {
+		t.Errorf("expected error naming block 2, got %v", result.MemorizeError)
+	}
+	if len(result.MemorizeRequests) != 1 || result.MemorizeRequests[0].Content != "kept" {
+		t.Errorf("valid block must survive: %+v", result.MemorizeRequests)
+	}
+}
+
+// TestExtractStructured_MultipleTextBlocks: publish and summary are free text,
+// so several blocks never failed, but they ran together into one paragraph.
+func TestExtractStructured_MultipleTextBlocks(t *testing.T) {
+	raw := `APIARY_PUBLISH_BEGIN
+## First
+APIARY_PUBLISH_END
+APIARY_PUBLISH_BEGIN
+second
+APIARY_PUBLISH_END
+APIARY_SUMMARY_START
+one
+APIARY_SUMMARY_END
+APIARY_SUMMARY_START
+two
+APIARY_SUMMARY_END`
+	_, _, summary, publish, _, _ := extractStructured(raw)
+	if publish != "## First\n\nsecond" {
+		t.Errorf("publish = %q", publish)
+	}
+	if summary != "one\n\ntwo" {
+		t.Errorf("summary = %q", summary)
+	}
+}
