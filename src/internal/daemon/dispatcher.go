@@ -102,6 +102,10 @@ type Dispatcher struct {
 	// follow-on advance) is in flight, so overlapping poll cycles don't double-check
 	// or double-advance the same instance. Mirrors inFlight for polled cells.
 	waitAdvancing sync.Map
+	// waitLastCheck remembers when each parked wait_for instance was last re-checked
+	// (instance id → time.Time) so checkWaits honours an explicit check_interval
+	// instead of hitting the external system on every source's poll cycle.
+	waitLastCheck sync.Map
 	// approvalAdvancing is the approval-path twin of waitAdvancing: it guards a parked
 	// approval instance while its cheap re-evaluation (and any follow-on resume/abort
 	// advance) is in flight, so overlapping poll cycles don't double-advance it.
