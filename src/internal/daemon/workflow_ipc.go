@@ -286,6 +286,25 @@ func (d *Dispatcher) StopInstance(ctx context.Context, instanceID string) error 
 			aplog.Error("stop instance %s: cancel queued work: %v", instanceID, err)
 		}
 	}
+	// A reservation has no step, no process and nothing to resume, so there is
+	// nothing to interrupt — and the cell-keyed fallback below would hit whatever
+	// sibling run is live on the cell. Losing this race means the run just started,
+	// so carry on and stop it like any other.
+	if inst.State == db.InstanceStateQueued {
+		left, err := d.db.LeaveQueuedState(ctx, instanceID, db.InstanceStateCanceled, "")
+		if err != nil {
+			return err
+		}
+		if left {
+			if inst.TaskID != "" {
+				if _, err := d.db.InternalTasks().DecrementOutstanding(ctx, inst.TaskID); err != nil {
+					aplog.Error("stop instance %s: decrement outstanding: %v", instanceID, err)
+				}
+			}
+			aplog.Info("cancelled queued instance %s (cell %s) before it started", instanceID, inst.CellID)
+			return nil
+		}
+	}
 	// Cancel this instance's own step, when it registered one. Cancelling by cell
 	// instead would be ambiguous the moment a cell carries two live instances —
 	// exactly the state this command exists to clean up (issue #422) — because the

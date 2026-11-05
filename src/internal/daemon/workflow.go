@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -232,7 +233,22 @@ func (d *Dispatcher) dispatchWorkflow(ctx context.Context, cell model.SourceItem
 	}
 
 	wf := d.resolveWorkflow(match)
-	instID, success, err := d.workflowEngine().RunInstance(ctx, wf, task)
+	var (
+		instID  string
+		success bool
+		err     error
+	)
+	if match.InstanceID != "" {
+		instID, success, err = d.workflowEngine().RunReservedInstance(ctx, wf, task, match.InstanceID)
+	} else {
+		instID, success, err = d.workflowEngine().RunInstance(ctx, wf, task)
+	}
+	if errors.Is(err, workflow.ErrReservationLost) {
+		// Stopped while it waited for a slot. That is the operator's outcome, not
+		// a failed dispatch, and whoever stopped it settled the accounting.
+		aplog.Info("cell %s: not starting workflow %s: %v", cell.LogLabel(), wf.ID, err)
+		return model.RunResult{Success: true, WorkerID: match.Route.Agent}
+	}
 	if err != nil {
 		aplog.Error("cell %s: workflow run failed: %v", cell.LogLabel(), err)
 		return model.RunResult{Success: false, WorkerID: match.Route.Agent}

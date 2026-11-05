@@ -135,7 +135,11 @@ func (c *Client) CreateWorkflowInstance(ctx context.Context, inst *WorkflowInsta
 		nullStr(inst.BlockedReason),
 		nullStr(inst.ParentInstanceID), nullStr(inst.ResumedFrom), inst.TaskID, inst.CreatedAt, inst.UpdatedAt)
 	if err == nil {
-		c.recordWorkflowEvent(ctx, inst, "workflow.started", map[string]any{"state": inst.State})
+		// A queued row is a reservation: nothing has started, and LeaveQueuedState
+		// records workflow.started when something does.
+		if inst.State != InstanceStateQueued {
+			c.recordWorkflowEvent(ctx, inst, "workflow.started", map[string]any{"state": inst.State})
+		}
 		if inst.ResumedFrom != "" {
 			c.recordWorkflowEvent(ctx, inst, "workflow.resumed", map[string]any{"resumed_from": inst.ResumedFrom})
 		}
@@ -170,6 +174,33 @@ func (c *Client) UpdateWorkflowInstanceState(ctx context.Context, id, newState, 
 		}
 	}
 	return err
+}
+
+// LeaveQueuedState moves a reserved instance out of 'queued', reporting whether
+// this call is the one that did it. The transition is atomic because a reservation
+// has competing owners — the run about to start, an operator cancelling it, the
+// queue settling its job — and exactly one may win: the winner also owns the task's
+// outstanding-workflow accounting for that instance. A false result with no error
+// means the row is absent or already left 'queued'.
+func (c *Client) LeaveQueuedState(ctx context.Context, id, newState, reason string) (bool, error) {
+	res, err := c.db.ExecContext(ctx, `
+		UPDATE workflow_instances SET state = ?, blocked_reason = ?, updated_at = ?
+		WHERE id = ? AND state = ?
+	`, newState, nullStr(reason), time.Now(), id, InstanceStateQueued)
+	if err != nil {
+		return false, err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return false, err
+	}
+	if inst, _ := c.GetWorkflowInstance(ctx, id); inst != nil {
+		eventType := workflowStateEventType(newState, reason)
+		if newState == InstanceStateRunning {
+			eventType = "workflow.started"
+		}
+		c.recordWorkflowEvent(ctx, inst, eventType, map[string]any{"state": newState})
+	}
+	return true, nil
 }
 
 // GetWorkflowInstance fetches an instance by ID, or (nil, nil) if not found.
@@ -532,6 +563,32 @@ func (c *Client) ReconcileOrphanWorkflowInstances(ctx context.Context) (int64, e
 		SET state = ?, blocked_reason = ?, updated_at = ?
 		WHERE state = ?
 	`, InstanceStateBlocked, string(state.ReasonInterrupted), time.Now(), InstanceStateRunning)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// ReconcileOrphanQueuedInstances interrupts reserved instances that nothing will
+// ever start. A reservation is kept alive by one of two things: a dispatch job
+// still waiting to run, which survives a restart and adopts the row when it is
+// delivered, or a goroutine in the previous process, which does not. Rows with no
+// live job are therefore orphans, and must not stay 'queued' — that state counts
+// towards outstanding_workflows, so the task could never settle.
+//
+// Must run after terminal queue jobs are settled, so a reservation whose job
+// finished takes that job's outcome rather than being reported as interrupted,
+// and before ReconcileOrphanTaskCounters, which recounts from these states.
+func (c *Client) ReconcileOrphanQueuedInstances(ctx context.Context) (int64, error) {
+	res, err := c.db.ExecContext(ctx, `
+		UPDATE workflow_instances
+		SET state = ?, blocked_reason = ?, updated_at = ?
+		WHERE state = ?
+		  AND NOT EXISTS (
+		      SELECT 1 FROM dispatch_jobs j
+		       WHERE j.state NOT IN ('done','failed','canceled')
+		         AND json_extract(j.payload, '$.match.instance_id') = workflow_instances.id)
+	`, InstanceStateBlocked, string(state.ReasonInterrupted), time.Now(), InstanceStateQueued)
 	if err != nil {
 		return 0, err
 	}

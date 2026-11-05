@@ -550,6 +550,13 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 			aplog.Info("reconciled %d orphaned step run(s) from a previous run", n)
 		}
 		d.reconcileTerminalQueueJobs(ctx)
+		// After the settle above, so a reservation takes its finished job's outcome,
+		// and before the recount below, which treats 'queued' as live.
+		if n, err := d.db.ReconcileOrphanQueuedInstances(ctx); err != nil {
+			aplog.Warn("reconcile orphan queued instances: %v", err)
+		} else if n > 0 {
+			aplog.Info("reconciled %d reserved instance(s) that lost their run in a previous process", n)
+		}
 		d.warnUnsatisfiableQueueJobs(ctx)
 
 		// Repair each non-terminal task's outstanding-workflow counter and settle

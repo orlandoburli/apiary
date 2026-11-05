@@ -323,6 +323,33 @@ apiary dispatch nightly-audit             # run standalone, with no source item
 apiary dispatch report --input scope=q3   # standalone, with structured input
 ```
 
+It prints the instance it started:
+
+```
+✓ Started workflow triage on #499 (499) in apiary — instance wf_1790032343887924000_23
+```
+
+That instance exists by the time the command returns, so `apiary instances <id>`
+works straight away. It reads `queued` until the run gets a queue lease and an
+agent slot, then `running`. `apiary instances <id> --cancel` on a queued instance
+cancels it before it starts.
+
+`--json` prints the same as one object, for scripts:
+
+```sh
+apiary dispatch triage --item '#499' --json | jq -r .instance_id
+```
+
+```json
+{"instance_id":"wf_1790032343887924000_23","workflow":"triage","item":"#499",
+ "source":"apiary","task_id":"…","standalone":false,"concurrent":false,
+ "bypassed_guards":["trigger match (state/labels/filters)","…"]}
+```
+
+Every field is always present; `item` and `source` are empty on a standalone run.
+A failed dispatch writes its error to stderr and exits non-zero, with nothing on
+stdout.
+
 A manual run skips **every** gate the poll loop applies:
 
 | Skipped | Meaning |

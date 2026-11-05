@@ -896,3 +896,22 @@ func TestSynthWF(t *testing.T) {
 		t.Errorf("synthesized on_complete wrong: %+v", wf.OnComplete)
 	}
 }
+
+// A remote worker's database has no reserved row. The run must still record under
+// the id the caller was given, or the two sides would disagree about the run.
+func TestRunReservedInstance_CreatesMissingRowUnderTheSameID(t *testing.T) {
+	store := newFakeStore()
+	e := NewEngine(&config.Config{}, store, &fakeExecutor{})
+	wf := config.WorkflowConfig{ID: "w", Steps: []config.StepConfig{{ID: "s", Agent: "a"}}}
+
+	id, _, err := e.RunReservedInstance(context.Background(), wf, model.InternalTask{ID: "t1"}, "wf_reserved")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if id != "wf_reserved" {
+		t.Fatalf("id = %q, want wf_reserved", id)
+	}
+	if _, ok := store.instances["wf_reserved"]; !ok || len(store.instances) != 1 {
+		t.Errorf("instances = %v, want only wf_reserved", store.instances)
+	}
+}
