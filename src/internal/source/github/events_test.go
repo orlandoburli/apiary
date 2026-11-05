@@ -73,11 +73,12 @@ func TestPollPREvents_CommentsReviewsAndExclusions(t *testing.T) {
 		},
 		"/repos/o/r/pulls": []map[string]any{
 			{"number": 7, "state": "open", "updated_at": newer, "body": "Fixes #42",
-				"html_url": "https://github.com/o/r/pull/7"},
+				"html_url": "https://github.com/o/r/pull/7", "user": map[string]any{"login": "dave", "type": "User"}},
 			{"number": 3, "state": "open", "updated_at": older, "body": "", "html_url": ""},
 		},
 		"/repos/o/r/pulls/7": map[string]any{
-			"number": 7, "state": "open", "body": "Fixes #42", "html_url": "https://github.com/o/r/pull/7"},
+			"number": 7, "state": "open", "body": "Fixes #42", "html_url": "https://github.com/o/r/pull/7",
+			"user": map[string]any{"login": "dave", "type": "User"}},
 		"/repos/o/r/pulls/7/reviews": []map[string]any{
 			{"id": 100, "state": "CHANGES_REQUESTED", "body": "needs tests", "submitted_at": newer,
 				"author_association": "OWNER", "user": map[string]any{"login": "carol", "type": "User"}},
@@ -122,6 +123,34 @@ func TestPollPREvents_CommentsReviewsAndExclusions(t *testing.T) {
 	}
 	if rv := byID["review-100"]; rv.Kind != model.EventPRReviewChangesRequest || rv.Author != "carol" || rv.Body != "needs tests" {
 		t.Errorf("review-100 = %+v", rv)
+	}
+	for id, ev := range byID {
+		if ev.PRAuthor != "dave" {
+			t.Errorf("%s pr author = %q, want dave", id, ev.PRAuthor)
+		}
+	}
+}
+
+// A failed PR fetch must leave PRAuthor empty rather than drop the event: the
+// router decides, and a trigger with pr_authors fails closed on the empty value.
+func TestPollPREvents_PRAuthorEmptyWhenPRFetchFails(t *testing.T) {
+	since := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	a := newEventTestAdapter(t, map[string]any{
+		"/user": map[string]any{"login": "apiary-daemon"},
+		"/repos/o/r/issues/comments": []map[string]any{
+			{"id": 1, "body": "hi", "created_at": since.Add(time.Hour).Format(time.RFC3339),
+				"html_url":           "https://github.com/o/r/pull/7#issuecomment-1",
+				"author_association": "MEMBER", "user": map[string]any{"login": "alice", "type": "User"}},
+		},
+		// /repos/o/r/pulls/7 is unmapped: its "[]" body cannot decode into a PR.
+	})
+
+	events, err := a.PollPREvents(context.Background(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].PRAuthor != "" {
+		t.Fatalf("want one event with an empty PR author, got %+v", events)
 	}
 }
 

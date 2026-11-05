@@ -82,7 +82,7 @@ func newEventDispatcher(t *testing.T) (*Dispatcher, *db.Client, *envRecordingRun
 func testEvent(id string) model.SourceEvent {
 	return model.SourceEvent{
 		ID: id, SourceID: "github", Kind: model.EventPRComment,
-		PRNumber: 7, PRURL: "https://github.com/o/r/pull/7",
+		PRNumber: 7, PRURL: "https://github.com/o/r/pull/7", PRAuthor: "carol",
 		Author: "alice", AuthorAssociation: "COLLABORATOR",
 		Body: "@apiary fix the lint errors", SubmittedAt: time.Now(),
 	}
@@ -154,11 +154,12 @@ func TestRoutePREvent_ExactlyOnceAndEnvPayload(t *testing.T) {
 	}
 	env := runner.envs[0]
 	for k, want := range map[string]string{
-		"APIARY_EVENT_KIND":   "pr_comment",
-		"APIARY_EVENT_AUTHOR": "alice",
-		"APIARY_EVENT_BODY":   "@apiary fix the lint errors",
-		"APIARY_PR_NUMBER":    "7",
-		"APIARY_PR_URL":       "https://github.com/o/r/pull/7",
+		"APIARY_EVENT_KIND":      "pr_comment",
+		"APIARY_EVENT_AUTHOR":    "alice",
+		"APIARY_EVENT_PR_AUTHOR": "carol",
+		"APIARY_EVENT_BODY":      "@apiary fix the lint errors",
+		"APIARY_PR_NUMBER":       "7",
+		"APIARY_PR_URL":          "https://github.com/o/r/pull/7",
 	} {
 		if env[k] != want {
 			t.Errorf("env[%s] = %q, want %q", k, env[k], want)
@@ -210,5 +211,11 @@ func TestRoutePREvent_BindsRelatedTask(t *testing.T) {
 	}
 	if b, _ := dbc.SourceBindings().GetBindingBySourceItem(ctx, "github", "pr-7"); b != nil {
 		t.Error("no standalone pr-7 task must be bound when the related task exists")
+	}
+}
+
+func TestPREventScope_ExposesPRAuthor(t *testing.T) {
+	if got := prEventScope(testEvent("comment-1"))["pr_author"]; got != "carol" {
+		t.Errorf("event scope pr_author = %q, want carol", got)
 	}
 }

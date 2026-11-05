@@ -206,11 +206,12 @@ func (d *Dispatcher) dispatchPREvent(ctx context.Context, ev model.SourceEvent, 
 // overridable per step).
 func prEventEnv(ev model.SourceEvent) map[string]string {
 	return map[string]string{
-		"APIARY_EVENT_KIND":   ev.Kind,
-		"APIARY_EVENT_AUTHOR": ev.Author,
-		"APIARY_EVENT_BODY":   ev.Body,
-		"APIARY_PR_NUMBER":    strconv.Itoa(ev.PRNumber),
-		"APIARY_PR_URL":       ev.PRURL,
+		"APIARY_EVENT_KIND":      ev.Kind,
+		"APIARY_EVENT_AUTHOR":    ev.Author,
+		"APIARY_EVENT_PR_AUTHOR": ev.PRAuthor,
+		"APIARY_EVENT_BODY":      ev.Body,
+		"APIARY_PR_NUMBER":       strconv.Itoa(ev.PRNumber),
+		"APIARY_PR_URL":          ev.PRURL,
 	}
 }
 
@@ -224,6 +225,7 @@ func prEventScope(ev model.SourceEvent) map[string]string {
 		"author_association": ev.AuthorAssociation,
 		"pr_number":          strconv.Itoa(ev.PRNumber),
 		"pr_url":             ev.PRURL,
+		"pr_author":          ev.PRAuthor,
 	}
 }
 

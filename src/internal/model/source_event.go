@@ -25,6 +25,11 @@ type SourceEvent struct {
 	Kind     string
 	PRNumber int
 	PRURL    string
+	// PRAuthor is the source-native login of the user who opened the pull
+	// request, as opposed to Author, who wrote this comment or review. Empty when
+	// the adapter could not resolve the PR; a trigger's pr_authors filter treats
+	// that as no match.
+	PRAuthor string
 	// Author is the source-native login of the user who wrote the comment or
 	// submitted the review.
 	Author string

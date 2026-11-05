@@ -45,7 +45,8 @@ func (a *Adapter) PollPREvents(ctx context.Context, since time.Time) ([]model.So
 	sinceParam := since.UTC().Format(time.RFC3339)
 	var events []model.SourceEvent
 
-	// One PR fetch per distinct number per poll: PRURL + related-issue lookup.
+	// One PR fetch per distinct number per poll: PRURL, PR author and
+	// related-issue lookup.
 	prCache := map[int]*pullRequest{}
 	prFor := func(n int) *pullRequest {
 		if pr, ok := prCache[n]; ok {
@@ -65,15 +66,16 @@ func (a *Adapter) PollPREvents(ctx context.Context, since time.Time) ([]model.So
 		prCache[n] = &pr
 		return &pr
 	}
-	describe := func(n int) (prURL, relatedItemID string) {
+	describe := func(n int) (prURL, prAuthor, relatedItemID string) {
 		prURL = fmt.Sprintf("%s/%s/%s/pull/%d", a.webBaseURL, a.owner, a.repo, n)
 		if pr := prFor(n); pr != nil {
 			if pr.HTMLURL != "" {
 				prURL = pr.HTMLURL
 			}
+			prAuthor = pr.User.Login
 			relatedItemID = findRelatedIssue(pr.Body, n)
 		}
-		return prURL, relatedItemID
+		return prURL, prAuthor, relatedItemID
 	}
 
 	// 1. PR conversation comments — the /issues/comments endpoint returns
@@ -95,13 +97,14 @@ func (a *Adapter) PollPREvents(ctx context.Context, since time.Time) ([]model.So
 		if !created.After(since) {
 			continue
 		}
-		prURL, itemID := describe(n)
+		prURL, prAuthor, itemID := describe(n)
 		events = append(events, model.SourceEvent{
 			ID:                fmt.Sprintf("comment-%d", cm.ID),
 			SourceID:          a.ID(),
 			Kind:              model.EventPRComment,
 			PRNumber:          n,
 			PRURL:             prURL,
+			PRAuthor:          prAuthor,
 			Author:            cm.User.Login,
 			AuthorAssociation: cm.AuthorAssociation,
 			Body:              cm.Body,
@@ -126,13 +129,14 @@ func (a *Adapter) PollPREvents(ctx context.Context, since time.Time) ([]model.So
 		if !created.After(since) {
 			continue
 		}
-		prURL, itemID := describe(n)
+		prURL, prAuthor, itemID := describe(n)
 		events = append(events, model.SourceEvent{
 			ID:                fmt.Sprintf("review-comment-%d", rc.ID),
 			SourceID:          a.ID(),
 			Kind:              model.EventPRComment,
 			PRNumber:          n,
 			PRURL:             prURL,
+			PRAuthor:          prAuthor,
 			Author:            rc.User.Login,
 			AuthorAssociation: rc.AuthorAssociation,
 			Body:              rc.Body,
@@ -177,13 +181,14 @@ func (a *Adapter) PollPREvents(ctx context.Context, since time.Time) ([]model.So
 			if !submitted.After(since) || a.skipAuthor(rv.User, self) {
 				continue
 			}
-			prURL, itemID := describe(pr.Number)
+			prURL, prAuthor, itemID := describe(pr.Number)
 			events = append(events, model.SourceEvent{
 				ID:                fmt.Sprintf("review-%d", rv.ID),
 				SourceID:          a.ID(),
 				Kind:              kind,
 				PRNumber:          pr.Number,
 				PRURL:             prURL,
+				PRAuthor:          prAuthor,
 				Author:            rv.User.Login,
 				AuthorAssociation: rv.AuthorAssociation,
 				Body:              rv.Body,

@@ -185,6 +185,16 @@ type TriggerConfig struct {
 	// this and Authors are empty the default is collaborators-only
 	// (DefaultEventAuthorAssociations).
 	AuthorsAssociation []string `yaml:"authors_association,omitempty"`
+	// IgnoreAuthors drops events authored by one of these source logins
+	// (case-insensitive). It is checked before Authors and AuthorsAssociation and
+	// wins over both, so one account (e.g. a CI user GitHub reports as a plain
+	// MEMBER) can be excluded without listing every human commenter.
+	IgnoreAuthors []string `yaml:"ignore_authors,omitempty"`
+	// PRAuthors, when set, restricts an event trigger to pull requests opened by
+	// one of these source logins (case-insensitive). It filters on who owns the
+	// PR, not on who wrote the event, so it applies in addition to Authors and
+	// AuthorsAssociation. An event whose PR author is unknown does not match.
+	PRAuthors []string `yaml:"pr_authors,omitempty"`
 	// MaxDispatches caps how many times this trigger may dispatch for the same
 	// pull request (a runaway-loop budget, analogous to on_conflict's own
 	// budget). 0 means unlimited.

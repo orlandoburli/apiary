@@ -172,6 +172,8 @@ workflows:
 | `comment_matches` | `pr_comment` only: comment body must match this Go regexp (case-sensitive — prefix `(?i)` for case-insensitive). Validated at config load |
 | `authors` | Only fire for these author logins (case-insensitive); overrides `authors_association` |
 | `authors_association` | Only fire for authors with one of these repo associations. **Default: `[OWNER, MEMBER, COLLABORATOR]`** — drive-by comments from strangers never spawn agents |
+| `ignore_authors` | Never fire for these author logins (case-insensitive). Wins over `authors` and `authors_association`, so one CI account can be excluded without listing every human commenter |
+| `pr_authors` | Only fire on PRs opened by these logins (case-insensitive), for every PR event kind. Applies in addition to `authors` / `authors_association`. If the PR author can't be resolved, the event doesn't match |
 | `max_dispatches` | Cap dispatches per (workflow, PR) — a runaway-loop budget. `0` = unlimited |
 
 Semantics:
@@ -192,9 +194,9 @@ Semantics:
   source; the item-shaped fields (`labels`, `states`, …) apply to the
   originating issue's task and only match when that task exists.
 - **Event payload.** Every step of an event-triggered instance gets
-  `APIARY_EVENT_KIND`, `APIARY_EVENT_AUTHOR`, `APIARY_EVENT_BODY`,
-  `APIARY_PR_NUMBER`, and `APIARY_PR_URL` in its environment, and expressions
-  can read `event.*` (see [Accessors](#accessors)).
+  `APIARY_EVENT_KIND`, `APIARY_EVENT_AUTHOR`, `APIARY_EVENT_PR_AUTHOR`,
+  `APIARY_EVENT_BODY`, `APIARY_PR_NUMBER`, and `APIARY_PR_URL` in its
+  environment, and expressions can read `event.*` (see [Accessors](#accessors)).
 
 ## Steps
 
@@ -541,6 +543,7 @@ Precedence is `not` > `and` > `or`, and `and`/`or` short-circuit.
 | `event.author_association` | string | author's repo association (e.g. `COLLABORATOR`) |
 | `event.pr_number` | string | pull request number |
 | `event.pr_url` | string | pull request URL |
+| `event.pr_author` | string | login of the user who opened the pull request (empty if it couldn't be resolved) |
 
 `event.*` is populated only on instances started by a [PR event
 trigger](#pr-event-triggers-on); elsewhere (and on instances rehydrated after

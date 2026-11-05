@@ -49,6 +49,21 @@ func TestValidateTriggerEvents_EventOnlyFieldsOnItemTrigger(t *testing.T) {
 	if errs := eventCfg(TriggerConfig{MaxDispatches: 3}).Validate(); !errsContain(errs, "max_dispatches is only valid") {
 		t.Errorf("max_dispatches on item trigger must be rejected, got %v", errs)
 	}
+	if errs := eventCfg(TriggerConfig{IgnoreAuthors: []string{"ci"}}).Validate(); !errsContain(errs, "ignore_authors is only valid") {
+		t.Errorf("ignore_authors on item trigger must be rejected, got %v", errs)
+	}
+	if errs := eventCfg(TriggerConfig{PRAuthors: []string{"me"}}).Validate(); !errsContain(errs, "pr_authors is only valid") {
+		t.Errorf("pr_authors on item trigger must be rejected, got %v", errs)
+	}
+}
+
+func TestValidateTriggerEvents_AuthorFiltersAcceptedOnEventTriggers(t *testing.T) {
+	for _, on := range TriggerEventKinds {
+		tr := TriggerConfig{On: on, IgnoreAuthors: []string{"ci"}, PRAuthors: []string{"me"}}
+		if errs := eventCfg(tr).Validate(); errsContain(errs, "ignore_authors") || errsContain(errs, "pr_authors") {
+			t.Errorf("on: %s must accept ignore_authors and pr_authors, got %v", on, errs)
+		}
+	}
 }
 
 func TestValidateTriggerEvents_CommentMatchesScoping(t *testing.T) {

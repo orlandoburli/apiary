@@ -10,6 +10,7 @@ func TestExprEventScope(t *testing.T) {
 		"author_association": "MEMBER",
 		"pr_number":          "42",
 		"pr_url":             "https://github.com/o/r/pull/42",
+		"pr_author":          "carol",
 	}}
 
 	cases := []struct {
@@ -21,6 +22,7 @@ func TestExprEventScope(t *testing.T) {
 		{`event.body contains "@apiary"`, true},
 		{`event.author == "alice" and event.author_association == "MEMBER"`, true},
 		{`event.pr_number == "42"`, true},
+		{`event.pr_author == "carol"`, true},
 	}
 	for _, c := range cases {
 		expr, err := ParseExpr(c.expr)
