@@ -17,6 +17,7 @@ import (
 	aplog "github.com/orlandoburli/apiary/internal/log"
 
 	"github.com/orlandoburli/apiary/internal/config"
+	"github.com/orlandoburli/apiary/internal/db"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/router"
 	"github.com/orlandoburli/apiary/internal/source"
@@ -35,6 +36,11 @@ var ErrUnknownSource = errors.New("unknown source")
 // more than one source could hold it. Guessing would mean fetching some other
 // project's PSP-199 and running a workflow over it, so the caller is asked.
 var ErrSourceRequired = errors.New("source required")
+
+// ErrNotDispatched is returned when a manual run's reservation was abandoned
+// because the run could not be handed to the queue. Reporting success would give
+// the caller an id for a run that will never start.
+var ErrNotDispatched = errors.New("workflow not dispatched")
 
 // ManualRunRequest asks the daemon to start one named workflow on demand.
 type ManualRunRequest struct {
@@ -62,6 +68,11 @@ type ManualRunRequest struct {
 // the target and the guards bypassed, not the outcome.
 type ManualRunResult struct {
 	WorkflowID string `json:"workflow_id"`
+	// InstanceID is the run's workflow instance. The row exists by the time this is
+	// returned, in state queued until the run gets its slot, so `apiary instances
+	// <id>` answers immediately. Empty only without a database, or from a daemon
+	// that predates it.
+	InstanceID string `json:"instance_id,omitempty"`
 	TaskID     string `json:"task_id"`
 	CellID     string `json:"cell_id,omitempty"`
 	Ref        string `json:"ref,omitempty"`
@@ -249,6 +260,17 @@ func (d *Dispatcher) RunWorkflowManual(ctx context.Context, req ManualRunRequest
 		}
 	}
 
+	// Reserve the instance before handing off. The run may wait on a queue lease or
+	// an agent slot for as long as it likes, and a caller following it needs an id
+	// that resolves now, not whichever row turns up first (issue #504).
+	if d.db != nil {
+		id, err := d.workflowEngine().ReserveInstance(ctx, wf, task)
+		if err != nil {
+			return res, fmt.Errorf("reserve instance for %s: %w", wf.ID, err)
+		}
+		match.InstanceID, res.InstanceID = id, id
+	}
+
 	aplog.Info("manual run: dispatching workflow %s on %s [agent %s] — bypassing %s%s",
 		wf.ID, res.Label(), match.Route.Agent, strings.Join(manualBypassed, ", "),
 		map[bool]string{true: " (a live instance already exists — starting a second)", false: ""}[res.Concurrent])
@@ -264,6 +286,13 @@ func (d *Dispatcher) RunWorkflowManual(ctx context.Context, req ManualRunRequest
 		// tick dispatch that cell a second time.
 		ownsInFlight: false,
 	})
+	if res.InstanceID != "" {
+		if inst, err := d.db.GetWorkflowInstance(ctx, res.InstanceID); err != nil {
+			aplog.Debug("manual run %s: reading reserved instance: %v", wf.ID, err)
+		} else if inst != nil && inst.State == db.InstanceStateCanceled {
+			return res, fmt.Errorf("%w: %s could not be queued — see the daemon log", ErrNotDispatched, wf.ID)
+		}
+	}
 	return res, nil
 }
 

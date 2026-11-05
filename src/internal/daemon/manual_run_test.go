@@ -448,7 +448,17 @@ func TestRunWorkflowManual_IgnoresSpentOnce(t *testing.T) {
 	if got := len(jobsFor(t, d, "triage")); got != 2 {
 		t.Fatalf("manual run of a spent `once` workflow produced %d job(s) in total, want 2", got)
 	}
-	if got := len(instancesFor(t, dbc, task.ID, "triage")); got != 1 {
-		t.Fatalf("sanity: %d instance(s) before the queued manual job runs, want 1", got)
+	// The manual run has its reserved row already (#504), but it has not run: the
+	// spent instance is still the only one that got past 'queued'.
+	var queued, ran int
+	for _, inst := range instancesFor(t, dbc, task.ID, "triage") {
+		if inst.State == db.InstanceStateQueued {
+			queued++
+		} else {
+			ran++
+		}
+	}
+	if queued != 1 || ran != 1 {
+		t.Fatalf("sanity: %d queued and %d started instance(s) before the manual job runs, want 1 and 1", queued, ran)
 	}
 }

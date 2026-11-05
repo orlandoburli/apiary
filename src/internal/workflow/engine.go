@@ -27,6 +27,18 @@ type Store interface {
 	UpdateStepRun(ctx context.Context, sr *db.StepRun) error
 }
 
+// instanceReservations is the optional capability behind RunReservedInstance.
+// *db.Client satisfies it; a store without it has no reserved rows to adopt.
+type instanceReservations interface {
+	LeaveQueuedState(ctx context.Context, id, newState, reason string) (bool, error)
+	GetWorkflowInstance(ctx context.Context, id string) (*db.WorkflowInstance, error)
+}
+
+// ErrReservationLost is returned by RunReservedInstance when the reserved row left
+// 'queued' before the run reached it — cancelled or interrupted while it waited.
+// The run must not start, and whoever moved the row settled its accounting.
+var ErrReservationLost = errors.New("reserved instance is no longer queued")
+
 // workflowSnapshotStore is implemented by persistent stores that retain the
 // exact workflow definition used by each instance for reproducible replay.
 type workflowSnapshotStore interface {
@@ -462,18 +474,76 @@ func (e *Engine) RunInstanceForEvent(ctx context.Context, wf config.WorkflowConf
 	cell := sourceItemView(task, bindings)
 
 	instID := e.newID("wf")
+	if err := e.createInstance(ctx, instID, wf, task, cell, db.InstanceStateRunning); err != nil {
+		return "", false, err
+	}
+	return e.runCreatedInstance(ctx, instID, wf, task, bindings, event)
+}
+
+// ReserveInstance creates the row of a run that has not started yet, in state
+// queued, and returns its id. It is for callers that must hand back a real
+// instance id while the run still waits for a queue lease or an agent slot — the
+// row is listable and cancellable from this moment. The run takes it over through
+// RunReservedInstance.
+func (e *Engine) ReserveInstance(ctx context.Context, wf config.WorkflowConfig, task model.InternalTask) (string, error) {
+	instID := e.NewInstanceID()
+	cell := sourceItemView(task, e.bindingsFor(ctx, task.ID))
+	if err := e.createInstance(ctx, instID, wf, task, cell, db.InstanceStateQueued); err != nil {
+		return "", err
+	}
+	return instID, nil
+}
+
+// RunReservedInstance is RunInstance for a row ReserveInstance created: it adopts
+// instanceID instead of minting a new one. A row that left 'queued' first yields
+// ErrReservationLost and nothing runs. A row that does not exist here is created
+// under the same id: a remote worker has its own database, and the reservation
+// lives in the control plane's.
+func (e *Engine) RunReservedInstance(ctx context.Context, wf config.WorkflowConfig, task model.InternalTask, instanceID string) (string, bool, error) {
+	bindings := e.bindingsFor(ctx, task.ID)
+	claimed := false
+	if store, ok := e.store.(instanceReservations); ok {
+		var err error
+		if claimed, err = store.LeaveQueuedState(ctx, instanceID, db.InstanceStateRunning, ""); err != nil {
+			return "", false, fmt.Errorf("claim reserved instance %s: %w", instanceID, err)
+		}
+		if !claimed {
+			existing, err := store.GetWorkflowInstance(ctx, instanceID)
+			if err != nil {
+				return "", false, fmt.Errorf("read reserved instance %s: %w", instanceID, err)
+			}
+			if existing != nil {
+				return instanceID, false, fmt.Errorf("%w: %s is %s", ErrReservationLost, instanceID, existing.State)
+			}
+		}
+	}
+	if !claimed {
+		cell := sourceItemView(task, bindings)
+		if err := e.createInstance(ctx, instanceID, wf, task, cell, db.InstanceStateRunning); err != nil {
+			return "", false, err
+		}
+	}
+	return e.runCreatedInstance(ctx, instanceID, wf, task, bindings, nil)
+}
+
+func (e *Engine) createInstance(ctx context.Context, instID string, wf config.WorkflowConfig, task model.InternalTask, cell model.SourceItem, st string) error {
 	inst := &db.WorkflowInstance{
 		ID:         instID,
 		WorkflowID: wf.ID,
 		TaskID:     task.ID,
 		CellID:     cell.ID,
 		SourceID:   cell.SourceID,
-		State:      db.InstanceStateRunning,
+		State:      st,
 		CreatedAt:  e.now(),
 	}
 	if err := e.store.CreateWorkflowInstance(ctx, inst); err != nil {
-		return "", false, fmt.Errorf("create workflow instance: %w", err)
+		return fmt.Errorf("create workflow instance: %w", err)
 	}
+	return nil
+}
+
+// runCreatedInstance drives an instance whose row already exists in state running.
+func (e *Engine) runCreatedInstance(ctx context.Context, instID string, wf config.WorkflowConfig, task model.InternalTask, bindings []model.SourceBinding, event map[string]string) (string, bool, error) {
 	if err := e.persistWorkflowSnapshot(ctx, instID, wf); err != nil {
 		return "", false, err
 	}

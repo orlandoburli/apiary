@@ -108,6 +108,9 @@ func dispatchIdempotencyKey(taskID string, generation int, workflowID, suffix st
 func (d *Dispatcher) enqueueFanOut(ctx context.Context, cell model.SourceItem, task model.InternalTask, matches []router.Match, idemSuffix string) {
 	if _, err := d.db.InternalTasks().IncrementOutstanding(ctx, task.ID, len(matches)); err != nil {
 		aplog.Error("task %s: increment outstanding by %d before enqueue: %v", task.ID, len(matches), err)
+		for _, match := range matches {
+			d.abandonReservation(ctx, match)
+		}
 		return
 	}
 	generation, err := d.db.InternalTasks().Generation(ctx, task.ID)
@@ -118,6 +121,7 @@ func (d *Dispatcher) enqueueFanOut(ctx context.Context, cell model.SourceItem, t
 		payload, err := json.Marshal(dispatchJobPayload{Version: dispatchPayloadVersion, Cell: cell, Task: task, Match: match})
 		if err != nil {
 			d.rollbackQueuedOutstanding(ctx, task.ID, fmt.Errorf("marshal dispatch payload: %w", err))
+			d.abandonReservation(ctx, match)
 			continue
 		}
 		pool, labels, capabilities, affinity := d.requirementsForMatch(task.ID, match)
@@ -125,6 +129,7 @@ func (d *Dispatcher) enqueueFanOut(ctx context.Context, cell model.SourceItem, t
 		created, err := d.dispatchQueue.Enqueue(ctx, job)
 		if err != nil {
 			d.rollbackQueuedOutstanding(ctx, task.ID, fmt.Errorf("enqueue workflow %s: %w", match.Route.ID, err))
+			d.abandonReservation(ctx, match)
 			continue
 		}
 		if !created {
@@ -143,9 +148,23 @@ func (d *Dispatcher) enqueueFanOut(ctx context.Context, cell model.SourceItem, t
 				aplog.Debug("task %s: workflow %s already enqueued (job %s, %s) — skipping duplicate", task.ID, match.Route.ID, job.ID, job.State)
 			}
 			d.rollbackQueuedOutstanding(ctx, task.ID, nil)
+			d.abandonReservation(ctx, match)
 			continue
 		}
 		d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "queue.enqueued", TaskID: task.ID, WorkflowID: match.Route.ID, Metadata: map[string]any{"job_id": job.ID, "generation": generation, "pool": pool, "required_labels": labels, "required_capabilities": capabilities}})
+	}
+}
+
+// abandonReservation cancels the reserved instance of a match that never reached
+// the queue, so its id does not name a run that can never start. The caller has
+// already rolled back the outstanding counter. A no-op on automatic dispatches,
+// which reserve nothing.
+func (d *Dispatcher) abandonReservation(ctx context.Context, match router.Match) {
+	if match.InstanceID == "" {
+		return
+	}
+	if _, err := d.db.LeaveQueuedState(ctx, match.InstanceID, db.InstanceStateCanceled, ""); err != nil {
+		aplog.Error("abandon reserved instance %s: %v", match.InstanceID, err)
 	}
 }
 
@@ -232,6 +251,19 @@ func (d *Dispatcher) ExecuteQueuedJob(ctx context.Context, job queue.Job, worker
 			return queue.FinishResult{Success: true, Note: "skipped: " + reason}
 		}
 	}
+	// A redelivered job may find its reservation already used: the first attempt
+	// claimed the row and then died. That row is history, so this attempt runs as a
+	// new instance, exactly as an automatic job would. A cancelled row stays
+	// reserved so the run refuses to start.
+	if d.db != nil && payload.Match.InstanceID != "" && job.AttemptCount > 1 {
+		inst, err := d.db.GetWorkflowInstance(ctx, payload.Match.InstanceID)
+		if err != nil {
+			return queue.FinishResult{Error: fmt.Sprintf("read reserved instance: %v", err), Retry: true}
+		}
+		if inst != nil && inst.State != db.InstanceStateQueued && inst.State != db.InstanceStateCanceled {
+			payload.Match.InstanceID = ""
+		}
+	}
 	d.active.Add(1)
 	defer d.active.Add(-1)
 	d.activeRuns.Store(job.ID, model.ActiveRun{ID: job.ID, Cell: payload.Cell, WorkerID: workerID, Model: payload.Match.Worker.Model, Status: model.RunStatusRunning, StartedAt: time.Now()})
@@ -252,6 +284,24 @@ func (d *Dispatcher) ExecuteQueuedJob(ctx context.Context, job queue.Job, worker
 func (d *Dispatcher) settleRemoteQueueJob(ctx context.Context, job queue.Job) error {
 	if d.db == nil || job.TaskID == "" {
 		return nil
+	}
+	// A job carrying a reservation settles through that row: it, not a synthetic
+	// queue-<jobid> instance, is the id the caller was given. Anything but 'queued'
+	// means something else took the row over, along with its accounting. This must
+	// come first — the row predates its job, so the created_at test below would not
+	// recognise it and would write a phantom instance beside it.
+	if reserved := reservedInstanceID(job); reserved != "" {
+		existing, err := d.db.GetWorkflowInstance(ctx, reserved)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			left, err := d.db.LeaveQueuedState(ctx, reserved, instanceStateForJob(job), "")
+			if err != nil || !left {
+				return err
+			}
+			return d.settleJobAccounting(ctx, job)
+		}
 	}
 	instanceID := "queue-" + job.ID
 	if existing, err := d.db.GetWorkflowInstance(ctx, instanceID); err != nil {
@@ -280,18 +330,39 @@ func (d *Dispatcher) settleRemoteQueueJob(ctx context.Context, job queue.Job) er
 			return nil
 		}
 	}
-	state := db.InstanceStateFailed
-	if job.State == queue.JobSucceeded {
-		state = db.InstanceStateDone
-	}
-	if job.State == queue.JobCanceled {
-		// Operator cancellation is its own terminal state now, rather than being
-		// recorded as an interruption it was never quite the same as (#465).
-		state = db.InstanceStateCanceled
-	}
-	if err := d.db.CreateWorkflowInstance(ctx, &db.WorkflowInstance{ID: instanceID, WorkflowID: job.WorkflowID, TaskID: job.TaskID, SourceID: job.SourceID, State: state}); err != nil {
+	if err := d.db.CreateWorkflowInstance(ctx, &db.WorkflowInstance{ID: instanceID, WorkflowID: job.WorkflowID, TaskID: job.TaskID, SourceID: job.SourceID, State: instanceStateForJob(job)}); err != nil {
 		return err
 	}
+	return d.settleJobAccounting(ctx, job)
+}
+
+// reservedInstanceID returns the instance a job's payload reserved, if any. An
+// unreadable payload reserves nothing: the job still settles the old way.
+func reservedInstanceID(job queue.Job) string {
+	var payload dispatchJobPayload
+	if err := json.Unmarshal(job.Payload, &payload); err != nil {
+		return ""
+	}
+	return payload.Match.InstanceID
+}
+
+// instanceStateForJob maps a terminal job to the instance state that records it.
+func instanceStateForJob(job queue.Job) string {
+	switch job.State {
+	case queue.JobSucceeded:
+		return db.InstanceStateDone
+	case queue.JobCanceled:
+		// Operator cancellation is its own terminal state now, rather than being
+		// recorded as an interruption it was never quite the same as (#465).
+		return db.InstanceStateCanceled
+	default:
+		return db.InstanceStateFailed
+	}
+}
+
+// settleJobAccounting releases a settled job's hold on its task and, when it was
+// the last one outstanding, moves the task to its terminal state.
+func (d *Dispatcher) settleJobAccounting(ctx context.Context, job queue.Job) error {
 	remaining, err := d.db.InternalTasks().DecrementOutstanding(ctx, job.TaskID)
 	if err != nil || remaining > 0 {
 		return err

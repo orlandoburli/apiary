@@ -648,3 +648,76 @@ func TestReconcileOrphanTaskCounters(t *testing.T) {
 		t.Errorf("expected idempotent no-op, got recounted=%d settled=%d", recounted, settled)
 	}
 }
+
+// A reservation has competing owners and exactly one may move it: the winner owns
+// the task's accounting, so a second success would count the instance twice.
+func TestLeaveQueuedState_OnlyOneWinner(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+	inst := &WorkflowInstance{ID: "wf_r", WorkflowID: "w", CellID: "c", State: InstanceStateQueued}
+	if err := c.CreateWorkflowInstance(ctx, inst); err != nil {
+		t.Fatal(err)
+	}
+
+	if ok, err := c.LeaveQueuedState(ctx, "wf_r", InstanceStateRunning, ""); !ok || err != nil {
+		t.Fatalf("first move = %v, %v", ok, err)
+	}
+	if ok, err := c.LeaveQueuedState(ctx, "wf_r", InstanceStateCanceled, ""); ok || err != nil {
+		t.Fatalf("second move = %v, %v, want refused", ok, err)
+	}
+	if ok, err := c.LeaveQueuedState(ctx, "wf_absent", InstanceStateRunning, ""); ok || err != nil {
+		t.Fatalf("absent row = %v, %v, want refused", ok, err)
+	}
+	got, _ := c.GetWorkflowInstance(ctx, "wf_r")
+	if got.State != InstanceStateRunning {
+		t.Errorf("state = %q, want running", got.State)
+	}
+
+	events, err := c.ListExecutionEvents(ctx, ExecutionEventFilter{WorkflowInstanceID: "wf_r", Type: "workflow.started", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Errorf("%d workflow.started event(s), want 1, on the claim and not the reservation", len(events))
+	}
+}
+
+// A live job will still adopt its row after a restart; a row with no job has lost
+// its goroutine and would otherwise hold the task open forever.
+func TestReconcileOrphanQueuedInstances(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+	for _, id := range []string{"wf_waiting", "wf_orphan", "wf_finished_job"} {
+		if err := c.CreateWorkflowInstance(ctx, &WorkflowInstance{ID: id, WorkflowID: "w", CellID: "c", State: InstanceStateQueued}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertJob := func(id, jobState, instanceID string) {
+		t.Helper()
+		_, err := c.db.ExecContext(ctx, `
+			INSERT INTO dispatch_jobs (id, idempotency_key, payload_version, payload, state, available_at, created_at, updated_at)
+			VALUES (?, ?, 1, ?, ?, ?, ?, ?)`,
+			id, id, `{"match":{"instance_id":"`+instanceID+`"}}`, jobState, time.Now(), time.Now(), time.Now())
+		if err != nil {
+			t.Fatalf("insert job: %v", err)
+		}
+	}
+	insertJob("j1", "queued", "wf_waiting")
+	insertJob("j2", "done", "wf_finished_job")
+
+	n, err := c.ReconcileOrphanQueuedInstances(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("reconciled %d, want 2", n)
+	}
+	waiting, _ := c.GetWorkflowInstance(ctx, "wf_waiting")
+	if waiting.State != InstanceStateQueued {
+		t.Errorf("waiting row = %q, want queued: its job will adopt it", waiting.State)
+	}
+	orphan, _ := c.GetWorkflowInstance(ctx, "wf_orphan")
+	if !InterruptedInstance(orphan.State, orphan.BlockedReason) {
+		t.Errorf("orphan = %q/%q, want interrupted", orphan.State, orphan.BlockedReason)
+	}
+}

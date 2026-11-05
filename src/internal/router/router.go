@@ -16,6 +16,11 @@ import (
 type Match struct {
 	Worker config.WorkerConfig
 	Route  config.RouteConfig
+	// InstanceID names a workflow instance already reserved for this dispatch, so
+	// the run adopts that row instead of creating its own. Only a manual run sets
+	// it: its caller needs the id before the run starts. It rides inside the
+	// match so it survives the queue payload; empty on every automatic path.
+	InstanceID string `json:"instance_id,omitempty"`
 }
 
 // RouteTrace records why a single route did or didn't match a cell — the

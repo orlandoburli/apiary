@@ -24,6 +24,7 @@ func newDispatchCmd() *cobra.Command {
 		sourceID string
 		title    string
 		inputs   []string
+		asJSON   bool
 	)
 
 	cmd := &cobra.Command{
@@ -56,7 +57,12 @@ that exists in more than one source.
 Without --item the workflow runs standalone on a fresh internal task with no
 source binding. Nothing writes back to a source: comment and state-lock steps
 are no-ops and sub-issues cannot be materialized. Use --input to pass values the
-steps read as ${{ input.<key> }}.`,
+steps read as ${{ input.<key> }}.
+
+On success it prints the id of the instance it started. That instance already
+exists when the command returns — queued until the run gets a slot — so
+` + "`apiary instances <id>`" + ` works straight away. --json prints the same as one
+object, for scripts.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			workflowID := strings.TrimSpace(args[0])
@@ -108,28 +114,17 @@ steps read as ${{ input.<key> }}.`,
 
 			var res daemon.ManualRunResult
 			if err := json.Unmarshal(payload, &res); err != nil {
-				fmt.Printf("✓ Started workflow %s\n", workflowID)
+				if asJSON {
+					// A script reading stdout gets JSON or a failure, never prose.
+					return fmt.Errorf("workflow %s started, but the daemon's response is unreadable: %w", workflowID, err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "✓ Started workflow %s\n", workflowID)
 				return nil
 			}
-
-			target := res.Label()
-			if res.SourceID != "" {
-				// Name the source even when it was inferred: with --item on an item
-				// apiary had not seen, which source answered is the one thing the
-				// caller cannot check from the reference alone.
-				target += " in " + res.SourceID
+			if asJSON {
+				return writeDispatchJSON(cmd.OutOrStdout(), res)
 			}
-			fmt.Printf("✓ Started workflow %s on %s\n", res.WorkflowID, target)
-			if res.Concurrent {
-				fmt.Printf("  ! this workflow was already running on the task — a second instance is now live\n")
-			}
-			if res.Standalone {
-				fmt.Printf("  → no source item bound: comments, state locks and sub-issues are no-ops for this run\n")
-			}
-			for _, b := range res.Bypassed {
-				fmt.Printf("  ! bypassed guard: %s\n", b)
-			}
-			fmt.Printf("  → follow it with: apiary instances\n")
+			writeDispatchText(cmd.OutOrStdout(), res)
 			return nil
 		},
 	}
@@ -138,7 +133,70 @@ steps read as ${{ input.<key> }}.`,
 	cmd.Flags().StringVar(&sourceID, "source", "", "source the --item belongs to; optional with one configured source, required when several could hold it")
 	cmd.Flags().StringVar(&title, "title", "", "title for the task created by a standalone run")
 	cmd.Flags().StringArrayVar(&inputs, "input", nil, "key=value passed to a standalone run's task input, readable as ${{ input.<key> }} (repeatable)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "output as JSON")
 	return cmd
+}
+
+// writeDispatchText renders a started run for a person.
+func writeDispatchText(w io.Writer, res daemon.ManualRunResult) {
+	target := res.Label()
+	if res.SourceID != "" {
+		// Name the source even when it was inferred: with --item on an item
+		// apiary had not seen, which source answered is the one thing the
+		// caller cannot check from the reference alone.
+		target += " in " + res.SourceID
+	}
+	follow := "apiary instances"
+	if res.InstanceID != "" {
+		target += " — instance " + res.InstanceID
+		follow += " " + res.InstanceID
+	}
+	fmt.Fprintf(w, "✓ Started workflow %s on %s\n", res.WorkflowID, target)
+	if res.Concurrent {
+		fmt.Fprintf(w, "  ! this workflow was already running on the task — a second instance is now live\n")
+	}
+	if res.Standalone {
+		fmt.Fprintf(w, "  → no source item bound: comments, state locks and sub-issues are no-ops for this run\n")
+	}
+	for _, b := range res.Bypassed {
+		fmt.Fprintf(w, "  ! bypassed guard: %s\n", b)
+	}
+	fmt.Fprintf(w, "  → follow it with: %s\n", follow)
+}
+
+// dispatchOutput is the --json shape. Every field is always present, so a script
+// can read one without first asking whether it exists.
+type dispatchOutput struct {
+	InstanceID     string   `json:"instance_id"`
+	Workflow       string   `json:"workflow"`
+	Item           string   `json:"item"`
+	Source         string   `json:"source"`
+	TaskID         string   `json:"task_id"`
+	Standalone     bool     `json:"standalone"`
+	Concurrent     bool     `json:"concurrent"`
+	BypassedGuards []string `json:"bypassed_guards"`
+}
+
+// writeDispatchJSON renders a started run for a script.
+func writeDispatchJSON(w io.Writer, res daemon.ManualRunResult) error {
+	item := res.Ref
+	if item == "" {
+		item = res.CellID
+	}
+	guards := res.Bypassed
+	if guards == nil {
+		guards = []string{}
+	}
+	return json.NewEncoder(w).Encode(dispatchOutput{
+		InstanceID:     res.InstanceID,
+		Workflow:       res.WorkflowID,
+		Item:           item,
+		Source:         res.SourceID,
+		TaskID:         res.TaskID,
+		Standalone:     res.Standalone,
+		Concurrent:     res.Concurrent,
+		BypassedGuards: guards,
+	})
 }
 
 // parseInputPairs turns repeated --input key=value flags into the task input map.

@@ -101,20 +101,19 @@ link plus its status, never a bare number:
 After you **start a workflow** (triage or any other), reply with:
 
 1. the issue link and its status, as above;
-2. which workflow you started and the instance id `apiary dispatch` printed;
-3. where the run stands right now. `apiary dispatch` does not print the
-   instance id, and the new instance takes a few seconds to appear, so look
-   it up like this — do not report "not found" after a single look:
+2. which workflow you started and the instance id `apiary dispatch` printed
+   (`✓ Started workflow … — instance wf_…`);
+3. where the run stands right now. That instance exists as soon as the command
+   returns, so ask for it by id — never search `apiary instances` for a
+   matching row, which can find an older run of the same workflow:
 
    ```bash
-   for i in 1 2 3 4; do sleep 5; apiary instances \
-     --config ${HOME}/Projects/Personal/apiary/.apiary/apiary.yaml \
-     | grep -E "^wf_.*<workflow>.* <number> " | head -3; done
+   apiary instances <instance-id> \
+     --config ${HOME}/Projects/Personal/apiary/.apiary/apiary.yaml
    ```
 
-   The newest `wf_…` line for that workflow and issue is the run you started
-   (an older `done` line is a previous run — say so if there is one). Report
-   its id and state (queued / running / …). Say that the agents report on the
+   Report its state (queued / running / …); `queued` means it is waiting for a
+   free slot, not that something is wrong. Say that the agents report on the
    issue itself, so the link is where to follow the work.
 
 If the dispatch failed, say so and include the error line.
