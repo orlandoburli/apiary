@@ -376,6 +376,11 @@ func (d *Dispatcher) checkWaits(ctx context.Context) {
 
 			// Cheap CI re-check, ungated. Still pending → leave it parked.
 			if !d.engine.RecheckWait(ctx, w.InstanceID) {
+				// A stop that raced this cycle may have cleared the entry before
+				// checkWaits stored it above.
+				if !d.engine.IsParked(w.InstanceID) {
+					d.waitLastCheck.Delete(w.InstanceID)
+				}
 				return
 			}
 			d.waitLastCheck.Delete(w.InstanceID)

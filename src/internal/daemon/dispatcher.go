@@ -1187,6 +1187,7 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, ref string) (RestartResul
 				// collapses the three parked states onto one, and a positive
 				// list is what silently misses a state added later (#465).
 				if !state.State(inst.State).IsTerminal() {
+					d.forgetParked(ctx, inst.ID)
 					if err := d.db.UpdateWorkflowInstanceState(ctx, inst.ID, db.InstanceStateBlocked, string(state.ReasonInterrupted)); err != nil {
 						aplog.Error("force-restart %s: interrupt instance %s: %v", cellID, inst.ID, err)
 					} else {
@@ -1745,27 +1746,7 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 	// every trigger and pre-dispatch guard. Registered on the subtree so the
 	// exact-match /workflows listing above keeps its own handler.
 	mux.HandleFunc("/workflows/", d.manualRunHandler(ctx))
-	mux.HandleFunc("/instances/stop/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		instanceID := strings.TrimPrefix(r.URL.Path, "/instances/stop/")
-		if instanceID == "" {
-			http.Error(w, "missing instance id", http.StatusBadRequest)
-			return
-		}
-		if err := d.StopInstance(ctx, instanceID); err != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(err, ErrInstanceNotFound) {
-				status = http.StatusNotFound
-			}
-			http.Error(w, err.Error(), status)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"stopped": instanceID})
-	})
+	mux.HandleFunc("/instances/stop/", d.stopInstanceHandler(ctx))
 	mux.HandleFunc("/clearlogs/", func(w http.ResponseWriter, r *http.Request) {
 		cellID := strings.TrimPrefix(r.URL.Path, "/clearlogs/")
 		if cellID == "" {

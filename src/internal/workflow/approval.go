@@ -155,12 +155,7 @@ func (e *Engine) ResolveApprovalResponse(ctx context.Context, instanceID string,
 	if strings.EqualFold(response.Decision, "reject") || strings.EqualFold(response.Decision, "rejected") {
 		decision = ApprovalAbort
 	}
-	e.mu.Lock()
-	r, ok := e.parked[instanceID]
-	if ok {
-		delete(e.parked, instanceID)
-	}
-	e.mu.Unlock()
+	r, ok := e.claimParked(ctx, instanceID)
 	if !ok {
 		return false, fmt.Errorf("instance %q is not awaiting approval", instanceID)
 	}
@@ -181,7 +176,6 @@ func (e *Engine) ResolveApprovalResponse(ctx context.Context, instanceID string,
 	r.contrib[stepID] = MemoryStep{StepID: stepID, WriteFields: write, Structured: structured, Summary: response.Feedback}
 
 	r.resolveApproval(decision)
-	_ = e.store.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateRunning, "")
 	outcome := e.driveDAG(ctx, r)
 	return e.settle(ctx, r, outcome), nil
 }
@@ -206,7 +200,7 @@ func (e *Engine) ResolveApprovalResponse(ctx context.Context, instanceID string,
 func (e *Engine) RecheckApproval(ctx context.Context, instanceID string, poll func(sourceID, sourceItemID string) (model.SourceItem, error)) ApprovalDecision {
 	e.mu.Lock()
 	r, ok := e.parked[instanceID]
-	if !ok {
+	if !ok || !e.stillParkedLocked(ctx, r) {
 		e.mu.Unlock()
 		return ApprovalWait
 	}

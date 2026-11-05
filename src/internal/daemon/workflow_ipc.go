@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -318,12 +320,56 @@ func (d *Dispatcher) StopInstance(ctx context.Context, instanceID string) error 
 		_ = d.db.UpdateExecution(ctx, lastExec)
 	}
 
+	// Drop it from the engine before persisting the interrupted state: a parked
+	// instance has no step to cancel above, and the next re-check would otherwise
+	// advance it (issue #517).
+	d.forgetParked(ctx, instanceID)
+
 	// Mark the instance itself interrupted.
 	if err := d.db.UpdateWorkflowInstanceState(ctx, instanceID, db.InstanceStateBlocked, string(state.ReasonInterrupted)); err != nil {
 		aplog.Error("stop instance %s: update state: %v", instanceID, err)
 	}
 	aplog.Info("stopped instance %s (cell %s)", instanceID, inst.CellID)
 	return nil
+}
+
+// stopInstanceHandler serves POST /instances/stop/{id}, the endpoint behind
+// `apiary instances <id> --cancel`.
+func (d *Dispatcher) stopInstanceHandler(ctx context.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		instanceID := strings.TrimPrefix(r.URL.Path, "/instances/stop/")
+		if instanceID == "" {
+			http.Error(w, "missing instance id", http.StatusBadRequest)
+			return
+		}
+		if err := d.StopInstance(ctx, instanceID); err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, ErrInstanceNotFound) {
+				status = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"stopped": instanceID})
+	}
+}
+
+// forgetParked removes a stopped instance from the engine's parked set and clears
+// the dispatcher's re-check bookkeeping for it. A goroutine still holding a claim
+// finds the instance gone and stops there; its deferred delete is then a no-op.
+func (d *Dispatcher) forgetParked(ctx context.Context, instanceID string) {
+	// No engine yet means nothing has parked in this process.
+	if d.engine != nil {
+		d.engine.StopParked(ctx, instanceID)
+	}
+	d.waitAdvancing.Delete(instanceID)
+	d.waitLastCheck.Delete(instanceID)
+	d.approvalAdvancing.Delete(instanceID)
 }
 
 // Instances returns workflow instances for the IPC list endpoint, optionally
