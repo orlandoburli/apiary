@@ -185,6 +185,14 @@ func (c *Config) validateTriggerEvents(ctx string, t TriggerConfig) []error {
 			errs = append(errs, fmt.Errorf("%s: trigger authors/authors_association are only valid on an event trigger (on: %s)",
 				ctx, strings.Join(TriggerEventKinds, "|")))
 		}
+		if len(t.IgnoreAuthors) > 0 {
+			errs = append(errs, fmt.Errorf("%s: trigger ignore_authors is only valid on an event trigger (on: %s)",
+				ctx, strings.Join(TriggerEventKinds, "|")))
+		}
+		if len(t.PRAuthors) > 0 {
+			errs = append(errs, fmt.Errorf("%s: trigger pr_authors is only valid on an event trigger (on: %s)",
+				ctx, strings.Join(TriggerEventKinds, "|")))
+		}
 		if t.MaxDispatches != 0 {
 			errs = append(errs, fmt.Errorf("%s: trigger max_dispatches is only valid on an event trigger", ctx))
 		}

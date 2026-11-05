@@ -16,8 +16,8 @@ type EvalContext struct {
 	Memory map[string]string    // workflow-memory Step Data keys → rendered values
 	Steps  map[string]StepState // step id → terminal state info
 	// Event carries the PR event payload for an event-triggered instance
-	// (kind, body, author, author_association, pr_number, pr_url). Nil for
-	// item-triggered instances — event.* accessors then resolve as missing ("").
+	// (kind, body, author, author_association, pr_number, pr_url, pr_author). Nil
+	// for item-triggered instances — event.* accessors then resolve as missing ("").
 	Event map[string]string
 }
 
@@ -488,7 +488,7 @@ func resolveAccessor(path []string, ctx EvalContext) (resolvedValue, error) {
 			return resolvedValue{}, fmt.Errorf("invalid event accessor %q", strings.Join(path, "."))
 		}
 		switch path[1] {
-		case "kind", "body", "author", "author_association", "pr_number", "pr_url":
+		case "kind", "body", "author", "author_association", "pr_number", "pr_url", "pr_author":
 			v, ok := ctx.Event[path[1]]
 			if !ok {
 				return resolvedValue{kind: kMissing}, nil

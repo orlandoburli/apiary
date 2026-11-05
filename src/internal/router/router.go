@@ -72,6 +72,8 @@ func New(cfg *config.Config) (*Router, error) {
 			CommentMatches:     wf.Trigger.CommentMatches,
 			Authors:            wf.Trigger.Authors,
 			AuthorsAssociation: wf.Trigger.AuthorsAssociation,
+			IgnoreAuthors:      wf.Trigger.IgnoreAuthors,
+			PRAuthors:          wf.Trigger.PRAuthors,
 			MaxDispatches:      wf.Trigger.MaxDispatches,
 		})
 	}

@@ -154,8 +154,8 @@ workflows:
   # (comment / review) dispatches exactly once, persisted across restarts.
   # Author gating defaults to collaborators-only; the daemon's own comments and
   # bot comments never trigger. The step environment carries APIARY_EVENT_KIND,
-  # APIARY_EVENT_AUTHOR, APIARY_EVENT_BODY, APIARY_PR_NUMBER, APIARY_PR_URL,
-  # and expressions can read ${{ event.* }}.
+  # APIARY_EVENT_AUTHOR, APIARY_EVENT_PR_AUTHOR, APIARY_EVENT_BODY,
+  # APIARY_PR_NUMBER, APIARY_PR_URL, and expressions can read ${{ event.* }}.
   - id: react-to-pr-comment
     description: "Address reviewer feedback left as a PR comment mentioning @apiary"
     trigger:
@@ -164,6 +164,8 @@ workflows:
       max_dispatches: 5               # per-PR runaway-loop budget (0 = unlimited)
       # authors: [orlandoburli]       # explicit allow-list (overrides association gate)
       # authors_association: [OWNER, MEMBER, COLLABORATOR]   # the default gate
+      # ignore_authors: [ci-account]    # deny-list; wins over the two above
+      # pr_authors: [orlandoburli]      # only PRs opened by these logins
     steps:
       - id: address
         agent: engineer

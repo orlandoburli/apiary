@@ -508,6 +508,16 @@
                   "enum": ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN", "NONE"]
                 }
               },
+              "ignore_authors": {
+                "type": "array",
+                "description": "Event triggers only: drop events authored by one of these source logins (case-insensitive). Wins over authors and authors_association",
+                "items": { "type": "string" }
+              },
+              "pr_authors": {
+                "type": "array",
+                "description": "Event triggers only: restrict to pull requests opened by one of these source logins (case-insensitive). Applies in addition to authors and authors_association; an event whose PR author is unknown does not match",
+                "items": { "type": "string" }
+              },
               "max_dispatches": {
                 "type": "integer",
                 "description": "Event triggers only: cap how many times this trigger may dispatch for the same pull request (runaway-loop budget). 0 = unlimited",

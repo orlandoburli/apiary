@@ -310,11 +310,14 @@ type RouteConfig struct {
 	// polled work items, or a pr_* event kind). Set by the Router from the
 	// workflow trigger; event routes are evaluated by RouteEvent only.
 	On string `yaml:"-"`
-	// CommentMatches / Authors / AuthorsAssociation / MaxDispatches mirror the
-	// same TriggerConfig fields for event routes. Set by the Router.
+	// CommentMatches / Authors / AuthorsAssociation / IgnoreAuthors / PRAuthors /
+	// MaxDispatches mirror the same TriggerConfig fields for event routes. Set by
+	// the Router.
 	CommentMatches     string   `yaml:"-"`
 	Authors            []string `yaml:"-"`
 	AuthorsAssociation []string `yaml:"-"`
+	IgnoreAuthors      []string `yaml:"-"`
+	PRAuthors          []string `yaml:"-"`
 	MaxDispatches      int      `yaml:"-"`
 }
 

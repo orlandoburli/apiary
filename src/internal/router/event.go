@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/orlandoburli/apiary/internal/config"
+	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
 )
 
@@ -33,8 +34,13 @@ func (r *Router) RouteEvent(event model.SourceEvent, task *model.InternalTask) [
 		if !route.IsEventRoute() {
 			continue
 		}
-		ok, _ := r.evaluateEvent(route, event, task)
+		ok, reason := r.evaluateEvent(route, event, task)
 		if !ok {
+			// A kind mismatch says nothing about the event: every trigger on
+			// another axis would log one line per event.
+			if route.On == event.Kind {
+				aplog.Debug("event %s: trigger %s skipped: %s", event.ID, route.ID, reason)
+			}
 			continue
 		}
 		m, ok := r.resolveMatch(route)
@@ -66,6 +72,9 @@ func (r *Router) evaluateEvent(route config.RouteConfig, event model.SourceEvent
 	if ok, reason := authorAllowed(route, event); !ok {
 		return false, reason
 	}
+	if ok, reason := prAuthorAllowed(route, event); !ok {
+		return false, reason
+	}
 
 	// Item-shaped criteria apply to the related task. A route that declares them
 	// but has no related task to evaluate them against must not match — matching
@@ -89,10 +98,16 @@ func (r *Router) evaluateEvent(route config.RouteConfig, event model.SourceEvent
 	return true, fmt.Sprintf("matched event %s by %s", event.Kind, event.Author)
 }
 
-// authorAllowed applies the trigger's actor gate: an explicit authors list wins;
-// otherwise the author's repository association must be in authors_association,
-// defaulting to collaborators-only (config.DefaultEventAuthorAssociations).
+// authorAllowed applies the trigger's actor gate: ignore_authors always rejects;
+// then an explicit authors list wins; otherwise the author's repository
+// association must be in authors_association, defaulting to collaborators-only
+// (config.DefaultEventAuthorAssociations).
 func authorAllowed(route config.RouteConfig, event model.SourceEvent) (bool, string) {
+	for _, a := range route.IgnoreAuthors {
+		if strings.EqualFold(a, event.Author) {
+			return false, fmt.Sprintf("author %q is in trigger ignore_authors", event.Author)
+		}
+	}
 	if len(route.Authors) > 0 {
 		for _, a := range route.Authors {
 			if strings.EqualFold(a, event.Author) {
@@ -111,6 +126,23 @@ func authorAllowed(route config.RouteConfig, event model.SourceEvent) (bool, str
 		}
 	}
 	return false, fmt.Sprintf("author %q association %q not in %v", event.Author, event.AuthorAssociation, allowed)
+}
+
+// prAuthorAllowed applies the trigger's pr_authors filter. It fails closed: an
+// event whose PR author is unknown (the adapter's PR fetch failed) never matches
+// a filtered trigger, or one bad poll would dispatch on everyone's PRs.
+func prAuthorAllowed(route config.RouteConfig, event model.SourceEvent) (bool, string) {
+	if len(route.PRAuthors) == 0 {
+		return true, ""
+	}
+	if event.PRAuthor != "" {
+		for _, a := range route.PRAuthors {
+			if strings.EqualFold(a, event.PRAuthor) {
+				return true, ""
+			}
+		}
+	}
+	return false, fmt.Sprintf("pr author %q not in trigger pr_authors %v", event.PRAuthor, route.PRAuthors)
 }
 
 // hasItemCriteria reports whether a match declares any criterion that must be

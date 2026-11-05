@@ -94,6 +94,109 @@ func TestRouteEvent_AuthorsListOverridesAssociation(t *testing.T) {
 	}
 }
 
+func TestRouteEvent_PRAuthorsFilter(t *testing.T) {
+	r, err := New(eventRouterConfig(map[string]*config.TriggerConfig{
+		"comment":  {On: config.TriggerOnPRComment, PRAuthors: []string{"Carol"}},
+		"approved": {On: config.TriggerOnPRReviewApproved, PRAuthors: []string{"Carol"}},
+		"changes":  {On: config.TriggerOnPRReviewChangesRequest, PRAuthors: []string{"Carol"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, kind := range []string{"pr_comment", "pr_review_approved", "pr_review_changes_requested"} {
+		ev := collabEvent(kind, "x")
+		ev.PRAuthor = "carol" // case differs from the trigger's list
+		if m := r.RouteEvent(ev, nil); len(m) != 1 {
+			t.Errorf("%s on a listed author's PR must match, got %v", kind, m)
+		}
+		ev.PRAuthor = "dave"
+		if m := r.RouteEvent(ev, nil); len(m) != 0 {
+			t.Errorf("%s on another author's PR must not match, got %v", kind, m)
+		}
+		ev.PRAuthor = ""
+		if m := r.RouteEvent(ev, nil); len(m) != 0 {
+			t.Errorf("%s with an unknown PR author must fail closed, got %v", kind, m)
+		}
+	}
+}
+
+func TestRouteEvent_PRAuthorsCombinesWithActorGate(t *testing.T) {
+	r, err := New(eventRouterConfig(map[string]*config.TriggerConfig{
+		"listed":  {On: config.TriggerOnPRComment, PRAuthors: []string{"carol"}, Authors: []string{"alice"}},
+		"default": {On: config.TriggerOnPRComment, PRAuthors: []string{"carol"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ev := collabEvent("pr_comment", "x")
+	ev.PRAuthor = "carol"
+	if m := r.RouteEvent(ev, nil); len(m) != 2 {
+		t.Errorf("both gates pass: want 2 matches, got %v", m)
+	}
+
+	// Right PR, wrong commenter: authors still gates, and the association
+	// default still applies when authors is absent.
+	ev.Author, ev.AuthorAssociation = "stranger", "NONE"
+	if m := r.RouteEvent(ev, nil); len(m) != 0 {
+		t.Errorf("pr_authors must not bypass the actor gate, got %v", m)
+	}
+
+	// Right commenter, wrong PR: an authors match must not bypass pr_authors.
+	ev = collabEvent("pr_comment", "x")
+	ev.PRAuthor = "dave"
+	if m := r.RouteEvent(ev, nil); len(m) != 0 {
+		t.Errorf("authors must not bypass pr_authors, got %v", m)
+	}
+}
+
+func TestEvaluateEvent_PRAuthorsReason(t *testing.T) {
+	r, err := New(eventRouterConfig(map[string]*config.TriggerConfig{
+		"mine": {On: config.TriggerOnPRComment, PRAuthors: []string{"carol"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := collabEvent("pr_comment", "x")
+	ev.PRAuthor = "dave"
+	ok, reason := r.evaluateEvent(r.routes[0], ev, nil)
+	if want := `pr author "dave" not in trigger pr_authors [carol]`; ok || reason != want {
+		t.Errorf("evaluateEvent = %v, %q; want false, %q", ok, reason, want)
+	}
+}
+
+func TestRouteEvent_IgnoreAuthors(t *testing.T) {
+	r, err := New(eventRouterConfig(map[string]*config.TriggerConfig{
+		"default-gate": {On: config.TriggerOnPRComment, IgnoreAuthors: []string{"CI-Account"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The account reports as an ordinary member, so only its name excludes it.
+	ev := collabEvent("pr_comment", "build passed")
+	ev.Author, ev.AuthorAssociation = "ci-account", "MEMBER"
+	if m := r.RouteEvent(ev, nil); len(m) != 0 {
+		t.Errorf("ignored author must not match (case-insensitive), got %v", m)
+	}
+	if m := r.RouteEvent(collabEvent("pr_comment", "x"), nil); len(m) != 1 {
+		t.Errorf("an author not on the list must still pass the default gate, got %v", m)
+	}
+}
+
+func TestRouteEvent_IgnoreAuthorsWinsOverAuthors(t *testing.T) {
+	r, err := New(eventRouterConfig(map[string]*config.TriggerConfig{
+		"both": {On: config.TriggerOnPRComment, Authors: []string{"alice"}, IgnoreAuthors: []string{"alice"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := r.RouteEvent(collabEvent("pr_comment", "x"), nil); len(m) != 0 {
+		t.Errorf("ignore_authors must win over authors, got %v", m)
+	}
+}
+
 func TestRouteEvent_ItemCriteriaRequireRelatedTask(t *testing.T) {
 	r, err := New(eventRouterConfig(map[string]*config.TriggerConfig{
 		"wf": {On: config.TriggerOnPRComment, Match: config.RouteMatch{Source: "github", Labels: []string{"apiary"}}},
