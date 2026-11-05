@@ -62,7 +62,7 @@ runners:
     provider: opencode
     # All `config` keys are optional — the provider preset covers them. Available
     # keys: command (binary override), args, model_flag, prompt_flag,
-    # prompt_positional, turns_flag. See docs/runners.md#cli-engine-configuration.
+    # prompt_positional, prompt_stdin, turns_flag. See docs/runners.md#cli-engine-configuration.
     # config:
     #   command: /usr/local/bin/opencode
 

@@ -11,7 +11,9 @@ func init() {
 	// ── CLI providers ──────────────────────────────────────────────────────────
 	cliFactory := func(cmd string, extra map[string]any) func() runner.Runner {
 		return func() runner.Runner {
-			cfg := map[string]any{"command": cmd, "model_flag": "--model", "prompt_flag": "-p"}
+			// prompt_stdin: every preset CLI reads its prompt from stdin when argv
+			// carries none, so a prompt too large for argv goes there (#493).
+			cfg := map[string]any{"command": cmd, "model_flag": "--model", "prompt_flag": "-p", "prompt_stdin": true}
 			for k, v := range extra {
 				cfg[k] = v
 			}

@@ -1,10 +1,14 @@
 package execution
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/orlandoburli/apiary/internal/model"
 )
 
 func envMap(kvs []string) map[string]string {
@@ -72,7 +76,7 @@ func TestScopedEnv_Passthrough(t *testing.T) {
 func TestWrapCommand_NoSecretValuesInArgv(t *testing.T) {
 	s := &cliSandbox{image: "apiary/agent:latest"}
 	// Names only — values live in the docker process env, never in argv.
-	_, args := s.wrapCommand("opencode", []string{"run", "--model", "x"}, "/work/task", []string{"GITHUB_TOKEN", "ANTHROPIC_API_KEY"})
+	_, args := s.wrapCommand("opencode", []string{"run", "--model", "x"}, "/work/task", []string{"GITHUB_TOKEN", "ANTHROPIC_API_KEY"}, false)
 
 	joined := strings.Join(args, " ")
 	// The critical assertion: no "NAME=VALUE" env pair (i.e. no secret value) in argv.
@@ -103,7 +107,7 @@ func TestWrapCommand_NoSecretValuesInArgv(t *testing.T) {
 
 func TestWrapCommand_NetworkDefaultsToBridge(t *testing.T) {
 	s := &cliSandbox{image: "img"}
-	_, args := s.wrapCommand("bin", nil, "", nil)
+	_, args := s.wrapCommand("bin", nil, "", nil, false)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--network bridge") {
 		t.Errorf("network should default to bridge so agents keep egress, got: %s", joined)
@@ -115,7 +119,7 @@ func TestWrapCommand_NetworkDefaultsToBridge(t *testing.T) {
 // wrong inside the image (HOME under a read-only rootfs is the classic break).
 func TestWrapCommand_DoesNotForwardHostWiringIntoContainer(t *testing.T) {
 	names := []string{"ANTHROPIC_API_KEY", "GITHUB_TOKEN", "DOCKER_HOST", "SSH_AUTH_SOCK", "HOME", "PATH", "TMPDIR"}
-	_, args := (&cliSandbox{image: "img"}).wrapCommand("bin", nil, "/w", names)
+	_, args := (&cliSandbox{image: "img"}).wrapCommand("bin", nil, "/w", names, false)
 	joined := strings.Join(args, " ")
 
 	// The host's values must not cross; note "--env HOME=<path>" (an explicit
@@ -143,7 +147,7 @@ func TestWrapCommand_DoesNotForwardHostWiringIntoContainer(t *testing.T) {
 // A bind-mounted workspace is owned by the daemon's uid; running as "nobody"
 // makes every write fail with EACCES.
 func TestWrapCommand_DefaultUserCanWriteWorkspace(t *testing.T) {
-	_, args := (&cliSandbox{image: "img"}).wrapCommand("bin", nil, "/w", nil)
+	_, args := (&cliSandbox{image: "img"}).wrapCommand("bin", nil, "/w", nil, false)
 	want := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--user "+want) {
@@ -190,5 +194,45 @@ func TestValidateExtraArgs(t *testing.T) {
 		if err := validateExtraArgs(ok); err != nil {
 			t.Errorf("benign args %v should be allowed, got %v", ok, err)
 		}
+	}
+}
+
+// docker run drops stdin without -i, so a prompt delivered there would vanish
+// and the agent would start with nothing to do (#493).
+func TestSandboxForwardsStdinOnlyWhenThePromptIsOnIt(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + dir + "/argv\"\ncat > \"" + dir + "/stdin\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	run := func(prompt string) (argv, stdin string) {
+		r := &CliRunner{command: "claude", promptFlag: "-p", promptStdin: true, sandbox: &cliSandbox{image: "img"}}
+		if _, err := r.Run(context.Background(), model.RunRequest{SystemAppend: prompt}); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		a, err := os.ReadFile(filepath.Join(dir, "argv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := os.ReadFile(filepath.Join(dir, "stdin"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(a), string(s)
+	}
+
+	argv, stdin := run(strings.Repeat("x", promptArgvLimit+1))
+	if !strings.Contains(argv, "\n-i\n") {
+		t.Error("a prompt on stdin needs docker run -i")
+	}
+	if len(stdin) <= promptArgvLimit {
+		t.Errorf("stdin should carry the prompt, got %d bytes", len(stdin))
+	}
+
+	argv, _ = run("small")
+	if strings.Contains(argv, "\n-i\n") {
+		t.Error("a prompt on argv must not change the docker invocation")
 	}
 }
