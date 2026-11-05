@@ -84,6 +84,7 @@ type pullRequest struct {
 	MergeableState string `json:"mergeable_state"`
 	Head           struct {
 		SHA string `json:"sha"`
+		Ref string `json:"ref"`
 	} `json:"head"`
 }
 

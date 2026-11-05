@@ -352,11 +352,12 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 
 		// Collect every cross-referenced PR, most recent first. Any PR that merely
 		// MENTIONS the issue shows up here (including closed PRs from sibling
-		// issues), so we can't just take the first hit: an issue's real PR must be
-		// picked among the candidates, preferring OPEN PRs and, among those, the
-		// most recently referenced one. Only when no candidate is open do we fall
-		// back to the most recent one regardless of state (e.g. polling right
-		// after a merge).
+		// issues and open PRs that only cite it), so we can't just take the first
+		// hit: an issue's real PR must be picked among the candidates. An OPEN PR
+		// whose head branch carries the issue number (e.g. agent/task-1958) wins;
+		// otherwise the most recently referenced OPEN PR; only when no candidate
+		// is open do we fall back to the most recent one regardless of state
+		// (e.g. polling right after a merge).
 		var candidates []int
 		seen := map[int]bool{}
 		for i := len(timeline) - 1; i >= 0; i-- {
@@ -377,7 +378,7 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 		// "pending": we found a real PR but can't read it. Surface it as an error
 		// so the caller logs it instead of masking a permanent problem (e.g. a
 		// token lacking Pull requests: Read, which returns 403) as an endless wait.
-		var fallbackBody []byte
+		var fallbackBody, openBody []byte
 		prBody = nil
 		for _, prNumber := range candidates {
 			prPath = fmt.Sprintf("/repos/%s/%s/pulls/%d", a.owner, a.repo, prNumber)
@@ -393,12 +394,20 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 				continue
 			}
 			if candidate.State == "open" {
-				prBody = body
-				break
+				if branchReferencesIssue(candidate.Head.Ref, cellID) {
+					prBody = body
+					break
+				}
+				if openBody == nil {
+					openBody = body
+				}
 			}
 			if fallbackBody == nil {
 				fallbackBody = body
 			}
+		}
+		if prBody == nil {
+			prBody = openBody
 		}
 		if prBody == nil {
 			prBody = fallbackBody
@@ -410,6 +419,32 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 
 	return a.ciStatusFromPRBody(ctx, prBody, cellID)
 }
+
+// branchReferencesIssue reports whether a PR head branch names the issue number
+// as a standalone token (agent/task-1958, 1958-fix, issue_1958), so the issue's
+// own PR can be told apart from other open PRs that merely cite it. Digits must
+// not continue on either side: task-19580 does not reference 1958.
+func branchReferencesIssue(ref, issue string) bool {
+	if ref == "" || issue == "" {
+		return false
+	}
+	for from := 0; ; {
+		i := strings.Index(ref[from:], issue)
+		if i < 0 {
+			return false
+		}
+		start := from + i
+		end := start + len(issue)
+		before := start == 0 || !isDigit(ref[start-1])
+		after := end == len(ref) || !isDigit(ref[end])
+		if before && after {
+			return true
+		}
+		from = start + 1
+	}
+}
+
+func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 
 // ciStatusFromPRBody synthesizes a CI status from an already-fetched pull
 // request payload. It is the half of the CI check that is the same whether the
