@@ -151,6 +151,7 @@ All `config` keys, with each provider's preset defaults:
 | `model_flag` | Flag used to pass the step's model | `--model` | `--model` | `--model` | `--model` |
 | `prompt_flag` | Flag used to pass the prompt | `-p` | *(positional)* | *(positional)* | *(positional)* |
 | `prompt_positional` | Pass the prompt as the last positional argument | `false` | `true` | `true` | `true` |
+| `prompt_stdin` | Deliver a prompt over 120 KiB on stdin | `true` | `true` | `true` | `true` |
 | `turns_flag` | Flag used to pass a max-turns limit | — | — | — | — |
 | `permission_mode` | Tool-permission posture (see below) | `bypass` | — | — | `bypass` |
 | `allowed_tools` | Tool names to pre-approve | — | — | — | — |
@@ -160,6 +161,13 @@ All `config` keys, with each provider's preset defaults:
 
 Prompt delivery: via `prompt_flag` when set, as the last positional argument
 when `prompt_positional: true`, otherwise on **stdin**.
+
+With `prompt_stdin: true`, a prompt over 120 KiB goes on stdin whatever the
+settings above say, because the OS refuses an argument list that large (128 KiB
+per argument on Linux, 1 MiB in total on macOS). `prompt_flag` stays on the
+command line without its value. If you point a runner at a `command` that cannot
+read its prompt from stdin, or whose `prompt_flag` requires a value, set
+`prompt_stdin: false`.
 
 ### Tool permissions
 

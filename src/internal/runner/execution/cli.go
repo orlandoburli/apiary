@@ -29,6 +29,10 @@ type CliRunner struct {
 	promptFlag       string
 	turnsFlag        string
 	promptPositional bool // pass prompt as last positional arg instead of a flag
+	// promptStdin moves a prompt larger than promptArgvLimit from argv to stdin.
+	// Only enable it for a command that reads its prompt from stdin when argv
+	// carries none, and whose prompt_flag (if any) works without a value.
+	promptStdin bool
 	// mcpFormat selects how MCP servers are serialised into the provider's native
 	// config ("claude" | "cursor" | "opencode"); empty disables MCP support.
 	mcpFormat string
@@ -67,6 +71,12 @@ type CliRunner struct {
 	permissionMode string
 	allowedTools   []string
 }
+
+// promptArgvLimit is the largest prompt passed on argv when promptStdin is set.
+// exec fails with E2BIG past the OS limit: 128 KiB for a single argument on
+// Linux (MAX_ARG_STRLEN), 1 MiB for argv plus the environment on macOS
+// (ARG_MAX). Staying under the smaller of the two keeps one behaviour on both.
+const promptArgvLimit = 120 * 1024
 
 // permissionModeBypass disables the provider's permission prompt entirely.
 // "bypassPermissions" is accepted as an alias because that is the name Claude
@@ -131,6 +141,9 @@ func (r *CliRunner) Configure(config map[string]any) error {
 	}
 	if v, ok := config["prompt_positional"].(bool); ok {
 		r.promptPositional = v
+	}
+	if v, ok := config["prompt_stdin"].(bool); ok {
+		r.promptStdin = v
 	}
 	if raw, ok := config["args"].([]any); ok {
 		for _, a := range raw {
@@ -240,6 +253,26 @@ func (r *CliRunner) Configure(config map[string]any) error {
 	return nil
 }
 
+// promptDelivery decides how the prompt reaches the command: the args to append
+// to argv, and whether the prompt goes on stdin instead. A prompt_flag stays on
+// argv without its value when the prompt moves to stdin, because claude's -p
+// also selects print mode.
+func (r *CliRunner) promptDelivery(prompt string) (args []string, onStdin bool) {
+	if r.promptFlag == "" && !r.promptPositional {
+		return nil, true
+	}
+	if r.promptStdin && len(prompt) > promptArgvLimit {
+		if r.promptPositional {
+			return nil, true
+		}
+		return []string{r.promptFlag}, true
+	}
+	if r.promptPositional {
+		return []string{prompt}, false
+	}
+	return []string{r.promptFlag, prompt}, false
+}
+
 func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunResult, error) {
 	start := time.Now()
 	prompt := buildPrompt(req)
@@ -266,11 +299,8 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	if r.turnsFlag != "" && req.MaxTurns > 0 {
 		argv = append(argv, r.turnsFlag, fmt.Sprintf("%d", req.MaxTurns))
 	}
-	if r.promptPositional {
-		argv = append(argv, prompt)
-	} else if r.promptFlag != "" {
-		argv = append(argv, r.promptFlag, prompt)
-	}
+	promptArgs, promptOnStdin := r.promptDelivery(prompt)
+	argv = append(argv, promptArgs...)
 
 	var cmd *exec.Cmd
 	if r.sandbox != nil {
@@ -281,7 +311,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 		// their values live solely in this docker process's environment (cmd.Env),
 		// never in argv/the host process table.
 		scoped, envNames := scopedEnv(os.Environ(), req.Env, r.envPassthrough)
-		binary, sandboxArgv := r.sandbox.wrapCommand(r.command, argv, req.WorkingDir, envNames)
+		binary, sandboxArgv := r.sandbox.wrapCommand(r.command, argv, req.WorkingDir, envNames, promptOnStdin)
 		cmd = exec.CommandContext(ctx, binary, sandboxArgv...)
 		cmd.Env = scoped
 	} else {
@@ -294,7 +324,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
 	}
-	if r.promptFlag == "" && !r.promptPositional {
+	if promptOnStdin {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
 

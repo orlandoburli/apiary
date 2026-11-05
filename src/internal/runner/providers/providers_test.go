@@ -2,6 +2,9 @@ package providers
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -157,5 +160,103 @@ func TestUnsupportedPermissionModeFailsAtConfigure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not supported by this provider") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// promptCapture installs a stand-in command that records its argv and stdin, so
+// a test sees exactly how a provider delivered the prompt.
+func promptCapture(t *testing.T) (command string, argv, stdin func() string) {
+	t.Helper()
+	dir := t.TempDir()
+	command = filepath.Join(dir, "agent")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + dir + "/argv\"\ncat > \"" + dir + "/stdin\"\n"
+	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	read := func(name string) func() string {
+		return func() string {
+			data, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatalf("the stand-in command did not run: %v", err)
+			}
+			return string(data)
+		}
+	}
+	return command, read("argv"), read("stdin")
+}
+
+func runWithPrompt(t *testing.T, providerID, prompt string, userConfig map[string]any) (argv, stdin string) {
+	t.Helper()
+	command, readArgv, readStdin := promptCapture(t)
+	r, ok := runner.New(providerID)
+	if !ok {
+		t.Fatalf("provider %q not registered", providerID)
+	}
+	cfg := map[string]any{"command": command}
+	for k, v := range userConfig {
+		cfg[k] = v
+	}
+	if err := r.Configure(cfg); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := r.Run(context.Background(), model.RunRequest{SystemAppend: prompt, WorkerID: "test"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	return readArgv(), readStdin()
+}
+
+var cliProviders = []string{"claude-cli", "opencode-cli", "codex-cli", "cursor-cli"}
+
+// A deep `apiary improve` prompt measured 1.4 MB, past macOS's 1 MiB ARG_MAX, so
+// exec failed with E2BIG before the agent started (#493).
+func TestPromptAboveArgMaxGoesOnStdin(t *testing.T) {
+	prompt := "HEAD " + strings.Repeat("x", 1200*1024) + " TAIL"
+	for _, id := range cliProviders {
+		t.Run(id, func(t *testing.T) {
+			argv, stdin := runWithPrompt(t, id, prompt, nil)
+			if !strings.Contains(stdin, prompt) {
+				t.Errorf("stdin should carry the whole prompt, got %d bytes", len(stdin))
+			}
+			if strings.Contains(argv, "HEAD") {
+				t.Errorf("the prompt must not be on argv (%d bytes)", len(argv))
+			}
+		})
+	}
+}
+
+// claude's -p selects print mode, so it stays when the prompt moves to stdin.
+func TestClaudeKeepsPrintFlagWhenThePromptIsOnStdin(t *testing.T) {
+	argv, _ := runWithPrompt(t, "claude-cli", strings.Repeat("x", 200*1024), nil)
+	if !strings.HasSuffix(argv, "\n-p\n") {
+		t.Errorf("argv should end with a bare -p, got %q", argv)
+	}
+}
+
+func TestNormalSizedPromptStaysOnArgv(t *testing.T) {
+	for _, id := range cliProviders {
+		t.Run(id, func(t *testing.T) {
+			argv, stdin := runWithPrompt(t, id, "a normal prompt", nil)
+			if !strings.Contains(argv, "a normal prompt") {
+				t.Errorf("the prompt should stay on argv, got %q", argv)
+			}
+			if stdin != "" {
+				t.Errorf("stdin should be empty, got %d bytes", len(stdin))
+			}
+		})
+	}
+}
+
+// 200 KiB fits macOS's total limit but not Linux's per-argument one.
+func TestPromptStdinCanBeTurnedOff(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("a single argument this large exceeds MAX_ARG_STRLEN on Linux")
+	}
+	prompt := strings.Repeat("x", 200*1024)
+	argv, stdin := runWithPrompt(t, "claude-cli", prompt, map[string]any{"prompt_stdin": false})
+	if !strings.Contains(argv, prompt) {
+		t.Errorf("the prompt should stay on argv (%d bytes)", len(argv))
+	}
+	if stdin != "" {
+		t.Errorf("stdin should be empty, got %d bytes", len(stdin))
 	}
 }

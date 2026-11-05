@@ -129,7 +129,10 @@ type cliSandbox struct {
 // envNames is the list of variable names to forward (from scopedEnv). Only the
 // working directory is bind-mounted, so the agent cannot read host files outside
 // its task workspace.
-func (s *cliSandbox) wrapCommand(binary string, argv []string, workDir string, envNames []string) (string, []string) {
+//
+// keepStdin adds `-i`: without it docker does not forward stdin, and a prompt
+// delivered there would never reach the agent.
+func (s *cliSandbox) wrapCommand(binary string, argv []string, workDir string, envNames []string, keepStdin bool) (string, []string) {
 	user := s.user
 	if user == "" {
 		// Default to the daemon's own uid:gid, NOT "nobody": the task working
@@ -166,6 +169,9 @@ func (s *cliSandbox) wrapCommand(binary string, argv []string, workDir string, e
 		"--env", "HOME=" + sandboxHome,
 		"--cap-drop", "all",
 		"--security-opt", "no-new-privileges",
+	}
+	if keepStdin {
+		dockerArgs = append(dockerArgs, "-i")
 	}
 	if workDir != "" {
 		dockerArgs = append(dockerArgs, "-v", workDir+":"+workDir, "-w", workDir)

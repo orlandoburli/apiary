@@ -100,7 +100,7 @@ func RunAdvisor(ctx context.Context, cfg *config.Config, adv *Advisor, prompt st
 				out.Analysis = analysis
 				return out, nil
 			}
-			lastErr = fmt.Errorf("runner %s failed: %v", c.runnerID, res.Error)
+			lastErr = runFailure(c.runnerID, res)
 			continue
 		}
 
@@ -159,7 +159,7 @@ func runStructured(ctx context.Context, cfg *config.Config, adv *Advisor, prompt
 			}
 			return out, nil
 		}
-		lastErr = fmt.Errorf("runner %s failed: %v", c.runnerID, res.Error)
+		lastErr = runFailure(c.runnerID, res)
 	}
 
 	out.Duration = time.Since(started)
@@ -248,7 +248,25 @@ func runOnce(ctx context.Context, cfg *config.Config, c candidate, prompt string
 	}
 
 	res, err := ra.Run(ctx, req)
-	return &res, err
+	if err != nil {
+		// A runner that returns an error produced no result. A pointer to the zero
+		// value would send callers down the "run failed" path, which reads
+		// res.Error and drops err.
+		return nil, err
+	}
+	return &res, nil
+}
+
+// runFailure describes a run that finished without success. Failure detection
+// can mark a run failed without setting res.Error, so that must not print <nil>.
+func runFailure(runnerID string, res *model.RunResult) error {
+	if res.Error != nil {
+		return fmt.Errorf("runner %s failed: %w", runnerID, res.Error)
+	}
+	if res.FailureKind != model.FailureNone {
+		return fmt.Errorf("runner %s failed: %s", runnerID, res.FailureKind)
+	}
+	return fmt.Errorf("runner %s failed without reporting an error", runnerID)
 }
 
 // decodeInto converts a parsed structured output into a typed shape.

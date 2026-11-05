@@ -28,7 +28,7 @@ func requireDocker(t *testing.T) {
 func runSandboxed(t *testing.T, workDir string, envNames []string, script string) (string, error) {
 	t.Helper()
 	s := &cliSandbox{image: "busybox:latest"}
-	bin, args := s.wrapCommand("sh", []string{"-c", script}, workDir, envNames)
+	bin, args := s.wrapCommand("sh", []string{"-c", script}, workDir, envNames, false)
 	cmd := exec.Command(bin, args...)
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
@@ -82,7 +82,7 @@ func TestSandbox_CredentialForwardedByNameNotArgv(t *testing.T) {
 	requireDocker(t)
 	t.Setenv("APIARY_TEST_SECRET", "s3cr3t-value")
 	s := &cliSandbox{image: "busybox:latest"}
-	bin, args := s.wrapCommand("sh", []string{"-c", `printf %s "$APIARY_TEST_SECRET"`}, "", []string{"APIARY_TEST_SECRET"})
+	bin, args := s.wrapCommand("sh", []string{"-c", `printf %s "$APIARY_TEST_SECRET"`}, "", []string{"APIARY_TEST_SECRET"}, false)
 	for _, a := range args {
 		if strings.Contains(a, "s3cr3t-value") {
 			t.Fatalf("secret value leaked into argv: %q", a)
@@ -139,7 +139,7 @@ func TestSandbox_HomeWritableWhenImagePreCreatesIt(t *testing.T) {
 	requireDocker(t)
 	tag := buildImageWithHome(t)
 	s := &cliSandbox{image: tag}
-	bin, args := s.wrapCommand("sh", []string{"-c", `touch "$HOME/probe" && echo WROTE`}, "", nil)
+	bin, args := s.wrapCommand("sh", []string{"-c", `touch "$HOME/probe" && echo WROTE`}, "", nil, false)
 	cmd := exec.Command(bin, args...)
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
