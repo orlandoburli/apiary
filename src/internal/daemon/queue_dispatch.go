@@ -69,7 +69,7 @@ func (d *Dispatcher) configureDispatchQueue() error {
 
 func (d *Dispatcher) queuePolicy() queue.ConcurrencyPolicy {
 	configured := d.cfg.Settings.Queue.Concurrency
-	policy := queue.ConcurrencyPolicy{DefaultProject: configured.DefaultProject, Projects: configured.Projects, DefaultSource: configured.DefaultSource, Sources: configured.Sources, DefaultAgent: configured.DefaultAgent, Agents: copyLimits(configured.Agents), DefaultRunner: configured.DefaultRunner, Runners: configured.Runners, DefaultPool: configured.DefaultPool, Pools: configured.Pools}
+	policy := queue.ConcurrencyPolicy{DefaultProject: configured.DefaultProject, Projects: configured.Projects, DefaultSource: configured.DefaultSource, Sources: configured.Sources, DefaultAgent: configured.DefaultAgent, Agents: copyLimits(configured.Agents), DefaultRunner: configured.DefaultRunner, Runners: configured.Runners, DefaultPool: configured.DefaultPool, Pools: configured.Pools, DefaultWorkflow: configured.DefaultWorkflow, Workflows: copyLimits(configured.Workflows)}
 	if policy.DefaultProject == 0 {
 		policy.DefaultProject = d.cfg.Settings.Concurrency
 	}

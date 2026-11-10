@@ -112,10 +112,25 @@ settings:
         codex-cli: 6
       pools:
         production: 1
+      workflows:
+        sweep: 1
 ```
 
-Limits are available for project, source, agent, runner, and pool. Worker
-capacity is enforced independently.
+Limits are available for project, source, agent, runner, pool, and workflow.
+Worker capacity is enforced independently.
+
+The workflow dimension caps how many jobs of one workflow may be **leased**
+(running) at once, which is how a workflow is stopped from overlapping itself —
+typically a scheduled routine whose cron fires faster than a run takes. A second
+occurrence of `sweep` stays queued until the running one finishes rather than
+being dropped, so occurrences are delayed, not coalesced. To bound queue depth
+instead, use the trigger's `max_pending` option. Note that this is a
+concurrency limit, not a per-workflow rate limit: a workflow whose jobs never
+reach `leased` (no worker satisfies its pool/labels/capabilities) is not
+affected by the cap.
+
+A workflow shared by several agents can therefore be capped without also
+throttling those agents for other workflows.
 
 ## Operations
 

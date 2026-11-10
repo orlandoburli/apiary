@@ -681,6 +681,7 @@ func withinPolicy(ctx context.Context, tx *sql.Tx, job *queue.Job, policy queue.
 		{"agent_id", job.AgentID, scopedLimit(policy.Agents, job.AgentID, policy.DefaultAgent)},
 		{"runner_id", job.RunnerID, scopedLimit(policy.Runners, job.RunnerID, policy.DefaultRunner)},
 		{"pool", job.Pool, scopedLimit(policy.Pools, job.Pool, policy.DefaultPool)},
+		{"workflow_id", job.WorkflowID, scopedLimit(policy.Workflows, job.WorkflowID, policy.DefaultWorkflow)},
 	}
 	for _, check := range checks {
 		if check.limit <= 0 || check.value == "" {
