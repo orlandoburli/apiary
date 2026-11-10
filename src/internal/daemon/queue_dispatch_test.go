@@ -119,3 +119,49 @@ func TestSettleRemoteQueueJobIsDurableAndIdempotent(t *testing.T) {
 		t.Fatalf("instance=%+v err=%v", instance, err)
 	}
 }
+
+// TestSettleRemoteQueueJobSurvivesCancelledRunContext is the queue-side #7748
+// regression: cancelling a leased job cancels the run context, and the
+// settlement used to run on that same context — so `DecrementOutstanding` died
+// with `context canceled`, the task kept its hold forever, and the terminal
+// state was never mirrored. A cancelled job is already terminal; its
+// settlement is teardown and must land.
+func TestSettleRemoteQueueJobSurvivesCancelledRunContext(t *testing.T) {
+	ctx := context.Background()
+	client, err := db.New(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	task := &model.InternalTask{ID: "task-1", Title: "Cancelled work"}
+	if err := client.InternalTasks().CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.InternalTasks().IncrementOutstanding(ctx, task.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	job := &queue.Job{IdempotencyKey: "task-1:0:build", TaskID: task.ID, WorkflowID: "build", SourceID: "github", PayloadVersion: 1, Payload: []byte(`{}`), MaxAttempts: 1}
+	if _, err := client.Queue().Enqueue(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	job.State = queue.JobCanceled
+
+	dispatcher := &Dispatcher{db: client, dispatchQueue: client.Queue()}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel() // the operator stop that ended the run
+	if err := dispatcher.settleRemoteQueueJob(cancelled, *job); err != nil {
+		t.Fatalf("settle a cancelled job: %v", err)
+	}
+
+	stored, err := client.InternalTasks().GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.OutstandingWorkflows != 0 {
+		t.Fatalf("outstanding workflows = %d, want 0 — the cancelled settlement must release the hold", stored.OutstandingWorkflows)
+	}
+	instance, err := client.GetWorkflowInstance(ctx, "queue-"+job.ID)
+	if err != nil || instance == nil || instance.State != db.InstanceStateCanceled {
+		t.Fatalf("instance=%+v err=%v, want state %q", instance, err, db.InstanceStateCanceled)
+	}
+}

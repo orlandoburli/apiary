@@ -869,7 +869,25 @@ func (s *wfSideEffects) LinkPullRequest(ctx context.Context, task model.Internal
 	})
 }
 
+// hookSideEffectTimeout bounds one exit hook's source writes. A stopped run
+// still owes its label, state and escalation side effects; the deadline only
+// keeps a wedged API from pinning the teardown forever.
+const hookSideEffectTimeout = 30 * time.Second
+
+// hookContext detaches an exit hook from the run's cancellation. Hooks are how
+// a stopped run explains itself, so they must not inherit the very
+// cancellation that stopped it: the on_fail `add_labels: [needs-human,
+// needs-attention]` used to die with `context canceled`, leaving the issue with
+// its `workflow:*` label, no job, and no signal that it had stopped (#7748).
+// Values (logs, tracing) are carried over.
+func hookContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), hookSideEffectTimeout)
+}
+
 func (s *wfSideEffects) ApplyHook(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, hook config.OnComplete) error {
+	ctx, cancel := hookContext(ctx)
+	defer cancel()
+
 	for _, b := range bindings {
 		adapter := s.d.sources[b.SourceID]
 		if adapter == nil {
