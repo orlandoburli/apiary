@@ -66,48 +66,35 @@ nfpms:
     formats: [deb, rpm]
     bindir: /usr/bin
 
-# Multi-arch images. Each `dockers` entry builds one arch from the prebuilt
-# static binary; `docker_manifests` stitches them into a single multi-arch tag.
-dockers:
-  - id: amd64
-    goos: linux
-    goarch: amd64
+# Multi-arch images. `dockers_v2` replaces the deprecated `dockers` +
+# `docker_manifests` pair: one `docker buildx build --push` produces both the
+# per-platform images and the multi-arch manifest, so the separate manifest
+# stitching step is gone (#535).
+#
+# The binary is NOT built here — goreleaser already built it for every target
+# platform. The Dockerfile copies it from the build context, which lays the
+# artifacts out under $TARGETPLATFORM/ (see the Dockerfile's ARG TARGETPLATFORM).
+dockers_v2:
+  - id: apiary
     dockerfile: Dockerfile
-    use: buildx
-    image_templates:
-      - "ghcr.io/orlandoburli/apiary:{{ .Version }}-amd64"
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.source=https://github.com/orlandoburli/apiary"
-      - "--label=org.opencontainers.image.licenses=BSD-3-Clause"
-  - id: arm64
-    goos: linux
-    goarch: arm64
-    dockerfile: Dockerfile
-    use: buildx
-    image_templates:
-      - "ghcr.io/orlandoburli/apiary:{{ .Version }}-arm64"
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.source=https://github.com/orlandoburli/apiary"
-      - "--label=org.opencontainers.image.licenses=BSD-3-Clause"
-
-docker_manifests:
-  - name_template: "ghcr.io/orlandoburli/apiary:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/orlandoburli/apiary:{{ .Version }}-amd64"
-      - "ghcr.io/orlandoburli/apiary:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/orlandoburli/apiary:latest"
-    skip_push: auto # don't move :latest on prereleases / snapshots
-    image_templates:
-      - "ghcr.io/orlandoburli/apiary:{{ .Version }}-amd64"
-      - "ghcr.io/orlandoburli/apiary:{{ .Version }}-arm64"
+    ids:
+      - apiary
+    images:
+      - "ghcr.io/orlandoburli/apiary"
+    tags:
+      - "{{ .Version }}"
+      # Don't move :latest on prereleases / snapshots, the way the old
+      # `skip_push: auto` manifest did.
+      - "{{ if not .IsSnapshot }}{{ if not .IsNightly }}latest{{ end }}{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      "org.opencontainers.image.title": "{{ .ProjectName }}"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "org.opencontainers.image.source": "https://github.com/orlandoburli/apiary"
+      "org.opencontainers.image.licenses": "BSD-3-Clause"
 
 checksum:
   name_template: "checksums.txt"
@@ -153,11 +140,16 @@ homebrew_casks:
     skip_upload: auto # don't publish casks for prereleases / snapshots
     # Unsigned binary: strip the Gatekeeper quarantine flag on install so macOS
     # doesn't block it. (Proper notarization is a deferred follow-up.)
+    #
+    # `hooks.post.install` was deprecated in goreleaser v2.19: Homebrew replaced
+    # the `preflight` stanza with `preflight_steps`, whose declarative DSL uses
+    # `run` instead of `system_command` and `{{ .StagedPath }}` instead of
+    # `#{staged_path}` (#535).
     hooks:
       post:
-        install: |
-          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/apiary"]
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/apiary"]
           end
 
 # Scoop (Windows). Pushes a manifest to orlandoburli/scoop-bucket →
