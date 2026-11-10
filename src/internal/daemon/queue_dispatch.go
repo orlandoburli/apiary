@@ -174,7 +174,11 @@ func (d *Dispatcher) enqueueFanOut(ctx context.Context, cell model.SourceItem, t
 			// once it is terminal the dispatch is being dropped, and the only
 			// thing that frees the key is a new dispatch generation. That used to
 			// be completely silent — the poll reported the cell and nothing else
-			// ever happened. Say so.
+			// ever happened. Say so. For a `canceled` job this is the documented
+			// policy, not a surprise: cancellation is an explicit operator action
+			// and the round stays canceled until a re-dispatch (`apiary restart`,
+			// `apiary dispatch`, or a label round-trip) bumps the generation —
+			// see docs/distributed-workers.md#cancelling-a-run.
 			if isTerminalJobState(job.State) {
 				aplog.Warn("task %s: workflow %s not enqueued — dispatch key %q already belongs to a %s job; re-dispatch waits for a new dispatch generation",
 					task.ID, match.Route.ID, job.IdempotencyKey, job.State)
@@ -314,6 +318,19 @@ func (d *Dispatcher) ExecuteQueuedJob(ctx context.Context, job queue.Job, worker
 	return queue.FinishResult{Success: true}
 }
 
+// queueSettleTimeout bounds the terminal bookkeeping of a settled queue job.
+const queueSettleTimeout = 30 * time.Second
+
+// queueSettleContext detaches a job's settlement from the cancellation that
+// ended it. Cancelling a leased job cancels the run context, so settling on
+// that same context failed with `context canceled` — the task's outstanding
+// counter kept its hold and the terminal state was never mirrored (#7748). The
+// job is already terminal here: what is left is teardown, and teardown must
+// land.
+func queueSettleContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), queueSettleTimeout)
+}
+
 // settleRemoteQueueJob mirrors the terminal workflow state into the canonical
 // control-plane database. The remote worker keeps detailed step state locally;
 // this summary makes task accounting and re-dispatch guards durable centrally.
@@ -321,6 +338,8 @@ func (d *Dispatcher) settleRemoteQueueJob(ctx context.Context, job queue.Job) er
 	if d.db == nil || job.TaskID == "" {
 		return nil
 	}
+	ctx, cancel := queueSettleContext(ctx)
+	defer cancel()
 	// A job carrying a reservation settles through that row: it, not a synthetic
 	// queue-<jobid> instance, is the id the caller was given. Anything but 'queued'
 	// means something else took the row over, along with its accounting. This must

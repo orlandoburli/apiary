@@ -104,3 +104,43 @@ func TestApplyHook_SkipsSourcesWithoutLabelRemover(t *testing.T) {
 		t.Fatalf("ApplyHook on a source without LabelRemover must be a no-op, got: %v", err)
 	}
 }
+
+// ctxRecordingHookSource records the context error each label write arrived
+// with, so a test can prove the exit hook ran on a live context.
+type ctxRecordingHookSource struct {
+	fakeHookSource
+	labelCtxErrs []error
+}
+
+func (f *ctxRecordingHookSource) AddLabels(ctx context.Context, item model.SourceItem, labels []string) error {
+	f.labelCtxErrs = append(f.labelCtxErrs, ctx.Err())
+	return f.fakeHookSource.AddLabels(ctx, item, labels)
+}
+
+// TestApplyHook_SurvivesCancelledRunContext is the #7748 regression on the
+// label path: the exit hook is how a stopped run explains itself, so it must
+// not inherit the cancellation that stopped it. The on_fail hook's
+// `add_labels: [needs-human, needs-attention]` used to die with
+// `context canceled` — the issue kept its `workflow:*` label, had no job, and
+// nothing told an operator it had stopped.
+func TestApplyHook_SurvivesCancelledRunContext(t *testing.T) {
+	fake := &ctxRecordingHookSource{}
+	d := &Dispatcher{sources: map[string]source.Adapter{"fake": fake}}
+
+	task := model.InternalTask{ID: "T-7730", Title: "orphan"}
+	bindings := []model.SourceBinding{{SourceID: "fake", SourceItemID: "7730"}}
+	hook := config.OnComplete{AddLabels: []string{"needs-human", "needs-attention"}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // operator stop: the run's context is gone when the hook runs
+
+	if err := (&wfSideEffects{d: d}).ApplyHook(ctx, task, bindings, hook); err != nil {
+		t.Fatalf("ApplyHook on a cancelled run: %v", err)
+	}
+	if len(fake.added) != 2 {
+		t.Fatalf("added labels = %v, want the two escalation labels", fake.added)
+	}
+	if len(fake.labelCtxErrs) != 1 || fake.labelCtxErrs[0] != nil {
+		t.Errorf("label write carried a cancelled context: %v", fake.labelCtxErrs)
+	}
+}

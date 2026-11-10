@@ -643,6 +643,25 @@ func sourceItemView(task model.InternalTask, bindings []model.SourceBinding) mod
 	return item
 }
 
+// settleBookkeepingTimeout bounds the terminal bookkeeping a stopped run still
+// owes: the instance state, the task's outstanding counter, the result comment
+// and the exit labels. Generous on purpose — it exists so a wedged source API
+// cannot pin the run forever, not to race the network.
+const settleBookkeepingTimeout = 30 * time.Second
+
+// settleContext detaches a run's cancellation from the bookkeeping that records
+// what happened when it stopped. A run can be stopped on purpose — operator
+// `stop`, `force-restart`, graceful shutdown — and the stop cancels the context
+// every step shares. Reusing that context for the teardown made all of it fail
+// with `context canceled`: the instance state went unwritten, the outstanding
+// counter was never decremented, and the exit labels (needs-human /
+// needs-attention) never reached the issue, which then sat with a `workflow:*`
+// label and no job while nothing said why (#7748). Values (logs, tracing) are
+// carried over, so the teardown is still attributed to the same run.
+func settleContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), settleBookkeepingTimeout)
+}
+
 // settle persists the terminal state of a run and applies completion hooks, or
 // parks the run when it suspended at an approval step. It returns whether the
 // instance completed successfully (false for failed or waiting).
@@ -652,6 +671,11 @@ func sourceItemView(task model.InternalTask, bindings []model.SourceBinding) mod
 // write share e.mu with StopParked, so a stop lands either before the check (and is
 // seen) or after the re-park (and finds the run parked) — it cannot be overwritten.
 func (e *Engine) settle(ctx context.Context, r *dagRun, outcome dagOutcome) bool {
+	// Everything below is teardown: it must land even though the run's own
+	// cancellation is what brought us here.
+	ctx, cancel := settleContext(ctx)
+	defer cancel()
+
 	e.mu.Lock()
 	if r.stopped.Load() {
 		e.mu.Unlock()

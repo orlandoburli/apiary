@@ -132,6 +132,30 @@ affected by the cap.
 A workflow shared by several agents can therefore be capped without also
 throttling those agents for other workflows.
 
+## Cancelling a run
+
+`apiary stop <instance>` — and the `force-restart` path — cancels the run's
+context and flags its job `cancel_requested`; a leased job's worker stops at the
+next heartbeat and the job settles `canceled`. Cancellation is **terminal for
+that dispatch round**, by design: it is a deliberate operator action, so the
+dispatcher does not quietly queue another attempt behind your back. The work is
+not lost from view either — the workflow's exit hook still runs, so its
+`on_fail` labels (`needs-human`, `needs-attention`) land on the ticket and say
+that the run stopped.
+
+The teardown that records all of this — the terminal instance state, the task's
+`outstanding_workflows` release, the result comment, and those exit labels —
+runs on a context detached from the run's own cancellation. It keeps the run's
+values but not its deadline, so a stopped run still settles its bookkeeping
+instead of failing every write with `context canceled` and leaving an issue with
+a `workflow:*` label, no job, and nothing to explain why it stopped.
+
+To run the workflow again, re-dispatch explicitly: `apiary restart <cell>` or
+`apiary dispatch <workflow> <cell>`. Both bump the task's dispatch generation,
+which frees the `taskID:generation:routeID` idempotency key the canceled job
+still holds. Removing and re-adding the routing label does the same by reopening
+the task under a new generation.
+
 ## Operations
 
 `apiary status` reports job counts and registered workers, including health,
