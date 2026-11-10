@@ -199,6 +199,16 @@ type TriggerConfig struct {
 	// pull request (a runaway-loop budget, analogous to on_conflict's own
 	// budget). 0 means unlimited.
 	MaxDispatches int `yaml:"max_dispatches,omitempty"`
+	// MaxPending caps how much of this workflow may be pending at once: a job
+	// that is queued or leased (running) counts, a terminal one does not. An
+	// occurrence that would exceed the cap is not enqueued; the drop is recorded
+	// as a dispatch.dropped event with reason "pending cap". Use it for a
+	// cron-like source whose occurrences overlap themselves when a run outlasts
+	// its cadence (issue #537). 0 means unlimited.
+	//
+	// Item triggers only: PR-event triggers dispatch inline rather than through
+	// the queue, so the cap cannot apply to them.
+	MaxPending int `yaml:"max_pending,omitempty"`
 }
 
 // EventKind returns the trigger's event axis, defaulting to TriggerOnItem.

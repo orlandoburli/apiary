@@ -21,18 +21,37 @@ func (c *Client) Queue() *QueueStore { return &QueueStore{db: c.db} }
 
 func NewQueueStore(database *sql.DB) *QueueStore { return &QueueStore{db: database} }
 
-func (s *QueueStore) Enqueue(ctx context.Context, job *queue.Job) (bool, error) {
+// EnqueueResult reports how EnqueueCapped handled one job.
+type EnqueueResult struct {
+	// Created is true when the job row was inserted.
+	Created bool
+	// Capped is true when the job was coalesced because the workflow already had
+	// maxPending non-terminal jobs. Created is false in that case.
+	Capped bool
+	// Pending is the number of non-terminal jobs the workflow had when the cap
+	// rejected the job (zero when not capped).
+	Pending int
+}
+
+// preparedQueueJob holds the values derived from a job before it is written.
+type preparedQueueJob struct {
+	labels       []byte
+	capabilities []byte
+	now          time.Time
+}
+
+func prepareQueueJob(job *queue.Job) (preparedQueueJob, error) {
 	if job == nil || strings.TrimSpace(job.IdempotencyKey) == "" {
-		return false, fmt.Errorf("queue job idempotency_key is required")
+		return preparedQueueJob{}, fmt.Errorf("queue job idempotency_key is required")
 	}
 	if job.ID == "" {
 		job.ID = randomQueueID("job")
 	}
 	if job.PayloadVersion <= 0 {
-		return false, fmt.Errorf("queue job payload_version must be positive")
+		return preparedQueueJob{}, fmt.Errorf("queue job payload_version must be positive")
 	}
 	if !json.Valid(job.Payload) {
-		return false, fmt.Errorf("queue job payload must be valid JSON")
+		return preparedQueueJob{}, fmt.Errorf("queue job payload must be valid JSON")
 	}
 	if job.MaxAttempts <= 0 {
 		job.MaxAttempts = 3
@@ -43,15 +62,35 @@ func (s *QueueStore) Enqueue(ctx context.Context, job *queue.Job) (bool, error) 
 	}
 	labels, _ := json.Marshal(uniqueSorted(job.RequiredLabels))
 	capabilities, _ := json.Marshal(uniqueSorted(job.RequiredCapabilities))
-	result, err := s.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO dispatch_jobs
-		  (id, idempotency_key, project_id, source_id, task_id, workflow_id, agent_id, runner_id, pool,
-		   required_labels, required_capabilities, affinity_key, affinity_worker_id, payload_version, payload,
-		   priority, state, attempt_count, max_attempts, cancel_requested, available_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, 0, ?, ?, ?)
-	`, job.ID, job.IdempotencyKey, nullStr(job.ProjectID), nullStr(job.SourceID), nullStr(job.TaskID), nullStr(job.WorkflowID),
-		nullStr(job.AgentID), nullStr(job.RunnerID), nullStr(job.Pool), string(labels), string(capabilities), nullStr(job.AffinityKey),
-		nullStr(job.AffinityWorkerID), job.PayloadVersion, string(job.Payload), job.Priority, job.MaxAttempts, job.AvailableAt.UTC(), now, now)
+	return preparedQueueJob{labels: labels, capabilities: capabilities, now: now}, nil
+}
+
+const enqueueJobSQL = `
+	INSERT OR IGNORE INTO dispatch_jobs
+	  (id, idempotency_key, project_id, source_id, task_id, workflow_id, agent_id, runner_id, pool,
+	   required_labels, required_capabilities, affinity_key, affinity_worker_id, payload_version, payload,
+	   priority, state, attempt_count, max_attempts, cancel_requested, available_at, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, 0, ?, ?, ?)
+`
+
+func enqueueJobArgs(job *queue.Job, prepared preparedQueueJob) []any {
+	return []any{job.ID, job.IdempotencyKey, nullStr(job.ProjectID), nullStr(job.SourceID), nullStr(job.TaskID), nullStr(job.WorkflowID),
+		nullStr(job.AgentID), nullStr(job.RunnerID), nullStr(job.Pool), string(prepared.labels), string(prepared.capabilities), nullStr(job.AffinityKey),
+		nullStr(job.AffinityWorkerID), job.PayloadVersion, string(job.Payload), job.Priority, job.MaxAttempts, job.AvailableAt.UTC(), prepared.now, prepared.now}
+}
+
+func markQueueJobEnqueued(job *queue.Job, now time.Time) {
+	job.State, job.AttemptCount, job.CancelRequested = queue.JobQueued, 0, false
+	job.CreatedAt, job.UpdatedAt = now, now
+	job.RequiredLabels, job.RequiredCapabilities = uniqueSorted(job.RequiredLabels), uniqueSorted(job.RequiredCapabilities)
+}
+
+func (s *QueueStore) Enqueue(ctx context.Context, job *queue.Job) (bool, error) {
+	prepared, err := prepareQueueJob(job)
+	if err != nil {
+		return false, err
+	}
+	result, err := s.db.ExecContext(ctx, enqueueJobSQL, enqueueJobArgs(job, prepared)...)
 	if err != nil {
 		return false, fmt.Errorf("enqueue dispatch job: %w", err)
 	}
@@ -66,10 +105,80 @@ func (s *QueueStore) Enqueue(ctx context.Context, job *queue.Job) (bool, error) 
 		}
 		return false, getErr
 	}
-	job.State, job.AttemptCount, job.CancelRequested = queue.JobQueued, 0, false
-	job.CreatedAt, job.UpdatedAt = now, now
-	job.RequiredLabels, job.RequiredCapabilities = uniqueSorted(job.RequiredLabels), uniqueSorted(job.RequiredCapabilities)
+	markQueueJobEnqueued(job, prepared.now)
 	return true, nil
+}
+
+// EnqueueCapped is Enqueue with a per-workflow pending cap. Pending means work
+// that has not reached a terminal state: a job that is queued or leased
+// (running). When the workflow already has maxPending such jobs the new job is
+// not inserted and the result reports Capped with the count observed.
+//
+// maxPending <= 0 disables the cap and is exactly Enqueue. The idempotency key
+// is checked before the cap: re-polling an occurrence that is already pending is
+// a duplicate, not a fresh occurrence that exceeds the cap.
+//
+// The read-check-insert runs inside one immediate transaction (the DSN sets
+// _txlock=immediate), so two concurrent enqueues for the same workflow are
+// serialized and cannot both observe the same free slot.
+func (s *QueueStore) EnqueueCapped(ctx context.Context, job *queue.Job, maxPending int) (EnqueueResult, error) {
+	if maxPending <= 0 {
+		created, err := s.Enqueue(ctx, job)
+		return EnqueueResult{Created: created}, err
+	}
+	prepared, err := prepareQueueJob(job)
+	if err != nil {
+		return EnqueueResult{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return EnqueueResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	existing, err := scanJob(tx.QueryRowContext(ctx, jobSelect+` WHERE idempotency_key=?`, job.IdempotencyKey))
+	switch {
+	case err == nil:
+		*job = *existing
+		return EnqueueResult{}, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return EnqueueResult{}, err
+	}
+
+	if job.WorkflowID != "" {
+		var pending int
+		// Running jobs are stored as 'leased' (queue.JobLeased is the in-memory
+		// spelling of the same state); both non-terminal states count as pending.
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM dispatch_jobs WHERE workflow_id=? AND state IN ('queued','leased')`, job.WorkflowID).Scan(&pending); err != nil {
+			return EnqueueResult{}, err
+		}
+		if pending >= maxPending {
+			return EnqueueResult{Capped: true, Pending: pending}, nil
+		}
+	}
+
+	insert, err := tx.ExecContext(ctx, enqueueJobSQL, enqueueJobArgs(job, prepared)...)
+	if err != nil {
+		return EnqueueResult{}, fmt.Errorf("enqueue dispatch job: %w", err)
+	}
+	rows, err := insert.RowsAffected()
+	if err != nil {
+		return EnqueueResult{}, err
+	}
+	if rows == 0 {
+		// A writer outside this immediate-transaction DSN took the key between the
+		// check above and the insert. Treat it as the duplicate it is.
+		existing, getErr := scanJob(tx.QueryRowContext(ctx, jobSelect+` WHERE idempotency_key=?`, job.IdempotencyKey))
+		if getErr == nil {
+			*job = *existing
+		}
+		return EnqueueResult{}, getErr
+	}
+	if err := tx.Commit(); err != nil {
+		return EnqueueResult{}, err
+	}
+	markQueueJobEnqueued(job, prepared.now)
+	return EnqueueResult{Created: true}, nil
 }
 
 // RegisterWorker inserts or refreshes a worker registration. active_jobs is
@@ -572,6 +681,7 @@ func withinPolicy(ctx context.Context, tx *sql.Tx, job *queue.Job, policy queue.
 		{"agent_id", job.AgentID, scopedLimit(policy.Agents, job.AgentID, policy.DefaultAgent)},
 		{"runner_id", job.RunnerID, scopedLimit(policy.Runners, job.RunnerID, policy.DefaultRunner)},
 		{"pool", job.Pool, scopedLimit(policy.Pools, job.Pool, policy.DefaultPool)},
+		{"workflow_id", job.WorkflowID, scopedLimit(policy.Workflows, job.WorkflowID, policy.DefaultWorkflow)},
 	}
 	for _, check := range checks {
 		if check.limit <= 0 || check.value == "" {

@@ -320,6 +320,10 @@ type RouteConfig struct {
 	IgnoreAuthors      []string `yaml:"-"`
 	PRAuthors          []string `yaml:"-"`
 	MaxDispatches      int      `yaml:"-"`
+	// MaxPending mirrors TriggerConfig.MaxPending: the per-workflow cap on
+	// queued+running dispatch jobs, enforced atomically at enqueue. Set by the
+	// Router from the workflow trigger. 0 means unlimited.
+	MaxPending int `yaml:"-"`
 }
 
 // IsEventRoute reports whether this route was synthesized from an event trigger
@@ -482,16 +486,18 @@ type QueueSettings struct {
 }
 
 type QueueConcurrencySettings struct {
-	DefaultProject int            `yaml:"default_project,omitempty"`
-	Projects       map[string]int `yaml:"projects,omitempty"`
-	DefaultSource  int            `yaml:"default_source,omitempty"`
-	Sources        map[string]int `yaml:"sources,omitempty"`
-	DefaultAgent   int            `yaml:"default_agent,omitempty"`
-	Agents         map[string]int `yaml:"agents,omitempty"`
-	DefaultRunner  int            `yaml:"default_runner,omitempty"`
-	Runners        map[string]int `yaml:"runners,omitempty"`
-	DefaultPool    int            `yaml:"default_pool,omitempty"`
-	Pools          map[string]int `yaml:"pools,omitempty"`
+	DefaultProject  int            `yaml:"default_project,omitempty"`
+	Projects        map[string]int `yaml:"projects,omitempty"`
+	DefaultSource   int            `yaml:"default_source,omitempty"`
+	Sources         map[string]int `yaml:"sources,omitempty"`
+	DefaultAgent    int            `yaml:"default_agent,omitempty"`
+	Agents          map[string]int `yaml:"agents,omitempty"`
+	DefaultRunner   int            `yaml:"default_runner,omitempty"`
+	Runners         map[string]int `yaml:"runners,omitempty"`
+	DefaultPool     int            `yaml:"default_pool,omitempty"`
+	Pools           map[string]int `yaml:"pools,omitempty"`
+	DefaultWorkflow int            `yaml:"default_workflow,omitempty"`
+	Workflows       map[string]int `yaml:"workflows,omitempty"`
 }
 
 func (q QueueSettings) IsEnabled() bool          { return q.Enabled == nil || *q.Enabled }

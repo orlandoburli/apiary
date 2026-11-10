@@ -44,6 +44,7 @@ trigger:
   priority: 10
   exclusive: false
   once: false
+  max_pending: 0
   match:
     source: my-repo
     labels: [backend, bug]
@@ -104,6 +105,28 @@ which are not reconsidered; nothing will run for this task until the reason clea
 If you want the lower-priority workflow to take over in that state, make the
 handover explicit — narrow the exclusive trigger's `match` so it stops matching
 once its work is done (e.g. on a label the workflow itself sets).
+
+### Coalescing overlapping runs: `max_pending`
+
+A source that emits one task per occurrence — a cron-like plugin source, for
+example — enqueues a new dispatch for every occurrence. If the routine is slower
+than its cadence, each occurrence overlaps the previous one. The queued copies
+accumulate in front of other work and the routine never catches up.
+
+| Field | Description |
+|---|---|
+| `max_pending` | Item triggers only: cap how many dispatch jobs this workflow may have **pending** at once. A job that is queued or leased (running) counts; a terminal one (`done`, `failed`, `canceled`) does not. An occurrence that would exceed the cap is **not** enqueued and is recorded as a `dispatch.dropped` event with reason `pending cap` (logged at `INFO`). `0` = unlimited (the default) |
+
+The cap is per **workflow id**, not per task: two occurrences of the same
+workflow on different tasks share it, while a different workflow enqueues
+normally. Because a running job counts as pending, `max_pending: 1` means "at
+most one occurrence of this routine in flight or waiting"; once that job reaches
+a terminal state the next occurrence enqueues again.
+
+The check is enforced atomically at enqueue time in queue mode (the default), so
+two occurrences racing to enqueue cannot both slip past the cap. Manual runs are
+exempt — like the other pre-dispatch guards, `apiary dispatch` always starts the
+workflow.
 
 ### Manual runs
 

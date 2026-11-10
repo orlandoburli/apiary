@@ -106,16 +106,18 @@ type Worker struct {
 // ConcurrencyPolicy is evaluated transactionally from active leases. A zero
 // limit means unlimited. Per-value maps override the corresponding default.
 type ConcurrencyPolicy struct {
-	DefaultProject int            `json:"default_project,omitempty"`
-	Projects       map[string]int `json:"projects,omitempty"`
-	DefaultSource  int            `json:"default_source,omitempty"`
-	Sources        map[string]int `json:"sources,omitempty"`
-	DefaultAgent   int            `json:"default_agent,omitempty"`
-	Agents         map[string]int `json:"agents,omitempty"`
-	DefaultRunner  int            `json:"default_runner,omitempty"`
-	Runners        map[string]int `json:"runners,omitempty"`
-	DefaultPool    int            `json:"default_pool,omitempty"`
-	Pools          map[string]int `json:"pools,omitempty"`
+	DefaultProject  int            `json:"default_project,omitempty"`
+	Projects        map[string]int `json:"projects,omitempty"`
+	DefaultSource   int            `json:"default_source,omitempty"`
+	Sources         map[string]int `json:"sources,omitempty"`
+	DefaultAgent    int            `json:"default_agent,omitempty"`
+	Agents          map[string]int `json:"agents,omitempty"`
+	DefaultRunner   int            `json:"default_runner,omitempty"`
+	Runners         map[string]int `json:"runners,omitempty"`
+	DefaultPool     int            `json:"default_pool,omitempty"`
+	Pools           map[string]int `json:"pools,omitempty"`
+	DefaultWorkflow int            `json:"default_workflow,omitempty"`
+	Workflows       map[string]int `json:"workflows,omitempty"`
 }
 
 type ClaimRequest struct {

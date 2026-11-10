@@ -14,6 +14,8 @@ func TestValidateQueueSettings(t *testing.T) {
 		{"listener requires token", QueueSettings{Listen: ":8080"}, "worker_token is required"},
 		{"heartbeat before lease", QueueSettings{LeaseDuration: "5s", HeartbeatInterval: "5s"}, "must be shorter"},
 		{"positive scoped limit", QueueSettings{Concurrency: QueueConcurrencySettings{Pools: map[string]int{"build": 0}}}, "positive limit"},
+		{"positive workflow limit", QueueSettings{Concurrency: QueueConcurrencySettings{Workflows: map[string]int{"sweep": 0}}}, "positive limit"},
+		{"non-negative default workflow", QueueSettings{Concurrency: QueueConcurrencySettings{DefaultWorkflow: -1}}, "must be >= 0"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -57,6 +57,18 @@ func TestValidateTriggerEvents_EventOnlyFieldsOnItemTrigger(t *testing.T) {
 	}
 }
 
+func TestValidateTriggerEvents_MaxPending(t *testing.T) {
+	if errs := eventCfg(TriggerConfig{MaxPending: -1}).Validate(); !errsContain(errs, "max_pending must be >= 0") {
+		t.Errorf("negative max_pending on an item trigger must be rejected, got %v", errs)
+	}
+	if errs := eventCfg(TriggerConfig{MaxPending: 1}).Validate(); errsContain(errs, "max_pending") {
+		t.Errorf("max_pending on an item trigger must be accepted, got %v", errs)
+	}
+	if errs := eventCfg(TriggerConfig{On: TriggerOnPRComment, MaxPending: 1}).Validate(); !errsContain(errs, "max_pending is only valid on an item trigger") {
+		t.Errorf("max_pending on an event trigger must be rejected, got %v", errs)
+	}
+}
+
 func TestValidateTriggerEvents_AuthorFiltersAcceptedOnEventTriggers(t *testing.T) {
 	for _, on := range TriggerEventKinds {
 		tr := TriggerConfig{On: on, IgnoreAuthors: []string{"ci"}, PRAuthors: []string{"me"}}
