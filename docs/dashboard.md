@@ -330,7 +330,7 @@ elsewhere, acting on the selected card:
 
 | Key            | Action                                             |
 |----------------|----------------------------------------------------|
-| `←` `→`        | Move between columns (at the edges, switches tab)  |
+| `←` `→`        | Move between columns (at the left edge: back to the list; at the right edge: next tab) |
 | `↑` `↓`        | Move within a column                               |
 | `Enter` / `l`  | Open the task                                      |
 | `a` / `y` / `n`| Answer the approval the card is blocked on         |
