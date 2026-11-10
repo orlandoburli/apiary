@@ -59,5 +59,8 @@ type SourceEvent struct {
 	// whose ticket resolves to no bound task is dropped rather than
 	// materialising a synthetic "PR #n" task: a PR is an event receipt, not a
 	// unit of work. Empty when no ticket key was found.
+	//
+	// Candidates only: the reference the dispatcher actually binds to is the
+	// bound task's SourceItemNumber, exposed to the agent as event.ticket.
 	TicketRefs []string
 }

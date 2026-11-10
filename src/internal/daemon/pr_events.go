@@ -76,7 +76,7 @@ func (d *Dispatcher) pollPREvents(ctx context.Context, sc config.SourceConfig, a
 // resolves to no bound task is dropped rather than materialising a synthetic
 // per-PR task.
 func (d *Dispatcher) routePREvent(ctx context.Context, ev model.SourceEvent) {
-	related, dropReason := d.resolveEventTask(ctx, ev)
+	related, ticketRef, dropReason := d.resolveEventTask(ctx, ev)
 	if related == nil {
 		aplog.Info("event %s (%s on PR #%d by %s): dropped — %s", ev.ID, ev.Kind, ev.PRNumber, ev.Author, dropReason)
 		return
@@ -117,13 +117,14 @@ func (d *Dispatcher) routePREvent(ctx context.Context, ev model.SourceEvent) {
 			aplog.Debug("event %s: workflow %s already dispatched, skipping", ev.ID, m.Route.ID)
 			continue
 		}
-		d.dispatchPREvent(ctx, ev, task, persisted, m)
+		d.dispatchPREvent(ctx, ev, task, ticketRef, persisted, m)
 	}
 }
 
 // resolveEventTask resolves the ticket a PR event is about to its bound
-// InternalTask. It returns nil plus a human-readable reason when the event must
-// be dropped.
+// InternalTask, returning the task, the human reference of the binding it used,
+// and a drop reason. It returns a nil task plus a human-readable reason when the
+// event must be dropped.
 //
 // Two kinds of reference are understood:
 //
@@ -140,18 +141,24 @@ func (d *Dispatcher) routePREvent(ctx context.Context, ev model.SourceEvent) {
 // dropped and logged rather than guessed at, mirroring the #377 guidance for
 // restart references. An unbound candidate is skipped so a false-positive key
 // in a title ("Fix UTF-8 decoding for PSP-348") never hides the real one.
-func (d *Dispatcher) resolveEventTask(ctx context.Context, ev model.SourceEvent) (*model.InternalTask, string) {
+//
+// The returned ticket is the human reference of the binding that was actually
+// used (the binding's SourceItemNumber: PSP-348, #42), not the first candidate
+// found in the PR text. It is what the agent sees as ${{ event.ticket }}, so a
+// skipped lookalike can never leak through. Both strings are empty on a drop.
+func (d *Dispatcher) resolveEventTask(ctx context.Context, ev model.SourceEvent) (*model.InternalTask, string, string) {
 	if ev.RelatedItemID != "" {
 		if b, _ := d.db.SourceBindings().GetBindingBySourceItem(ctx, ev.SourceID, ev.RelatedItemID); b != nil {
 			if t, _ := d.db.InternalTasks().GetTask(ctx, b.TaskID); t != nil {
-				aplog.Debug("event %s: related item %s/%s → task %s", ev.ID, ev.SourceID, ev.RelatedItemID, t.ID)
-				return t, ""
+				ref := bindingReference(*b, ev.RelatedItemID)
+				aplog.Debug("event %s: related item %s/%s (%s) → task %s", ev.ID, ev.SourceID, ev.RelatedItemID, ref, t.ID)
+				return t, ref, ""
 			}
 		}
 	}
 
 	if len(ev.TicketRefs) == 0 {
-		return nil, "no ticket reference in the PR title, head branch, or body"
+		return nil, "", "no ticket reference in the PR title, head branch, or body"
 	}
 
 	var unbound []string
@@ -181,7 +188,7 @@ func (d *Dispatcher) resolveEventTask(ctx context.Context, ev model.SourceEvent)
 			sort.Strings(keys)
 			aplog.Warn("event %s: ticket reference %q matches %d bound items (%s); dropping the event rather than guessing which one it means",
 				ev.ID, ref, len(distinct), strings.Join(keys, ", "))
-			return nil, fmt.Sprintf("ticket reference %q is ambiguous (%s)", ref, strings.Join(keys, ", "))
+			return nil, "", fmt.Sprintf("ticket reference %q is ambiguous (%s)", ref, strings.Join(keys, ", "))
 		}
 		for _, b := range distinct {
 			t, err := d.db.InternalTasks().GetTask(ctx, b.TaskID)
@@ -195,20 +202,31 @@ func (d *Dispatcher) resolveEventTask(ctx context.Context, ev model.SourceEvent)
 				unbound = append(unbound, ref)
 				continue
 			}
-			aplog.Debug("event %s: ticket reference %q → task %s (source %s)", ev.ID, ref, t.ID, b.SourceID)
-			return t, ""
+			resolved := bindingReference(b, ref)
+			aplog.Debug("event %s: ticket reference %q (%s) → task %s (source %s)", ev.ID, ref, resolved, t.ID, b.SourceID)
+			return t, resolved, ""
 		}
 	}
 
-	return nil, fmt.Sprintf("ticket reference(s) %s not bound to a task", strings.Join(unbound, ", "))
+	return nil, "", fmt.Sprintf("ticket reference(s) %s not bound to a task", strings.Join(unbound, ", "))
+}
+
+// bindingReference is the human reference an operator recognises for a binding:
+// the source-native item number (PSP-348, #42), falling back to fallback when
+// the adapter did not record one.
+func bindingReference(b model.SourceBinding, fallback string) string {
+	if b.SourceItemNumber != "" {
+		return b.SourceItemNumber
+	}
+	return fallback
 }
 
 // dispatchPREvent launches one workflow for one claimed PR event, mirroring
 // fanOut's admission (per-agent semaphore, active-run tracking, outstanding
-// counter) for a single match. The event payload rides in on the workflow env
-// overlay (APIARY_EVENT_* / APIARY_PR_*) and the engine's event scope
-// (${{ event.* }}).
-func (d *Dispatcher) dispatchPREvent(ctx context.Context, ev model.SourceEvent, task model.InternalTask, persisted bool, match router.Match) {
+// counter) for a single match. The event payload and the resolved ticket
+// reference ride in on the workflow env overlay (APIARY_EVENT_* / APIARY_PR_*)
+// and the engine's event scope (${{ event.* }}).
+func (d *Dispatcher) dispatchPREvent(ctx context.Context, ev model.SourceEvent, task model.InternalTask, ticketRef string, persisted bool, match router.Match) {
 	if persisted && d.db != nil {
 		if _, err := d.db.InternalTasks().IncrementOutstanding(ctx, task.ID, 1); err != nil {
 			aplog.Error("task %s: increment outstanding: %v", task.ID, err)
@@ -263,9 +281,9 @@ func (d *Dispatcher) dispatchPREvent(ctx context.Context, ev model.SourceEvent, 
 			Metadata: map[string]any{"event_id": ev.ID, "kind": ev.Kind, "pr_number": ev.PRNumber, "author": ev.Author}})
 
 		wf := d.resolveWorkflow(match)
-		wf.Env = overlayEnv(wf.Env, prEventEnv(ev))
+		wf.Env = overlayEnv(wf.Env, prEventEnv(ev, ticketRef))
 
-		instID, success, err := d.workflowEngine().RunInstanceForEvent(ctx, wf, task, prEventScope(ev))
+		instID, success, err := d.workflowEngine().RunInstanceForEvent(ctx, wf, task, prEventScope(ev, ticketRef))
 		if err != nil {
 			aplog.Error("event %s: workflow run failed: %v", ev.ID, err)
 			return
@@ -276,21 +294,26 @@ func (d *Dispatcher) dispatchPREvent(ctx context.Context, ev model.SourceEvent, 
 
 // prEventEnv is the environment payload exported to every step of an
 // event-triggered workflow instance (overlaid on workflow-scope env, still
-// overridable per step).
-func prEventEnv(ev model.SourceEvent) map[string]string {
+// overridable per step). ticket is the human reference of the ticket the
+// dispatcher bound the instance to (empty only if it could not be derived).
+func prEventEnv(ev model.SourceEvent, ticket string) map[string]string {
 	return map[string]string{
 		"APIARY_EVENT_KIND":      ev.Kind,
 		"APIARY_EVENT_AUTHOR":    ev.Author,
 		"APIARY_EVENT_PR_AUTHOR": ev.PRAuthor,
 		"APIARY_EVENT_BODY":      ev.Body,
+		"APIARY_EVENT_TICKET":    ticket,
+		"APIARY_EVENT_PR_TITLE":  ev.PRTitle,
+		"APIARY_EVENT_PR_BRANCH": ev.PRBranch,
 		"APIARY_PR_NUMBER":       strconv.Itoa(ev.PRNumber),
 		"APIARY_PR_URL":          ev.PRURL,
 	}
 }
 
 // prEventScope is the ${{ event.* }} expression scope for an event-triggered
-// instance.
-func prEventScope(ev model.SourceEvent) map[string]string {
+// instance. ticket is the resolved ticket reference, not a re-derivation from
+// the event text: it is the binding the instance was actually created on.
+func prEventScope(ev model.SourceEvent, ticket string) map[string]string {
 	return map[string]string{
 		"kind":               ev.Kind,
 		"body":               ev.Body,
@@ -299,6 +322,9 @@ func prEventScope(ev model.SourceEvent) map[string]string {
 		"pr_number":          strconv.Itoa(ev.PRNumber),
 		"pr_url":             ev.PRURL,
 		"pr_author":          ev.PRAuthor,
+		"pr_title":           ev.PRTitle,
+		"pr_branch":          ev.PRBranch,
+		"ticket":             ticket,
 	}
 }
 

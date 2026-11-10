@@ -63,6 +63,35 @@ func TestEngine_RendersPromptTemplates(t *testing.T) {
 	}
 }
 
+// TestEngine_RendersEventTicketInPrompt pins #492: a step prompt can reference
+// the ticket the event instance is bound to with ${{ event.ticket }}, rendered
+// from the same scope an `if:` condition sees.
+func TestEngine_RendersEventTicketInPrompt(t *testing.T) {
+	cfg := baseCfg()
+	store := newFakeStore()
+	exec := &fakeExecutor{results: map[string]StepResult{}}
+	eng := testEngine(cfg, store, exec, &fakeSide{})
+
+	wf := config.WorkflowConfig{
+		ID: "pr-fix",
+		Steps: []config.StepConfig{{
+			ID:     "fix",
+			Agent:  "backend-dev",
+			Prompt: "ticket=${{ event.ticket }} pr=${{ event.pr_number }}",
+		}},
+	}
+	task := model.InternalTask{ID: "C1", Title: "PSP-348 — ship the thing"}
+	event := map[string]string{"ticket": "PSP-348", "pr_number": "7"}
+
+	if _, _, err := eng.RunInstanceForEvent(context.Background(), wf, task, event); err != nil {
+		t.Fatalf("RunInstanceForEvent: %v", err)
+	}
+
+	if req := findStepRequest(t, exec, "fix"); req.Prompt != "ticket=PSP-348 pr=7" {
+		t.Errorf("rendered prompt = %q, want %q", req.Prompt, "ticket=PSP-348 pr=7")
+	}
+}
+
 // TestEngine_PromptTemplateLeavesUnresolvedPlaceholders verifies the rendering
 // is non-destructive: an unknown path or root stays visible instead of blanking.
 func TestEngine_PromptTemplateLeavesUnresolvedPlaceholders(t *testing.T) {
