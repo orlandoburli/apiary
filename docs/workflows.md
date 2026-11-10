@@ -152,8 +152,8 @@ workflows:
       - id: fix
         agent: engineer
         prompt: |
-          A reviewer commented on PR ${{ event.pr_number }}. Address it:
-          the comment body is in $APIARY_EVENT_BODY.
+          A reviewer commented on PR ${{ event.pr_number }} for ${{ event.ticket }}.
+          Address it: the comment body is in $APIARY_EVENT_BODY.
 
   - id: fix-review-feedback
     trigger:
@@ -204,8 +204,12 @@ Semantics:
   originating issue's task and only match when that task exists.
 - **Event payload.** Every step of an event-triggered instance gets
   `APIARY_EVENT_KIND`, `APIARY_EVENT_AUTHOR`, `APIARY_EVENT_PR_AUTHOR`,
-  `APIARY_EVENT_BODY`, `APIARY_PR_NUMBER`, and `APIARY_PR_URL` in its
+  `APIARY_EVENT_BODY`, `APIARY_EVENT_TICKET`, `APIARY_EVENT_PR_TITLE`,
+  `APIARY_EVENT_PR_BRANCH`, `APIARY_PR_NUMBER`, and `APIARY_PR_URL` in its
   environment, and expressions can read `event.*` (see [Accessors](#accessors)).
+  `APIARY_EVENT_TICKET` / `${{ event.ticket }}` carry the same resolved
+  reference the instance is bound to, so a prompt can address the ticket
+  directly instead of re-discovering it from the PR.
 
 ## Steps
 
@@ -555,6 +559,9 @@ Precedence is `not` > `and` > `or`, and `and`/`or` short-circuit.
 | `event.pr_number` | string | pull request number |
 | `event.pr_url` | string | pull request URL |
 | `event.pr_author` | string | login of the user who opened the pull request (empty if it couldn't be resolved) |
+| `event.pr_title` | string | pull request title |
+| `event.pr_branch` | string | pull request head branch |
+| `event.ticket` | string | human reference of the ticket the instance is bound to (`PSP-348`, `#42`) — the reference the dispatcher actually resolved, not merely the first one in the PR text |
 
 `event.*` is populated only on instances started by a [PR event
 trigger](#pr-event-triggers-on); elsewhere (and on instances rehydrated after

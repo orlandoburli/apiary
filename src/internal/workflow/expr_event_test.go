@@ -11,6 +11,9 @@ func TestExprEventScope(t *testing.T) {
 		"pr_number":          "42",
 		"pr_url":             "https://github.com/o/r/pull/42",
 		"pr_author":          "carol",
+		"pr_title":           "PSP-348 ship the thing",
+		"pr_branch":          "feat/PSP-348-thing",
+		"ticket":             "PSP-348",
 	}}
 
 	cases := []struct {
@@ -23,6 +26,10 @@ func TestExprEventScope(t *testing.T) {
 		{`event.author == "alice" and event.author_association == "MEMBER"`, true},
 		{`event.pr_number == "42"`, true},
 		{`event.pr_author == "carol"`, true},
+		{`event.pr_title contains "PSP-348"`, true},
+		{`event.pr_branch == "feat/PSP-348-thing"`, true},
+		{`event.ticket == "PSP-348"`, true},
+		{`event.ticket == "#42"`, false},
 	}
 	for _, c := range cases {
 		expr, err := ParseExpr(c.expr)

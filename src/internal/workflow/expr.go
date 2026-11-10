@@ -16,8 +16,10 @@ type EvalContext struct {
 	Memory map[string]string    // workflow-memory Step Data keys → rendered values
 	Steps  map[string]StepState // step id → terminal state info
 	// Event carries the PR event payload for an event-triggered instance
-	// (kind, body, author, author_association, pr_number, pr_url, pr_author). Nil
-	// for item-triggered instances — event.* accessors then resolve as missing ("").
+	// (kind, body, author, author_association, pr_number, pr_url, pr_author,
+	// pr_title, pr_branch) plus the ticket the instance is bound to (ticket).
+	// Nil for item-triggered instances — event.* accessors then resolve as
+	// missing ("").
 	Event map[string]string
 	// Input carries the task's structured input (from `apiary dispatch --input
 	// key=value`), exposed to expressions and prompt templates as
@@ -496,7 +498,8 @@ func resolveAccessor(path []string, ctx EvalContext) (resolvedValue, error) {
 			return resolvedValue{}, fmt.Errorf("invalid event accessor %q", strings.Join(path, "."))
 		}
 		switch path[1] {
-		case "kind", "body", "author", "author_association", "pr_number", "pr_url", "pr_author":
+		case "kind", "body", "author", "author_association", "pr_number", "pr_url", "pr_author",
+			"pr_title", "pr_branch", "ticket":
 			v, ok := ctx.Event[path[1]]
 			if !ok {
 				return resolvedValue{kind: kMissing}, nil

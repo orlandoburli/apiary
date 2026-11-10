@@ -157,6 +157,8 @@ func TestRoutePREvent_ExactlyOnceAndEnvPayload(t *testing.T) {
 	ticketTask := bindTicket(t, d, "jira", "10001", "PSP-348", "PSP-348 — [ask-du] ship the thing")
 
 	ev := testEvent("comment-1")
+	ev.PRTitle = "PSP-348 — [ask-du] ship the thing"
+	ev.PRBranch = "feat/PSP-348-thing"
 	ev.TicketRefs = []string{"PSP-348"}
 	d.routePREvent(ctx, ev)
 	d.routePREvent(ctx, ev) // duplicate delivery must be a no-op
@@ -191,6 +193,9 @@ func TestRoutePREvent_ExactlyOnceAndEnvPayload(t *testing.T) {
 		"APIARY_EVENT_AUTHOR":    "alice",
 		"APIARY_EVENT_PR_AUTHOR": "carol",
 		"APIARY_EVENT_BODY":      "@apiary fix the lint errors",
+		"APIARY_EVENT_TICKET":    "PSP-348",
+		"APIARY_EVENT_PR_TITLE":  "PSP-348 — [ask-du] ship the thing",
+		"APIARY_EVENT_PR_BRANCH": "feat/PSP-348-thing",
 		"APIARY_PR_NUMBER":       "7",
 		"APIARY_PR_URL":          "https://github.com/o/r/pull/7",
 	} {
@@ -267,8 +272,8 @@ func TestRoutePREvent_DropsEventWithoutTicket(t *testing.T) {
 	ev.PRBody = "Closes #42"           // a GitHub ref, not a ticket key
 	ev.TicketRefs = ticketpkg.Refs(ev.PRTitle, ev.PRBranch, ev.PRBody)
 
-	if task, reason := d.resolveEventTask(context.Background(), ev); task != nil || !strings.Contains(reason, "no ticket reference") {
-		t.Fatalf("resolveEventTask = (%v, %q), want no task and a no-ticket-reference reason", task, reason)
+	if task, ref, reason := d.resolveEventTask(context.Background(), ev); task != nil || ref != "" || !strings.Contains(reason, "no ticket reference") {
+		t.Fatalf("resolveEventTask = (%v, %q, %q), want no task, no ref and a no-ticket-reference reason", task, ref, reason)
 	}
 
 	d.routePREvent(context.Background(), ev)
@@ -288,9 +293,9 @@ func TestRoutePREvent_AmbiguousTicketReferenceDropsEvent(t *testing.T) {
 	ev := testEvent("comment-1")
 	ev.TicketRefs = []string{"PSP-348"}
 
-	task, reason := d.resolveEventTask(context.Background(), ev)
-	if task != nil || !strings.Contains(reason, "ambiguous") {
-		t.Fatalf("resolveEventTask = (%v, %q), want no task and an ambiguous reason", task, reason)
+	task, ref, reason := d.resolveEventTask(context.Background(), ev)
+	if task != nil || ref != "" || !strings.Contains(reason, "ambiguous") {
+		t.Fatalf("resolveEventTask = (%v, %q, %q), want no task, no ref and an ambiguous reason", task, ref, reason)
 	}
 
 	d.routePREvent(context.Background(), ev)
@@ -344,7 +349,7 @@ func TestRoutePREvent_MaxDispatchesBudget(t *testing.T) {
 // with no standalone pr-<n> task created.
 func TestRoutePREvent_BindsRelatedTask(t *testing.T) {
 	ctx := context.Background()
-	d, dbc, _ := newEventDispatcher(t)
+	d, dbc, runner := newEventDispatcher(t)
 
 	issueTask, persisted := d.bindItem(ctx, model.SourceItem{
 		ID: "42", SourceID: "github", Number: "#42", Title: "Fix login", State: "open",
@@ -355,6 +360,14 @@ func TestRoutePREvent_BindsRelatedTask(t *testing.T) {
 
 	ev := testEvent("comment-9")
 	ev.RelatedItemID = "42"
+
+	// A "Closes #42" resolution exposes the issue's human reference, never the
+	// PR number.
+	_, ref, reason := d.resolveEventTask(ctx, ev)
+	if ref != "#42" || reason != "" {
+		t.Fatalf("resolveEventTask ref = %q (reason %q), want #42", ref, reason)
+	}
+
 	d.routePREvent(ctx, ev)
 
 	waitIdle(t, d)
@@ -365,10 +378,91 @@ func TestRoutePREvent_BindsRelatedTask(t *testing.T) {
 	if b, _ := dbc.SourceBindings().GetBindingBySourceItem(ctx, "github", "pr-7"); b != nil {
 		t.Error("no standalone pr-7 task must be bound when the related task exists")
 	}
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.envs) != 1 {
+		t.Fatalf("expected 1 agent run, got %d", len(runner.envs))
+	}
+	if got := runner.envs[0]["APIARY_EVENT_TICKET"]; got != "#42" {
+		t.Errorf("APIARY_EVENT_TICKET = %q, want #42 (the related issue, not PR #7)", got)
+	}
 }
 
 func TestPREventScope_ExposesPRAuthor(t *testing.T) {
-	if got := prEventScope(testEvent("comment-1"))["pr_author"]; got != "carol" {
+	if got := prEventScope(testEvent("comment-1"), "")["pr_author"]; got != "carol" {
 		t.Errorf("event scope pr_author = %q, want carol", got)
+	}
+}
+
+// TestRoutePREvent_ExposesBoundTicketNotLookalike pins #492's crux: the ticket
+// the agent sees is the one the instance was bound to, not the first candidate
+// in the PR text. The unbound "UTF-8" lookalike precedes the real key, and the
+// env must still carry PSP-348.
+func TestRoutePREvent_ExposesBoundTicketNotLookalike(t *testing.T) {
+	ctx := context.Background()
+	d, _, runner := newEventDispatcher(t)
+	bindTicket(t, d, "jira", "10001", "PSP-348", "PSP-348 — [ask-du] ship the thing")
+
+	ev := testEvent("comment-1")
+	ev.PRTitle = "Fix UTF-8 decoding for PSP-348"
+	ev.TicketRefs = ticketpkg.Refs(ev.PRTitle, "", "")
+
+	task, ref, reason := d.resolveEventTask(ctx, ev)
+	if task == nil || ref != "PSP-348" || reason != "" {
+		t.Fatalf("resolveEventTask = (task %v, ref %q, reason %q), want the bound PSP-348", task, ref, reason)
+	}
+
+	d.routePREvent(ctx, ev)
+	waitIdle(t, d)
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.envs) != 1 {
+		t.Fatalf("expected 1 agent run, got %d", len(runner.envs))
+	}
+	if got := runner.envs[0]["APIARY_EVENT_TICKET"]; got != "PSP-348" {
+		t.Errorf("APIARY_EVENT_TICKET = %q, want PSP-348 (the bound key, not the UTF-8 lookalike)", got)
+	}
+}
+
+// TestPREventScope_ExposesResolvedTicket checks the scope and env expose the
+// resolved reference and the PR metadata consistently.
+func TestPREventScope_ExposesResolvedTicket(t *testing.T) {
+	ev := testEvent("comment-1")
+	ev.PRTitle = "Fix UTF-8 decoding for PSP-348"
+	ev.PRBranch = "feat/PSP-348-thing"
+
+	scope := prEventScope(ev, "PSP-348")
+	for k, want := range map[string]string{
+		"ticket":    "PSP-348",
+		"pr_title":  "Fix UTF-8 decoding for PSP-348",
+		"pr_branch": "feat/PSP-348-thing",
+	} {
+		if got := scope[k]; got != want {
+			t.Errorf("event scope %s = %q, want %q", k, got, want)
+		}
+	}
+
+	env := prEventEnv(ev, "PSP-348")
+	for k, want := range map[string]string{
+		"APIARY_EVENT_TICKET":    "PSP-348",
+		"APIARY_EVENT_PR_TITLE":  "Fix UTF-8 decoding for PSP-348",
+		"APIARY_EVENT_PR_BRANCH": "feat/PSP-348-thing",
+	} {
+		if got := env[k]; got != want {
+			t.Errorf("env %s = %q, want %q", k, got, want)
+		}
+	}
+}
+
+// An unresolved reference must stay empty rather than panic or leak a stale
+// value; the accessor then resolves as missing ("").
+func TestPREventScope_EmptyTicketWhenUnresolved(t *testing.T) {
+	if got, ok := prEventScope(testEvent("comment-1"), "")["ticket"]; !ok || got != "" {
+		t.Errorf("event scope ticket = (%q, present=%v), want an empty value", got, ok)
+	}
+	if got, ok := prEventEnv(testEvent("comment-1"), "")["APIARY_EVENT_TICKET"]; !ok || got != "" {
+		t.Errorf("APIARY_EVENT_TICKET = (%q, present=%v), want an empty value", got, ok)
 	}
 }
