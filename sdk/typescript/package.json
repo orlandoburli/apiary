@@ -1,0 +1,39 @@
+{
+  "name": "@apiary/plugin",
+  "version": "1.0.0",
+  "description": "Official TypeScript/Node SDK for Apiary plugins (protocol 1)",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist/src",
+    "dist/examples",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test dist/tests/protocol.test.js"
+  },
+  "keywords": [
+    "apiary",
+    "plugin",
+    "sdk",
+    "agents",
+    "orchestration"
+  ],
+  "license": "BSD-3-Clause",
+  "author": "Orlando Burli",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}

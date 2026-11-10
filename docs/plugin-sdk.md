@@ -3,9 +3,9 @@
 Plugins talk to Apiary over a deliberately small JSON protocol (see
 [Protocol version 1](plugins.md#protocol-version-1)), so a plugin can be
 written in **any language**. Official SDKs handle the protocol envelope for you
-in **Go** and **Python**; for everything else this page specifies exactly what
-your code — or an SDK you build for your language — must do, and the
-[conformance kit](#the-conformance-kit) checks that it does.
+in **Go**, **Python** and **TypeScript/Node**; for everything else this page
+specifies exactly what your code — or an SDK you build for your language — must
+do, and the [conformance kit](#the-conformance-kit) checks that it does.
 
 ## Versioning and the protocol
 
@@ -19,14 +19,15 @@ like.
 |---|---|---|
 | Go SDK (`github.com/orlandoburli/apiary/sdk`) | tag `sdk/vX.Y.Z` | `sdk/v1.x` → protocol 1 |
 | Python SDK (`apiary-plugin`, in `sdk/python`) | `X.Y.Z` | `1.x` → protocol 1 |
+| TypeScript SDK (`@apiary/plugin`, in `sdk/typescript`) | `X.Y.Z` | `1.x` → protocol 1 |
 | Apiary daemon | tag `vX.Y.Z` | see [releases](https://github.com/orlandoburli/apiary/releases) |
 
 An SDK stays on major version 1 for as long as protocol 1 is what it speaks;
 a future protocol bump gets its own SDK major version (for Go, `sdk/v2.x` with
 import path `github.com/orlandoburli/apiary/sdk/v2`; for Python,
-`apiary-plugin` 2.x). Within a protocol, SDK patch and minor releases are
-additive and safe to upgrade. Any SDK you write for another language should
-follow the same rule.
+`apiary-plugin` 2.x; for TypeScript, `@apiary/plugin` 2.x). Within a protocol,
+SDK patch and minor releases are additive and safe to upgrade. Any SDK you
+write for another language should follow the same rule.
 
 ## Go SDK
 
@@ -243,10 +244,120 @@ Make it executable, pair it with a manifest declaring
 `"capabilities": ["source"]`, and [install it](plugins.md#installing-a-plugin)
 like any other plugin.
 
+## TypeScript SDK
+
+Import path:
+
+```ts
+import { CAPABILITY_SOURCE, PluginError, Request, main } from "@apiary/plugin";
+import { SOURCE_METHOD_POLL, SourceItem, SourceOKResult, SourcePollResult } from "@apiary/plugin";
+```
+
+Install it from a checkout — the package lives in `sdk/typescript` and is **not
+published to npm**:
+
+```bash
+cd sdk/typescript
+npm install
+npm run build
+npm install /path/to/sdk/typescript   # or: npm link
+```
+
+Like the other SDKs it depends on **nothing but Node builtins** (the only
+devDependencies are `typescript` and `@types/node`, used to build it), and its
+version tracks the protocol (`@apiary/plugin` 1.x speaks protocol 1) — see
+[Versioning and the protocol](#versioning-and-the-protocol).
+
+### Entry points
+
+| Symbol | Purpose |
+|---|---|
+| `main(handler)` | Call from your entry point: serves one request on stdin/stdout, reports transport failures on stderr, exits 2 on them |
+| `serveOne(handler, { input, output })` | The engine behind `main`, with injectable streams — use it in tests |
+| `Request` | The decoded envelope: `protocol`, `request_id`, `capability`, `method`, `config`, `payload` |
+| `PluginError(code, message)` | **Throw** it to return an error response; both fields must be non-empty (the constructor enforces it) |
+| `TransportError` | The stream itself was unusable, so no response can be delivered — distinct from a *delivered* error |
+| `@apiary/plugin` | Typed mirrors of `sdk/plugin/source.go`: `SourceItem`, `SourcePollRequest`/`SourcePollResult`, `SourceAckRequest`, `SourceWriteResultRequest`, `SourceOKResult`, and the method-name constants |
+
+Where the Go SDK returns `(result, *ResponseError)`, the TypeScript SDK returns
+the result and throws `PluginError` — the same dichotomy in idiomatic
+JavaScript. Anything with a `toJSON()` (every typed mirror) encodes itself, and
+empty optional fields are dropped exactly as the Go structs' `omitempty` drops
+them, so every SDK puts the same bytes on the wire.
+
+### A complete source plugin in TypeScript
+
+This is the bundled example (`sdk/typescript/examples/source_file.ts`),
+trimmed to its essence — the same behaviour as the Go `source-file` plugin:
+
+```ts
+#!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import {
+  CAPABILITY_SOURCE, PluginError, Request, main,
+  SOURCE_METHOD_ACKNOWLEDGE, SOURCE_METHOD_POLL, SOURCE_METHOD_WRITE_RESULT,
+  SourceItem, SourceOKResult, SourcePollResult,
+} from "@apiary/plugin";
+
+function handle(request: Request): unknown {
+  if (request.capability !== CAPABILITY_SOURCE) {
+    throw new PluginError("unsupported_capability", "expected capability source");
+  }
+  if (request.method === SOURCE_METHOD_POLL) {
+    const path = request.config["path"];
+    if (typeof path !== "string" || path === "") {
+      throw new PluginError("invalid_config", "config.path is required");
+    }
+    let items: unknown;
+    try {
+      items = JSON.parse(readFileSync(path, "utf8"));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return new SourcePollResult([]);          // no file yet means no work yet
+      }
+      throw new PluginError("read_failed", String(err));
+    }
+    if (!Array.isArray(items)) {
+      throw new PluginError("invalid_items", `${path} must hold a JSON array of items`);
+    }
+    return new SourcePollResult(items.map((item) => SourceItem.fromDict(item)));
+  }
+  if (request.method === SOURCE_METHOD_ACKNOWLEDGE
+      || request.method === SOURCE_METHOD_WRITE_RESULT) {
+    return new SourceOKResult();
+  }
+  throw new PluginError("unsupported_method", `unknown method ${request.method}`);
+}
+
+await main(handle);
+```
+
+Compile it with `tsc`, make the emitted script executable (or invoke it with
+`node`), pair it with a manifest declaring `"capabilities": ["source"]`, and
+[install it](plugins.md#installing-a-plugin) like any other plugin.
+
+### Testing without Apiary
+
+The protocol is pipeable, so a shell one-liner is a complete integration test:
+
+```bash
+cd sdk/typescript && npm run build
+echo '{"protocol":1,"request_id":"t1","capability":"source","method":"poll","config":{"path":"items.json"}}' \
+  | node dist/examples/source_file.js
+```
+
+In TypeScript tests, drive `serveOne` with an `input` string and an `output`
+callback — no subprocess needed. The SDK's own tests use Node's built-in
+`node:test`, so there is no test-framework dependency:
+
+```bash
+cd sdk/typescript && npm test
+```
+
 ## Other languages
 
-TypeScript/Node and Rust SDKs are still open (tracked in
-[#367](https://github.com/orlandoburli/apiary/issues/367)) — but none is
+A Rust SDK is still open (tracked in
+[#367](https://github.com/orlandoburli/apiary/issues/367)) — but no SDK is
 required. Complete installable examples ship in `src/examples/plugins/`:
 `source-bash` (shell script, no build step) and `source-node`
 (TypeScript compiled to a shebang executable), both behaviorally identical to
@@ -387,8 +498,9 @@ You do not have to take those seven rules on trust, and you should not have to
 discover a violation from a daemon log. `sdk/conformance/` is a
 **language-agnostic golden corpus**: JSON request fixtures plus the
 expectations each response must meet, one case per rule, driven against any
-plugin executable as a subprocess over stdin/stdout. The Go SDK, the Python
-SDK, a Bash script and a Rust binary are all validated by the same corpus.
+plugin executable as a subprocess over stdin/stdout. The Go, Python and
+TypeScript SDKs, a Bash script and a Rust binary are all validated by the same
+corpus.
 
 Point it at your plugin:
 
@@ -417,10 +529,10 @@ your plugin needs nothing but the ability to be executed, so the kit is the
 same amount of work in every ecosystem. Each case names the rules it enforces,
 so a failure points at the paragraph above that it violates; cases marked
 `[should]` are advisory and warn instead of failing. `make conformance` runs
-the whole corpus against every plugin this repository ships, **including the
-Python, Rust and Bash examples extracted from these docs** — a documented
-snippet that drifts out of conformance fails CI rather than quietly misleading
-a reader.
+the whole corpus against every plugin this repository ships — the Go, Python
+and TypeScript SDK examples, the in-tree plugins, **and the Python, Rust and
+Bash examples extracted from these docs** — a documented snippet that drifts
+out of conformance fails CI rather than quietly misleading a reader.
 
 For the full case list and how to add one, see
 [`sdk/conformance/README.md`](https://github.com/orlandoburli/apiary/blob/main/sdk/conformance/README.md).
@@ -429,7 +541,8 @@ For the full case list and how to add one, see
 
 1. Write the thinnest possible envelope wrapper and one example plugin that
    answers `poll`, `acknowledge` and `write_result` — the Python SDK's
-   `sdk/python/examples/source_file.py` is the shape to copy.
+   `sdk/python/examples/source_file.py` (or the TypeScript SDK's
+   `sdk/typescript/examples/source_file.ts`) is the shape to copy.
 2. Run the kit against that example until it is 10/10. Every rule has at least
    one case, so a green run is a real statement about the implementation, not
    a smoke test.

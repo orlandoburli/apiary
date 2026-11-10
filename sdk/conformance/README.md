@@ -8,8 +8,8 @@ handful of details wrong. This kit turns the seven contract rules from
 [Writing an SDK for your language](../../docs/plugin-sdk.md#writing-an-sdk-for-your-language)
 into golden request fixtures plus the expectations each response must meet,
 and runs them against **any plugin executable** as a subprocess over
-stdin/stdout. Go SDK, Python SDK, a Bash script, a Rust binary — same corpus,
-same verdict.
+stdin/stdout. Go SDK, Python SDK, TypeScript SDK, a Bash script, a Rust
+binary — same corpus, same verdict.
 
 ## Run it
 
@@ -48,11 +48,14 @@ make conformance
 ```
 
 `check-examples.sh` runs the corpus against the Go SDK's example plugin, the
-Python SDK's example plugin, the in-tree Bash and Node plugins, and the
+Python and TypeScript SDK examples, the in-tree Bash and Node plugins, and the
 hand-rolled Python/Rust/Bash examples **extracted from the docs** — so a
 documented snippet that drifts out of conformance fails the build instead of
-quietly misleading a reader. Missing toolchains (no Node, no Rust) are skipped
-with a notice rather than failing.
+quietly misleading a reader. The TypeScript SDK is built on demand (`npm
+install` only when `node_modules/` is absent, then `npm run build`). Missing
+toolchains (no Node, no Rust) are skipped with a notice rather than failing; an
+`npm install` that cannot run offline is skipped too, while a build failure
+after dependencies are present fails the run.
 
 ## What the corpus covers
 
