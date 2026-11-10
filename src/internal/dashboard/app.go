@@ -781,7 +781,10 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	// While a Tasks sub-view (detail/logs/workflow) is open, keys are scoped to it.
+	// While a Tasks sub-view (detail/logs/workflow/board) is open, keys are
+	// scoped to it. The board is a grid over the same task list rather than a
+	// separate screen, but it still has its own cursor keys (see
+	// handleTaskSubViewKey).
 	if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil && a.model.tasksTab.View != TaskViewList {
 		return a.handleTaskSubViewKey(key)
 	}
@@ -815,16 +818,8 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.logsTab.HScroll += hStep
 			return a, nil
 		}
-		// On the board, ← / → move between columns — but only while there is a
-		// column to move to. At the last column the key falls through to the
-		// tab switch, so the board never traps the cursor.
-		if t := a.model.tasksTab; a.model.ActiveTab() == "Tasks" && t != nil && t.View == TaskViewBoard {
-			if t.BoardCol < a.boardColumnCount()-1 {
-				t.BoardCol++
-				t.BoardRow = 0
-				return a, nil
-			}
-		}
+		// The board's own ← / → are handled in handleTaskSubViewKey, which the
+		// board is routed to before this switch is reached.
 		a.model.NextTab()
 		a.model.loading = true
 		return a, a.fetchActiveTab()
@@ -836,13 +831,8 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 		}
-		if t := a.model.tasksTab; a.model.ActiveTab() == "Tasks" && t != nil && t.View == TaskViewBoard {
-			if t.BoardCol > 0 {
-				t.BoardCol--
-				t.BoardRow = 0
-				return a, nil
-			}
-		}
+		// The board's own ← is handled in handleTaskSubViewKey, which the board
+		// is routed to before this switch is reached.
 		a.model.PrevTab()
 		a.model.loading = true
 		return a, a.fetchActiveTab()
@@ -854,16 +844,16 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.logsTab.Scrolled = 0
 		}
 	case "b":
-		// Toggle the board. Scoped to the two views it moves between, so it does
-		// not fire from a detail/logs/monitor screen where it would be a
-		// surprising jump.
+		// Toggle the board. Only the list→board direction reaches this switch;
+		// board→list is handled in handleTaskSubViewKey, which the board is
+		// routed to before this switch is reached. Scoped to the two views it
+		// moves between, so it does not fire from a detail/logs/monitor screen
+		// where it would be a surprising jump.
 		if a.model.ActiveTab() == "Tasks" && a.model.tasksTab != nil {
 			switch a.model.tasksTab.View {
 			case TaskViewList:
 				a.model.tasksTab.View = TaskViewBoard
 				a.model.tasksTab.BoardCol, a.model.tasksTab.BoardRow = 0, 0
-			case TaskViewBoard:
-				a.model.tasksTab.View = TaskViewList
 			}
 		}
 	case "T":
@@ -931,12 +921,8 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up":
 		switch a.model.ActiveTab() {
 		case "Tasks":
-			if t := a.model.tasksTab; t != nil && t.View == TaskViewBoard {
-				if t.BoardRow > 0 {
-					t.BoardRow--
-				}
-				break
-			}
+			// The board's own ↑ is handled in handleTaskSubViewKey, which the
+			// board is routed to before this switch is reached.
 			if a.model.tasksTab != nil && a.model.tasksTab.SelectedIdx > 0 {
 				a.model.tasksTab.SelectedIdx--
 			}
@@ -953,10 +939,8 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down":
 		switch a.model.ActiveTab() {
 		case "Tasks":
-			if t := a.model.tasksTab; t != nil && t.View == TaskViewBoard {
-				t.BoardRow++ // clamped on render, where the column sizes are known
-				break
-			}
+			// The board's own ↓ is handled in handleTaskSubViewKey, which the
+			// board is routed to before this switch is reached.
 			if t := a.model.tasksTab; t != nil {
 				maxIdx := len(a.filteredTasks(t)) - 1
 				if t.SelectedIdx < maxIdx {
@@ -1384,6 +1368,46 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 	// Transcript viewer has its own key map.
 	if t.View == TaskViewTranscript {
 		return a.handleTranscriptKey(key)
+	}
+
+	// The board is a grid over the task list, so its cursor keys live here even
+	// though everything else (detail, logs, approve, restart) is shared with the
+	// list. Arrows move the (column, row) cursor and leave the board at its
+	// edges — the board never traps the cursor.
+	if t.View == TaskViewBoard {
+		switch key {
+		case "right":
+			if t.BoardCol < a.boardColumnCount()-1 {
+				t.BoardCol++
+				t.BoardRow = 0
+				return a, nil
+			}
+			// At the last column, → keeps its global meaning and switches tabs.
+			a.model.NextTab()
+			a.model.loading = true
+			return a, a.fetchActiveTab()
+		case "left":
+			if t.BoardCol > 0 {
+				t.BoardCol--
+				t.BoardRow = 0
+				return a, nil
+			}
+			// At the first column, fall through to the shared "back to the
+			// list" case below instead of switching tabs.
+		case "up":
+			if t.BoardRow > 0 {
+				t.BoardRow--
+			}
+			return a, nil
+		case "down":
+			t.BoardRow++ // clamped on render, where the column sizes are known
+			return a, nil
+		case "b":
+			// Toggle back to the list. The matching list→board direction is
+			// handled before the sub-view dispatch, in handleKeyMsg.
+			t.View = TaskViewList
+			return a, nil
+		}
 	}
 
 	switch key {
