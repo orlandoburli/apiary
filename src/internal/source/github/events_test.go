@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -73,12 +74,15 @@ func TestPollPREvents_CommentsReviewsAndExclusions(t *testing.T) {
 		},
 		"/repos/o/r/pulls": []map[string]any{
 			{"number": 7, "state": "open", "updated_at": newer, "body": "Fixes #42",
+				"title": "PSP-348 fix login", "head": map[string]any{"ref": "feat/PSP-348-login"},
 				"html_url": "https://github.com/o/r/pull/7", "user": map[string]any{"login": "dave", "type": "User"}},
 			{"number": 3, "state": "open", "updated_at": older, "body": "", "html_url": ""},
 		},
 		"/repos/o/r/pulls/7": map[string]any{
-			"number": 7, "state": "open", "body": "Fixes #42", "html_url": "https://github.com/o/r/pull/7",
-			"user": map[string]any{"login": "dave", "type": "User"}},
+			"number": 7, "state": "open", "body": "Fixes #42",
+			"title": "PSP-348 fix login", "head": map[string]any{"ref": "feat/PSP-348-login"},
+			"html_url": "https://github.com/o/r/pull/7",
+			"user":     map[string]any{"login": "dave", "type": "User"}},
 		"/repos/o/r/pulls/7/reviews": []map[string]any{
 			{"id": 100, "state": "CHANGES_REQUESTED", "body": "needs tests", "submitted_at": newer,
 				"author_association": "OWNER", "user": map[string]any{"login": "carol", "type": "User"}},
@@ -113,6 +117,12 @@ func TestPollPREvents_CommentsReviewsAndExclusions(t *testing.T) {
 	}
 	if cm.RelatedItemID != "42" {
 		t.Errorf("comment-1 related item = %q, want 42 (from \"Fixes #42\")", cm.RelatedItemID)
+	}
+	if cm.PRTitle != "PSP-348 fix login" || cm.PRBranch != "feat/PSP-348-login" || cm.PRBody != "Fixes #42" {
+		t.Errorf("comment-1 PR metadata = title %q branch %q body %q", cm.PRTitle, cm.PRBranch, cm.PRBody)
+	}
+	if want := []string{"PSP-348"}; !reflect.DeepEqual(cm.TicketRefs, want) {
+		t.Errorf("comment-1 ticket refs = %v, want %v", cm.TicketRefs, want)
 	}
 	if cm.PRURL != "https://github.com/o/r/pull/7" {
 		t.Errorf("comment-1 pr url = %q", cm.PRURL)
@@ -151,6 +161,39 @@ func TestPollPREvents_PRAuthorEmptyWhenPRFetchFails(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].PRAuthor != "" {
 		t.Fatalf("want one event with an empty PR author, got %+v", events)
+	}
+}
+
+// A ticket key is picked up from the PR body when the title and branch have
+// none, and a bare GitHub issue reference is not mistaken for one.
+func TestPollPREvents_TicketRefFromBody(t *testing.T) {
+	since := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	a := newEventTestAdapter(t, map[string]any{
+		"/user": map[string]any{"login": "apiary-daemon"},
+		"/repos/o/r/issues/comments": []map[string]any{
+			{"id": 1, "body": "hi", "created_at": since.Add(time.Hour).Format(time.RFC3339),
+				"html_url":           "https://github.com/o/r/pull/7#issuecomment-1",
+				"author_association": "MEMBER", "user": map[string]any{"login": "alice", "type": "User"}},
+		},
+		"/repos/o/r/pulls/7": map[string]any{
+			"number": 7, "title": "Fix login", "body": "Closes #42, tracks PSP-348",
+			"head": map[string]any{"ref": "fix-login"},
+			"user": map[string]any{"login": "dave", "type": "User"}},
+	})
+
+	events, err := a.PollPREvents(context.Background(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want one event, got %d", len(events))
+	}
+	ev := events[0]
+	if want := []string{"PSP-348"}; !reflect.DeepEqual(ev.TicketRefs, want) {
+		t.Errorf("TicketRefs = %v, want %v", ev.TicketRefs, want)
+	}
+	if ev.RelatedItemID != "42" {
+		t.Errorf("RelatedItemID = %q, want the GitHub issue reference 42", ev.RelatedItemID)
 	}
 }
 

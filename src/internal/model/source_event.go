@@ -14,7 +14,8 @@ const (
 // a review submission) returned by a source adapter's PollPREvents. Unlike a
 // SourceItem it is not a unit of work by itself: the dispatcher routes it
 // through event triggers (`trigger.on:`) and binds the resulting workflow
-// instance to the InternalTask of the originating issue when one exists.
+// instance to the InternalTask of the ticket the PR is about. An event with no
+// resolvable ticket is dropped rather than turned into a synthetic PR task.
 type SourceEvent struct {
 	// ID is a stable, source-native identifier for the event (e.g. a comment id
 	// or review id, prefixed by kind). It is the dedup key: an event ID must
@@ -44,4 +45,19 @@ type SourceEvent struct {
 	// the issue a PR closes), resolved best-effort by the adapter. Empty when the
 	// PR has no discoverable parent item.
 	RelatedItemID string
+	// PRTitle and PRBranch carry the pull request's metadata so the dispatcher
+	// can resolve the ticket the PR is about (a Jira/Plane key in the title or
+	// head branch is a stronger signal than a mention in a comment).
+	PRTitle  string
+	PRBranch string
+	// PRBody is the pull request's description. The adapter already scans it for
+	// a closing issue reference (RelatedItemID); it is surfaced here so the
+	// dispatcher can resolve a ticket key found there too.
+	PRBody string
+	// TicketRefs are the human ticket references found in the PR title, head
+	// branch, and body, in that order (see internal/ticket.Refs). A PR event
+	// whose ticket resolves to no bound task is dropped rather than
+	// materialising a synthetic "PR #n" task: a PR is an event receipt, not a
+	// unit of work. Empty when no ticket key was found.
+	TicketRefs []string
 }

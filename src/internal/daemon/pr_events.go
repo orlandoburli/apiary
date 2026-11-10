@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/config"
@@ -68,18 +70,16 @@ func (d *Dispatcher) pollPREvents(ctx context.Context, sc config.SourceConfig, a
 
 // routePREvent routes one PR event through the event triggers and dispatches
 // every match exactly once (guarded by the persistent per-(event, workflow)
-// claim). The workflow instance binds to the InternalTask of the originating
-// issue when one exists; otherwise a standalone per-PR task is bound, so
-// lineage, dashboard, and transcripts work unchanged.
+// claim). The workflow instance binds to the InternalTask of the ticket the PR
+// is about — resolved from the PR title, head branch, then body — so the task
+// list shows the ticket, not a "PR #nnn" event receipt. An event whose ticket
+// resolves to no bound task is dropped rather than materialising a synthetic
+// per-PR task.
 func (d *Dispatcher) routePREvent(ctx context.Context, ev model.SourceEvent) {
-	// Resolve the related task (originating issue) via its source binding.
-	var related *model.InternalTask
-	if ev.RelatedItemID != "" {
-		if b, _ := d.db.SourceBindings().GetBindingBySourceItem(ctx, ev.SourceID, ev.RelatedItemID); b != nil {
-			if t, _ := d.db.InternalTasks().GetTask(ctx, b.TaskID); t != nil {
-				related = t
-			}
-		}
+	related, dropReason := d.resolveEventTask(ctx, ev)
+	if related == nil {
+		aplog.Info("event %s (%s on PR #%d by %s): dropped — %s", ev.ID, ev.Kind, ev.PRNumber, ev.Author, dropReason)
+		return
 	}
 
 	matches := d.router.RouteEvent(ev, related)
@@ -88,24 +88,7 @@ func (d *Dispatcher) routePREvent(ctx context.Context, ev model.SourceEvent) {
 		return
 	}
 
-	var task model.InternalTask
-	var persisted bool
-	if related != nil {
-		task, persisted = *related, true
-	} else {
-		// No originating issue: bind a standalone per-PR task. The synthetic item
-		// id is stable per PR, so every event on the same PR resolves to the same
-		// task (the binder is keyed on source_id + source_item_id).
-		task, persisted = d.bindItem(ctx, model.SourceItem{
-			ID:       fmt.Sprintf("pr-%d", ev.PRNumber),
-			SourceID: ev.SourceID,
-			Number:   fmt.Sprintf("#%d", ev.PRNumber),
-			Title:    fmt.Sprintf("PR #%d", ev.PRNumber),
-			URL:      ev.PRURL,
-			Type:     "pr",
-			State:    "open",
-		})
-	}
+	task, persisted := *related, true
 
 	for _, m := range matches {
 		// Runaway-loop budget: cap dispatches per (workflow, PR). Fail closed on a
@@ -138,6 +121,88 @@ func (d *Dispatcher) routePREvent(ctx context.Context, ev model.SourceEvent) {
 	}
 }
 
+// resolveEventTask resolves the ticket a PR event is about to its bound
+// InternalTask. It returns nil plus a human-readable reason when the event must
+// be dropped.
+//
+// Two kinds of reference are understood:
+//
+//   - RelatedItemID — the source-native id of the GitHub issue referenced by the
+//     PR body ("Closes #42"). This is the explicit origin and wins when the
+//     issue is bound, because a closing keyword is a stronger signal than a
+//     passing mention elsewhere.
+//   - TicketRefs — human ticket keys (PSP-348) found in the PR title, head
+//     branch, then body. They are tried in that order against the bindings'
+//     SourceItemNumber, because a ticket key is what people and bindings
+//     actually share (Jira binds on the opaque numeric issue id).
+//
+// A reference that matches distinct bound items is ambiguous: the event is
+// dropped and logged rather than guessed at, mirroring the #377 guidance for
+// restart references. An unbound candidate is skipped so a false-positive key
+// in a title ("Fix UTF-8 decoding for PSP-348") never hides the real one.
+func (d *Dispatcher) resolveEventTask(ctx context.Context, ev model.SourceEvent) (*model.InternalTask, string) {
+	if ev.RelatedItemID != "" {
+		if b, _ := d.db.SourceBindings().GetBindingBySourceItem(ctx, ev.SourceID, ev.RelatedItemID); b != nil {
+			if t, _ := d.db.InternalTasks().GetTask(ctx, b.TaskID); t != nil {
+				aplog.Debug("event %s: related item %s/%s → task %s", ev.ID, ev.SourceID, ev.RelatedItemID, t.ID)
+				return t, ""
+			}
+		}
+	}
+
+	if len(ev.TicketRefs) == 0 {
+		return nil, "no ticket reference in the PR title, head branch, or body"
+	}
+
+	var unbound []string
+	for _, ref := range ev.TicketRefs {
+		bindings, err := d.db.SourceBindings().ListBindingsBySourceItemNumber(ctx, ref)
+		if err != nil {
+			aplog.Error("event %s: look up ticket reference %q: %v", ev.ID, ref, err)
+			continue
+		}
+
+		// Several bindings are fine when they are the same item (a source item can
+		// be bound more than once over its life); distinct items are not. The list
+		// is oldest-first, so a map assignment keeps the newest binding per item.
+		distinct := map[string]model.SourceBinding{}
+		for _, b := range bindings {
+			distinct[b.SourceID+":"+b.SourceItemID] = b
+		}
+		if len(distinct) == 0 {
+			unbound = append(unbound, ref)
+			continue
+		}
+		if len(distinct) > 1 {
+			keys := make([]string, 0, len(distinct))
+			for k := range distinct {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			aplog.Warn("event %s: ticket reference %q matches %d bound items (%s); dropping the event rather than guessing which one it means",
+				ev.ID, ref, len(distinct), strings.Join(keys, ", "))
+			return nil, fmt.Sprintf("ticket reference %q is ambiguous (%s)", ref, strings.Join(keys, ", "))
+		}
+		for _, b := range distinct {
+			t, err := d.db.InternalTasks().GetTask(ctx, b.TaskID)
+			if err != nil {
+				aplog.Error("event %s: read task %s for ticket reference %q: %v", ev.ID, b.TaskID, ref, err)
+				unbound = append(unbound, ref)
+				continue
+			}
+			if t == nil {
+				aplog.Warn("event %s: ticket reference %q is bound to missing task %s", ev.ID, ref, b.TaskID)
+				unbound = append(unbound, ref)
+				continue
+			}
+			aplog.Debug("event %s: ticket reference %q → task %s (source %s)", ev.ID, ref, t.ID, b.SourceID)
+			return t, ""
+		}
+	}
+
+	return nil, fmt.Sprintf("ticket reference(s) %s not bound to a task", strings.Join(unbound, ", "))
+}
+
 // dispatchPREvent launches one workflow for one claimed PR event, mirroring
 // fanOut's admission (per-agent semaphore, active-run tracking, outstanding
 // counter) for a single match. The event payload rides in on the workflow env
@@ -152,15 +217,23 @@ func (d *Dispatcher) dispatchPREvent(ctx context.Context, ev model.SourceEvent, 
 
 	agentCh := d.agentSem[match.Route.Agent]
 	runID := d.nextRunID()
+	title := fmt.Sprintf("%s on PR #%d", ev.Kind, ev.PRNumber)
 	cell := model.SourceItem{
 		ID:       ev.RelatedItemID,
 		SourceID: ev.SourceID,
 		Number:   fmt.Sprintf("#%d", ev.PRNumber),
-		Title:    fmt.Sprintf("%s on PR #%d", ev.Kind, ev.PRNumber),
+		Title:    title,
 		URL:      ev.PRURL,
 	}
-	if cell.ID == "" {
-		cell.ID = fmt.Sprintf("pr-%d", ev.PRNumber)
+	if cell.ID == "" && d.db != nil {
+		// The task is bound to the ticket, not to a synthetic PR cell; carry the
+		// ticket's primary binding into the active-run view so cancel-by-cell and
+		// the dashboard's drill key resolve it.
+		if bindings, err := d.db.ListBindingsByTask(ctx, task.ID); err == nil && len(bindings) > 0 {
+			b := bindings[0]
+			cell.ID, cell.SourceID = b.SourceItemID, b.SourceID
+			cell.Number, cell.URL = b.SourceItemNumber, b.SourceItemURL
+		}
 	}
 
 	d.goBackground(func() {

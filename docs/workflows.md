@@ -182,10 +182,19 @@ Semantics:
   workflow exactly once, persisted in SQLite — a daemon restart or poll
   overlap never re-dispatches it. First-time enablement baselines to "now":
   historical comments are ignored.
-- **Task binding.** The instance binds to the InternalTask of the PR's
-  originating issue when one exists (resolved from the PR body's `Closes #N`
-  reference), so lineage, dashboard, and transcripts work unchanged.
-  Otherwise a standalone per-PR task is bound.
+- **Task binding.** The instance binds to the ticket the PR is about, so the
+  task list shows `PSP-348 — …` rather than `PR #800`. The reference is
+  resolved, in order, from a `Closes #N` GitHub issue reference in the PR body
+  (when that issue is bound), then a ticket key (`PSP-348`, `CDT-123`) in the
+  PR **title**, **head branch**, then **body**. Within one field the first key
+  wins; an unbound candidate is skipped so a lookalike token (`UTF-8`) cannot
+  hide the real key. Ticket keys are the canonical uppercase form — a lowercase
+  branch segment such as `feat/psp-348` is not recognized.
+- **No ticket, no task.** A PR event whose reference resolves to no bound task
+  is dropped (logged at INFO) instead of materialising a synthetic `PR #nnn`
+  task: a PR is an event receipt, not a unit of work. A reference that matches
+  two different bound items is likewise dropped rather than guessed at, the
+  same rule restart uses (#377).
 - **Loop prevention.** Events authored by the daemon's own source token
   identity and by bot accounts are dropped at the adapter, so an agent's own
   PR comments can never re-trigger a workflow. `max_dispatches` is the

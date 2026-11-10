@@ -12,6 +12,7 @@ import (
 
 	aplog "github.com/orlandoburli/apiary/internal/log"
 	"github.com/orlandoburli/apiary/internal/model"
+	"github.com/orlandoburli/apiary/internal/ticket"
 )
 
 // prPathRe extracts a PR number from a comment html_url: an issue comment on a
@@ -28,6 +29,19 @@ var closingRefRe = regexp.MustCompile(`(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[s
 // issueRefRe matches any plain issue reference ("#42") as the fallback signal.
 var issueRefRe = regexp.MustCompile(`#(\d+)`)
 
+// prEventMeta is the per-PR metadata every PR event carries: the URL and author
+// needed for routing, the related GitHub issue (if any), and the raw PR surface
+// the dispatcher needs to resolve the ticket the PR is about.
+type prEventMeta struct {
+	url           string
+	author        string
+	relatedItemID string
+	title         string
+	branch        string
+	body          string
+	ticketRefs    []string
+}
+
 // PollPREvents returns the pull-request events (conversation comments, inline
 // review comments, and review submissions) created since the watermark, oldest
 // first per category. Implements source.PREventPoller.
@@ -38,8 +52,11 @@ var issueRefRe = regexp.MustCompile(`#(\d+)`)
 //
 // RelatedItemID is resolved best-effort by scanning the PR body for an issue
 // reference (closing keywords first), reusing one PR fetch per distinct PR and
-// poll. A PR with no discoverable parent issue yields events with an empty
-// RelatedItemID — the dispatcher then binds a standalone task for the PR.
+// poll. PRTitle, PRBranch, and PRBody carry the PR metadata, and TicketRefs
+// carries the ticket-key candidates found in title, branch, and body (in that
+// order), so the dispatcher can bind the event to the ticket the PR is about.
+// An event with no resolvable ticket is dropped by the dispatcher: a PR is an
+// event receipt, not a unit of work.
 func (a *Adapter) PollPREvents(ctx context.Context, since time.Time) ([]model.SourceEvent, error) {
 	self := a.selfLogin(ctx)
 	sinceParam := since.UTC().Format(time.RFC3339)
@@ -66,16 +83,20 @@ func (a *Adapter) PollPREvents(ctx context.Context, since time.Time) ([]model.So
 		prCache[n] = &pr
 		return &pr
 	}
-	describe := func(n int) (prURL, prAuthor, relatedItemID string) {
-		prURL = fmt.Sprintf("%s/%s/%s/pull/%d", a.webBaseURL, a.owner, a.repo, n)
+	describe := func(n int) prEventMeta {
+		m := prEventMeta{url: fmt.Sprintf("%s/%s/%s/pull/%d", a.webBaseURL, a.owner, a.repo, n)}
 		if pr := prFor(n); pr != nil {
 			if pr.HTMLURL != "" {
-				prURL = pr.HTMLURL
+				m.url = pr.HTMLURL
 			}
-			prAuthor = pr.User.Login
-			relatedItemID = findRelatedIssue(pr.Body, n)
+			m.author = pr.User.Login
+			m.relatedItemID = findRelatedIssue(pr.Body, n)
+			m.title = pr.Title
+			m.branch = pr.Head.Ref
+			m.body = pr.Body
+			m.ticketRefs = ticket.Refs(pr.Title, pr.Head.Ref, pr.Body)
 		}
-		return prURL, prAuthor, relatedItemID
+		return m
 	}
 
 	// 1. PR conversation comments — the /issues/comments endpoint returns
@@ -97,19 +118,23 @@ func (a *Adapter) PollPREvents(ctx context.Context, since time.Time) ([]model.So
 		if !created.After(since) {
 			continue
 		}
-		prURL, prAuthor, itemID := describe(n)
+		m := describe(n)
 		events = append(events, model.SourceEvent{
 			ID:                fmt.Sprintf("comment-%d", cm.ID),
 			SourceID:          a.ID(),
 			Kind:              model.EventPRComment,
 			PRNumber:          n,
-			PRURL:             prURL,
-			PRAuthor:          prAuthor,
+			PRURL:             m.url,
+			PRAuthor:          m.author,
 			Author:            cm.User.Login,
 			AuthorAssociation: cm.AuthorAssociation,
 			Body:              cm.Body,
 			SubmittedAt:       created,
-			RelatedItemID:     itemID,
+			RelatedItemID:     m.relatedItemID,
+			PRTitle:           m.title,
+			PRBranch:          m.branch,
+			PRBody:            m.body,
+			TicketRefs:        m.ticketRefs,
 		})
 	}
 
@@ -129,19 +154,23 @@ func (a *Adapter) PollPREvents(ctx context.Context, since time.Time) ([]model.So
 		if !created.After(since) {
 			continue
 		}
-		prURL, prAuthor, itemID := describe(n)
+		m := describe(n)
 		events = append(events, model.SourceEvent{
 			ID:                fmt.Sprintf("review-comment-%d", rc.ID),
 			SourceID:          a.ID(),
 			Kind:              model.EventPRComment,
 			PRNumber:          n,
-			PRURL:             prURL,
-			PRAuthor:          prAuthor,
+			PRURL:             m.url,
+			PRAuthor:          m.author,
 			Author:            rc.User.Login,
 			AuthorAssociation: rc.AuthorAssociation,
 			Body:              rc.Body,
 			SubmittedAt:       created,
-			RelatedItemID:     itemID,
+			RelatedItemID:     m.relatedItemID,
+			PRTitle:           m.title,
+			PRBranch:          m.branch,
+			PRBody:            m.body,
+			TicketRefs:        m.ticketRefs,
 		})
 	}
 
@@ -181,19 +210,23 @@ func (a *Adapter) PollPREvents(ctx context.Context, since time.Time) ([]model.So
 			if !submitted.After(since) || a.skipAuthor(rv.User, self) {
 				continue
 			}
-			prURL, prAuthor, itemID := describe(pr.Number)
+			m := describe(pr.Number)
 			events = append(events, model.SourceEvent{
 				ID:                fmt.Sprintf("review-%d", rv.ID),
 				SourceID:          a.ID(),
 				Kind:              kind,
 				PRNumber:          pr.Number,
-				PRURL:             prURL,
-				PRAuthor:          prAuthor,
+				PRURL:             m.url,
+				PRAuthor:          m.author,
 				Author:            rv.User.Login,
 				AuthorAssociation: rv.AuthorAssociation,
 				Body:              rv.Body,
 				SubmittedAt:       submitted,
-				RelatedItemID:     itemID,
+				RelatedItemID:     m.relatedItemID,
+				PRTitle:           m.title,
+				PRBranch:          m.branch,
+				PRBody:            m.body,
+				TicketRefs:        m.ticketRefs,
 			})
 		}
 	}
