@@ -20,7 +20,11 @@ Two things happen at load time:
   shell take priority — they are never overwritten.
 - **`${VAR}` expansion.** String values containing `${VAR}` are replaced from
   the environment, so secrets stay out of the file:
-  `api_key: ${GITHUB_TOKEN}`.
+  `api_key: ${GITHUB_TOKEN}`. Two agent-visible fields are deliberately exempt:
+  `prompt` / `summary_prompt` text reaches the agent byte-for-byte (a shell
+  `$LOG`, `$3` or `$APIARY_MEMORY_DIR` is left for the agent's shell), and
+  `env:` values expand only the braced `${VAR}` form — bare `$VAR` is preserved
+  for the subprocess.
 
 The config is validated against a schema on every load; `apiary validate`
 runs the same checks standalone, and the

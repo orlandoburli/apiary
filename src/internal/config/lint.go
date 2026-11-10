@@ -101,7 +101,8 @@ func (c *Config) lintRemovedDirectives() []error {
 // "known" to the decoder and are reported by lintRemovedDirectives instead, so
 // there is no double-reporting.
 func (c *Config) lintUnknownFields() []error {
-	dec := yaml.NewDecoder(strings.NewReader(expandEnv(c.rawContent)))
+	raw, _ := expandConfigDoc(c.rawContent)
+	dec := yaml.NewDecoder(strings.NewReader(raw))
 	dec.KnownFields(true)
 
 	var probe Config

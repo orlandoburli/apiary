@@ -534,6 +534,8 @@ Precedence is `not` > `and` > `or`, and `and`/`or` short-circuit.
 | `cell.source` | string | source id the task came from |
 | `cell.labels` | list | task labels (use `contains`) |
 | `memory.<key>` | string | workflow-memory value written by an earlier step |
+| `input.<key>` | string | value passed with `apiary dispatch --input key=value` (empty when not supplied) |
+| `task.id`, `task.title`, `task.description` | string | the task's identity fields; `task.<input-key>` also reads structured input |
 | `steps.<id>.state` | string | `passed` or `failed` |
 | `steps.<id>.output` | string | the step's output text |
 | `steps.<id>.exit_code` | number | the step's exit code |
@@ -553,6 +555,12 @@ A `memory.<key>` that was never written — and a `steps.<id>` that has not
 run — resolves to the empty string, so `memory.flag == ""` is the idiom for
 "not set". Lists only support `contains`; `==` or `matches` on `cell.labels`
 is an error.
+
+The same dot-path accessors are substituted into a step's `prompt` and
+`summary_prompt` text at step start (literal text replacement, not expression
+evaluation). Only a plain `${{ root.path }}` accessor is replaced; a placeholder
+whose root or path cannot be resolved is left visible in the prompt so a human
+can spot it.
 
 #### Examples
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/config"
@@ -436,7 +437,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		ctx = context.WithValue(ctx, source.SourceTokenCtxKey, req.Agent.SourceToken)
 	}
 
-	env := withMemoryDir(stepEnv(req.Agent, req.WorkflowEnv, req.Step.Env), x.d.memDir)
+	env := withMemoryDir(withInputEnv(stepEnv(req.Agent, req.WorkflowEnv, req.Step.Env), req.Inputs), x.d.memDir)
 
 	rr := model.RunRequest{
 		Cell:               req.Cell,
@@ -1077,6 +1078,42 @@ func withMemoryDir(env map[string]string, dir string) map[string]string {
 		env["APIARY_MEMORY_DIR"] = dir
 	}
 	return env
+}
+
+// withInputEnv exports a task's structured input to the agent subprocess as
+// APIARY_INPUT_<KEY>. Keys are upper-cased and every non-alphanumeric rune
+// becomes "_", so `--input dry_run=no` reaches a shell snippet as
+// APIARY_INPUT_DRY_RUN=no. An explicit env value at any scope wins (same escape
+// hatch as APIARY_MEMORY_DIR), so a workflow can deliberately override one.
+func withInputEnv(env map[string]string, inputs map[string]string) map[string]string {
+	if len(inputs) == 0 {
+		return env
+	}
+	if env == nil {
+		env = make(map[string]string, len(inputs))
+	}
+	for k, v := range inputs {
+		name := "APIARY_INPUT_" + inputEnvKey(k)
+		if _, ok := env[name]; !ok {
+			env[name] = v
+		}
+	}
+	return env
+}
+
+// inputEnvKey upper-cases an input key and replaces every rune that is not an
+// ASCII letter or digit with "_".
+func inputEnvKey(key string) string {
+	var b strings.Builder
+	b.Grow(len(key))
+	for _, r := range strings.ToUpper(key) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // compile-time interface checks.

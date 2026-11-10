@@ -82,9 +82,9 @@ func TestStepEnv_ExplicitTokenOverridesIdentity(t *testing.T) {
 	}
 }
 
-// TestStepEnv_NoExplicitEnv verifies that with no env at any scope, the result is
-// exactly the identity overlay — a regression guard that the merge is a no-op by
-// default.
+// TestStepEnv_NoExplicitEnv verifies that with no env at any scope, the result
+// is exactly the identity overlay — a regression guard that the merge is a
+// no-op by default.
 func TestStepEnv_NoExplicitEnv(t *testing.T) {
 	agent := config.AgentConfig{
 		SourceName:  "reviewer-bot",
@@ -101,5 +101,33 @@ func TestStepEnv_NoExplicitEnv(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("env[%q] = %q, want %q", k, got[k], v)
 		}
+	}
+}
+
+// TestWithInputEnv verifies that task input is exported as APIARY_INPUT_<KEY>
+// with the key upper-cased and non-alphanumerics sanitised to underscores, and
+// that an explicit env value wins.
+func TestWithInputEnv(t *testing.T) {
+	env := withInputEnv(map[string]string{"APIARY_INPUT_DRY_RUN": "explicit"}, map[string]string{
+		"dry_run":   "no",
+		"pr-url":    "https://example.test/pull/78",
+		"mixed key": "v",
+	})
+
+	cases := map[string]string{
+		"APIARY_INPUT_DRY_RUN":   "explicit", // explicit env wins
+		"APIARY_INPUT_PR_URL":    "https://example.test/pull/78",
+		"APIARY_INPUT_MIXED_KEY": "v",
+	}
+	for k, want := range cases {
+		if env[k] != want {
+			t.Errorf("env[%q] = %q, want %q", k, env[k], want)
+		}
+	}
+	if got := withInputEnv(nil, nil); got != nil {
+		t.Errorf("withInputEnv(nil, nil) = %v, want nil", got)
+	}
+	if got := withInputEnv(nil, map[string]string{"a": "b"}); got["APIARY_INPUT_A"] != "b" {
+		t.Errorf("withInputEnv with nil env did not allocate: %v", got)
 	}
 }

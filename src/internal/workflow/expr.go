@@ -19,6 +19,14 @@ type EvalContext struct {
 	// (kind, body, author, author_association, pr_number, pr_url, pr_author). Nil
 	// for item-triggered instances — event.* accessors then resolve as missing ("").
 	Event map[string]string
+	// Input carries the task's structured input (from `apiary dispatch --input
+	// key=value`), exposed to expressions and prompt templates as
+	// ${{ input.<key> }}. Nil for tasks dispatched without input.
+	Input map[string]string
+	// Task carries the task identity for ${{ task.<field> }} prompt templates
+	// (id, title, description, or an input key — the same resolution
+	// sub-workflow `with:` values use). It is not used by condition expressions.
+	Task model.InternalTask
 }
 
 // StepState exposes a completed step's outcome to expressions.
@@ -506,6 +514,32 @@ func resolveAccessor(path []string, ctx EvalContext) (resolvedValue, error) {
 			return resolvedValue{kind: kMissing}, nil
 		}
 		return resolvedValue{kind: kString, s: v}, nil
+	case "input":
+		if len(path) != 2 {
+			return resolvedValue{}, fmt.Errorf("invalid input accessor %q", strings.Join(path, "."))
+		}
+		v, ok := ctx.Input[path[1]]
+		if !ok {
+			return resolvedValue{kind: kMissing}, nil
+		}
+		return resolvedValue{kind: kString, s: v}, nil
+	case "task":
+		if len(path) < 2 {
+			return resolvedValue{}, fmt.Errorf("invalid task accessor %q", strings.Join(path, "."))
+		}
+		key := strings.Join(path[1:], ".")
+		switch key {
+		case "id":
+			return resolvedValue{kind: kString, s: ctx.Task.ID}, nil
+		case "title":
+			return resolvedValue{kind: kString, s: ctx.Task.Title}, nil
+		case "description":
+			return resolvedValue{kind: kString, s: ctx.Task.Description}, nil
+		}
+		if v, ok := ctx.Input[key]; ok {
+			return resolvedValue{kind: kString, s: v}, nil
+		}
+		return resolvedValue{kind: kMissing}, nil
 	case "steps":
 		if len(path) != 3 {
 			return resolvedValue{}, fmt.Errorf("invalid steps accessor %q (want steps.<id>.<field>)", strings.Join(path, "."))
@@ -525,6 +559,6 @@ func resolveAccessor(path []string, ctx EvalContext) (resolvedValue, error) {
 			return resolvedValue{}, fmt.Errorf("unknown step field %q", path[2])
 		}
 	default:
-		return resolvedValue{}, fmt.Errorf("unknown accessor root %q (want cell, memory, steps, or event)", path[0])
+		return resolvedValue{}, fmt.Errorf("unknown accessor root %q (want cell, event, memory, input, steps, or task)", path[0])
 	}
 }

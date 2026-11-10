@@ -411,7 +411,8 @@ issue id) are both reported, since only one of them appears in Jira's UI.
 **Without `--item`** the workflow runs standalone on a fresh internal task with no
 source binding. Nothing writes back to a source: comment and state-lock steps are
 no-ops and sub-issues cannot be materialized. Pass `--input key=value` (repeatable)
-for values the steps read as `${{ input.<key> }}`, and `--title` to name the task.
+for values the steps read as `${{ input.<key> }}` (also exported to the agent
+subprocess as `APIARY_INPUT_<KEY>`), and `--title` to name the task.
 
 This is what makes a **trigger-less workflow** useful: a workflow with no
 `trigger:` block never starts on its own — `apiary validate` warns about exactly

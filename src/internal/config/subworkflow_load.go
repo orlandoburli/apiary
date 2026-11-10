@@ -107,7 +107,11 @@ func (r *workflowFileResolver) load(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading subworkflow %q: %w", canonical, err)
 	}
-	dec := yaml.NewDecoder(strings.NewReader(expandEnv(string(data))))
+	expanded, err := expandConfigDoc(string(data))
+	if err != nil {
+		return "", fmt.Errorf("parsing subworkflow %q: %w", canonical, err)
+	}
+	dec := yaml.NewDecoder(strings.NewReader(expanded))
 	dec.KnownFields(true)
 	var child WorkflowConfig
 	if err := dec.Decode(&child); err != nil {
