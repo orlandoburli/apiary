@@ -329,11 +329,17 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	}
 
 	var (
-		mu          sync.Mutex
-		outBuf      bytes.Buffer
-		errBuf      bytes.Buffer
-		logs        []model.LogEntry
-		finalResult string
+		mu     sync.Mutex
+		outBuf bytes.Buffer
+		errBuf bytes.Buffer
+		logs   []model.LogEntry
+		// resultTexts holds the text of every result/completion event in arrival
+		// order. A session can emit more than one: a background task that
+		// finishes after the agent's final answer wakes the session, which
+		// replies and emits a second result with no structured output. The
+		// selection at the end keeps the last result that actually carries an
+		// APIARY_OUTPUT sentinel (issue #528).
+		resultTexts []string
 		usage       model.Usage
 		// Set when the provider emits a rate_limit_event with status "rejected"
 		// (e.g. Claude's 5-hour session limit). resetsAt is epoch seconds, 0 if
@@ -455,7 +461,7 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 			}
 			if res, ok := finalResultText(line); ok {
 				mu.Lock()
-				finalResult = res
+				resultTexts = append(resultTexts, res)
 				mu.Unlock()
 			}
 			if resetsAt, rejected := detectRateLimitRejection(line); rejected {
@@ -493,9 +499,13 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 	runErr := cmd.Wait()
 	close(heartbeatDone)
 
+	// Prefer the last result event that carried a valid APIARY_OUTPUT sentinel
+	// over a later result without one (issue #528). When no result carries a
+	// sentinel, fall back to the last result text, and when the session emitted
+	// no result event at all, to the full stdout.
 	output := strings.TrimSpace(outBuf.String())
-	if strings.TrimSpace(finalResult) != "" {
-		output = strings.TrimSpace(finalResult)
+	if chosen := resultOutputWithSentinel(resultTexts); chosen != "" {
+		output = chosen
 	}
 
 	usagePtr := &usage
@@ -852,6 +862,43 @@ func systemDetail(line string) string {
 		parts = append(parts, "task="+ev.TaskID)
 	}
 	return strings.Join(parts, " · ")
+}
+
+// resultOutputWithSentinel picks the run output from a session's result texts
+// in arrival order. A CLI session can emit several result events: when a Bash
+// command is moved to the background and finishes after the agent's final
+// answer, its completion notice starts a new turn and the CLI emits a second
+// result with no sentinel. Taking the last result verbatim would discard the
+// real answer and fail an on_missing_output=fail step (issue #528).
+//
+// The last result carrying a valid APIARY_OUTPUT wins, so the structured output
+// and the summary beside it survive. A malformed sentinel is not valid and must
+// not shadow an earlier good result. When no result carries a sentinel, the last
+// non-empty result wins — the previous "final result" behaviour. An empty
+// return means the session had no usable result text and the caller must fall
+// back to the full stdout.
+func resultOutputWithSentinel(results []string) string {
+	fallback := ""
+	for _, text := range results {
+		if trimmed := strings.TrimSpace(text); trimmed != "" {
+			fallback = trimmed
+		}
+	}
+	for i := len(results) - 1; i >= 0; i-- {
+		if resultHasStructuredOutput(results[i]) {
+			return strings.TrimSpace(results[i])
+		}
+	}
+	return fallback
+}
+
+// resultHasStructuredOutput reports whether text contains an APIARY_OUTPUT
+// sentinel that parses into a JSON object. It reuses extractStructured so the
+// test matches exactly what applyStructured will later accept: a sentinel whose
+// payload is malformed, empty, or not an object does not count.
+func resultHasStructuredOutput(text string) bool {
+	_, structured, _, _, _, _ := extractStructured(text)
+	return structured != nil
 }
 
 func finalResultText(line string) (string, bool) {
