@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -962,7 +963,10 @@ func Load(path string) (*Config, error) {
 	loadDotEnv(path)
 
 	raw := string(data)
-	expanded := expandEnv(raw)
+	expanded, err := expandConfigDoc(raw)
+	if err != nil {
+		return nil, fmt.Errorf("expanding config: %w", err)
+	}
 
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
@@ -1073,6 +1077,93 @@ func expandEnv(s string) string {
 		}
 		return os.Getenv(strings.TrimSpace(key))
 	})
+}
+
+// bracedEnvRef matches only the documented `${VAR}` form (with optional interior
+// spaces) — never a bare `$VAR`, `$3`, or `$$`, and never `${{ … }}` because a
+// `{` follows the first brace.
+var bracedEnvRef = regexp.MustCompile(`\$\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}`)
+
+// expandEnvBraced expands only `${VAR}` references. Used for env values that are
+// forwarded to an agent: the documented `${DEPLOY_URL}` forwarding keeps
+// working, while a shell-local `$VAR`, `$3` or `$$` reaches the subprocess
+// intact instead of being blanked from the daemon's environment.
+func expandEnvBraced(s string) string {
+	if !strings.Contains(s, "${") {
+		return s
+	}
+	return bracedEnvRef.ReplaceAllStringFunc(s, func(match string) string {
+		sub := bracedEnvRef.FindStringSubmatch(match)
+		return os.Getenv(sub[1])
+	})
+}
+
+// expandConfigDoc applies environment expansion to a raw YAML document without
+// corrupting content that must reach an agent verbatim.
+//
+// The whole-document os.Expand this replaces blanked shell variables inside
+// prompts (`$LOG`, `$sha`, `$3`, `$APIARY_MEMORY_DIR`), turning authored shell
+// snippets into silent nonsense (#526). Here:
+//
+//   - `prompt` and `summary_prompt` values are left byte-for-byte untouched;
+//   - `env` map values expand only the braced `${VAR}` form (the documented
+//     forwarding syntax), leaving bare `$VAR`, `$3` and `$$` alone;
+//   - every other scalar keeps the previous full `$VAR` / `${VAR}` expansion,
+//     so source credentials, URLs and paths still resolve from the daemon env.
+//
+// Working on a yaml.Node (rather than the raw text) makes the protection
+// field-aware and avoids re-parsing an expanded value as YAML. Comments are not
+// needed by the decode; Load keeps the untouched raw text separately.
+func expandConfigDoc(raw string) (string, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
+		// Let the real decode report the syntax error against the raw text.
+		return raw, nil
+	}
+	expandConfigNode(&doc)
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return raw, nil
+	}
+	return string(out), nil
+}
+
+func expandConfigNode(n *yaml.Node) {
+	switch n.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, c := range n.Content {
+			expandConfigNode(c)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			key, val := n.Content[i], n.Content[i+1]
+			switch key.Value {
+			case "prompt", "summary_prompt":
+				continue // agent-visible text: never expand env references
+			case "env":
+				if val.Kind == yaml.MappingNode {
+					expandScalarValues(val, expandEnvBraced)
+					continue
+				}
+			}
+			if key.Kind == yaml.ScalarNode {
+				key.Value = expandEnv(key.Value)
+			}
+			expandConfigNode(val)
+		}
+	case yaml.ScalarNode:
+		n.Value = expandEnv(n.Value)
+	}
+}
+
+func expandScalarValues(n *yaml.Node, expand func(string) string) {
+	if n.Kind == yaml.ScalarNode {
+		n.Value = expand(n.Value)
+		return
+	}
+	for _, c := range n.Content {
+		expandScalarValues(c, expand)
+	}
 }
 
 // loadDotEnv reads .env from the same directory as the config file and calls

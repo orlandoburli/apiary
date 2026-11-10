@@ -279,6 +279,11 @@ func (c *Config) validateStep(
 	// lowering on every step), so lint here rather than in a per-type validator.
 	errs = append(errs, lintStepExprs(sctx, s)...)
 
+	// Prompt templates resolve a fixed set of expression roots at step start.
+	// An unknown root (the common `${{ inputs.x }}` typo in a non-sub-workflow)
+	// would otherwise sit in the agent's prompt unrendered, so fail it at load.
+	errs = append(errs, lintStepPromptRoots(sctx, s, wf, wfByID)...)
+
 	// pull_request_from reads the step's structured output, which only an agent
 	// step produces.
 	if s.PullRequestFrom != "" && s.StepType() != StepTypeAgent {
@@ -429,6 +434,103 @@ func lintStepExprs(sctx string, s StepConfig) []error {
 		errs = append(errs, lintStepExprs(sctx+" (inner step)", *s.Step)...)
 	}
 	return errs
+}
+
+// promptRootRe matches a plain `${{ <root>.<path> }}` prompt accessor. It is
+// deliberately narrower than the expression grammar: an operator or a bare
+// alias in the placeholder is not a text substitution and is ignored.
+var promptRootRe = regexp.MustCompile(`\$\{\{\s*([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z0-9_-]+)+\s*\}\}`)
+
+// lintStepPromptRoots rejects unknown expression roots in a step's prompt
+// templates. It mirrors the roots the engine's renderer understands. `inputs.*`
+// is valid only where a sub-workflow binding exists; foreach inner steps may
+// additionally use their item alias.
+func lintStepPromptRoots(sctx string, s StepConfig, wf WorkflowConfig, wfByID map[string]WorkflowConfig) []error {
+	allowed := promptRootsFor(wf, wfByID)
+	var errs []error
+	errs = append(errs, lintPromptText(sctx, "prompt", s.Prompt, allowed)...)
+	errs = append(errs, lintPromptText(sctx, "summary_prompt", s.SummaryPrompt, allowed)...)
+
+	// A foreach inner step is not routed through validateStep, so check it here.
+	if s.StepType() == StepTypeForeach && s.Step != nil {
+		inner := promptAliasRoots(allowed, s.As)
+		ictx := sctx + " (inner step)"
+		errs = append(errs, lintPromptText(ictx, "prompt", s.Step.Prompt, inner)...)
+		errs = append(errs, lintPromptText(ictx, "summary_prompt", s.Step.SummaryPrompt, inner)...)
+	}
+	return errs
+}
+
+// promptRootsFor returns the expression roots a prompt template may use. The
+// `inputs` root is a sub-workflow binding, so it is accepted only for a
+// workflow that declares inputs or is referenced by another workflow's
+// `type: workflow` step.
+func promptRootsFor(wf WorkflowConfig, wfByID map[string]WorkflowConfig) map[string]bool {
+	allowed := map[string]bool{
+		"cell": true, "event": true, "input": true,
+		"memory": true, "steps": true, "task": true,
+	}
+	if workflowHasSubworkflowBinding(wf, wfByID) {
+		allowed["inputs"] = true
+	}
+	return allowed
+}
+
+// promptAliasRoots copies allowed and adds the foreach item aliases (the
+// authored `as:` name and the default "item").
+func promptAliasRoots(allowed map[string]bool, as string) map[string]bool {
+	out := make(map[string]bool, len(allowed)+2)
+	for k := range allowed {
+		out[k] = true
+	}
+	out["item"] = true
+	if as != "" {
+		out[as] = true
+	}
+	return out
+}
+
+// workflowHasSubworkflowBinding reports whether wf is a reusable sub-workflow:
+// it declares inputs, or some workflow invokes it through a `type: workflow`
+// step.
+func workflowHasSubworkflowBinding(wf WorkflowConfig, wfByID map[string]WorkflowConfig) bool {
+	if len(wf.Inputs) > 0 {
+		return true
+	}
+	for _, other := range wfByID {
+		for _, s := range other.Steps {
+			if s.StepType() == StepTypeWorkflow && s.Workflow == wf.ID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// lintPromptText flags every distinct unknown root in one prompt field.
+func lintPromptText(sctx, field, text string, allowed map[string]bool) []error {
+	if text == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var errs []error
+	for _, m := range promptRootRe.FindAllStringSubmatch(text, -1) {
+		root := m[1]
+		if allowed[root] || seen[root] {
+			continue
+		}
+		seen[root] = true
+		errs = append(errs, fmt.Errorf("%s: %s uses unknown expression root %q in %q (valid roots: cell, event, input, memory, steps, task%s)",
+			sctx, field, root, m[0], inputsRootHint(allowed)))
+	}
+	return errs
+}
+
+func inputsRootHint(allowed map[string]bool) string {
+	if allowed["inputs"] {
+		return ", inputs"
+	}
+	return ""
 }
 
 // validateSplitStep validates a type: split step.

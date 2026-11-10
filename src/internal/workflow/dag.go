@@ -202,13 +202,16 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 	dispatch := func() {
 		for _, id := range r.pickAllRunnable() {
 			step := r.byID[id]
+			// Snapshot the expression/prompt scope once, on the scheduler
+			// goroutine that owns r.stepStates and r.memory. `if:` and prompt
+			// rendering then see exactly the same data (#526).
+			evalCtx := r.evalContext(r.memoryValues())
 
 			// Per-step condition: evaluate on scheduler goroutine (reads dagRun).
 			// An expression that cannot be parsed or evaluated fails the step
 			// (routed through resultCh so on_fail applies) — silently treating it
 			// as false would skip the branch with no error signal (#180).
 			if step.Condition != "" {
-				evalCtx := EvalContext{Cell: r.cell, Memory: r.memoryValues(), Steps: r.stepStates, Event: r.event}
 				condOK, condErr := e.evalExpr(step.Condition, evalCtx)
 				if condErr != nil {
 					aplog.Error("workflow %s: step %q condition eval error %q: %v (failing step)", r.wf.ID, id, step.Condition, condErr)
@@ -260,7 +263,12 @@ func (e *Engine) driveDAG(ctx context.Context, r *dagRun) dagOutcome {
 				break
 			}
 
-			// I/O-bound steps: dispatch to worker goroutine.
+			// I/O-bound steps: dispatch to worker goroutine. Render the prompt
+			// tree HERE, on the scheduler goroutine: runStep and the parallel/
+			// foreach workers must not read r.stepStates. Rendering the whole
+			// tree also covers parallel/foreach child prompts before they are
+			// handed to their workers.
+			step = renderStepTree(step, evalCtx)
 			r.state[id] = stRunning
 			snap := r.memSteps()
 			contribSnap := r.contribSnapshot()
@@ -830,7 +838,7 @@ func (r *dagRun) markCondSkipped(id string) {
 // returns an error before any state is mutated — the caller fails the split
 // step rather than silently routing as if the branch didn't match (#180).
 func (e *Engine) runSplitStep(r *dagRun, step config.StepConfig) error {
-	ctx := EvalContext{Cell: r.cell, Memory: r.memoryValues(), Steps: r.stepStates, Event: r.event}
+	ctx := r.evalContext(r.memoryValues())
 
 	chosen := map[string]bool{}
 	for _, b := range step.Branches {
@@ -976,6 +984,21 @@ func (r *dagRun) memoryValues() map[string]string {
 	return memoryValuesFrom(r.memSteps())
 }
 
+// evalContext builds the data an expression evaluates against: the same task
+// input, event scope, and step states prompt templates see. It must only be
+// called on the scheduler goroutine, which owns r.stepStates. Callers pass the
+// memory map appropriate to the gate being evaluated.
+func (r *dagRun) evalContext(memory map[string]string) EvalContext {
+	return EvalContext{
+		Cell:   r.cell,
+		Memory: memory,
+		Steps:  r.stepStates,
+		Event:  r.event,
+		Input:  inputValues(r.task.Input),
+		Task:   r.task,
+	}
+}
+
 // memoryValuesFrom flattens ordered memory contributions into the Step Data
 // map used by expression evaluation (memory.<key>), last-write-wins.
 func memoryValuesFrom(steps []MemoryStep) map[string]string {
@@ -1025,7 +1048,7 @@ func (e *Engine) applyFailWhen(ctx context.Context, r *dagRun, step config.StepC
 			}
 		}
 	}
-	evalCtx := EvalContext{Cell: r.cell, Memory: transientMem, Steps: r.stepStates, Event: r.event}
+	evalCtx := r.evalContext(transientMem)
 
 	gate, parseErr := ParseExpr(stripExprDelimiters(step.FailWhen))
 	if parseErr != nil {

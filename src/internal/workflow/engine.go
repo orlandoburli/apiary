@@ -183,6 +183,11 @@ type StepRequest struct {
 	// for the instance this step belongs to. The executor folds it into the
 	// working-directory precedence chain, below step.working_dir (#436).
 	WorkflowWorkingDir string
+	// Inputs is the task's structured input (from `apiary dispatch --input
+	// key=value`), already rendered to strings. The executor exports it to the
+	// agent subprocess as APIARY_INPUT_<KEY> so shell snippets in a prompt can
+	// read the same values the ${{ input.* }} templates resolve.
+	Inputs map[string]string
 }
 
 // wfScope carries the workflow-level settings a step inherits while it runs:
@@ -799,6 +804,12 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 	if agent != nil {
 		ag = *agent
 	}
+
+	// Prompts are rendered at dispatch time (dag.go) on the scheduler goroutine,
+	// where the if:-condition scope is safely readable; runStep only needs the
+	// task input for the APIARY_INPUT_* overlay. (#526)
+	inputs := inputValues(task.Input)
+
 	res := e.exec.ExecuteStep(ctx, StepRequest{
 		InstanceID:         instID,
 		Cell:               cell,
@@ -809,6 +820,7 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 		Prompt:             step.Prompt,
 		WorkflowEnv:        scope.Env,
 		WorkflowWorkingDir: scope.WorkingDir,
+		Inputs:             inputs,
 	})
 
 	finished := e.now()
