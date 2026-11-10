@@ -77,6 +77,7 @@ type labelCreateRequest struct {
 type pullRequest struct {
 	Number         int    `json:"number"`
 	State          string `json:"state"`
+	Title          string `json:"title"`
 	HTMLURL        string `json:"html_url"`
 	Body           string `json:"body"`
 	User           user   `json:"user"`

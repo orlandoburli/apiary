@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/router"
 	runnerpkg "github.com/orlandoburli/apiary/internal/runner"
 	"github.com/orlandoburli/apiary/internal/source"
+	ticketpkg "github.com/orlandoburli/apiary/internal/ticket"
 )
 
 // envRecordingRunner records the env of every RunRequest it executes, so the
@@ -88,6 +91,28 @@ func testEvent(id string) model.SourceEvent {
 	}
 }
 
+// bindTicket pre-binds a ticket task the way the normal poll→bind path would,
+// so a PR event reference can resolve to it.
+func bindTicket(t *testing.T, d *Dispatcher, sourceID, itemID, number, title string) model.InternalTask {
+	t.Helper()
+	task, persisted := d.bindItem(context.Background(), model.SourceItem{
+		ID: itemID, SourceID: sourceID, Number: number, Title: title, State: "open",
+	})
+	if !persisted {
+		t.Fatalf("ticket %s/%s must persist", sourceID, itemID)
+	}
+	return task
+}
+
+// assertNoPRCell asserts the synthetic per-PR task the old behaviour created was
+// not bound.
+func assertNoPRCell(t *testing.T, dbc *db.Client, n int) {
+	t.Helper()
+	if b, err := dbc.SourceBindings().GetBindingBySourceItem(context.Background(), "github", fmt.Sprintf("pr-%d", n)); err != nil || b != nil {
+		t.Fatalf("a synthetic pr-%d task/binding must not be created, got %v (%v)", n, b, err)
+	}
+}
+
 // waitIdle blocks until every dispatch the test kicked off has finished, so
 // assertions observe the completed run rather than a half-written one. Waiting
 // on the dispatcher's own goroutines is deterministic: polling the DB for the
@@ -122,13 +147,17 @@ func waitForInstances(t *testing.T, dbc *db.Client, want int) []db.WorkflowInsta
 
 // TestRoutePREvent_ExactlyOnceAndEnvPayload drives one PR comment event through
 // routing twice (simulating the watermark overlap / a restart re-fetch) and
-// asserts: exactly one workflow instance dispatches, the agent step receives the
-// APIARY_EVENT_* / APIARY_PR_* payload, and a standalone per-PR task is bound.
+// asserts: exactly one workflow instance dispatches on the ticket's task, the
+// agent step receives the APIARY_EVENT_* / APIARY_PR_* payload, and no synthetic
+// per-PR task is created.
 func TestRoutePREvent_ExactlyOnceAndEnvPayload(t *testing.T) {
 	ctx := context.Background()
 	d, dbc, runner := newEventDispatcher(t)
 
+	ticketTask := bindTicket(t, d, "jira", "10001", "PSP-348", "PSP-348 — [ask-du] ship the thing")
+
 	ev := testEvent("comment-1")
+	ev.TicketRefs = []string{"PSP-348"}
 	d.routePREvent(ctx, ev)
 	d.routePREvent(ctx, ev) // duplicate delivery must be a no-op
 
@@ -138,14 +167,18 @@ func TestRoutePREvent_ExactlyOnceAndEnvPayload(t *testing.T) {
 		t.Errorf("instance workflow = %q", insts[0].WorkflowID)
 	}
 
-	// The standalone per-PR task is bound via the synthetic pr-<n> item.
-	b, err := dbc.SourceBindings().GetBindingBySourceItem(ctx, "github", "pr-7")
-	if err != nil || b == nil {
-		t.Fatalf("expected a binding for pr-7, got %v (%v)", b, err)
+	// The instance binds to the ticket task, not to a PR event receipt.
+	if insts[0].TaskID != ticketTask.ID {
+		t.Errorf("instance task %q != ticket task %q", insts[0].TaskID, ticketTask.ID)
 	}
-	if insts[0].TaskID != b.TaskID {
-		t.Errorf("instance task %q != bound task %q", insts[0].TaskID, b.TaskID)
+	gotTask, err := dbc.InternalTasks().GetTask(ctx, insts[0].TaskID)
+	if err != nil || gotTask == nil {
+		t.Fatalf("read instance task: %v (%v)", gotTask, err)
 	}
+	if gotTask.Title != ticketTask.Title {
+		t.Errorf("instance task title = %q, want the ticket's %q", gotTask.Title, ticketTask.Title)
+	}
+	assertNoPRCell(t, dbc, 7)
 
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
@@ -167,22 +200,142 @@ func TestRoutePREvent_ExactlyOnceAndEnvPayload(t *testing.T) {
 	}
 }
 
+// TestRoutePREvent_ResolvesTicketFromTitle checks the title is the first place a
+// ticket key is looked for.
+func TestRoutePREvent_ResolvesTicketFromTitle(t *testing.T) {
+	d, dbc, _ := newEventDispatcher(t)
+	ticketTask := bindTicket(t, d, "jira", "10001", "PSP-348", "PSP-348 — [ask-du] ship the thing")
+
+	ev := testEvent("comment-1")
+	ev.PRTitle = "[ask-du] PSP-348 ship the thing"
+	ev.TicketRefs = ticketpkg.Refs(ev.PRTitle, "", "")
+
+	d.routePREvent(context.Background(), ev)
+	waitIdle(t, d)
+	insts := waitForInstances(t, dbc, 1)
+	if insts[0].TaskID != ticketTask.ID {
+		t.Errorf("instance task = %q, want ticket task %q", insts[0].TaskID, ticketTask.ID)
+	}
+	assertNoPRCell(t, dbc, 7)
+}
+
+// TestRoutePREvent_ResolvesTicketFromBranch checks the head branch is the second
+// place a ticket key is looked for.
+func TestRoutePREvent_ResolvesTicketFromBranch(t *testing.T) {
+	d, dbc, _ := newEventDispatcher(t)
+	ticketTask := bindTicket(t, d, "jira", "10001", "PSP-348", "PSP-348 — [ask-du] ship the thing")
+
+	ev := testEvent("comment-1")
+	ev.PRBranch = "feat/PSP-348-thing"
+	ev.TicketRefs = ticketpkg.Refs("", ev.PRBranch, "")
+
+	d.routePREvent(context.Background(), ev)
+	waitIdle(t, d)
+	insts := waitForInstances(t, dbc, 1)
+	if insts[0].TaskID != ticketTask.ID {
+		t.Errorf("instance task = %q, want ticket task %q", insts[0].TaskID, ticketTask.ID)
+	}
+	assertNoPRCell(t, dbc, 7)
+}
+
+// TestRoutePREvent_ResolvesTicketFromBody checks the PR body is the last place a
+// ticket key is looked for.
+func TestRoutePREvent_ResolvesTicketFromBody(t *testing.T) {
+	d, dbc, _ := newEventDispatcher(t)
+	ticketTask := bindTicket(t, d, "jira", "10001", "PSP-348", "PSP-348 — [ask-du] ship the thing")
+
+	ev := testEvent("comment-1")
+	ev.PRBody = "Tracks PSP-348."
+	ev.TicketRefs = ticketpkg.Refs("", "", ev.PRBody)
+
+	d.routePREvent(context.Background(), ev)
+	waitIdle(t, d)
+	insts := waitForInstances(t, dbc, 1)
+	if insts[0].TaskID != ticketTask.ID {
+		t.Errorf("instance task = %q, want ticket task %q", insts[0].TaskID, ticketTask.ID)
+	}
+	assertNoPRCell(t, dbc, 7)
+}
+
+// TestRoutePREvent_DropsEventWithoutTicket pins the new default: no ticket key
+// means no task. The event must not create a pr-<n> row or dispatch.
+func TestRoutePREvent_DropsEventWithoutTicket(t *testing.T) {
+	d, dbc, _ := newEventDispatcher(t)
+
+	ev := testEvent("comment-1")
+	ev.PRTitle = "fix the lint errors" // no key anywhere
+	ev.PRBody = "Closes #42"           // a GitHub ref, not a ticket key
+	ev.TicketRefs = ticketpkg.Refs(ev.PRTitle, ev.PRBranch, ev.PRBody)
+
+	if task, reason := d.resolveEventTask(context.Background(), ev); task != nil || !strings.Contains(reason, "no ticket reference") {
+		t.Fatalf("resolveEventTask = (%v, %q), want no task and a no-ticket-reference reason", task, reason)
+	}
+
+	d.routePREvent(context.Background(), ev)
+	waitIdle(t, d)
+	waitForInstances(t, dbc, 0)
+	assertNoPRCell(t, dbc, 7)
+}
+
+// TestRoutePREvent_AmbiguousTicketReferenceDropsEvent pins the ambiguity rule: a
+// reference bound to two distinct items is dropped (never guessed at), with a
+// reason naming the candidates.
+func TestRoutePREvent_AmbiguousTicketReferenceDropsEvent(t *testing.T) {
+	d, dbc, _ := newEventDispatcher(t)
+	bindTicket(t, d, "jira", "10001", "PSP-348", "PSP-348 one")
+	bindTicket(t, d, "other", "20002", "PSP-348", "PSP-348 two")
+
+	ev := testEvent("comment-1")
+	ev.TicketRefs = []string{"PSP-348"}
+
+	task, reason := d.resolveEventTask(context.Background(), ev)
+	if task != nil || !strings.Contains(reason, "ambiguous") {
+		t.Fatalf("resolveEventTask = (%v, %q), want no task and an ambiguous reason", task, reason)
+	}
+
+	d.routePREvent(context.Background(), ev)
+	waitIdle(t, d)
+	waitForInstances(t, dbc, 0)
+	assertNoPRCell(t, dbc, 7)
+}
+
+// TestRoutePREvent_SkipsUnboundFalsePositiveCandidate checks that a leading
+// token that looks like a key but is not bound ("UTF-8") does not hide the real
+// ticket key later in the title.
+func TestRoutePREvent_SkipsUnboundFalsePositiveCandidate(t *testing.T) {
+	d, dbc, _ := newEventDispatcher(t)
+	ticketTask := bindTicket(t, d, "jira", "10001", "PSP-348", "PSP-348 — [ask-du] ship the thing")
+
+	ev := testEvent("comment-1")
+	ev.PRTitle = "Fix UTF-8 decoding for PSP-348"
+	ev.TicketRefs = ticketpkg.Refs(ev.PRTitle, "", "")
+
+	d.routePREvent(context.Background(), ev)
+	waitIdle(t, d)
+	insts := waitForInstances(t, dbc, 1)
+	if insts[0].TaskID != ticketTask.ID {
+		t.Errorf("instance task = %q, want ticket task %q (the unbound UTF-8 candidate must be skipped)", insts[0].TaskID, ticketTask.ID)
+	}
+}
+
 // TestRoutePREvent_MaxDispatchesBudget sends distinct events on the same PR past
 // the trigger's max_dispatches and asserts the budget caps dispatch.
 func TestRoutePREvent_MaxDispatchesBudget(t *testing.T) {
 	ctx := context.Background()
 	d, dbc, _ := newEventDispatcher(t)
+	bindTicket(t, d, "jira", "10001", "PSP-348", "PSP-348 — ship the thing")
 
-	d.routePREvent(ctx, testEvent("comment-1"))
-	waitIdle(t, d)
-	waitForInstances(t, dbc, 1)
-	d.routePREvent(ctx, testEvent("comment-2"))
-	waitIdle(t, d)
-	waitForInstances(t, dbc, 2)
+	for i := 1; i <= 3; i++ {
+		ev := testEvent(fmt.Sprintf("comment-%d", i))
+		ev.TicketRefs = []string{"PSP-348"}
+		d.routePREvent(ctx, ev)
+		waitIdle(t, d)
+		if i <= 2 {
+			waitForInstances(t, dbc, i)
+		}
+	}
 
 	// Budget is 2: the third event on the same PR must not dispatch.
-	d.routePREvent(ctx, testEvent("comment-3"))
-	waitIdle(t, d)
 	waitForInstances(t, dbc, 2)
 }
 
