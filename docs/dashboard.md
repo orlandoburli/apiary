@@ -140,6 +140,7 @@ From the list you can drill into the selected task:
 | `d`                    | **Details** — agent, model, runner, attempts, start/finish times, total duration, and the error message if it failed |
 | `Enter` or `l`         | **Logs** — the per-task log lines for that run     |
 | `o`                    | **Open** the task in your browser (its source URL) |
+| `p`                    | **Open PR** — the task's most recent pull request, in your browser |
 | `R` (Shift+R)          | **Force restart** — cancel and re-dispatch the task (with confirmation) |
 | `W` (Shift+W)          | **Start a workflow** on the task, ignoring triggers and guards |
 | `C`                    | **Clear logs** — delete all logs for the task (with confirmation) |
@@ -147,8 +148,10 @@ From the list you can drill into the selected task:
 | `Esc` / `Backspace` / `h` / `←` | Back to the list                          |
 
 The `#` column shows each task's human reference (e.g. `ERP-42`) so you can
-match a row to the work item in Plane. Press `o` on any task — in the list, in
-Details, or drilled into from an agent — to open it directly in the browser.
+match a row to the work item in Plane. Press `o` on any task — in the list, on
+the board, in Details, in the workflow monitor, or drilled into from an agent —
+to open it directly in the browser, and `p` to open its most recent pull
+request.
 
 In the **Logs** view, `↑` / `↓` scroll through the lines, `Home` / `End` jump
 to the top / bottom, and `PgUp` / `PgDn` (or `Ctrl+U` / `Ctrl+D` / `Space`)
@@ -175,6 +178,7 @@ monitor: the step list on the left, and the selected step's detail — or its lo
 | `-` / `+` | **Resize the split** — narrow or widen the step list, 5% at a time |
 | `[` / `]` | Switch between workflow instances, when a task fanned out to several |
 | `t` | Open the step's [transcript](#watching-the-live-conversation-debug-mode) |
+| `o` / `p` | Open the monitored task (its source URL) / its latest pull request |
 | `r` | Refresh the monitor |
 | `X` / `R` | Stop the workflow / restart the whole task (both confirm first) |
 | `Esc` / `Backspace` / `h` / `←` | Back (closes the log panel first, then the monitor) |
@@ -331,6 +335,7 @@ elsewhere, acting on the selected card:
 | `Enter` / `l`  | Open the task                                      |
 | `a` / `y` / `n`| Answer the approval the card is blocked on         |
 | `R` (Shift+R)  | Force restart the task                             |
+| `o` / `p`      | Open the card's source URL / its latest PR         |
 | `b` / `Esc`    | Back to the list                                   |
 
 Answering approvals in place is the reason the view earns its keystroke: open
@@ -374,6 +379,7 @@ The Agents tab supports three levels of drill-down:
 | `d`                    | **Detail** — full per-agent stats: status, running count, current task, completed / succeeded / failed counts, queued count, success rate, average duration, last task timestamp |
 | `Enter` / `l`          | **Activity list** — all tasks handled by this agent (from activity: press `Enter` / `l` again to drill into that task's logs) |
 | `o`                    | **Open** the task's source URL in your browser (from activity or task logs) |
+| `p`                    | **Open PR** — the task's most recent pull request (from activity or task logs) |
 | `Esc` / `Backspace` / `h` / `←` | Back one level (agent list → detail → activity → task logs)|
 | `Home` / `End`         | Jump to top / bottom in activity list or task logs                 |
 | `PgUp` / `PgDn`        | Page up / down in activity list or task logs                       |

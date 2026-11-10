@@ -1758,23 +1758,63 @@ func (a *App) selectedTaskID() (string, bool) {
 	return row.TaskID, true
 }
 
+// focusedTaskItem returns the task the user is currently looking at in the
+// Tasks tab. Each sub-view addresses its task differently — the board by
+// (column, row), the workflow monitor by WorkflowTaskID, the detail view by its
+// loaded item, the list by the cursor — so resolving it here, once, is what
+// keeps every focused-task action on the same task. Indexing the filtered list
+// directly from a per-view helper is what made (o)/(p) miss on the board and in
+// the monitor (#527).
+func (a *App) focusedTaskItem() (*TaskItem, bool) {
+	t := a.model.tasksTab
+	if t == nil {
+		return nil, false
+	}
+	// The board addresses a task by (column, row) rather than by list index.
+	// Below its legibility floor the tab renders the list instead of the board
+	// (see renderTasksTab), so fall through and resolve the row the user can
+	// actually see rather than a board cursor that is no longer drawn.
+	if t.View == TaskViewBoard {
+		if a.boardColumnCount() > 0 {
+			if card := a.selectedBoardTask(t); card != nil {
+				return card, true
+			}
+			return nil, false
+		}
+	} else if t.View == TaskViewDetail && t.Detail != nil {
+		return t.Detail, true
+	} else if t.View == TaskViewWorkflow && t.WorkflowTaskID != "" {
+		// The monitor's own task, not whatever the list cursor happens to sit on:
+		// a re-sorted list underneath would otherwise retarget the action. The row
+		// may have scrolled out of the loaded window, in which case there is no
+		// TaskItem to return; focusedTaskID still reports WorkflowTaskID then.
+		for i := range t.History {
+			it := &t.History[i]
+			if it.TaskID == t.WorkflowTaskID || it.DrillKey == t.WorkflowTaskID {
+				return it, true
+			}
+		}
+		return nil, false
+	}
+	rows := a.filteredTasks(t)
+	if t.SelectedIdx < 0 || t.SelectedIdx >= len(rows) {
+		return nil, false
+	}
+	return &rows[t.SelectedIdx], true
+}
+
 // focusedTaskURL returns the source URL of the task the user is currently
-// looking at — the selected row in the Tasks list, the open task detail, or the
-// task drilled into from an agent's activity. Reports false when there is no URL.
+// looking at — the focused item in the Tasks tab (list, board, detail, or
+// workflow monitor), or the task drilled into from an agent's activity. Reports
+// false when there is no URL.
 func (a *App) focusedTaskURL() (string, bool) {
 	switch a.model.ActiveTab() {
 	case "Tasks":
-		t := a.model.tasksTab
-		if t == nil {
+		item, ok := a.focusedTaskItem()
+		if !ok {
 			return "", false
 		}
-		if t.View == TaskViewDetail && t.Detail != nil {
-			return t.Detail.URL, t.Detail.URL != ""
-		}
-		if rows := a.filteredTasks(t); t.SelectedIdx >= 0 && t.SelectedIdx < len(rows) {
-			u := rows[t.SelectedIdx].URL
-			return u, u != ""
-		}
+		return item.URL, item.URL != ""
 	case "Agents":
 		ag := a.model.agentsTab
 		if ag == nil {
@@ -1796,16 +1836,11 @@ func (a *App) focusedTaskURL() (string, bool) {
 func (a *App) focusedTaskPulls() ([]PullRequestItem, bool) {
 	switch a.model.ActiveTab() {
 	case "Tasks":
-		t := a.model.tasksTab
-		if t == nil {
+		item, ok := a.focusedTaskItem()
+		if !ok {
 			return nil, false
 		}
-		if t.View == TaskViewDetail && t.Detail != nil {
-			return t.Detail.PullRequests, true
-		}
-		if rows := a.filteredTasks(t); t.SelectedIdx >= 0 && t.SelectedIdx < len(rows) {
-			return rows[t.SelectedIdx].PullRequests, true
-		}
+		return item.PullRequests, true
 	case "Agents":
 		ag := a.model.agentsTab
 		if ag == nil {
@@ -1836,20 +1871,15 @@ func (a *App) focusedTaskPRURL() (string, bool) {
 func (a *App) focusedTaskID() (string, bool) {
 	switch a.model.ActiveTab() {
 	case "Tasks":
-		t := a.model.tasksTab
-		if t == nil {
-			return "", false
-		}
-		if t.View == TaskViewDetail && t.Detail != nil {
-			return t.Detail.TaskID, true
-		}
-		// The monitor's own task, not whatever the list cursor happens to sit on:
-		// a re-sorted list underneath would otherwise retarget the action.
-		if t.View == TaskViewWorkflow && t.WorkflowTaskID != "" {
+		if t := a.model.tasksTab; t != nil && t.View == TaskViewWorkflow && t.WorkflowTaskID != "" {
+			// The monitor's own task, not whatever the list cursor happens to
+			// sit on: a re-sorted list underneath would otherwise retarget the
+			// action. Kept ahead of the shared resolver because the row can
+			// have scrolled out of the loaded window.
 			return t.WorkflowTaskID, true
 		}
-		if rows := a.filteredTasks(t); t.SelectedIdx >= 0 && t.SelectedIdx < len(rows) {
-			return rows[t.SelectedIdx].TaskID, true
+		if item, ok := a.focusedTaskItem(); ok {
+			return item.TaskID, true
 		}
 	case "Agents":
 		ag := a.model.agentsTab
@@ -5864,9 +5894,9 @@ func (a *App) footerKeys() []fkey {
 				return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"end", "follow"}, {"t", label}, {"r", "reload"}, {"q", "quit"}}
 			case TaskViewWorkflow:
 				if t.WorkflowShowLogs {
-					return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"-/+", "split"}, {"q", "quit"}}
+					return []fkey{{"esc", "back"}, {"↑/↓", "scroll"}, {"o", "open"}, {"p", "open PR"}, {"-/+", "split"}, {"q", "quit"}}
 				}
-				keys := []fkey{{"↑/↓", "step"}, {"enter/l", "logs"}, {"t", "transcript"}}
+				keys := []fkey{{"↑/↓", "step"}, {"enter/l", "logs"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}}
 				if len(t.WorkflowInstances) > 1 {
 					keys = append(keys, fkey{"[ ]", "workflow"})
 				}
