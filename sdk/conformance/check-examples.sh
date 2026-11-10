@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run the conformance corpus against every plugin implementation this
-# repository ships: the Go SDK's example plugins, the Python SDK's example, the
-# in-tree Bash and Node plugins, and the hand-rolled examples embedded in the
-# docs. One command, one verdict — `make conformance` calls this.
+# repository ships: the Go SDK's example plugins, the Python and TypeScript SDK
+# examples, the in-tree Bash and Node plugins, and the hand-rolled examples
+# embedded in the docs. One command, one verdict — `make conformance` calls this.
 #
 # Toolchains that are missing are skipped with a notice rather than failing the
 # run, so a contributor without Node or Rust still gets a useful result; CI has
@@ -47,6 +47,30 @@ fi
 
 # ── Python SDK ───────────────────────────────────────────────────────────────
 check "python source_file (Python SDK)" "$FILE_CONFIG" "$PYTHON" "$REPO/sdk/python/examples/source_file.py"
+
+# ── TypeScript/Node SDK ──────────────────────────────────────────────────────
+# `dist/` and `node_modules/` are gitignored, so a fresh checkout has to build
+# the example before it can be checked. Missing node/npm is a skip; a broken
+# build after dependencies installed is a failure.
+TS_SDK="$REPO/sdk/typescript"
+TS_EXAMPLE="$TS_SDK/dist/examples/source_file.js"
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+  skip "typescript source_file (TypeScript SDK)" "node/npm not installed"
+else
+  ts_build_ok=1
+  if [[ ! -d "$TS_SDK/node_modules" ]] \
+    && ! (cd "$TS_SDK" && npm install --no-audit --no-fund --silent); then
+    ts_build_ok=0
+    skip "typescript source_file (TypeScript SDK)" "npm install failed (offline?) — run it in sdk/typescript"
+  fi
+  if (( ts_build_ok )) && ! (cd "$TS_SDK" && npm run build --silent); then
+    ts_build_ok=0
+    failures+=("typescript source_file (TypeScript SDK) (build)")
+  fi
+  if (( ts_build_ok )); then
+    check "typescript source_file (TypeScript SDK)" "$FILE_CONFIG" node "$TS_EXAMPLE"
+  fi
+fi
 
 # ── In-tree hand-rolled example plugins ──────────────────────────────────────
 if command -v jq >/dev/null 2>&1; then
