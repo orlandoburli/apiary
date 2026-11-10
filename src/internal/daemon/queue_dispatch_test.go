@@ -59,6 +59,28 @@ func TestEmbeddedWorkerLeasesJobRequiringRunnerCapability(t *testing.T) {
 	}
 }
 
+// The workflow dimension must reach the policy the claim transaction evaluates;
+// config validation alone does not prove queuePolicy wired it in.
+func TestQueuePolicyIncludesWorkflowLimits(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Settings.Queue.Concurrency = config.QueueConcurrencySettings{
+		DefaultWorkflow: 3,
+		Workflows:       map[string]int{"sweep": 1},
+	}
+	policy := (&Dispatcher{cfg: cfg}).queuePolicy()
+	if policy.DefaultWorkflow != 3 {
+		t.Errorf("DefaultWorkflow = %d, want 3", policy.DefaultWorkflow)
+	}
+	if policy.Workflows["sweep"] != 1 {
+		t.Errorf("Workflows[sweep] = %d, want 1", policy.Workflows["sweep"])
+	}
+	// The map is copied so the per-agent default loop cannot mutate the config.
+	policy.Workflows["sweep"] = 9
+	if cfg.Settings.Queue.Concurrency.Workflows["sweep"] != 1 {
+		t.Error("queuePolicy must copy the workflows map, not alias the config")
+	}
+}
+
 func TestSettleRemoteQueueJobIsDurableAndIdempotent(t *testing.T) {
 	ctx := context.Background()
 	client, err := db.New(ctx, filepath.Join(t.TempDir(), "control.db"))

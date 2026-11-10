@@ -422,12 +422,12 @@ func validateQueueSettings(settings QueueSettings) []error {
 		errs = append(errs, fmt.Errorf("settings.queue.worker_capacity must be >= 0"))
 	}
 	limits := settings.Concurrency
-	for name, value := range map[string]int{"default_project": limits.DefaultProject, "default_source": limits.DefaultSource, "default_agent": limits.DefaultAgent, "default_runner": limits.DefaultRunner, "default_pool": limits.DefaultPool} {
+	for name, value := range map[string]int{"default_project": limits.DefaultProject, "default_source": limits.DefaultSource, "default_agent": limits.DefaultAgent, "default_runner": limits.DefaultRunner, "default_pool": limits.DefaultPool, "default_workflow": limits.DefaultWorkflow} {
 		if value < 0 {
 			errs = append(errs, fmt.Errorf("settings.queue.concurrency.%s must be >= 0", name))
 		}
 	}
-	for name, values := range map[string]map[string]int{"projects": limits.Projects, "sources": limits.Sources, "agents": limits.Agents, "runners": limits.Runners, "pools": limits.Pools} {
+	for name, values := range map[string]map[string]int{"projects": limits.Projects, "sources": limits.Sources, "agents": limits.Agents, "runners": limits.Runners, "pools": limits.Pools, "workflows": limits.Workflows} {
 		for key, value := range values {
 			if strings.TrimSpace(key) == "" || value <= 0 {
 				errs = append(errs, fmt.Errorf("settings.queue.concurrency.%s[%q] must have a non-empty key and positive limit", name, key))

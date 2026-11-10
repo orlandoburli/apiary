@@ -482,16 +482,18 @@ type QueueSettings struct {
 }
 
 type QueueConcurrencySettings struct {
-	DefaultProject int            `yaml:"default_project,omitempty"`
-	Projects       map[string]int `yaml:"projects,omitempty"`
-	DefaultSource  int            `yaml:"default_source,omitempty"`
-	Sources        map[string]int `yaml:"sources,omitempty"`
-	DefaultAgent   int            `yaml:"default_agent,omitempty"`
-	Agents         map[string]int `yaml:"agents,omitempty"`
-	DefaultRunner  int            `yaml:"default_runner,omitempty"`
-	Runners        map[string]int `yaml:"runners,omitempty"`
-	DefaultPool    int            `yaml:"default_pool,omitempty"`
-	Pools          map[string]int `yaml:"pools,omitempty"`
+	DefaultProject  int            `yaml:"default_project,omitempty"`
+	Projects        map[string]int `yaml:"projects,omitempty"`
+	DefaultSource   int            `yaml:"default_source,omitempty"`
+	Sources         map[string]int `yaml:"sources,omitempty"`
+	DefaultAgent    int            `yaml:"default_agent,omitempty"`
+	Agents          map[string]int `yaml:"agents,omitempty"`
+	DefaultRunner   int            `yaml:"default_runner,omitempty"`
+	Runners         map[string]int `yaml:"runners,omitempty"`
+	DefaultPool     int            `yaml:"default_pool,omitempty"`
+	Pools           map[string]int `yaml:"pools,omitempty"`
+	DefaultWorkflow int            `yaml:"default_workflow,omitempty"`
+	Workflows       map[string]int `yaml:"workflows,omitempty"`
 }
 
 func (q QueueSettings) IsEnabled() bool          { return q.Enabled == nil || *q.Enabled }

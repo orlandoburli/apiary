@@ -247,3 +247,106 @@ func TestRetryOnBusyDoesNotRetryOtherErrors(t *testing.T) {
 		t.Errorf("op ran %d times, want 1", calls)
 	}
 }
+
+// Each concurrency dimension must deny a second claim of the same scope while
+// the first job is leased, and allow it again once that lease finishes. The
+// workflow dimension is the #537 surface 2 addition: a scheduled routine could
+// not be capped on its own because the queue had no workflow scope.
+func TestQueueConcurrencyPolicyScopes(t *testing.T) {
+	scopes := []struct {
+		name   string
+		job    func(*queue.Job)
+		policy queue.ConcurrencyPolicy
+	}{
+		{"project", func(job *queue.Job) { job.ProjectID = "scoped" }, queue.ConcurrencyPolicy{DefaultProject: 1}},
+		{"source", func(job *queue.Job) { job.SourceID = "scoped" }, queue.ConcurrencyPolicy{DefaultSource: 1}},
+		{"agent", func(job *queue.Job) { job.AgentID = "scoped" }, queue.ConcurrencyPolicy{DefaultAgent: 1}},
+		{"runner", func(job *queue.Job) { job.RunnerID = "scoped" }, queue.ConcurrencyPolicy{DefaultRunner: 1}},
+		{"pool", func(job *queue.Job) { job.Pool = "default" }, queue.ConcurrencyPolicy{Pools: map[string]int{"default": 1}}},
+		{"default pool", func(job *queue.Job) { job.Pool = "default" }, queue.ConcurrencyPolicy{DefaultPool: 1}},
+		{"workflow", func(job *queue.Job) { job.WorkflowID = "sweep" }, queue.ConcurrencyPolicy{Workflows: map[string]int{"sweep": 1}}},
+		{"default workflow", func(job *queue.Job) { job.WorkflowID = "sweep" }, queue.ConcurrencyPolicy{DefaultWorkflow: 1}},
+	}
+	for _, scope := range scopes {
+		t.Run(scope.name, func(t *testing.T) {
+			ctx := context.Background()
+			client, _ := queueTestClient(t)
+			defer client.Close()
+			store := client.Queue()
+
+			var jobs []*queue.Job
+			for i := 0; i < 2; i++ {
+				job := testJob(fmt.Sprintf("%s-limit-%d", scope.name, i))
+				scope.job(job)
+				if _, err := store.Enqueue(ctx, job); err != nil {
+					t.Fatal(err)
+				}
+				jobs = append(jobs, job)
+			}
+			registerQueueWorker(t, store, "worker", 2, nil, nil)
+
+			first, err := store.Claim(ctx, queue.ClaimRequest{WorkerID: "worker", Policy: scope.policy})
+			if err != nil {
+				t.Fatalf("first claim: %v", err)
+			}
+			if _, err := store.Claim(ctx, queue.ClaimRequest{WorkerID: "worker", Policy: scope.policy}); !errors.Is(err, queue.ErrNoJob) {
+				t.Fatalf("second claim = %v, want ErrNoJob while the scope is at its limit", err)
+			}
+			// A concurrency limit delays the sibling job; it must stay queued
+			// rather than be failed, canceled, or dropped.
+			for _, job := range jobs {
+				if job.ID == first.Job.ID {
+					continue
+				}
+				pending, err := store.GetJob(ctx, job.ID)
+				if err != nil {
+					t.Fatalf("get denied job: %v", err)
+				}
+				if pending.State != queue.JobQueued {
+					t.Fatalf("denied job state = %s, want %s", pending.State, queue.JobQueued)
+				}
+				if pending.AttemptCount != 0 {
+					t.Fatalf("denied job attempt_count = %d, want 0", pending.AttemptCount)
+				}
+			}
+			if err := store.Finish(ctx, first.Job.ID, first.Attempt.ID, first.Attempt.ClaimToken, queue.FinishResult{Success: true}); err != nil {
+				t.Fatalf("finish: %v", err)
+			}
+			if _, err := store.Claim(ctx, queue.ClaimRequest{WorkerID: "worker", Policy: scope.policy}); err != nil {
+				t.Fatalf("claim after the lease finished: %v", err)
+			}
+		})
+	}
+}
+
+// The point of a workflow scope: capping one workflow must not throttle a
+// different workflow that shares every other scope with it, so a slow routine
+// can be capped without touching an agent it shares with product work.
+func TestQueueWorkflowConcurrencyIsIndependentOfOtherWorkflows(t *testing.T) {
+	ctx := context.Background()
+	client, _ := queueTestClient(t)
+	defer client.Close()
+	store := client.Queue()
+
+	policy := queue.ConcurrencyPolicy{Workflows: map[string]int{"sweep": 1}}
+	registerQueueWorker(t, store, "worker", 2, nil, nil)
+
+	sweep := testJob("sweep-0")
+	sweep.WorkflowID = "sweep"
+	if _, err := store.Enqueue(ctx, sweep); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(ctx, queue.ClaimRequest{WorkerID: "worker", Policy: policy}); err != nil {
+		t.Fatalf("claim sweep: %v", err)
+	}
+	// The sweep lease is still active, so another sweep would be denied — but a
+	// different workflow must lease normally.
+	build := testJob("build-0")
+	build.WorkflowID = "build"
+	if _, err := store.Enqueue(ctx, build); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(ctx, queue.ClaimRequest{WorkerID: "worker", Policy: policy}); err != nil {
+		t.Fatalf("claim build while sweep is at its limit: %v", err)
+	}
+}
