@@ -102,6 +102,28 @@ func dispatchIdempotencyKey(taskID string, generation int, workflowID, suffix st
 	return key
 }
 
+// pendingCappedEnqueuer is implemented by queue stores that can enforce a
+// per-workflow pending cap atomically at enqueue time. Stores that do not
+// implement it (test fakes, proxy clients) fall back to plain Enqueue.
+type pendingCappedEnqueuer interface {
+	EnqueueCapped(context.Context, *queue.Job, int) (db.EnqueueResult, error)
+}
+
+// enqueueDispatchJob hands job to the queue, applying the route's pending cap
+// when the store supports it. maxPending <= 0 keeps the plain Enqueue path, so
+// workloads that do not opt in behave exactly as before. Manual runs
+// (idemSuffix != "") also skip the cap: a manual dispatch is explicitly a
+// second concurrent run, the same way it bypasses the live-instance guard.
+func (d *Dispatcher) enqueueDispatchJob(ctx context.Context, job *queue.Job, maxPending int, idemSuffix string) (db.EnqueueResult, error) {
+	if maxPending > 0 && idemSuffix == "" {
+		if store, ok := d.dispatchQueue.(pendingCappedEnqueuer); ok {
+			return store.EnqueueCapped(ctx, job, maxPending)
+		}
+	}
+	created, err := d.dispatchQueue.Enqueue(ctx, job)
+	return db.EnqueueResult{Created: created}, err
+}
+
 // enqueueFanOut hands each match to the dispatch queue instead of running it in
 // the daemon. idemSuffix widens the idempotency key (see dispatchIdempotencyKey);
 // it is empty for every automatic path.
@@ -126,13 +148,27 @@ func (d *Dispatcher) enqueueFanOut(ctx context.Context, cell model.SourceItem, t
 		}
 		pool, labels, capabilities, affinity := d.requirementsForMatch(task.ID, match)
 		job := &queue.Job{IdempotencyKey: dispatchIdempotencyKey(task.ID, generation, match.Route.ID, idemSuffix), ProjectID: d.queueProjectID, SourceID: cell.SourceID, TaskID: task.ID, WorkflowID: match.Route.ID, AgentID: match.Route.Agent, RunnerID: d.agentRunner[match.Route.Agent], Pool: pool, RequiredLabels: labels, RequiredCapabilities: capabilities, AffinityKey: affinity, PayloadVersion: dispatchPayloadVersion, Payload: payload, Priority: -match.Route.Priority, MaxAttempts: d.cfg.Settings.MaxAttempts}
-		created, err := d.dispatchQueue.Enqueue(ctx, job)
+		result, err := d.enqueueDispatchJob(ctx, job, match.Route.MaxPending, idemSuffix)
 		if err != nil {
 			d.rollbackQueuedOutstanding(ctx, task.ID, fmt.Errorf("enqueue workflow %s: %w", match.Route.ID, err))
 			d.abandonReservation(ctx, match)
 			continue
 		}
-		if !created {
+		if result.Capped {
+			// The workflow already has as much pending work as its trigger allows
+			// (queued or running). This occurrence is coalesced rather than queued,
+			// so a routine slower than its cadence cannot stack up behind itself.
+			// Say so at a visible level: the whole point of the cap is that the
+			// drop is diagnosable, not silent.
+			aplog.Info("task %s: workflow %s not enqueued — %d pending job(s) already at max_pending=%d; coalescing this occurrence",
+				task.ID, match.Route.ID, result.Pending, match.Route.MaxPending)
+			d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "dispatch.dropped", TaskID: task.ID, WorkflowID: match.Route.ID,
+				Metadata: map[string]any{"reason": "pending cap", "pending": result.Pending, "max_pending": match.Route.MaxPending}})
+			d.rollbackQueuedOutstanding(ctx, task.ID, nil)
+			d.abandonReservation(ctx, match)
+			continue
+		}
+		if !result.Created {
 			// The idempotency key already exists. While the existing job is still
 			// pending this is the intended de-duplication of an overlapping poll;
 			// once it is terminal the dispatch is being dropped, and the only

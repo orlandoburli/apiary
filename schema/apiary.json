@@ -523,6 +523,12 @@
                 "description": "Event triggers only: cap how many times this trigger may dispatch for the same pull request (runaway-loop budget). 0 = unlimited",
                 "minimum": 0,
                 "default": 0
+              },
+              "max_pending": {
+                "type": "integer",
+                "description": "Item triggers only: cap this workflow's pending dispatch jobs (queued or running). An occurrence that would exceed the cap is not enqueued; the drop is recorded as a dispatch.dropped event with reason \"pending cap\". 0 = unlimited (default)",
+                "minimum": 0,
+                "default": 0
               }
             }
           },

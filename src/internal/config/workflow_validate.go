@@ -175,6 +175,10 @@ func (c *Config) validateTriggerEvents(ctx string, t TriggerConfig) []error {
 		return errs
 	}
 
+	if t.MaxPending < 0 {
+		errs = append(errs, fmt.Errorf("%s: trigger max_pending must be >= 0", ctx))
+	}
+
 	if !t.IsEventTrigger() {
 		// Event-only fields are a config mistake on an item trigger: they would
 		// silently never apply.
@@ -206,6 +210,9 @@ func (c *Config) validateTriggerEvents(ctx string, t TriggerConfig) []error {
 		if _, err := regexp.Compile(t.CommentMatches); err != nil {
 			errs = append(errs, fmt.Errorf("%s: trigger comment_matches %q: invalid regexp: %w", ctx, t.CommentMatches, err))
 		}
+	}
+	if t.MaxPending != 0 {
+		errs = append(errs, fmt.Errorf("%s: trigger max_pending is only valid on an item trigger", ctx))
 	}
 	if t.MaxDispatches < 0 {
 		errs = append(errs, fmt.Errorf("%s: trigger max_dispatches must be >= 0", ctx))

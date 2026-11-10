@@ -40,6 +40,33 @@ func exclusiveRoute(id string, prio int, agent string, m config.RouteMatch) conf
 	return r
 }
 
+// The synthetic trigger route must carry max_pending from the workflow trigger:
+// the enqueue path reads the cap off the matched RouteConfig.
+func TestRouteAll_CarriesTriggerMaxPending(t *testing.T) {
+	workflowCfg := &config.Config{
+		Version: "1",
+		Workflows: []config.WorkflowConfig{{
+			ID: "nightly-sweep",
+			Trigger: &config.TriggerConfig{
+				Match:      config.RouteMatch{Source: "src-a"},
+				MaxPending: 1,
+			},
+			Steps: []config.StepConfig{{ID: "run", Agent: "a"}},
+		}},
+	}
+	r, err := router.New(workflowCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches := r.RouteAll(task())
+	if len(matches) != 1 {
+		t.Fatalf("matches = %v, want the nightly-sweep route", ids(matches))
+	}
+	if matches[0].Route.MaxPending != 1 {
+		t.Errorf("route max_pending = %d, want 1", matches[0].Route.MaxPending)
+	}
+}
+
 func TestRouteAll_TwoNonExclusiveBothMatch(t *testing.T) {
 	r, err := router.New(cfg([]config.RouteConfig{
 		agentRoute("review", 10, "reviewer", config.RouteMatch{Source: "src-a", Labels: []string{"ai-ready"}}),

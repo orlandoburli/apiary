@@ -320,6 +320,10 @@ type RouteConfig struct {
 	IgnoreAuthors      []string `yaml:"-"`
 	PRAuthors          []string `yaml:"-"`
 	MaxDispatches      int      `yaml:"-"`
+	// MaxPending mirrors TriggerConfig.MaxPending: the per-workflow cap on
+	// queued+running dispatch jobs, enforced atomically at enqueue. Set by the
+	// Router from the workflow trigger. 0 means unlimited.
+	MaxPending int `yaml:"-"`
 }
 
 // IsEventRoute reports whether this route was synthesized from an event trigger

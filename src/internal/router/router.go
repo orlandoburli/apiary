@@ -75,6 +75,7 @@ func New(cfg *config.Config) (*Router, error) {
 			IgnoreAuthors:      wf.Trigger.IgnoreAuthors,
 			PRAuthors:          wf.Trigger.PRAuthors,
 			MaxDispatches:      wf.Trigger.MaxDispatches,
+			MaxPending:         wf.Trigger.MaxPending,
 		})
 	}
 	sort.Slice(routes, func(i, j int) bool {
