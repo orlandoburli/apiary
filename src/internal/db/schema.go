@@ -348,6 +348,7 @@ CREATE INDEX IF NOT EXISTS idx_step_runs_instance ON step_runs(workflow_instance
 CREATE INDEX IF NOT EXISTS idx_ci_poll_checks_instance ON ci_poll_checks(workflow_instance_id, step_id);
 CREATE INDEX IF NOT EXISTS idx_internal_tasks_state ON internal_tasks(state);
 CREATE INDEX IF NOT EXISTS idx_internal_tasks_parent ON internal_tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_internal_tasks_created_id ON internal_tasks(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_source_bindings_task ON source_bindings(task_id);
 CREATE INDEX IF NOT EXISTS idx_source_bindings_item ON source_bindings(source_id, source_item_id);
 CREATE INDEX IF NOT EXISTS idx_task_pull_requests_task ON task_pull_requests(task_id);
