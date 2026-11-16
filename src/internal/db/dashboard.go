@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"time"
 )
 
@@ -67,11 +66,22 @@ func (c *Client) GetDashboardStats(ctx context.Context, startTime time.Time) (*D
 		}
 	}
 
-	// Count active agents (those with recent activity)
+	// Count active agents (those with recent activity).
+	//
+	// The cutoff is computed in Go and passed as a parameter rather than
+	// written as datetime('now', '-1 hour'). created_at is written by the Go
+	// driver as a *local* timestamp with its offset
+	// ("2026-11-16 16:01:00.08254-04:00"), while SQLite's datetime('now')
+	// returns *UTC* ("2026-11-16 20:01:00"). Comparing the two as strings is
+	// comparing wall-clock in two different zones: in any negative-offset
+	// zone the stored value always sorts before the UTC cutoff, so the query
+	// matched nothing and the Overview reported 0 active agents however many
+	// had run. A Go-computed cutoff is serialized in the same format the rows
+	// are stored in, so the comparison is exact.
 	row = c.db.QueryRowContext(ctx, `
 		SELECT COUNT(DISTINCT agent_id) FROM task_executions
-		WHERE created_at >= datetime('now', '-1 hour')
-	`)
+		WHERE created_at >= ?
+	`, time.Now().Add(-time.Hour))
 	_ = row.Scan(&stats.ActiveAgents)
 
 	// Get today's usage totals
@@ -102,13 +112,14 @@ type RecentTask struct {
 
 // GetRecentTasks retrieves recently executed tasks.
 func (c *Client) GetRecentTasks(ctx context.Context, limit int) ([]RecentTask, error) {
+	// Go-computed cutoff, for the same local-vs-UTC reason as GetDashboardStats.
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT id, title, agent_id, state, success, duration_ms, error_message
 		FROM tasks
-		WHERE created_at >= datetime('now', '-24 hours')
+		WHERE created_at >= ?
 		ORDER BY created_at DESC
 		LIMIT ?
-	`, limit)
+	`, time.Now().Add(-24*time.Hour), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -159,20 +170,23 @@ type RunningExecution struct {
 
 // GetRunningExecutions lists the agent processes that are running right now.
 //
-// Scoped to status='running' executions, joined to the latest execution row per
-// task so a retried task shows its current attempt rather than every attempt
-// it ever made. Ordered by start time so the longest-running process sits at
-// the top of the list.
+// Scoped to status='running' executions, ordered by start time so the
+// longest-running process sits at the top of the list.
+//
+// Every row with status='running' is listed, without narrowing to the latest
+// execution per task. A previous version joined to MAX(id) per task to avoid
+// showing one row per retry attempt of the same task, but the status filter
+// already does that: a retried task's earlier attempts are 'failed' or
+// 'success', not 'running'. The join only ever hid rows — specifically a
+// still-'running' execution whose task later got another attempt, and two
+// agents running the same task at once (a reviewer and a QA on one ticket),
+// which are two real processes, not one. Work that is stuck is exactly what
+// this list exists to show, so a stale row must not be dropped.
 func (c *Client) GetRunningExecutions(ctx context.Context) ([]RunningExecution, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT e.id, e.task_id, e.task_number, e.task_url, e.title, e.agent_id, e.model, e.runner,
 		       e.attempt, e.pid, e.heartbeat_at, e.heartbeat_count, e.started_at
 		FROM task_executions e
-		JOIN (
-			SELECT task_id, MAX(id) AS max_id
-			FROM task_executions
-			GROUP BY task_id
-		) latest ON e.id = latest.max_id
 		WHERE e.status = 'running'
 		ORDER BY e.started_at ASC
 	`)
@@ -745,6 +759,11 @@ type DailyUsage struct {
 
 // GetDailyUsage returns per-day usage aggregates for the last N days.
 func (c *Client) GetDailyUsage(ctx context.Context, days int) ([]DailyUsage, error) {
+	// Same reasoning as the ActiveAgents cutoff above: the window is computed
+	// in Go so it is serialized in the same local+offset format the rows are
+	// stored in. A SQLite-computed UTC cutoff would drop the most recent
+	// hours of every day in a negative-offset zone.
+	cutoff := time.Now().AddDate(0, 0, -days)
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT
 			DATE(created_at) as day,
@@ -753,10 +772,10 @@ func (c *Client) GetDailyUsage(ctx context.Context, days int) ([]DailyUsage, err
 			COALESCE(SUM(total_tokens),0),
 			COALESCE(SUM(cost_usd),0)
 		FROM task_executions
-		WHERE created_at >= datetime('now', ? || ' days')
+		WHERE created_at >= ?
 		GROUP BY DATE(created_at)
 		ORDER BY day ASC
-	`, fmt.Sprintf("-%d", days))
+	`, cutoff)
 	if err != nil {
 		return nil, err
 	}

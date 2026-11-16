@@ -85,8 +85,9 @@ func TestGetRunningExecutions(t *testing.T) {
 }
 
 // A task whose earlier attempt failed and whose latest attempt is running must
-// appear exactly once — the latest execution, not one row per attempt.
-func TestGetRunningExecutionsLatestAttemptOnly(t *testing.T) {
+// appear exactly once — the failed attempt is not work in flight, so it does
+// not get a row of its own.
+func TestGetRunningExecutionsOneRowPerRunningAttempt(t *testing.T) {
 	ctx := context.Background()
 	c := newTestClient(t)
 	now := time.Now()
@@ -99,7 +100,7 @@ func TestGetRunningExecutionsLatestAttemptOnly(t *testing.T) {
 		t.Fatalf("GetRunningExecutions: %v", err)
 	}
 	if len(got) != 1 {
-		t.Fatalf("got %d running executions, want 1 (only the latest attempt): %+v", len(got), got)
+		t.Fatalf("got %d running executions, want 1 (only the running attempt): %+v", len(got), got)
 	}
 	if got[0].PID != 777 {
 		t.Errorf("PID = %d, want 777 (the running attempt)", got[0].PID)
@@ -147,5 +148,51 @@ func TestGetRunningExecutionsIncludesStaleRows(t *testing.T) {
 	}
 	if got[0].PID != 999 {
 		t.Errorf("PID = %d, want 999", got[0].PID)
+	}
+}
+
+// Every row still marked 'running' must be listed, including one whose task
+// later got another attempt.
+//
+// The query used to join to MAX(id) per task, on the reasoning that a retried
+// task should show only its current attempt. But the status filter already
+// handles that — a retried task's earlier attempts are 'failed' or 'success',
+// not 'running'. The join only hid rows: a still-'running' execution whose
+// task was later retried disappeared from the list, and so did one of two
+// agents running the same task at once. Both are real processes, and a stale
+// row is exactly what the list exists to show.
+func TestGetRunningExecutionsKeepsSupersededAndParallelRows(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+	now := time.Now()
+
+	// T-1: a stale 'running' execution whose task later got another attempt.
+	seedExecution(t, c, 1, "T-1", "engineer", "running", now.Add(-4*time.Hour), 111, nil)
+	seedExecution(t, c, 2, "T-1", "engineer", "success", now.Add(-time.Hour), 0, nil)
+
+	// T-2: two agents running the same task at the same time.
+	seedExecution(t, c, 3, "T-2", "reviewer", "running", now.Add(-2*time.Minute), 222, nil)
+	seedExecution(t, c, 4, "T-2", "qa", "running", now.Add(-2*time.Minute), 333, nil)
+
+	got, err := c.GetRunningExecutions(ctx)
+	if err != nil {
+		t.Fatalf("GetRunningExecutions: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d running executions, want 3 (the superseded stale row and both parallel rows): %+v", len(got), got)
+	}
+
+	byID := map[int64]RunningExecution{}
+	for _, g := range got {
+		byID[g.ExecID] = g
+	}
+	if _, ok := byID[1]; !ok {
+		t.Error("the stale 'running' execution whose task was later retried was dropped")
+	}
+	if _, ok := byID[3]; !ok {
+		t.Error("the first of two parallel agents on one task was dropped")
+	}
+	if _, ok := byID[4]; !ok {
+		t.Error("the second of two parallel agents on one task was dropped")
 	}
 }
