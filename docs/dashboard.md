@@ -58,7 +58,7 @@ like without affecting running tasks.
 
 ## Getting around
 
-The dashboard has four tabs along the top. Use the keyboard to move:
+The dashboard has a row of tabs along the top. Use the keyboard to move:
 
 | Key                          | Action                                            |
 |------------------------------|---------------------------------------------------|
@@ -361,6 +361,45 @@ settings:
 
 or per invocation with `apiary dashboard --view=board`.
 
+### Running
+
+The agents working right now — one row per in-flight process, so you can see
+what the hive is doing at this instant rather than what it did.
+
+```
+   AGENT            TASK             TITLE                    MODEL         PID   ELAPSED
+▶  janitor          stuck-check@…   Stuck agent work check   claude-haiku…  7941   19h36m
+```
+
+Each row is a **process**, not an agent: an agent running two tasks at once
+appears twice, because those are two separate processes doing two separate
+jobs. The **TASK** column carries the work item's human reference (`ERP-42`,
+`#412`), so you can match a row to the thing it is doing.
+
+The dot in front of each row says whether the process is provably alive:
+
+- **Green** — the process is working. It has a PID and a heartbeat from the
+  last minute.
+- **Red** — the row still says *running*, but the heartbeat has gone stale.
+  The process is gone: it died, or the machine it ran on went away, without
+  the row being closed out.
+
+A stale row is still listed on purpose. Work that is stuck is exactly the work
+you want to see, and hiding it would leave you looking at a shorter list and a
+false sense of calm.
+
+| Key                    | Action                                                     |
+|------------------------|------------------------------------------------------------|
+| `↑` / `↓`              | Move the selection                                          |
+| `Enter` / `l`          | **Open the task's workflow monitor** — the live step list for the task this agent is working on |
+| `o`                    | **Open** the task in your browser (its source URL)          |
+| `Home` / `End`         | Jump to top / bottom                                        |
+| `PgUp` / `PgDn`        | Page up / down                                              |
+
+Opening the monitor from here lands you on the same live view the Tasks tab
+opens, with the steps and their logs — so you can watch a specific agent work
+rather than reading about it afterwards.
+
 ### Agents
 
 How each of your agents is performing over time. For every agent you'll see its
@@ -419,6 +458,17 @@ The dispatcher hasn't produced that kind of data yet. Make sure `apiary run` is
 going in another terminal, then give it a task to work on. The Overview and
 Agents tabs populate first as soon as work starts; the Tasks and Logs tabs fill
 in as the dispatcher records running tasks and log activity.
+
+**The Running tab is empty.**
+That means nothing is in flight — no agent process is running right now. It is
+empty between tasks, not broken. If work should be running and the tab stays
+empty, check the Tasks tab for a task stuck in `queued`, and the Logs tab for
+why it was never dispatched.
+
+**The Running tab shows a red dot.**
+The row says *running* but the process's heartbeat has gone stale: the process
+died without the row being closed out. The work is stuck — restart the task
+with `R` from the Tasks tab, or check the Logs tab for the failure.
 
 **Numbers look stale.**
 Press `r` to force an immediate refresh. The footer shows the last update time.

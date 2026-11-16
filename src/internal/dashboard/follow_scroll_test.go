@@ -72,7 +72,7 @@ func TestTaskLogsScrollUpStopsFollowing(t *testing.T) {
 // position across the periodic full refresh.
 func TestLogsTabFollowsTail(t *testing.T) {
 	a := newTestApp(80, 20)
-	a.model.activeTab = 4 // Logs
+	a.model.activeTab = tabIndex(a.model, "Logs")
 
 	a.Update(logsDataMsg{logs: infoLines(60)})
 	l := a.model.logsTab
@@ -108,7 +108,7 @@ func TestLogsTabFollowsTail(t *testing.T) {
 // without resetting the view or a scrolled-up cursor.
 func TestAgentTaskLogsRefreshPreservesScroll(t *testing.T) {
 	a := newTestApp(80, 20)
-	a.model.activeTab = 2 // Agents
+	a.model.activeTab = tabIndex(a.model, "Agents")
 
 	a.Update(agentTaskLogsMsg{taskID: "T-9", logs: infoLines(40)})
 	ag := a.model.agentsTab

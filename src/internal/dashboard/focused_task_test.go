@@ -210,7 +210,7 @@ func TestWorkflowFooterIncludesOpenKeys(t *testing.T) {
 // the resolvers: the focused activity row still supplies the URL and PRs.
 func TestFocusedTaskURLAndPullsOnAgentsUnchanged(t *testing.T) {
 	a := newTestApp(90, 20)
-	a.model.activeTab = 2 // Agents
+	a.model.activeTab = tabIndex(a.model, "Agents")
 	a.model.agentsTab.View = AgentViewActivity
 	a.model.agentsTab.Activity = []TaskItem{
 		{TaskID: "A-1", URL: "https://example.test/agent/1",

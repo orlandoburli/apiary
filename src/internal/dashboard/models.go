@@ -13,6 +13,7 @@ type Model struct {
 	overviewTab    *OverviewTab
 	tasksTab       *TasksTab
 	agentsTab      *AgentsTab
+	runningTab     *RunningTab
 	usageTab       *UsageTab
 	logsTab        *LogsTab
 	workflowsTab   *WorkflowsTab
@@ -410,6 +411,38 @@ type AgentsTab struct {
 	fileLinesValid bool
 }
 
+// RunningAgent is one live agent process shown in the Running tab.
+//
+// Unlike AgentStatus — which aggregates every execution an agent ever ran —
+// this describes a single in-flight process: which agent it is, what task it
+// is working on, and whether the process is still alive.
+type RunningAgent struct {
+	ExecID      int64
+	TaskID      string
+	Number      string // human reference, e.g. "ERP-42"
+	Title       string
+	TaskURL     string // link to the task in its source UI
+	AgentID     string
+	Model       string
+	Runner      string
+	Attempt     int
+	PID         int
+	HeartbeatAt *time.Time
+	StartedAt   *time.Time
+
+	// Alive is false when the process is stale or a zombie: the execution row
+	// still says 'running' but nothing proves the process is still working.
+	// A heartbeat within 60s is the only proof of life the dashboard has.
+	Alive bool
+}
+
+// RunningTab lists the agent processes running right now, one row each.
+type RunningTab struct {
+	Agents      []RunningAgent
+	SelectedIdx int
+}
+
+// AgentStatus describes an agent's configuration and aggregate performance.
 type AgentStatus struct {
 	ID              string
 	Status          string // active, stale, zombie, idle
@@ -501,7 +534,7 @@ type WorkflowsTab struct {
 func NewModel() *Model {
 	return &Model{
 		activeTab: 0,
-		tabs:      []string{"Overview", "Tasks", "Agents", "Usage", "Logs", "Workflows"},
+		tabs:      []string{"Overview", "Tasks", "Running", "Agents", "Usage", "Logs", "Workflows"},
 		overviewTab: &OverviewTab{
 			Status:      "Loading...",
 			Uptime:      "0s",
@@ -513,6 +546,9 @@ func NewModel() *Model {
 		},
 		agentsTab: &AgentsTab{
 			Agents: []AgentStatus{},
+		},
+		runningTab: &RunningTab{
+			Agents: []RunningAgent{},
 		},
 		usageTab: &UsageTab{},
 		logsTab: &LogsTab{
