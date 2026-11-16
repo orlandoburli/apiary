@@ -71,10 +71,12 @@ const logPrefixWidth = 15
 // event-loop goroutine) is allowed to mutate the model. This is what keeps
 // the data-fetching goroutines from racing with View.
 type App struct {
-	model      *Model
-	dbConn     *db.Client
-	socketPath string
-	cfg        *config.Config
+	navigationID    uint64
+	navigationLabel string
+	model           *Model
+	dbConn          *db.Client
+	socketPath      string
+	cfg             *config.Config
 	// logDir is the daemon's log directory, used to locate per-task markdown
 	// transcripts (logDir/transcripts/<task>/...).
 	logDir string
@@ -261,6 +263,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case navigationLoadedMsg:
+		if a.navigationLabel == "" || msg.id != a.navigationID {
+			return a, nil
+		}
+		a.navigationLabel = ""
+		a.model.loading = false
+		return a.Update(msg.result)
+
 	case tea.KeyMsg:
 		return a.handleKeyMsg(msg)
 
@@ -355,6 +365,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case taskDetailMsg:
+		if msg.detail == nil {
+			a.model.loading = false
+			a.model.notice = "Could not load task details. Press d to retry."
+			a.model.noticeIsErr = true
+			a.model.noticeUntil = time.Now().Add(noticeTTL)
+			return a, nil
+		}
 		if a.model.tasksTab != nil {
 			// A fresh open (d/enter/r) resets the scroll to the top; the in-place
 			// live refresh (taskDetailRefreshMsg) preserves the reader's position.
@@ -622,6 +639,17 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Ctrl+C is always available, even while typing a filter.
 	if key == "ctrl+c" {
 		return a, tea.Quit
+	}
+
+	if a.navigationLabel != "" {
+		switch key {
+		case "q":
+			return a, tea.Quit
+		case "esc", "backspace":
+			a.navigationLabel = ""
+			a.model.loading = false
+		}
+		return a, nil
 	}
 
 	// While the task filter is being typed it owns the keyboard: esc clears
@@ -1053,7 +1081,7 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.model.loading = true
 				// Open the workflow monitor if this task has a workflow instance,
 				// otherwise fall back to the task logs view.
-				return a, a.openWorkflowMonitorOrLogs(id)
+				return a, a.beginNavigation("Loading task workflows…", a.openWorkflowMonitorOrLogs(id))
 			}
 		case "Agents":
 			if id, ok := a.selectedAgentID(); ok {
@@ -1066,7 +1094,7 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "Tasks":
 			if row, ok := a.selectedTask(); ok {
 				a.model.loading = true
-				return a, tea.Batch(a.fetchTaskDetail(row.TaskID, row.InternalTaskID), a.refreshTaskPullsCmd(row.InternalTaskID))
+				return a, tea.Batch(a.beginNavigation("Loading task details…", a.fetchTaskDetail(row.TaskID, row.InternalTaskID)), a.refreshTaskPullsCmd(row.InternalTaskID))
 			}
 		case "Agents":
 			// Detail uses the already-loaded stats — no DB round-trip needed.
@@ -1425,7 +1453,7 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 	case "d":
 		if row, ok := a.selectedTask(); ok {
 			a.model.loading = true
-			return a, tea.Batch(a.fetchTaskDetail(row.TaskID, row.InternalTaskID), a.refreshTaskPullsCmd(row.InternalTaskID))
+			return a, tea.Batch(a.beginNavigation("Loading task details…", a.fetchTaskDetail(row.TaskID, row.InternalTaskID)), a.refreshTaskPullsCmd(row.InternalTaskID))
 		}
 	case "a", "y", "n":
 		if t.View == TaskViewDetail && t.DetailInstance != nil && t.DetailInstance.Approval != nil {
@@ -1441,15 +1469,15 @@ func (a *App) handleTaskSubViewKey(key string) (tea.Model, tea.Cmd) {
 	case "l", "enter":
 		if row, ok := a.selectedTask(); ok {
 			a.model.loading = true
-			return a, a.fetchTaskHistory(row.InternalTaskID, row.TaskID)
+			return a, a.beginNavigation("Loading task history…", a.fetchTaskHistory(row.InternalTaskID, row.TaskID))
 		}
 	case "r":
 		if row, ok := a.selectedTask(); ok {
 			a.model.loading = true
 			if t.View == TaskViewLogs {
-				return a, a.fetchTaskHistory(row.InternalTaskID, row.TaskID)
+				return a, a.beginNavigation("Loading task history…", a.fetchTaskHistory(row.InternalTaskID, row.TaskID))
 			}
-			return a, tea.Batch(a.fetchTaskDetail(row.TaskID, row.InternalTaskID), a.refreshTaskPullsCmd(row.InternalTaskID))
+			return a, tea.Batch(a.beginNavigation("Loading task details…", a.fetchTaskDetail(row.TaskID, row.InternalTaskID)), a.refreshTaskPullsCmd(row.InternalTaskID))
 		}
 	case "up":
 		if t.View == TaskViewLogs {
@@ -2527,6 +2555,9 @@ func (a *App) loadingLine(label string) string {
 // fetchActiveTab returns the query command for whichever tab is active. It is
 // always called from Update (event loop), so reading the active tab is safe.
 func (a *App) fetchActiveTab() tea.Cmd {
+	if a.navigationLabel != "" {
+		return nil
+	}
 	switch a.model.ActiveTab() {
 	case "Overview":
 		return a.fetchOverview()
@@ -3510,6 +3541,17 @@ func (a *App) View() string {
 	}
 	if a.model.width == 0 || a.model.height == 0 {
 		return "Loading..."
+	}
+
+	if a.navigationLabel != "" {
+		tabs := a.renderTabs()
+		footer := StyleMuted.Render("Esc: cancel · q: quit")
+		height := a.model.height - lipgloss.Height(tabs) - lipgloss.Height(footer) - 1
+		if height < 3 {
+			height = 3
+		}
+		return lipgloss.JoinVertical(lipgloss.Left, tabs,
+			a.box("LOADING", a.loadingLine(a.navigationLabel)+"\n", height), footer)
 	}
 
 	tabs := a.renderTabs()
