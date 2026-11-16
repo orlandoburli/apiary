@@ -41,6 +41,17 @@ const refreshInterval = 2 * time.Second
 // queryTimeout bounds each database query so a locked DB never blocks the UI.
 const queryTimeout = 2 * time.Second
 
+// runningQueryTimeout bounds the Running tab's query.
+//
+// It is more generous than queryTimeout because this query scans the
+// task_executions table — which grows with every run a hive has ever done —
+// while the common queryTimeout is tuned for the indexed lookups the other
+// tabs do. On a hive with tens of thousands of executions and a large
+// write-ahead log, the very first read of that table on a cold connection
+// takes longer than queryTimeout allows, and the tab would report that no
+// agent is running when in fact it had not managed to ask.
+const runningQueryTimeout = 10 * time.Second
+
 // noticeTTL is how long an action-result banner stays on screen. Long enough to
 // read a dispatched-workflow list without hunting for it, short enough that it
 // does not linger over the view it covers.
@@ -205,7 +216,13 @@ type taskHistoryRefreshMsg struct {
 	detail   *TaskItem
 }
 type agentsDataMsg struct{ agents []AgentStatus }
-type runningDataMsg struct{ agents []RunningAgent }
+type runningDataMsg struct {
+	agents []RunningAgent
+	// err is set when the query failed. Without it the tab would render
+	// "no agents running", which is a claim about the hive's state — and a
+	// query that timed out says nothing about it.
+	err error
+}
 type agentActivityMsg struct {
 	agentID string
 	items   []TaskItem
@@ -470,6 +487,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runningDataMsg:
 		if a.model.runningTab != nil {
 			a.model.runningTab.Agents = msg.agents
+			a.model.runningTab.LoadErr = msg.err
 			if a.model.runningTab.SelectedIdx >= len(msg.agents) {
 				a.model.runningTab.SelectedIdx = 0
 			}
@@ -2709,10 +2727,17 @@ func (a *App) fetchOverview() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 		defer cancel()
 
-		data := OverviewTab{Status: "Unknown", Concurrency: 4}
+		data := OverviewTab{Status: "Unknown", Concurrency: config.LoadDefaults().Settings.Concurrency}
 
 		// Enrich agent breakdown from config + running stats
 		if a.cfg != nil {
+			// The concurrency the daemon actually runs with. It used to be a
+			// hardcoded 4, which only looked right because 4 is also the config
+			// default — so a hive configured with anything else saw a number
+			// that matched nothing, including its own agent worker pools.
+			if a.cfg.Settings.Concurrency > 0 {
+				data.Concurrency = a.cfg.Settings.Concurrency
+			}
 			for _, ac := range a.cfg.Agents {
 				mw := ac.MaxWorkers
 				if mw < 1 {
@@ -3500,14 +3525,14 @@ func mapStepRuns(steps []db.StepRun, now time.Time) []WorkflowStepItem {
 func (a *App) fetchRunning() tea.Cmd {
 	dbConn := a.dbConn
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), runningQueryTimeout)
 		defer cancel()
 
 		agents := make([]RunningAgent, 0)
 		if dbConn != nil {
 			rows, err := dbConn.GetRunningExecutions(ctx)
 			if err != nil {
-				return runningDataMsg{agents: agents}
+				return runningDataMsg{agents: agents, err: err}
 			}
 			now := time.Now()
 			for _, r := range rows {
@@ -5398,6 +5423,12 @@ func (a *App) renderRunningTab(height int) string {
 }
 
 func (a *App) renderRunningList(rt *RunningTab, height int) string {
+	// A failed query is reported, not rendered as an empty list: "no agents
+	// running" is a claim about the hive, and a query that timed out or hit a
+	// locked database says nothing about it.
+	if rt.LoadErr != nil {
+		return a.box("RUNNING", StyleError.Render("Could not read the running agents: ")+rt.LoadErr.Error()+"\n", height)
+	}
 	if len(rt.Agents) == 0 {
 		return a.box("RUNNING", StyleMuted.Render("No agents running right now — they appear here while a task is in flight.")+"\n", height)
 	}

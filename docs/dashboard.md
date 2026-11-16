@@ -99,6 +99,12 @@ Counts like Completed, Failed, Success Rate and Avg Duration cover **today**
 (since midnight) and reset each day. Running and Queued are live right-now
 numbers.
 
+**Running** counts the task executions the database still marks as running.
+That is not the same as the number of processes actually working: a process
+that died without closing its row out keeps counting until the next dispatcher
+restart reconciles it. The **Running** tab tells the two apart — it shows which
+of those executions are provably alive and which are stale.
+
 ![Overview tab](screenshots/overview.png)
 
 ### Tasks
@@ -387,6 +393,10 @@ The dot in front of each row says whether the process is provably alive:
 A stale row is still listed on purpose. Work that is stuck is exactly the work
 you want to see, and hiding it would leave you looking at a shorter list and a
 false sense of calm.
+
+If the tab cannot read the database — a locked file, or a query that took too
+long on a very large one — it says so instead of showing an empty list. An
+empty list is a claim about the hive; a failed query is not.
 
 | Key                    | Action                                                     |
 |------------------------|------------------------------------------------------------|

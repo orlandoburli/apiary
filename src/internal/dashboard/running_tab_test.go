@@ -46,6 +46,42 @@ func TestRunningTabEmptyState(t *testing.T) {
 	}
 }
 
+// A failed query must not be rendered as "no agents running". An empty list
+// is a claim about the hive; a query that timed out or hit a locked database
+// says nothing about it, and the user must be able to tell the two apart.
+func TestRunningTabReportsLoadFailure(t *testing.T) {
+	a := newTestApp(90, 20)
+	a.model.activeTab = tabIndex(a.model, "Running")
+
+	a.Update(runningDataMsg{agents: nil, err: context.DeadlineExceeded})
+
+	out := stripANSI(a.renderRunningTab(14))
+	if !strings.Contains(out, "Could not read the running agents") {
+		t.Errorf("a failed query should say so, not render an empty list:\n%s", out)
+	}
+	if strings.Contains(out, "No agents running right now") {
+		t.Errorf("a failed query must not claim nothing is running:\n%s", out)
+	}
+}
+
+// A later successful load clears the error: the tab recovers on its own once
+// the query works again.
+func TestRunningTabClearsLoadErrorOnSuccess(t *testing.T) {
+	a := newTestApp(90, 20)
+	a.model.activeTab = tabIndex(a.model, "Running")
+
+	a.Update(runningDataMsg{agents: nil, err: context.DeadlineExceeded})
+	a.Update(runningDataMsg{agents: []RunningAgent{{AgentID: "engineer", TaskID: "T-1"}}})
+
+	out := stripANSI(a.renderRunningTab(14))
+	if strings.Contains(out, "Could not read the running agents") {
+		t.Errorf("a successful load should clear the error:\n%s", out)
+	}
+	if !strings.Contains(out, "engineer") {
+		t.Errorf("the recovered list should render its rows:\n%s", out)
+	}
+}
+
 // The cursor moves through the rows and clamps at both ends — it must never
 // index outside the list.
 func TestRunningTabCursorNavigation(t *testing.T) {

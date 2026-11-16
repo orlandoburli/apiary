@@ -440,6 +440,11 @@ type RunningAgent struct {
 type RunningTab struct {
 	Agents      []RunningAgent
 	SelectedIdx int
+
+	// LoadErr is set when the query failed. The tab then says so instead of
+	// rendering "no agents running": an empty list is a claim about the hive,
+	// and a query that timed out says nothing about it.
+	LoadErr error
 }
 
 // AgentStatus describes an agent's configuration and aggregate performance.
