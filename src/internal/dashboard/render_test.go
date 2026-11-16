@@ -176,7 +176,7 @@ func TestLogMarkdownInlineRender(t *testing.T) {
 		{Timestamp: now, Level: "INFO", Message: plain},
 		{Timestamp: now, Level: "INFO", Message: md},
 	}
-	a.model.activeTab = 4 // Logs
+	a.model.activeTab = tabIndex(a.model, "Logs")
 	a.model.logsTab.Wrap = true
 	a.model.logsTab.Logs = entries
 	assertFramed(t, a.renderLogsTab(16), 90)
@@ -242,7 +242,7 @@ func TestAgentSubViewsFramed(t *testing.T) {
 func TestLogsPagingKeys(t *testing.T) {
 	now := time.Now()
 	a := newTestApp(80, 20) // pageSize = height-5 = 15
-	a.model.activeTab = 4   // Logs (index 4 after inserting Usage at 3)
+	a.model.activeTab = tabIndex(a.model, "Logs")
 	// 60 short messages → 60 visual lines when wrapped.
 	for i := 0; i < 60; i++ {
 		a.model.logsTab.Logs = append(a.model.logsTab.Logs, LogEntry{Timestamp: now, Level: "INFO", Message: "line"})
@@ -282,7 +282,7 @@ func TestLogsPagingKeys(t *testing.T) {
 func TestAgentActivityDrillToLogs(t *testing.T) {
 	now := time.Now()
 	a := newTestApp(90, 20)
-	a.model.activeTab = 2 // Agents
+	a.model.activeTab = tabIndex(a.model, "Agents")
 	a.model.agentsTab.Agents = []AgentStatus{
 		{ID: "engineer", Status: "active", PID: 12345, MaxWorkers: 3, RunningCount: 1, CurrentTask: "build X"},
 	}
@@ -348,7 +348,7 @@ func TestAgentRelatedFilesFlow(t *testing.T) {
 	}
 
 	a := newTestApp(90, 20)
-	a.model.activeTab = 2 // Agents
+	a.model.activeTab = tabIndex(a.model, "Agents")
 	a.model.agentsTab.Agents = []AgentStatus{
 		{ID: "engineer", Status: "active", MaxWorkers: 2, SoulFile: soulPath, Skills: []string{"git-workflow", "ghost-skill"}},
 	}
@@ -418,7 +418,7 @@ func TestAgentMarkdownViewerToggle(t *testing.T) {
 	}
 
 	a := newTestApp(90, 20)
-	a.model.activeTab = 2 // Agents
+	a.model.activeTab = tabIndex(a.model, "Agents")
 	a.model.agentsTab.Agents = []AgentStatus{
 		{ID: "engineer", Status: "active", MaxWorkers: 2, SoulFile: soulPath},
 	}

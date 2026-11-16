@@ -134,6 +134,90 @@ func (c *Client) GetRecentTasks(ctx context.Context, limit int) ([]RecentTask, e
 	return tasks, nil
 }
 
+// RunningExecution is one in-flight agent process.
+//
+// A row here means a runner process was actually spawned and has not returned
+// yet — the execution row is written immediately before the runner is invoked
+// and flipped to success/failed when it returns. Unlike the aggregate
+// AgentStats, which collapses every execution of an agent into one row, this
+// keeps one row per live process, which is what the Running tab lists.
+type RunningExecution struct {
+	ExecID       int64
+	TaskID       string
+	TaskNumber   string
+	TaskTitle    string
+	TaskURL      string
+	AgentID      string
+	Model        string
+	Runner       string
+	Attempt      int
+	PID          int
+	HeartbeatAt  *time.Time
+	HeartbeatCnt int
+	StartedAt    *time.Time
+}
+
+// GetRunningExecutions lists the agent processes that are running right now.
+//
+// Scoped to status='running' executions, joined to the latest execution row per
+// task so a retried task shows its current attempt rather than every attempt
+// it ever made. Ordered by start time so the longest-running process sits at
+// the top of the list.
+func (c *Client) GetRunningExecutions(ctx context.Context) ([]RunningExecution, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT e.id, e.task_id, e.task_number, e.task_url, e.title, e.agent_id, e.model, e.runner,
+		       e.attempt, e.pid, e.heartbeat_at, e.heartbeat_count, e.started_at
+		FROM task_executions e
+		JOIN (
+			SELECT task_id, MAX(id) AS max_id
+			FROM task_executions
+			GROUP BY task_id
+		) latest ON e.id = latest.max_id
+		WHERE e.status = 'running'
+		ORDER BY e.started_at ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []RunningExecution
+	for rows.Next() {
+		var e RunningExecution
+		var number, url, title, model, runner sql.NullString
+		var pid sql.NullInt64
+		var hbStr, startedStr sql.NullString
+		var hbCount sql.NullInt64
+		if err := rows.Scan(&e.ExecID, &e.TaskID, &number, &url, &title, &e.AgentID, &model, &runner,
+			&e.Attempt, &pid, &hbStr, &hbCount, &startedStr); err != nil {
+			continue
+		}
+		e.TaskNumber = number.String
+		e.TaskURL = url.String
+		e.TaskTitle = title.String
+		e.Model = model.String
+		e.Runner = runner.String
+		if pid.Valid {
+			e.PID = int(pid.Int64)
+		}
+		if hbCount.Valid {
+			e.HeartbeatCnt = int(hbCount.Int64)
+		}
+		if hbStr.Valid {
+			if t, ok := parseSQLiteTime(hbStr.String); ok {
+				e.HeartbeatAt = &t
+			}
+		}
+		if startedStr.Valid {
+			if t, ok := parseSQLiteTime(startedStr.String); ok {
+				e.StartedAt = &t
+			}
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
 // AgentStats holds agent performance and health information.
 type AgentStats struct {
 	ID              string

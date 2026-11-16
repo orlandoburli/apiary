@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -204,6 +205,7 @@ type taskHistoryRefreshMsg struct {
 	detail   *TaskItem
 }
 type agentsDataMsg struct{ agents []AgentStatus }
+type runningDataMsg struct{ agents []RunningAgent }
 type agentActivityMsg struct {
 	agentID string
 	items   []TaskItem
@@ -465,6 +467,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.model.loading = false
 		a.model.lastRefresh = time.Now()
 
+	case runningDataMsg:
+		if a.model.runningTab != nil {
+			a.model.runningTab.Agents = msg.agents
+			if a.model.runningTab.SelectedIdx >= len(msg.agents) {
+				a.model.runningTab.SelectedIdx = 0
+			}
+		}
+		a.model.loading = false
+		a.model.lastRefresh = time.Now()
+
 	case agentActivityMsg:
 		if a.model.agentsTab != nil {
 			a.model.agentsTab.Activity = msg.items
@@ -526,6 +538,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.model.tasksTab.WorkflowLogStepID = ""
 			a.model.tasksTab.WorkflowShowLogs = false
 			a.model.tasksTab.View = TaskViewWorkflow
+			// The monitor lives in the Tasks tab. When it is opened from
+			// elsewhere — the Running tab drills into the task a live agent is
+			// working on — follow the view to its tab, or the user would be
+			// left looking at the tab they came from.
+			a.model.SetActiveTab("Tasks")
 		}
 		a.model.loading = false
 
@@ -958,6 +975,10 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if a.model.agentsTab != nil && a.model.agentsTab.SelectedIdx > 0 {
 				a.model.agentsTab.SelectedIdx--
 			}
+		case "Running":
+			if a.model.runningTab != nil && a.model.runningTab.SelectedIdx > 0 {
+				a.model.runningTab.SelectedIdx--
+			}
 		case "Logs":
 			if a.model.logsTab != nil && a.model.logsTab.Scrolled > 0 {
 				a.model.logsTab.Scrolled--
@@ -981,6 +1002,10 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if a.model.agentsTab != nil && a.model.agentsTab.SelectedIdx < len(a.model.agentsTab.Agents)-1 {
 				a.model.agentsTab.SelectedIdx++
 			}
+		case "Running":
+			if a.model.runningTab != nil && a.model.runningTab.SelectedIdx < len(a.model.runningTab.Agents)-1 {
+				a.model.runningTab.SelectedIdx++
+			}
 		case "Logs":
 			if a.model.logsTab != nil && a.model.logsTab.Scrolled < len(a.logVisualLines())-1 {
 				a.model.logsTab.Scrolled++
@@ -995,6 +1020,10 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "Agents":
 			if a.model.agentsTab != nil {
 				a.model.agentsTab.SelectedIdx = 0
+			}
+		case "Running":
+			if a.model.runningTab != nil {
+				a.model.runningTab.SelectedIdx = 0
 			}
 		case "Logs":
 			if a.model.logsTab != nil {
@@ -1018,6 +1047,10 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if a.model.agentsTab != nil {
 				a.model.agentsTab.SelectedIdx = len(a.model.agentsTab.Agents) - 1
 			}
+		case "Running":
+			if a.model.runningTab != nil {
+				a.model.runningTab.SelectedIdx = lastIndex(len(a.model.runningTab.Agents))
+			}
 		case "Logs":
 			if a.model.logsTab != nil {
 				a.model.logsTab.Scrolled = lastIndex(len(a.logVisualLines()))
@@ -1038,6 +1071,13 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.model.agentsTab.SelectedIdx -= a.pageSize()
 				if a.model.agentsTab.SelectedIdx < 0 {
 					a.model.agentsTab.SelectedIdx = 0
+				}
+			}
+		case "Running":
+			if a.model.runningTab != nil {
+				a.model.runningTab.SelectedIdx -= a.pageSize()
+				if a.model.runningTab.SelectedIdx < 0 {
+					a.model.runningTab.SelectedIdx = 0
 				}
 			}
 		case "Logs":
@@ -1088,6 +1128,13 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.model.loading = true
 				return a, a.fetchAgentActivity(id)
 			}
+		case "Running":
+			// Open the workflow monitor for the task this agent is working on,
+			// so the user lands on the live step list rather than a summary.
+			if id, ok := a.selectedRunningTaskID(); ok {
+				a.model.loading = true
+				return a, a.beginNavigation("Loading task workflows…", a.openWorkflowMonitorOrLogs(id))
+			}
 		}
 	case "d":
 		switch a.model.ActiveTab() {
@@ -1122,6 +1169,17 @@ func (a *App) selectedAgentID() (string, bool) {
 		return ag.ID, true
 	}
 	return "", false
+}
+
+// selectedRunningTaskID returns the task id of the running agent under the
+// cursor — the task whose workflow monitor the user opens with enter.
+func (a *App) selectedRunningTaskID() (string, bool) {
+	rt := a.model.runningTab
+	if rt == nil || rt.SelectedIdx < 0 || rt.SelectedIdx >= len(rt.Agents) {
+		return "", false
+	}
+	id := rt.Agents[rt.SelectedIdx].TaskID
+	return id, id != ""
 }
 
 // handleAgentSubViewKey handles keys while an agent detail/activity/task-logs
@@ -1878,6 +1936,13 @@ func (a *App) focusedTaskURL() (string, bool) {
 				return u, u != ""
 			}
 		}
+	case "Running":
+		rt := a.model.runningTab
+		if rt == nil || rt.SelectedIdx < 0 || rt.SelectedIdx >= len(rt.Agents) {
+			return "", false
+		}
+		u := rt.Agents[rt.SelectedIdx].TaskURL
+		return u, u != ""
 	}
 	return "", false
 }
@@ -2626,6 +2691,8 @@ func (a *App) fetchActiveTab() tea.Cmd {
 			return nil
 		}
 		return a.fetchAgents()
+	case "Running":
+		return a.fetchRunning()
 	case "Usage":
 		return a.fetchUsage()
 	case "Logs":
@@ -3423,6 +3490,70 @@ func mapStepRuns(steps []db.StepRun, now time.Time) []WorkflowStepItem {
 	return out
 }
 
+// fetchRunning loads the agent processes that are running right now.
+//
+// A process counts as alive when its heartbeat is at most 60s old: the runner
+// updates the heartbeat while it works, so a stale heartbeat means the process
+// stopped without flipping the execution row (a crash or a killed daemon). A
+// running row with no PID at all is likewise not proof of anything, so it is
+// shown as a zombie rather than as live work.
+func (a *App) fetchRunning() tea.Cmd {
+	dbConn := a.dbConn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+
+		agents := make([]RunningAgent, 0)
+		if dbConn != nil {
+			rows, err := dbConn.GetRunningExecutions(ctx)
+			if err != nil {
+				return runningDataMsg{agents: agents}
+			}
+			now := time.Now()
+			for _, r := range rows {
+				ra := RunningAgent{
+					ExecID:      r.ExecID,
+					TaskID:      r.TaskID,
+					Number:      r.TaskNumber,
+					Title:       r.TaskTitle,
+					TaskURL:     r.TaskURL,
+					AgentID:     r.AgentID,
+					Model:       r.Model,
+					Runner:      r.Runner,
+					Attempt:     r.Attempt,
+					PID:         r.PID,
+					HeartbeatAt: r.HeartbeatAt,
+					StartedAt:   r.StartedAt,
+				}
+				ra.Alive = runningProcessAlive(r.PID, r.HeartbeatAt, now)
+				agents = append(agents, ra)
+			}
+		}
+		return runningDataMsg{agents: agents}
+	}
+}
+
+// runningHeartbeatWindow is how old a heartbeat may be and still count as
+// proof that the process is working. The runner refreshes its heartbeat while
+// it runs, so anything older than this means the process stopped without
+// flipping its execution row.
+const runningHeartbeatWindow = 60 * time.Second
+
+// runningProcessAlive reports whether an execution row that still says
+// 'running' is backed by a process that is actually alive.
+//
+// The execution row is written immediately before the runner is invoked, so a
+// row left in that state can mean two very different things: a process that is
+// working right now, or a process that died without updating its row. Only a
+// PID plus a recent heartbeat distinguishes them — so both are required, and
+// a row with no PID is never treated as live work.
+func runningProcessAlive(pid int, heartbeat *time.Time, now time.Time) bool {
+	if pid <= 0 || heartbeat == nil {
+		return false
+	}
+	return now.Sub(*heartbeat) <= runningHeartbeatWindow
+}
+
 func (a *App) fetchAgents() tea.Cmd {
 	dbConn := a.dbConn
 	return func() tea.Msg {
@@ -3576,6 +3707,8 @@ func (a *App) View() string {
 		content = a.renderTasksTab(contentHeight)
 	case "Agents":
 		content = a.renderAgentsTab(contentHeight)
+	case "Running":
+		content = a.renderRunningTab(contentHeight)
 	case "Usage":
 		content = a.renderUsageTab(contentHeight)
 	case "Logs":
@@ -5254,6 +5387,122 @@ func (a *App) renderAgentsTab(height int) string {
 	}
 }
 
+// renderRunningTab renders the Running tab: one row per in-flight agent
+// process, showing which task it is working on and whether it is still alive.
+func (a *App) renderRunningTab(height int) string {
+	rt := a.model.runningTab
+	if rt == nil {
+		return a.box("RUNNING", StyleMuted.Render("No running agents")+"\n", height)
+	}
+	return a.renderRunningList(rt, height)
+}
+
+func (a *App) renderRunningList(rt *RunningTab, height int) string {
+	if len(rt.Agents) == 0 {
+		return a.box("RUNNING", StyleMuted.Render("No agents running right now — they appear here while a task is in flight.")+"\n", height)
+	}
+
+	const (
+		cursorW  = 2
+		statusW  = 2
+		agentW   = 16
+		baseNumW = 10
+		maxNumW  = 30 // cap so one long reference can't collapse TITLE
+		modelW   = 14
+		runnerW  = 8
+		pidW     = 8
+		elapsedW = 10
+	)
+	// The TASK column is sized to the widest reference actually on screen, the
+	// way the Tasks tab does it: a routine occurrence id
+	// ("<routine>@<RFC3339 instant>") is far longer than "ERP-42", and a fixed
+	// width would cut the distinguishing part off. The room comes out of TITLE,
+	// which is the more compressible of the two.
+	numW := baseNumW
+	for _, ag := range rt.Agents {
+		if n := len([]rune(valueOr(ag.Number, "—"))); n > numW {
+			numW = n
+		}
+	}
+	if numW > maxNumW {
+		numW = maxNumW
+	}
+
+	inner := a.model.width - 2
+	titleW := inner - cursorW - statusW - agentW - numW - modelW - runnerW - pidW - elapsedW - 8
+	if titleW < 12 {
+		titleW = 12
+	}
+
+	var b strings.Builder
+	header := pad("", cursorW) + " " + pad("", statusW) + " " + pad("AGENT", agentW) + " " +
+		pad("TASK", numW) + " " + pad("TITLE", titleW) + " " + pad("MODEL", modelW) + " " +
+		pad("RUNNER", runnerW) + " " + padLeft("PID", pidW) + " " + padLeft("ELAPSED", elapsedW)
+	b.WriteString(StyleTableHeader.Render(header) + "\n")
+
+	for i, ag := range rt.Agents {
+		selected := i == rt.SelectedIdx
+		cursor := "  "
+		status := StyleSuccess.Render("●")
+		if !ag.Alive {
+			status = StyleError.Render("●")
+		}
+		// The status dot is its own narrow column: green means the process is
+		// provably alive, red means the row says 'running' but the heartbeat
+		// has gone stale. The dot carries the meaning, so it keeps its color
+		// even on the selected row.
+		status = pad(status, statusW)
+		agent := pad(truncate(valueOr(ag.AgentID, "—"), agentW), agentW)
+		num := pad(truncate(valueOr(ag.Number, "—"), numW), numW)
+		title := pad(truncate(valueOr(ag.Title, "—"), titleW), titleW)
+		model := pad(truncate(valueOr(ag.Model, "—"), modelW), modelW)
+		runner := pad(truncate(valueOr(ag.Runner, "—"), runnerW), runnerW)
+		pid := "—"
+		if ag.PID > 0 {
+			pid = strconv.Itoa(ag.PID)
+		}
+		pid = padLeft(pid, pidW)
+		elapsed := padLeft(runningElapsed(ag.StartedAt), elapsedW)
+
+		if selected {
+			cursor = StyleFocusedArrow.Render("▶") + " "
+			agent = StyleSelectedRow.Render(agent)
+			num = StyleSelectedRow.Render(num)
+			title = StyleSelectedRow.Render(title)
+			model = StyleSelectedRow.Render(model)
+			runner = StyleSelectedRow.Render(runner)
+			pid = StyleSelectedRow.Render(pid)
+			elapsed = StyleSelectedRow.Render(elapsed)
+		}
+		b.WriteString(cursor + " " + status + " " + agent + " " + num + " " + title + " " +
+			model + " " + runner + " " + pid + " " + elapsed + "\n")
+	}
+	// Legend: the dot is the only thing that distinguishes a provably live
+	// process from a row the database still calls 'running'.
+	b.WriteString("\n" + StyleSuccess.Render("●") + StyleMuted.Render(" alive   ") +
+		StyleError.Render("●") + StyleMuted.Render(" stale heartbeat — the row says running but the process is gone"))
+	return a.box("RUNNING", b.String(), height)
+}
+
+// runningElapsed renders how long a process has been running, or "—" when the
+// start time is unknown.
+func runningElapsed(started *time.Time) string {
+	if started == nil {
+		return "—"
+	}
+	d := time.Since(*started)
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
 func (a *App) renderAgentList(ag *AgentsTab, height int) string {
 	if len(ag.Agents) == 0 {
 		return a.box("AGENTS", StyleMuted.Render("No agents yet — they appear after running at least one task.")+"\n", height)
@@ -5978,6 +6227,8 @@ func (a *App) footerKeys() []fkey {
 			return []fkey{{"↑/↓", "step"}, {"esc/←", "back"}, {"tab", "next tab"}, {"q", "quit"}}
 		}
 		return []fkey{{"↑/↓", "workflow"}, {"enter/→", "steps"}, {"W", "run now"}, {"tab", "next tab"}, {"q", "quit"}}
+	case "Running":
+		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"o", "open"}, {"tab", "switch"}, {"r", "refresh"}, {"q", "quit"}}
 	case "Agents":
 		if ag := a.model.agentsTab; ag != nil {
 			switch ag.View {
