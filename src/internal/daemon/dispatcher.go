@@ -582,6 +582,22 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		} else if n > 0 {
 			aplog.Info("marked %d task(s) blocked after their workflow instances were interrupted", n)
 		}
+
+		// Reap executions whose process is gone, periodically.
+		//
+		// The reconciliations above run once, at startup, and are safe because
+		// a fresh process genuinely owns no in-flight runs. They say nothing
+		// about a run that dies *while* this process is working: its execution
+		// row keeps saying 'running' until the next restart, and the dashboard
+		// counts it as live work that never comes. This one runs continuously,
+		// so it must be much more careful — it closes a row only when the
+		// process is provably gone, judged by the same rule the dashboard's
+		// Running tab uses, so the two can never disagree.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.reapStaleExecutionsLoop(ctx)
+		}()
 	}
 	if d.db != nil {
 		if retention := d.cfg.Settings.Events.RetentionDuration(); retention > 0 {
