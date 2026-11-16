@@ -394,6 +394,11 @@ A stale row is still listed on purpose. Work that is stuck is exactly the work
 you want to see, and hiding it would leave you looking at a shorter list and a
 false sense of calm.
 
+Stale rows do not stay forever: the dispatcher reaps them, closing out any
+execution whose process is gone — every few minutes, and again whenever the
+dispatcher restarts. A row is only reaped when nothing proves the process is
+still running, so live work is never closed out from under you.
+
 If the tab cannot read the database — a locked file, or a query that took too
 long on a very large one — it says so instead of showing an empty list. An
 empty list is a claim about the hive; a failed query is not.

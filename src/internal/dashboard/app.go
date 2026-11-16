@@ -3550,33 +3550,12 @@ func (a *App) fetchRunning() tea.Cmd {
 					HeartbeatAt: r.HeartbeatAt,
 					StartedAt:   r.StartedAt,
 				}
-				ra.Alive = runningProcessAlive(r.PID, r.HeartbeatAt, now)
+				ra.Alive = db.ExecutionIsAlive(r.PID, r.HeartbeatAt, r.StartedAt, now)
 				agents = append(agents, ra)
 			}
 		}
 		return runningDataMsg{agents: agents}
 	}
-}
-
-// runningHeartbeatWindow is how old a heartbeat may be and still count as
-// proof that the process is working. The runner refreshes its heartbeat while
-// it runs, so anything older than this means the process stopped without
-// flipping its execution row.
-const runningHeartbeatWindow = 60 * time.Second
-
-// runningProcessAlive reports whether an execution row that still says
-// 'running' is backed by a process that is actually alive.
-//
-// The execution row is written immediately before the runner is invoked, so a
-// row left in that state can mean two very different things: a process that is
-// working right now, or a process that died without updating its row. Only a
-// PID plus a recent heartbeat distinguishes them — so both are required, and
-// a row with no PID is never treated as live work.
-func runningProcessAlive(pid int, heartbeat *time.Time, now time.Time) bool {
-	if pid <= 0 || heartbeat == nil {
-		return false
-	}
-	return now.Sub(*heartbeat) <= runningHeartbeatWindow
 }
 
 func (a *App) fetchAgents() tea.Cmd {

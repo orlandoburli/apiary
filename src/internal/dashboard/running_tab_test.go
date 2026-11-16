@@ -188,10 +188,16 @@ func TestRunningTabIsRegistered(t *testing.T) {
 // still calls 'running' is only live work when the process proves it — a PID
 // and a heartbeat from the last minute. Anything else is a stale row left
 // behind by a process that died without flipping its execution row.
-func TestRunningProcessAlive(t *testing.T) {
+//
+// The rule itself lives in db (db.ExecutionIsAlive), because the daemon's
+// reaper decides whether to close a row by the same rule. This test pins that
+// the tab uses the shared one: a rule defined twice is a rule that will
+// eventually disagree with itself.
+func TestRunningTabUsesTheSharedLivenessRule(t *testing.T) {
 	now := time.Now()
 	fresh := now.Add(-5 * time.Second)
 	old := now.Add(-time.Hour)
+	started := now.Add(-time.Minute)
 
 	cases := []struct {
 		name      string
@@ -201,12 +207,12 @@ func TestRunningProcessAlive(t *testing.T) {
 	}{
 		{"fresh heartbeat with a pid", 1234, &fresh, true},
 		{"stale heartbeat", 1234, &old, false},
-		{"no pid", 0, &fresh, false},
-		{"no heartbeat", 1234, nil, false},
+		{"fresh heartbeat without a pid", 0, &fresh, true},
+		{"no heartbeat and no pid", 0, nil, false},
 	}
 	for _, tc := range cases {
-		if got := runningProcessAlive(tc.pid, tc.heartbeat, now); got != tc.want {
-			t.Errorf("%s: runningProcessAlive = %v, want %v", tc.name, got, tc.want)
+		if got := db.ExecutionIsAlive(tc.pid, tc.heartbeat, &started, now); got != tc.want {
+			t.Errorf("%s: db.ExecutionIsAlive = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
