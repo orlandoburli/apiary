@@ -180,6 +180,35 @@ func (d *Dispatcher) enqueueFanOut(ctx context.Context, cell model.SourceItem, t
 			// `apiary dispatch`, or a label round-trip) bumps the generation —
 			// see docs/distributed-workers.md#cancelling-a-run.
 			if isTerminalJobState(job.State) {
+				// A *failed* job is different from a canceled one: nobody
+				// canceled that round, it simply died. The task is left waiting
+				// for a new attempt, and this dispatch is that attempt — but its
+				// key still points at the dead round, because the generation only
+				// moves when a task is reopened and an interrupted task is not
+				// reopenable. Without advancing it here, the daemon re-tried the
+				// same dead key once a minute, forever, and the task's work was
+				// never picked up again.
+				//
+				// A canceled job keeps its key on purpose (see above): the
+				// operator canceled that round and the cancellation stands until
+				// an explicit re-dispatch. Only a failure advances the round.
+				if job.State == queue.JobFailed {
+					if gen, err := d.db.InternalTasks().AdvanceGenerationForNewRound(ctx, task.ID); err != nil {
+						aplog.Error("task %s: advance dispatch generation for a failed round: %v", task.ID, err)
+					} else {
+						aplog.Info("task %s: workflow %s re-dispatched — the previous round's job failed, so the dispatch key moved to generation %d",
+							task.ID, match.Route.ID, gen)
+						d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "dispatch.dropped", TaskID: task.ID, WorkflowID: match.Route.ID,
+							Metadata: map[string]any{"reason": "failed round superseded", "detail": string(job.State), "job_id": job.ID, "generation": gen}})
+						// The next poll picks the task up under the new generation.
+						// Nothing is enqueued now: the task's state and its
+						// outstanding counter are left as the failed round left
+						// them, and the poll re-routes it.
+						d.rollbackQueuedOutstanding(ctx, task.ID, nil)
+						d.abandonReservation(ctx, match)
+						continue
+					}
+				}
 				aplog.Warn("task %s: workflow %s not enqueued — dispatch key %q already belongs to a %s job; re-dispatch waits for a new dispatch generation",
 					task.ID, match.Route.ID, job.IdempotencyKey, job.State)
 				d.recordExecutionEvent(ctx, db.ExecutionEvent{Type: "dispatch.dropped", TaskID: task.ID, WorkflowID: match.Route.ID,

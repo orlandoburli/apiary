@@ -933,15 +933,33 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 
 // Status returns a snapshot for the IPC status endpoint.
 func (d *Dispatcher) Status() StatusResponse {
-	// Build per-agent concurrency status
+	// Build per-agent concurrency status.
+	//
+	// This counts the agent processes that are actually running, not the
+	// dispatch slots the agent's semaphore holds. A workflow instance takes one
+	// slot for its whole run, but the run may fan out to several agent
+	// processes at once — a reviewer and a QA on one ticket, three engineers on
+	// one board — so the slot count understated the work in flight. It was
+	// worst exactly where it mattered: three engineers running while the
+	// status said two, and "active: 1" while three processes worked.
+	//
+	// The count comes from the database rather than from in-memory state, and
+	// it uses the same liveness rule as the dashboard's Running tab, so the
+	// status and the dashboard cannot disagree about the same process.
 	agentStatus := make(map[string]int)
 	for _, ac := range d.cfg.Agents {
-		ch := d.agentSem[ac.ID]
-		used := 0
-		if ch != nil {
-			used = len(ch)
+		agentStatus[ac.ID] = 0
+	}
+	if d.db != nil {
+		// Status() takes no context — it is a snapshot for the status
+		// endpoint — so the read gets its own bounded one.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if live, err := d.db.LiveAgentCounts(ctx); err == nil {
+			for agentID, n := range live {
+				agentStatus[agentID] = n
+			}
 		}
-		agentStatus[ac.ID] = used
 	}
 
 	resp := StatusResponse{
