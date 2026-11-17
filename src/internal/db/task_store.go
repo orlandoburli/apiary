@@ -269,6 +269,40 @@ func (s *InternalTaskStore) BumpGeneration(ctx context.Context, id string) (int,
 	return generation, err
 }
 
+// AdvanceGenerationForNewRound advances a task's dispatch generation by one and
+// returns the new value.
+//
+// IncrementOutstanding bumps the generation implicitly, but only for a task
+// that is reopenable — one that has settled, or one waiting out a retry
+// backoff. A task blocked on *interrupted* is not in that set, and that left a
+// hole: an interrupted task's round is over (its instance was interrupted), so
+// the next poll's re-dispatch is a new round — but its generation never moved,
+// so the queue's taskID:generation:routeID idempotency key stayed pinned to
+// the terminal job of the interrupted round. Every re-dispatch then collapsed
+// into "key already belongs to a terminal job" and no new run was ever
+// created: the daemon retried the same dead key once a minute, forever.
+//
+// This is deliberately a separate call rather than a widening of
+// taskReopenable: reopening a task also flips its state back to 'running' and
+// clears its blocked reason, and an interrupted task must not be reopened
+// that way — the instance that was interrupted is still on record, and the
+// engine's own resume path decides what happens to it.
+//
+// The bump is unconditional, like BumpGeneration: the caller has already
+// decided that this is a new round.
+func (s *InternalTaskStore) AdvanceGenerationForNewRound(ctx context.Context, id string) (int, error) {
+	var generation int
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE internal_tasks SET generation = COALESCE(generation,0) + 1, updated_at = ?
+		WHERE id = ?
+		RETURNING generation
+	`, time.Now(), id).Scan(&generation)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return generation, err
+}
+
 // DeleteTask removes a task row by ID. Workflow instances, bindings, and logs are
 // removed by their own stores; this only drops the internal_tasks row. Deleting a
 // non-existent id is a no-op (no error), so it is safe to call for orphaned cells.
