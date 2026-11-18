@@ -780,6 +780,8 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return a, a.clearLogsCmd(id)
 			case "stop":
 				return a, a.stopInstanceCmd(id)
+			case "delete":
+				return a, a.deleteTaskCmd(id)
 			}
 		default:
 			a.model.confirmAction = ""
@@ -815,6 +817,19 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key == "c" || key == "C" {
 		if id, ok := a.focusedTaskID(); ok {
 			a.model.confirmAction = "clear"
+			a.model.confirmTaskID = id
+			return a, nil
+		}
+		return a, nil
+	}
+
+	// Permanently delete the focused task (Shift+D): the task, its workflow
+	// instances, its steps and its logs. Shift+D rather than a plain letter
+	// because it cannot be undone, and the other destructive key in this
+	// dashboard — clear logs — is already Shift+C.
+	if key == "D" {
+		if id, ok := a.focusedTaskID(); ok {
+			a.model.confirmAction = "delete"
 			a.model.confirmTaskID = id
 			return a, nil
 		}
@@ -2028,6 +2043,13 @@ func (a *App) focusedTaskID() (string, bool) {
 				return ag.Activity[ag.ActivityIdx].TaskID, true
 			}
 		}
+	case "Running":
+		// The row under the cursor in the Running tab. The tab lists the
+		// processes working right now, and a task acted on from here is the
+		// one the user is looking at.
+		if id, ok := a.selectedRunningTaskID(); ok {
+			return id, true
+		}
 	}
 	return "", false
 }
@@ -2040,6 +2062,45 @@ func (a *App) focusedTaskID() (string, bool) {
 // cell id") and a successful restart were indistinguishable on screen: the modal
 // closed and nothing happened. The daemon's message is the whole diagnosis, so it
 // goes to the user verbatim.
+// deleteTaskCmd permanently removes a task and everything attached to it.
+//
+// It calls the same endpoint the `apiary delete` command does, so the two
+// cannot drift: the dashboard is not a second implementation of "delete a
+// task", it is a way to reach the one that exists.
+//
+// The daemon does the work, not the dashboard: it cancels the run in flight,
+// closes the workflow instances, and removes the bindings, logs and the task
+// row. Doing it in the daemon is what makes it safe — the daemon knows what
+// else is holding a reference to the task.
+func (a *App) deleteTaskCmd(taskID string) tea.Cmd {
+	return func() tea.Msg {
+		socketPath := a.socketPath
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+			},
+		}
+		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+		// PathEscape: the reference may be a GitHub "#1953", and a raw '#' would
+		// be read as a URL fragment, leaving the daemon with an empty id.
+		resp, err := client.Post("http://apiary/tasks/delete/"+neturl.PathEscape(taskID), "application/json", nil)
+		if err != nil {
+			return noticeMsg{text: fmt.Sprintf("Delete failed: cannot reach daemon: %v", err), isErr: true}
+		}
+		defer resp.Body.Close()
+
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if resp.StatusCode != http.StatusOK {
+			msg := strings.TrimSpace(string(body))
+			if msg == "" {
+				msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			}
+			return noticeMsg{text: "Delete failed: " + msg, isErr: true}
+		}
+		return noticeMsg{text: fmt.Sprintf("Deleted %s — its workflows, steps and logs are gone", taskID)}
+	}
+}
+
 func (a *App) restartTaskCmd(taskID string) tea.Cmd {
 	return func() tea.Msg {
 		socketPath := a.socketPath
@@ -3795,13 +3856,22 @@ func (a *App) renderConfirmModal(view string) string {
 	case "stop":
 		label = "Stop workflow"
 		msg = "Stop this workflow instance? It will be marked interrupted."
+	case "delete":
+		label = "Delete task"
+		msg = "Delete this task and all its workflows, steps and logs?\nThis cannot be undone."
 	}
 
+	// Wide enough for the longest message (the delete warning), so it is not
+	// wrapped across lines in a dialog the user has to read carefully.
+	dialogWidth := 44
+	if len(label)+len(msg) > 60 {
+		dialogWidth = 58
+	}
 	dialog := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ColorWarning).
 		Padding(1, 3).
-		Width(44).
+		Width(dialogWidth).
 		Render(
 			lipgloss.JoinVertical(lipgloss.Center,
 				StyleBoxTitle.Render(" "+label+" "),
@@ -6471,7 +6541,7 @@ func (a *App) footerKeys() []fkey {
 				return []fkey{{"type", "filter"}, {"enter", "apply"}, {"esc", "cancel"}}
 			}
 		}
-		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"/", "filter"}, {"T", "tickets-only"}, {"A", "approvals"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"W", "run wf"}, {"C", "clear"}, {"tab", "switch"}, {"q", "quit"}}
+		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"/", "filter"}, {"T", "tickets-only"}, {"A", "approvals"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"W", "run wf"}, {"C", "clear"}, {"D", "delete"}, {"tab", "switch"}, {"q", "quit"}}
 	case "Workflows":
 		if wt := a.model.workflowsTab; wt != nil && wt.Focus == WorkflowsViewSteps {
 			return []fkey{{"↑/↓", "step"}, {"esc/←", "back"}, {"tab", "next tab"}, {"q", "quit"}}

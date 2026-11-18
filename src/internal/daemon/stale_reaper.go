@@ -44,8 +44,28 @@ func (d *Dispatcher) reapStaleExecutionsLoop(ctx context.Context) {
 		}
 
 		d.reapStaleExecutionsOnce(ctx)
+		d.reconcileAbandonedInstancesOnce(ctx)
 
 		timer.Reset(staleReapInterval)
+	}
+}
+
+// reconcileAbandonedInstancesOnce closes the workflow instances that no run is
+// working on and no job is waiting to start.
+//
+// Split out from the loop so it can be exercised directly, without waiting on
+// a timer.
+func (d *Dispatcher) reconcileAbandonedInstancesOnce(ctx context.Context) {
+	if d.db == nil {
+		return
+	}
+	n, err := d.db.ReconcileAbandonedInstances(ctx)
+	if err != nil {
+		aplog.Warn("reconcile abandoned instances: %v", err)
+		return
+	}
+	if n > 0 {
+		aplog.Info("closed %d abandoned workflow instance(s) — no run working on them and no job waiting to start them", n)
 	}
 }
 

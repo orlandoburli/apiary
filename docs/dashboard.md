@@ -150,6 +150,7 @@ From the list you can drill into the selected task:
 | `R` (Shift+R)          | **Force restart** — cancel and re-dispatch the task (with confirmation) |
 | `W` (Shift+W)          | **Start a workflow** on the task, ignoring triggers and guards |
 | `C`                    | **Clear logs** — delete all logs for the task (with confirmation) |
+| `D` (Shift+D)          | **Delete task** — permanently remove the task and all its workflows, steps and logs (with confirmation; cannot be undone) |
 | `b`                    | **Board** — the same tasks grouped into columns by state (see below) |
 | `Esc` / `Backspace` / `h` / `←` | Back to the list                          |
 
@@ -422,6 +423,12 @@ Nothing here is hidden: the count in the section header is the number of
 non-terminal workflows, and when the list is longer than the screen it says how
 many were cut off.
 
+The waiting section is not a graveyard. A workflow that no run is working on
+and no job is waiting to start is dead, and the dispatcher closes it out on its
+regular pass — so an interrupted run does not sit here being "waiting"
+forever. What stays is what is genuinely waiting: an approval, a CI run, a
+blocker issue.
+
 If the tab cannot read the database — a locked file, or a query that took too
 long on a very large one — it says so instead of showing an empty list. An
 empty list is a claim about the hive; a failed query is not.
@@ -431,6 +438,7 @@ empty list is a claim about the hive; a failed query is not.
 | `↑` / `↓`              | Move the selection                                          |
 | `Enter` / `l`          | **Open the task's workflow monitor** — the live step list for the task this agent is working on |
 | `o`                    | **Open** the task in your browser (its source URL)          |
+| `D` (Shift+D)          | **Delete task** — permanently remove the task and all its workflows, steps and logs (with confirmation; cannot be undone) |
 | `Home` / `End`         | Jump to top / bottom                                        |
 | `PgUp` / `PgDn`        | Page up / down                                              |
 
