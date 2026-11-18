@@ -2443,14 +2443,8 @@ func (d *Dispatcher) dropCappedMatches(ctx context.Context, task model.InternalT
 // the workflow has no on_fail (e.g. the hatch-* escape hatches) — the cap still
 // stops re-dispatch, the item just keeps being polled harmlessly.
 func (d *Dispatcher) parkCappedTask(ctx context.Context, task model.InternalTask, workflowID string) {
-	var onFail *config.OnComplete
-	for i := range d.cfg.Workflows {
-		if d.cfg.Workflows[i].ID == workflowID {
-			onFail = d.cfg.Workflows[i].OnFail
-			break
-		}
-	}
-	if onFail == nil {
+	hook := cappedTaskHook(d.cfg, workflowID)
+	if hook == nil {
 		return
 	}
 	bindings, err := d.db.ListBindingsByTask(ctx, task.ID)
@@ -2458,9 +2452,38 @@ func (d *Dispatcher) parkCappedTask(ctx context.Context, task model.InternalTask
 		aplog.Error("park capped task %s: list bindings: %v", task.ID, err)
 		return
 	}
-	if err := (&wfSideEffects{d: d}).ApplyHook(ctx, task, bindings, *onFail); err != nil {
-		aplog.Error("park capped task %s: apply on_fail: %v", task.ID, err)
+	if err := (&wfSideEffects{d: d}).ApplyHook(ctx, task, bindings, *hook); err != nil {
+		aplog.Error("park capped task %s: apply on_exhausted: %v", task.ID, err)
 	}
+}
+
+// cappedTaskHook selects the hook a capped workflow applies when its retry
+// budget is spent.
+//
+// on_exhausted wins: it is the hook written for this moment — the budget is
+// spent and a human is now needed. on_fail is only the fallback, for a
+// workflow that has not opted in, so nothing changes for it.
+//
+// The distinction is what makes a workflow's failure retryable. on_fail runs
+// after *every* failure, and a workflow's on_fail commonly adds a label its
+// own trigger excludes — needs-attention, which every workflow adds and every
+// trigger excludes. That took the task out of its own trigger after the first
+// failure, so it was never retried: 835 tasks failed once and got no second
+// attempt, and settings.max_attempts never meant anything.
+func cappedTaskHook(cfg *config.Config, workflowID string) *config.OnComplete {
+	if cfg == nil {
+		return nil
+	}
+	for i := range cfg.Workflows {
+		if cfg.Workflows[i].ID != workflowID {
+			continue
+		}
+		if cfg.Workflows[i].OnExhausted != nil {
+			return cfg.Workflows[i].OnExhausted
+		}
+		return cfg.Workflows[i].OnFail
+	}
+	return nil
 }
 
 // dispatch acknowledges, runs, and writes the result for a single task.

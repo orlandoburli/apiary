@@ -148,9 +148,21 @@ type TaskTracker interface {
 // mirrors dropCappedMatches, which is what actually enforces the cap on the next
 // poll; this only decides how the task is labelled in the meantime.
 //
-// Fail-safe: on a count error, or with the cap disabled, it reports false so the
-// task settles as 'failed'. Over-reporting a retry would hide a genuinely dead
-// task from an operator, which is the failure mode worth avoiding.
+// It also checks that the task would still be routed at all. The failure count
+// alone is not enough: a workflow's own on_fail hook commonly adds a label
+// that its trigger excludes (the classic being needs-attention, which every
+// workflow adds on failure and every trigger excludes), so the item stops
+// matching the moment the first attempt fails. The failure count would still
+// be under the cap, and the task would be labelled "a retry is pending" —
+// while the poll would never route it again. That is a claim about the future
+// the system cannot keep, and it left hundreds of tasks sitting in
+// blocked/retry_backoff with nothing coming.
+//
+// Fail-safe: on a count error, or with the cap disabled, it reports false so
+// the task settles as 'failed'. Over-reporting a retry would hide a genuinely
+// dead task from an operator, which is the failure mode worth avoiding. The
+// same reasoning applies to the routability check: when it cannot be
+// established, it reports false.
 func (e *Engine) retryPending(ctx context.Context, r *dagRun) bool {
 	limit := e.cfg.Settings.MaxAttempts
 	if limit <= 0 || e.tracker == nil || r.task.ID == "" || r.wf.ID == "" {
@@ -161,7 +173,68 @@ func (e *Engine) retryPending(ctx context.Context, r *dagRun) bool {
 		aplog.Error("task %s: consecutive-failure count: %v", r.task.ID, err)
 		return false
 	}
-	return n < limit
+	if n >= limit {
+		return false
+	}
+	return e.stillRoutable(r)
+}
+
+// stillRoutable reports whether the task would still match the workflow's own
+// trigger once the failure has been handled.
+//
+// Two label sets matter, and the second is the one that matters most:
+//
+//   - The labels the task carries now (its metadata, kept in sync with the
+//     source item on every poll).
+//   - The labels the workflow's own on_fail hook is about to add. The hook
+//     runs *after* this decision (completeTask applies it once the state is
+//     written), so the task's metadata does not carry them yet — but they are
+//     what the source item will have by the time the next poll routes it.
+//
+// A workflow whose trigger excludes one of them will not be dispatched again,
+// so the task must not be told a retry is pending. This is the common case:
+// every workflow adds needs-attention on failure, and every trigger excludes
+// it — so without this check the failure count alone would keep claiming a
+// retry that the poll was never going to make.
+//
+// A workflow with no trigger of its own (a sub-workflow dispatched by its
+// parent, or a manually run one) is not routed by a poll at all, so this
+// cannot say it is not routable — the dispatch that starts it is not a poll.
+func (e *Engine) stillRoutable(r *dagRun) bool {
+	trigger := r.wf.Trigger
+	if trigger == nil {
+		return true
+	}
+	match := trigger.Match
+	labels := make(map[string]bool, len(r.task.Metadata.Labels))
+	for _, l := range r.task.Metadata.Labels {
+		labels[strings.ToLower(l)] = true
+	}
+	// The labels the failure is about to add. They are not in the metadata yet:
+	// the hook runs after this decision.
+	if r.wf.OnFail != nil {
+		for _, l := range r.wf.OnFail.AddLabels {
+			labels[strings.ToLower(l)] = true
+		}
+	}
+	for _, excluded := range match.ExcludeLabels {
+		if labels[strings.ToLower(excluded)] {
+			aplog.Info("task %s: workflow %s will not be dispatched again — %q is excluded by its own trigger (present now, or added by its on_fail hook); not claiming a retry is pending",
+				r.task.ID, r.wf.ID, excluded)
+			return false
+		}
+	}
+	if match.ExcludeLabelPrefix != "" {
+		prefix := strings.ToLower(match.ExcludeLabelPrefix)
+		for _, l := range r.task.Metadata.Labels {
+			if strings.HasPrefix(strings.ToLower(l), prefix) {
+				aplog.Info("task %s: workflow %s will not be dispatched again — %q matches its own trigger's excluded prefix %q; not claiming a retry is pending",
+					r.task.ID, r.wf.ID, l, match.ExcludeLabelPrefix)
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // StepRequest is the input to executing one agent step.

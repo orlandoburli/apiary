@@ -94,6 +94,23 @@ type WorkflowConfig struct {
 	Steps         []StepConfig   `yaml:"steps"`
 	OnComplete    *OnComplete    `yaml:"on_complete,omitempty"`
 	OnFail        *OnComplete    `yaml:"on_fail,omitempty"`
+	// OnExhausted is applied when the workflow's failure budget is spent —
+	// settings.max_attempts consecutive failures — and the task is not going
+	// to be dispatched again.
+	//
+	// It exists because OnFail cannot be the escalation point: the hook a
+	// workflow applies on failure typically adds a label its own trigger
+	// excludes (needs-attention, which every workflow adds and every trigger
+	// excludes), so applying it on the first failure takes the task out of its
+	// own trigger and no retry ever happens. That made settings.max_attempts
+	// meaningless — 835 tasks failed once and were never tried again.
+	//
+	// With the escalation here instead, OnFail is free to mean "route this
+	// onward" (the mobile handoff adds workflow:implementation-mobile-10x) and
+	// the human is notified once the budget is spent. When it is set, it
+	// replaces OnFail at the cap; when it is not, OnFail is applied at the cap
+	// as before, so nothing changes for a workflow that has not opted in.
+	OnExhausted *OnComplete `yaml:"on_exhausted,omitempty"`
 	// Env is the workflow-scope environment overlay applied to every step of this
 	// workflow. It overrides agent.env and is overridden by step.env.
 	Env map[string]string `yaml:"env,omitempty"`
