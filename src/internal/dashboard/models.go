@@ -441,10 +441,36 @@ type RunningTab struct {
 	Agents      []RunningAgent
 	SelectedIdx int
 
+	// Waiting holds the workflow instances that have not reached a terminal
+	// state — the ones running an agent, and the ones parked on something
+	// (an approval, a CI run, a blocker issue). They are shown in a second
+	// section: work the hive is holding but cannot advance yet is worth seeing
+	// next to work it is actively doing.
+	Waiting []WaitingInstance
+
 	// LoadErr is set when the query failed. The tab then says so instead of
 	// rendering "no agents running": an empty list is a claim about the hive,
 	// and a query that timed out says nothing about it.
 	LoadErr error
+}
+
+// WaitingInstance is one workflow instance in the Running tab's waiting
+// section.
+type WaitingInstance struct {
+	WorkflowID string
+	TaskID     string
+	CellID     string
+	Title      string
+	// State is the instance state: running, queued, blocked, interrupted.
+	State string
+	// WaitReason names what the instance is waiting on: approval | ci |
+	// dependency | retry_backoff | interrupted. Empty when it is not blocked.
+	WaitReason string
+	// AgentID is the agent of the open step, when the instance has one.
+	AgentID string
+	StepID  string
+	// Age is how long the instance has been in its current state.
+	Age time.Duration
 }
 
 // AgentStatus describes an agent's configuration and aggregate performance.

@@ -399,6 +399,29 @@ execution whose process is gone — every few minutes, and again whenever the
 dispatcher restarts. A row is only reaped when nothing proves the process is
 still running, so live work is never closed out from under you.
 
+#### Waiting workflows
+
+Below the running processes is a **WAITING** section: the workflows the hive
+holds but cannot advance. A workflow is not a process — it stays non-terminal
+long after the agent that was running it is gone, parked on something.
+
+```
+   STATE         WORKFLOW         TASK       TITLE                      AGENT        WAITING ON     AGE
+   ⏸ ci          implementation   #7853      Oficina: integrar emiss…   —            CI run      38m21s
+   ⏸ approval    implementation   #7874      Oficina: painel de capa…   —            human approval  2h06m
+   ✗ interrupted implementation   #7864      Oficina: dashboard emp…   —            run died     1h45m
+```
+
+The rows are ordered by what you can do about them: a workflow waiting on a
+human, a CI run or a blocker issue is waiting for something, while an
+**interrupted** instance is the debris of a run that died and needs a decision
+rather than a wait. The **AGE** column is how long it has been waiting, which
+is what makes a two-day-old approval visible.
+
+Nothing here is hidden: the count in the section header is the number of
+non-terminal workflows, and when the list is longer than the screen it says how
+many were cut off.
+
 If the tab cannot read the database — a locked file, or a query that took too
 long on a very large one — it says so instead of showing an empty list. An
 empty list is a claim about the hive; a failed query is not.
