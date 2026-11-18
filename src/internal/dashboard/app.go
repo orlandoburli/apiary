@@ -217,7 +217,8 @@ type taskHistoryRefreshMsg struct {
 }
 type agentsDataMsg struct{ agents []AgentStatus }
 type runningDataMsg struct {
-	agents []RunningAgent
+	agents  []RunningAgent
+	waiting []WaitingInstance
 	// err is set when the query failed. Without it the tab would render
 	// "no agents running", which is a claim about the hive's state — and a
 	// query that timed out says nothing about it.
@@ -487,6 +488,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runningDataMsg:
 		if a.model.runningTab != nil {
 			a.model.runningTab.Agents = msg.agents
+			a.model.runningTab.Waiting = msg.waiting
 			a.model.runningTab.LoadErr = msg.err
 			if a.model.runningTab.SelectedIdx >= len(msg.agents) {
 				a.model.runningTab.SelectedIdx = 0
@@ -3529,6 +3531,7 @@ func (a *App) fetchRunning() tea.Cmd {
 		defer cancel()
 
 		agents := make([]RunningAgent, 0)
+		waiting := make([]WaitingInstance, 0)
 		if dbConn != nil {
 			rows, err := dbConn.GetRunningExecutions(ctx)
 			if err != nil {
@@ -3553,8 +3556,34 @@ func (a *App) fetchRunning() tea.Cmd {
 				ra.Alive = db.ExecutionIsAlive(r.PID, r.HeartbeatAt, r.StartedAt, now)
 				agents = append(agents, ra)
 			}
+
+			// The workflows the hive is holding but cannot advance: parked on an
+			// approval, a CI run, a blocker issue, or the debris of a run that
+			// died. They are fetched separately from the running executions
+			// because an instance is a workflow, not a process: it stays
+			// non-terminal long after the agent that was running it is gone.
+			insts, err := dbConn.ListNonTerminalInstances(ctx, 200)
+			if err != nil {
+				return runningDataMsg{agents: agents, waiting: waiting, err: err}
+			}
+			for _, inst := range insts {
+				w := WaitingInstance{
+					WorkflowID: inst.WorkflowID,
+					TaskID:     inst.TaskID,
+					CellID:     inst.CellID,
+					Title:      inst.Title,
+					State:      inst.State,
+					WaitReason: inst.BlockedReason,
+					AgentID:    inst.AgentID,
+					StepID:     inst.StepID,
+				}
+				if !inst.UpdatedAt.IsZero() {
+					w.Age = now.Sub(inst.UpdatedAt)
+				}
+				waiting = append(waiting, w)
+			}
 		}
-		return runningDataMsg{agents: agents}
+		return runningDataMsg{agents: agents, waiting: waiting}
 	}
 }
 
@@ -5409,7 +5438,14 @@ func (a *App) renderRunningList(rt *RunningTab, height int) string {
 		return a.box("RUNNING", StyleError.Render("Could not read the running agents: ")+rt.LoadErr.Error()+"\n", height)
 	}
 	if len(rt.Agents) == 0 {
-		return a.box("RUNNING", StyleMuted.Render("No agents running right now — they appear here while a task is in flight.")+"\n", height)
+		// Nothing is running — but workflows may still be waiting, and that is
+		// exactly the state an operator needs to see. The waiting section is
+		// still rendered; only the running section is empty.
+		var b strings.Builder
+		b.WriteString(StyleMuted.Render("No agents running right now — they appear here while a task is in flight."))
+		b.WriteString("\n")
+		b.WriteString(a.renderWaitingSection(rt.Waiting, waitingRowsFor(height, 2)))
+		return a.box("RUNNING", b.String(), height)
 	}
 
 	const (
@@ -5491,7 +5527,211 @@ func (a *App) renderRunningList(rt *RunningTab, height int) string {
 	// process from a row the database still calls 'running'.
 	b.WriteString("\n" + StyleSuccess.Render("●") + StyleMuted.Render(" alive   ") +
 		StyleError.Render("●") + StyleMuted.Render(" stale heartbeat — the row says running but the process is gone"))
+
+	// The waiting section gets whatever height the running section did not
+	// use: the header row, one row per running process, the blank line and the
+	// legend, plus the box's own borders.
+	used := len(rt.Agents) + 4
+	b.WriteString(a.renderWaitingSection(rt.Waiting, waitingRowsFor(height, used)))
 	return a.box("RUNNING", b.String(), height)
+}
+
+// waitingRowsFor is how many waiting rows fit in the space left over.
+//
+// The box drops whatever does not fit, silently — so a waiting list that
+// overflowed would simply vanish below the fold. That is the one failure this
+// section must not have: a workflow parked on an approval for two days is
+// invisible in every other view.
+//
+// The space taken is: the box's two borders, the "used" rows the caller
+// already spent, the section's own header, and a row for the "and N more"
+// line. That last one is only reserved when the list is actually long enough
+// to need it, so nothing is wasted on a short list.
+func waitingRowsFor(height, used int) int {
+	// height covers the box's two borders; used is what the caller already
+	// spent; +1 is the section header.
+	room := height - 2 - used - 1
+	if room < 1 {
+		return 0
+	}
+	// Keep a row for the "and N more" line, but only if the list is actually
+	// long enough to need one.
+	if room > 1 {
+		return room - 1
+	}
+	return room
+}
+
+// renderWaitingSection renders the workflows the hive is holding but cannot
+// advance: instances parked on an approval, a CI run, a blocker issue, or the
+// debris of a run that died.
+//
+// They are shown below the running processes because they are a different kind
+// of thing: a running row is a process doing work now, and a waiting row is a
+// workflow that will do work once something it needs arrives. Both are work
+// the hive holds, and an operator looking at the tab wants to see the second
+// kind as much as the first — a task parked on an approval for two days is
+// invisible in every other view.
+//
+// The rows are ordered so the ones a person can act on come first: a workflow
+// waiting on a human, a CI run or a blocker is waiting for something, while an
+// interrupted instance is the debris of a run that died and needs a decision,
+// not a wait.
+//
+// maxRows bounds how many are drawn. The box silently drops whatever does not
+// fit, so a long list that overflowed simply vanished below the fold — the
+// exact failure this section exists to prevent. The rows that did not fit are
+// counted and reported instead.
+func (a *App) renderWaitingSection(waiting []WaitingInstance, maxRows int) string {
+	if len(waiting) == 0 {
+		return ""
+	}
+
+	ordered := make([]WaitingInstance, len(waiting))
+	copy(ordered, waiting)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return waitingRank(ordered[i]) < waitingRank(ordered[j])
+	})
+
+	shown := ordered
+	var hidden int
+	if maxRows > 0 && len(ordered) > maxRows {
+		shown = ordered[:maxRows]
+		hidden = len(ordered) - maxRows
+	}
+
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(StyleTableHeader.Render(fmt.Sprintf("WAITING (%d) — workflows the hive holds but cannot advance", len(ordered))) + "\n")
+	for _, w := range shown {
+		b.WriteString(a.renderWaitingRow(w))
+	}
+	if hidden > 0 {
+		// The rows are ordered so the ones a person can act on come first, so
+		// what is cut off is the tail — the debris of runs that died. Say that
+		// rather than "the oldest", which would describe an order this list
+		// does not use.
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  … and %d more (mostly runs that died — the ones you can act on are listed first)", hidden)) + "\n")
+	}
+	return b.String()
+}
+
+// waitingRank orders the waiting rows by what a person can do about them: a
+// workflow blocked on a human, a CI run or a blocker issue is waiting for
+// something; an interrupted instance is over and needs a decision; a running
+// one has an agent on it right now.
+func waitingRank(w WaitingInstance) int {
+	switch w.WaitReason {
+	case string(state.ReasonApproval):
+		return 0
+	case string(state.ReasonCI):
+		return 1
+	case string(state.ReasonDependency):
+		return 2
+	case string(state.ReasonInterrupted):
+		return 4
+	case string(state.ReasonRetryBackoff):
+		return 3
+	default:
+		return 5
+	}
+}
+
+// renderWaitingRow renders one waiting workflow.
+func (a *App) renderWaitingRow(w WaitingInstance) string {
+	const (
+		cursorW = 2
+		stateW  = 15
+		wfW     = 16
+		taskW   = 10
+		titleW  = 40
+		agentW  = 12
+		reasonW = 14
+		ageW    = 9
+	)
+
+	inner := a.model.width - 2
+	// The title is the most compressible column: a truncated title is still
+	// readable, while a truncated workflow name is not.
+	tw := titleW
+	if room := inner - cursorW - stateW - wfW - taskW - agentW - reasonW - ageW - 10; room < tw {
+		tw = room
+	}
+	if tw < 12 {
+		tw = 12
+	}
+
+	state := waitingStateLabel(w)
+	wf := pad(truncate(valueOr(w.WorkflowID, "—"), wfW), wfW)
+	task := pad(truncate(valueOr(w.CellID, "—"), taskW), taskW)
+	title := pad(truncate(valueOr(w.Title, "—"), tw), tw)
+	agent := pad(truncate(valueOr(w.AgentID, "—"), agentW), agentW)
+	reason := pad(truncate(waitingReasonLabel(w), reasonW), reasonW)
+	age := padLeft(waitingAge(w.Age), ageW)
+	return pad("", cursorW) + " " + pad(state, stateW) + " " + wf + " " + task + " " + title + " " +
+		agent + " " + reason + " " + age + "\n"
+}
+
+// waitingStateLabel names the instance's state in a word, so the row says what
+// the instance is doing rather than repeating the raw state.
+func waitingStateLabel(w WaitingInstance) string {
+	switch {
+	case w.WaitReason == string(state.ReasonApproval):
+		return StyleWarning.Render("⏸ approval")
+	case w.WaitReason == string(state.ReasonCI):
+		return StyleWarning.Render("⏸ ci")
+	case w.WaitReason == string(state.ReasonDependency):
+		return StyleWarning.Render("⏸ dependency")
+	case w.WaitReason == string(state.ReasonInterrupted):
+		return StyleError.Render("✗ interrupted")
+	case w.WaitReason == string(state.ReasonRetryBackoff):
+		return StyleWarning.Render("↻ retry")
+	case w.State == "running" || w.State == "queued":
+		return StyleSuccess.Render("▶ " + w.State)
+	case w.State == "interrupted":
+		return StyleError.Render("✗ interrupted")
+	default:
+		return StyleMuted.Render(w.State)
+	}
+}
+
+// waitingReasonLabel names what the instance is waiting on, in the words an
+// operator would use for it.
+func waitingReasonLabel(w WaitingInstance) string {
+	switch w.WaitReason {
+	case string(state.ReasonApproval):
+		return "human approval"
+	case string(state.ReasonCI):
+		return "CI run"
+	case string(state.ReasonDependency):
+		return "blocker issue"
+	case string(state.ReasonInterrupted):
+		return "run died"
+	case string(state.ReasonRetryBackoff):
+		return "retry backoff"
+	default:
+		if w.StepID != "" {
+			return "step " + w.StepID
+		}
+		return "—"
+	}
+}
+
+// waitingAge renders how long an instance has been waiting.
+func waitingAge(age time.Duration) string {
+	if age <= 0 {
+		return "—"
+	}
+	if age < time.Minute {
+		return fmt.Sprintf("%ds", int(age.Seconds()))
+	}
+	if age < time.Hour {
+		return fmt.Sprintf("%dm%02ds", int(age.Minutes()), int(age.Seconds())%60)
+	}
+	if age < 24*time.Hour {
+		return fmt.Sprintf("%dh%02dm", int(age.Hours()), int(age.Minutes())%60)
+	}
+	return fmt.Sprintf("%dd%02dh", int(age.Hours())/24, int(age.Hours())%24)
 }
 
 // runningElapsed renders how long a process has been running, or "—" when the
