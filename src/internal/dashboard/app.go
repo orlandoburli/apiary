@@ -1249,13 +1249,16 @@ func (a *App) selectedAgentID() (string, bool) {
 	return "", false
 }
 
-// selectedRunningTaskID returns the task id of the row under the cursor — the
-// running agent, or the waiting workflow.
+// selectedRunningTaskID returns the id of the row under the cursor, in the id
+// space the task actions use: the running agent's task reference, or the
+// waiting workflow's cell.
 //
-// Both sections have a task, and both open the same place with enter: the
-// workflow monitor lands on the live step list either way. Resolving one
-// cursor over both is what keeps o/t/p/D/R acting on the row the user sees
-// highlighted, rather than on a row in the other section.
+// The running agents carry a cell reference (task_executions.task_id is the
+// routed id), and every action that takes this id — enter, D, R, t, o —
+// resolves through that same space. The waiting row has both ids, and they are
+// not interchangeable: workflow_instances.task_id is the internal ulid, while
+// the monitor looks instances up by cell_id. Returning the ulid here opened an
+// empty logs view, which is why enter looked dead on a waiting row.
 func (a *App) selectedRunningTaskID() (string, bool) {
 	rt := a.model.runningTab
 	if rt == nil || rt.SelectedIdx < 0 {
@@ -1268,6 +1271,9 @@ func (a *App) selectedRunningTaskID() (string, bool) {
 	w, ok := rt.selectedWaiting()
 	if !ok {
 		return "", false
+	}
+	if w.CellID != "" {
+		return w.CellID, true
 	}
 	return w.TaskID, w.TaskID != ""
 }
@@ -2082,11 +2088,21 @@ func (a *App) focusedTaskURL() (string, bool) {
 		}
 	case "Running":
 		rt := a.model.runningTab
-		if rt == nil || rt.SelectedIdx < 0 || rt.SelectedIdx >= len(rt.Agents) {
+		if rt == nil || rt.SelectedIdx < 0 {
 			return "", false
 		}
-		u := rt.Agents[rt.SelectedIdx].TaskURL
-		return u, u != ""
+		if rt.SelectedIdx < len(rt.Agents) {
+			u := rt.Agents[rt.SelectedIdx].TaskURL
+			return u, u != ""
+		}
+		// A waiting workflow has no execution row to carry the link, so it
+		// comes from the task's source binding instead. Without this branch `o`
+		// did nothing on a waiting row while the footer still advertised it.
+		w, ok := rt.selectedWaiting()
+		if !ok {
+			return "", false
+		}
+		return w.TaskURL, w.TaskURL != ""
 	}
 	return "", false
 }
@@ -3741,6 +3757,7 @@ func (a *App) fetchRunning() tea.Cmd {
 					WorkflowID: inst.WorkflowID,
 					TaskID:     inst.TaskID,
 					CellID:     inst.CellID,
+					TaskURL:    inst.TaskURL,
 					Title:      inst.Title,
 					State:      inst.State,
 					WaitReason: inst.BlockedReason,

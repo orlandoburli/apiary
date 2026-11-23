@@ -453,7 +453,8 @@ is what makes a two-day-old approval visible.
 One cursor covers both sections: press `↓` past the last running row and it
 steps onto the first waiting workflow. `Enter` opens the selected row's workflow
 monitor, exactly as it does for a running process, and the task actions —
-`D` delete, `R` restart, `t` transcript — apply to the row the cursor is on.
+`o` open, `D` delete, `R` restart, `t` transcript — apply to the row the cursor
+is on.
 
 Nothing here is hidden: the count in the section header is the number of
 non-terminal workflows, and when the list is longer than the screen it scrolls
