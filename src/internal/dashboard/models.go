@@ -438,7 +438,13 @@ type RunningAgent struct {
 
 // RunningTab lists the agent processes running right now, one row each.
 type RunningTab struct {
-	Agents      []RunningAgent
+	Agents []RunningAgent
+
+	// SelectedIdx indexes the row under the cursor across the tab's single
+	// selection order: the running agents first, then the waiting instances in
+	// the order the tab draws them. One cursor over both sections is what lets
+	// ↑/↓ walk from a running process onto the parked workflow below it,
+	// instead of stopping dead at the section boundary.
 	SelectedIdx int
 
 	// Waiting holds the workflow instances that have not reached a terminal

@@ -490,9 +490,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.model.runningTab.Agents = msg.agents
 			a.model.runningTab.Waiting = msg.waiting
 			a.model.runningTab.LoadErr = msg.err
-			if a.model.runningTab.SelectedIdx >= len(msg.agents) {
-				a.model.runningTab.SelectedIdx = 0
-			}
+			// The cursor spans both sections, so a refresh can shrink the list
+			// from either end. Clamp rather than reset: resetting would yank the
+			// user back to the top on every poll, which is exactly when they are
+			// watching a row.
+			a.model.runningTab.ClampCursor()
 		}
 		a.model.loading = false
 		a.model.lastRefresh = time.Now()
@@ -1011,8 +1013,11 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.model.agentsTab.SelectedIdx--
 			}
 		case "Running":
-			if a.model.runningTab != nil && a.model.runningTab.SelectedIdx > 0 {
-				a.model.runningTab.SelectedIdx--
+			// One cursor over both sections: ↓ from the last running agent
+			// steps onto the first waiting workflow, which is the whole point of
+			// the tab — work in flight and work parked are both the hive's.
+			if a.model.runningTab != nil {
+				a.model.runningTab.MoveCursor(-1)
 			}
 		case "Logs":
 			if a.model.logsTab != nil && a.model.logsTab.Scrolled > 0 {
@@ -1038,8 +1043,8 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.model.agentsTab.SelectedIdx++
 			}
 		case "Running":
-			if a.model.runningTab != nil && a.model.runningTab.SelectedIdx < len(a.model.runningTab.Agents)-1 {
-				a.model.runningTab.SelectedIdx++
+			if a.model.runningTab != nil {
+				a.model.runningTab.MoveCursor(1)
 			}
 		case "Logs":
 			if a.model.logsTab != nil && a.model.logsTab.Scrolled < len(a.logVisualLines())-1 {
@@ -1084,7 +1089,7 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "Running":
 			if a.model.runningTab != nil {
-				a.model.runningTab.SelectedIdx = lastIndex(len(a.model.runningTab.Agents))
+				a.model.runningTab.SelectedIdx = lastIndex(a.model.runningTab.RowCount())
 			}
 		case "Logs":
 			if a.model.logsTab != nil {
@@ -1110,10 +1115,7 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "Running":
 			if a.model.runningTab != nil {
-				a.model.runningTab.SelectedIdx -= a.pageSize()
-				if a.model.runningTab.SelectedIdx < 0 {
-					a.model.runningTab.SelectedIdx = 0
-				}
+				a.model.runningTab.MoveCursor(-a.pageSize())
 			}
 		case "Logs":
 			if a.model.logsTab != nil {
@@ -1143,6 +1145,12 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if a.model.agentsTab.SelectedIdx > maxIdx {
 					a.model.agentsTab.SelectedIdx = maxIdx
 				}
+			}
+		case "Running":
+			// pgdown used to have no Running case at all, so paging down in the
+			// tab did nothing while paging up worked.
+			if a.model.runningTab != nil {
+				a.model.runningTab.MoveCursor(a.pageSize())
 			}
 		case "Logs":
 			if a.model.logsTab != nil {
@@ -1206,15 +1214,81 @@ func (a *App) selectedAgentID() (string, bool) {
 	return "", false
 }
 
-// selectedRunningTaskID returns the task id of the running agent under the
-// cursor — the task whose workflow monitor the user opens with enter.
+// selectedRunningTaskID returns the task id of the row under the cursor — the
+// running agent, or the waiting workflow.
+//
+// Both sections have a task, and both open the same place with enter: the
+// workflow monitor lands on the live step list either way. Resolving one
+// cursor over both is what keeps o/t/p/D/R acting on the row the user sees
+// highlighted, rather than on a row in the other section.
 func (a *App) selectedRunningTaskID() (string, bool) {
 	rt := a.model.runningTab
-	if rt == nil || rt.SelectedIdx < 0 || rt.SelectedIdx >= len(rt.Agents) {
+	if rt == nil || rt.SelectedIdx < 0 {
 		return "", false
 	}
-	id := rt.Agents[rt.SelectedIdx].TaskID
-	return id, id != ""
+	if rt.SelectedIdx < len(rt.Agents) {
+		id := rt.Agents[rt.SelectedIdx].TaskID
+		return id, id != ""
+	}
+	w, ok := rt.selectedWaiting()
+	if !ok {
+		return "", false
+	}
+	return w.TaskID, w.TaskID != ""
+}
+
+// RowCount is the number of selectable rows: the running agents, then the
+// waiting instances.
+func (rt *RunningTab) RowCount() int {
+	return len(rt.Agents) + len(rt.Waiting)
+}
+
+// ClampCursor keeps the cursor on a real row after the lists change size.
+//
+// The wait list is rebuilt from the database on every poll, so an instance
+// reaching a terminal state removes a row under the cursor. Leaving the cursor
+// past the end would make the next key press a no-op and the highlight vanish.
+func (rt *RunningTab) ClampCursor() {
+	if rt.SelectedIdx >= rt.RowCount() {
+		rt.SelectedIdx = lastIndex(rt.RowCount())
+	}
+	if rt.SelectedIdx < 0 {
+		rt.SelectedIdx = 0
+	}
+}
+
+// MoveCursor moves the cursor by delta rows, stopping at either end.
+func (rt *RunningTab) MoveCursor(delta int) {
+	rt.SelectedIdx += delta
+	rt.ClampCursor()
+}
+
+// selectedWaiting returns the waiting instance under the cursor, if the cursor
+// is in the waiting section.
+//
+// The index is into waitingOrder, not into rt.Waiting: the section is drawn
+// ranked, and the cursor must follow what is drawn.
+func (rt *RunningTab) selectedWaiting() (WaitingInstance, bool) {
+	i := rt.SelectedIdx - len(rt.Agents)
+	ordered := waitingOrder(rt.Waiting)
+	if i < 0 || i >= len(ordered) {
+		return WaitingInstance{}, false
+	}
+	return ordered[i], true
+}
+
+// waitingOrder returns the waiting instances in the order the tab draws them:
+// the ones a person can act on first, the debris of dead runs last.
+//
+// The cursor indexes this same order, so the highlighted row is the row the
+// user sees. Rendering and selection share the ordering for that reason.
+func waitingOrder(waiting []WaitingInstance) []WaitingInstance {
+	ordered := make([]WaitingInstance, len(waiting))
+	copy(ordered, waiting)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return waitingRank(ordered[i]) < waitingRank(ordered[j])
+	})
+	return ordered
 }
 
 // handleAgentSubViewKey handles keys while an agent detail/activity/task-logs
@@ -5514,7 +5588,8 @@ func (a *App) renderRunningList(rt *RunningTab, height int) string {
 		var b strings.Builder
 		b.WriteString(StyleMuted.Render("No agents running right now — they appear here while a task is in flight."))
 		b.WriteString("\n")
-		b.WriteString(a.renderWaitingSection(rt.Waiting, waitingRowsFor(height, 2)))
+		// With no agents the cursor indexes the waiting rows directly.
+		b.WriteString(a.renderWaitingSection(rt.Waiting, waitingRowsFor(height, 2), rt.SelectedIdx))
 		return a.box("RUNNING", b.String(), height)
 	}
 
@@ -5602,7 +5677,8 @@ func (a *App) renderRunningList(rt *RunningTab, height int) string {
 	// use: the header row, one row per running process, the blank line and the
 	// legend, plus the box's own borders.
 	used := len(rt.Agents) + 4
-	b.WriteString(a.renderWaitingSection(rt.Waiting, waitingRowsFor(height, used)))
+	// The waiting section's cursor is the same cursor, offset past the agents.
+	b.WriteString(a.renderWaitingSection(rt.Waiting, waitingRowsFor(height, used), rt.SelectedIdx-len(rt.Agents)))
 	return a.box("RUNNING", b.String(), height)
 }
 
@@ -5648,42 +5724,77 @@ func waitingRowsFor(height, used int) int {
 // interrupted instance is the debris of a run that died and needs a decision,
 // not a wait.
 //
-// maxRows bounds how many are drawn. The box silently drops whatever does not
-// fit, so a long list that overflowed simply vanished below the fold — the
-// exact failure this section exists to prevent. The rows that did not fit are
-// counted and reported instead.
-func (a *App) renderWaitingSection(waiting []WaitingInstance, maxRows int) string {
+// maxRows bounds how many are drawn, and cursor is the index of the row under
+// the selection (negative when the cursor is in the running section). The
+// window scrolls to keep the selected row visible rather than cutting off the
+// tail: the box silently drops whatever does not fit, so a row that overflowed
+// simply vanished below the fold — the exact failure this section exists to
+// prevent.
+func (a *App) renderWaitingSection(waiting []WaitingInstance, maxRows, cursor int) string {
 	if len(waiting) == 0 {
 		return ""
 	}
 
-	ordered := make([]WaitingInstance, len(waiting))
-	copy(ordered, waiting)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		return waitingRank(ordered[i]) < waitingRank(ordered[j])
-	})
-
-	shown := ordered
-	var hidden int
-	if maxRows > 0 && len(ordered) > maxRows {
-		shown = ordered[:maxRows]
-		hidden = len(ordered) - maxRows
-	}
+	ordered := waitingOrder(waiting)
+	shown, above, below, base := waitingWindow(ordered, maxRows, cursor)
 
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(StyleTableHeader.Render(fmt.Sprintf("WAITING (%d) — workflows the hive holds but cannot advance", len(ordered))) + "\n")
-	for _, w := range shown {
-		b.WriteString(a.renderWaitingRow(w))
+	if above > 0 {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  … %d earlier", above)) + "\n")
 	}
-	if hidden > 0 {
+	for i, w := range shown {
+		b.WriteString(a.renderWaitingRow(w, base+i == cursor))
+	}
+	if below > 0 {
 		// The rows are ordered so the ones a person can act on come first, so
-		// what is cut off is the tail — the debris of runs that died. Say that
-		// rather than "the oldest", which would describe an order this list
-		// does not use.
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  … and %d more (mostly runs that died — the ones you can act on are listed first)", hidden)) + "\n")
+		// what is cut off below is the tail — the debris of runs that died. Say
+		// that rather than "the oldest", which would describe an order this
+		// list does not use.
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  … and %d more (mostly runs that died — the ones you can act on are listed first)", below)) + "\n")
 	}
 	return b.String()
+}
+
+// waitingWindow picks the slice of waiting rows to draw and counts what is
+// hidden on either side.
+//
+// base is the index, within ordered, of the first row drawn, so the caller can
+// tell which drawn row the cursor is on. The caller's budget already reserves
+// one row for a single "and N more" line; when the list is scrolled so that
+// something is hidden on both sides, one row is given back so the two lines
+// fit rather than the box clipping the last visible row.
+func waitingWindow(ordered []WaitingInstance, maxRows, cursor int) (shown []WaitingInstance, above, below, base int) {
+	if maxRows <= 0 || len(ordered) <= maxRows {
+		return ordered, 0, 0, 0
+	}
+	if cursor >= maxRows {
+		base = cursor - maxRows + 1
+	}
+	end := base + maxRows
+	if end > len(ordered) {
+		end = len(ordered)
+		base = end - maxRows
+		if base < 0 {
+			base = 0
+		}
+	}
+	above = base
+	below = len(ordered) - end
+	if above > 0 && below > 0 && end-base > 1 {
+		// Both "… and more" lines will be drawn, and the budget only reserved
+		// one. Give a row back on the side away from the cursor, so the shrink
+		// never scrolls the selected row out of view.
+		if cursor < end-1 {
+			end--
+		} else {
+			base++
+		}
+		above = base
+		below = len(ordered) - end
+	}
+	return ordered[base:end], above, below, base
 }
 
 // waitingRank orders the waiting rows by what a person can do about them: a
@@ -5707,8 +5818,9 @@ func waitingRank(w WaitingInstance) int {
 	}
 }
 
-// renderWaitingRow renders one waiting workflow.
-func (a *App) renderWaitingRow(w WaitingInstance) string {
+// renderWaitingRow renders one waiting workflow, with the selection cursor
+// when it is the row under the cursor.
+func (a *App) renderWaitingRow(w WaitingInstance, selected bool) string {
 	const (
 		cursorW = 2
 		stateW  = 15
@@ -5738,7 +5850,21 @@ func (a *App) renderWaitingRow(w WaitingInstance) string {
 	agent := pad(truncate(valueOr(w.AgentID, "—"), agentW), agentW)
 	reason := pad(truncate(waitingReasonLabel(w), reasonW), reasonW)
 	age := padLeft(waitingAge(w.Age), ageW)
-	return pad("", cursorW) + " " + pad(state, stateW) + " " + wf + " " + task + " " + title + " " +
+
+	marker := pad("", cursorW)
+	if selected {
+		// The state cell keeps its own colour, the way the running rows keep
+		// their status dot: the icon and its colour are the meaning, and a
+		// nested style on top of an already-coloured cell would reset it.
+		marker = StyleFocusedArrow.Render("▶") + " "
+		wf = StyleSelectedRow.Render(wf)
+		task = StyleSelectedRow.Render(task)
+		title = StyleSelectedRow.Render(title)
+		agent = StyleSelectedRow.Render(agent)
+		reason = StyleSelectedRow.Render(reason)
+		age = StyleSelectedRow.Render(age)
+	}
+	return marker + " " + pad(state, stateW) + " " + wf + " " + task + " " + title + " " +
 		agent + " " + reason + " " + age + "\n"
 }
 
