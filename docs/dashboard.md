@@ -105,6 +105,31 @@ that died without closing its row out keeps counting until the next dispatcher
 restart reconciles it. The **Running** tab tells the two apart — it shows which
 of those executions are provably alive and which are stale.
 
+#### Resources
+
+Below the counters, a **Resources** section reports what the hive costs on this
+machine right now:
+
+```
+Hive:     12.3% CPU  412.5 MiB  14 processes
+Daemon:    1.2% CPU   87.0 MiB
+```
+
+- **Hive** is the daemon and its whole process tree — every agent CLI it spawned
+  plus the MCP servers and node children under each. That is where the memory
+  actually goes, and it is the number to watch.
+- **Daemon** is the dispatcher process alone, so you can see how much of the
+  total is the daemon versus the work it is running.
+
+The figures are measured by the dashboard from the operating system's process
+table, not reported by the daemon. **CPU** is what the tree used since the
+previous refresh, as a percentage of one core (200% means two cores' worth),
+so it is an instantaneous reading rather than a lifetime average. On the very
+first sample it reads `—`: there is no earlier reading to compare against yet.
+
+Not every platform exposes a process table to this tool; where it does not, the
+section says so instead of printing a number it could not measure.
+
 ![Overview tab](screenshots/overview.png)
 
 ### Tasks
@@ -374,14 +399,20 @@ The agents working right now — one row per in-flight process, so you can see
 what the hive is doing at this instant rather than what it did.
 
 ```
-   AGENT            TASK             TITLE                    MODEL         PID   ELAPSED
-▶  janitor          stuck-check@…   Stuck agent work check   claude-haiku…  7941   19h36m
+   AGENT            TASK             TITLE                    MODEL         PID   ELAPSED     CPU       MEM
+▶  janitor          stuck-check@…   Stuck agent work check   claude-haiku…  7941   19h36m   12.4%   184.2 MiB
 ```
 
 Each row is a **process**, not an agent: an agent running two tasks at once
 appears twice, because those are two separate processes doing two separate
 jobs. The **TASK** column carries the work item's human reference (`ERP-42`,
 `#412`), so you can match a row to the thing it is doing.
+
+**CPU** and **MEM** are what that agent is costing right now, for its whole
+tree: the CLI plus the MCP servers and node children under it. They are the
+same measure as the Overview's **Hive** figure, broken down per row, and they
+refresh with the tab. A `—` means the process exited between the database query
+and the measurement, or that the first CPU sample has not landed yet.
 
 The dot in front of each row says whether the process is provably alive:
 

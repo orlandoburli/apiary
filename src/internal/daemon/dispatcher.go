@@ -964,6 +964,7 @@ func (d *Dispatcher) Status() StatusResponse {
 
 	resp := StatusResponse{
 		Version:    version.Version,
+		PID:        os.Getpid(),
 		ConfigFile: d.configFile,
 		Uptime:     humanDuration(time.Since(d.startedAt)),
 		Concurrency: ConcurrencyStatus{

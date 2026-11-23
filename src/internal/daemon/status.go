@@ -4,7 +4,14 @@ import "time"
 
 // StatusResponse is the JSON payload returned by GET /status on the IPC socket.
 type StatusResponse struct {
-	Version     string            `json:"version"`
+	Version string `json:"version"`
+	// PID is the daemon's own process id.
+	//
+	// It is here so a local client can measure the daemon's CPU and memory
+	// from the outside: the dashboard runs on the same machine (it reaches the
+	// daemon over a unix socket) and reads the process table itself, rather
+	// than the daemon sampling itself and shipping the numbers.
+	PID         int               `json:"pid"`
 	ConfigFile  string            `json:"config_file"`
 	Uptime      string            `json:"uptime"`
 	Sources     []SourceStatus    `json:"sources"`
