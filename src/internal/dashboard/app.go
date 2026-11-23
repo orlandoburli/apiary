@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,6 +32,7 @@ import (
 	"github.com/orlandoburli/apiary/internal/db"
 	"github.com/orlandoburli/apiary/internal/format"
 	"github.com/orlandoburli/apiary/internal/model"
+	"github.com/orlandoburli/apiary/internal/procstat"
 	"github.com/orlandoburli/apiary/internal/skills"
 	"github.com/orlandoburli/apiary/internal/state"
 )
@@ -104,6 +106,20 @@ type App struct {
 	logMDCache   map[string][]string
 	logMDPending map[string]bool
 	logMDWidth   int
+
+	// resourceSampler measures the process table over time, and resourceUsage
+	// is its latest snapshot; daemonPID is the process whose whole tree the
+	// Overview reports on.
+	//
+	// The dashboard reads the process table itself rather than having the
+	// daemon report on itself. That is what makes the numbers include what the
+	// daemon actually costs: the agent CLI it spawned plus the MCP servers and
+	// node children under each of them, none of which the daemon tracks as its
+	// own memory. It also lets the Running tab show a live figure per agent
+	// from the pid the database already records.
+	resourceSampler *procstat.Sampler
+	resourceUsage   *procstat.Usage
+	daemonPID       int
 }
 
 func New(dbConn *db.Client, socketPath string, cfg *config.Config, logDir string) *App {
@@ -125,11 +141,12 @@ func NewWithView(dbConn *db.Client, socketPath string, cfg *config.Config, logDi
 		m.tasksTab.View = TaskViewBoard
 	}
 	return &App{
-		model:      m,
-		dbConn:     dbConn,
-		socketPath: socketPath,
-		cfg:        cfg,
-		logDir:     logDir,
+		model:           m,
+		dbConn:          dbConn,
+		socketPath:      socketPath,
+		cfg:             cfg,
+		logDir:          logDir,
+		resourceSampler: procstat.NewSampler(),
 	}
 }
 
@@ -223,6 +240,15 @@ type runningDataMsg struct {
 	// "no agents running", which is a claim about the hive's state — and a
 	// query that timed out says nothing about it.
 	err error
+}
+
+// resourceDataMsg carries a process-table snapshot and the daemon pid it was
+// taken for. The two travel together so the tree total and the per-agent
+// figures are read from one snapshot and cannot disagree.
+type resourceDataMsg struct {
+	usage     *procstat.Usage
+	daemonPID int
+	err       error
 }
 type agentActivityMsg struct {
 	agentID string
@@ -484,6 +510,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.model.loading = false
 		a.model.lastRefresh = time.Now()
+
+	case resourceDataMsg:
+		// A failed sample leaves the previous one in place: stale numbers beat
+		// a panel that blanks out whenever a ps call races the poll.
+		if msg.usage != nil {
+			a.resourceUsage = msg.usage
+		}
+		a.daemonPID = msg.daemonPID
+		return a, nil
 
 	case runningDataMsg:
 		if a.model.runningTab != nil {
@@ -2780,7 +2815,7 @@ func (a *App) fetchActiveTab() tea.Cmd {
 	}
 	switch a.model.ActiveTab() {
 	case "Overview":
-		return a.fetchOverview()
+		return tea.Batch(a.fetchOverview(), a.fetchResources())
 	case "Tasks":
 		// Sub-views live-refresh by id (not by list index), so the open Detail/Logs
 		// stay current without re-sorting History under the cursor — which would make
@@ -2847,7 +2882,7 @@ func (a *App) fetchActiveTab() tea.Cmd {
 		}
 		return a.fetchAgents()
 	case "Running":
-		return a.fetchRunning()
+		return tea.Batch(a.fetchRunning(), a.fetchResources())
 	case "Usage":
 		return a.fetchUsage()
 	case "Logs":
@@ -3722,6 +3757,105 @@ func (a *App) fetchRunning() tea.Cmd {
 	}
 }
 
+// fetchResources samples the process table and asks the daemon for its pid.
+//
+// Both happen in one command so the Overview's tree total and the Running
+// tab's per-agent figures come from the same snapshot; sampling twice would
+// make them disagree by a tick. The sampler is long-lived, so the CPU figure is
+// a delta against the previous refresh — an instantaneous reading — rather than
+// the lifetime average ps reports on its own.
+func (a *App) fetchResources() tea.Cmd {
+	sampler := a.resourceSampler
+	socketPath := a.socketPath
+	return func() tea.Msg {
+		if sampler == nil {
+			return resourceDataMsg{err: errors.New("no process sampler")}
+		}
+		usage, err := sampler.Read()
+		if err != nil {
+			return resourceDataMsg{err: err}
+		}
+		// A missing daemon is not a failed measurement: every agent is still
+		// measurable from the pid the database records, so the snapshot is kept
+		// and only the tree total goes unavailable.
+		pid, _ := daemonProcessID(socketPath)
+		return resourceDataMsg{usage: usage, daemonPID: pid}
+	}
+}
+
+// daemonProcessID asks the daemon for its own pid over the IPC socket.
+//
+// The pid is what makes the daemon's tree measurable from the outside: the
+// apiary process, every agent CLI it spawned, and the MCP servers and node
+// children under each. Nothing else on the machine identifies it — there is no
+// pid file.
+func daemonProcessID(socketPath string) (int, error) {
+	if socketPath == "" {
+		return 0, errors.New("no daemon socket")
+	}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+		},
+	}
+	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+	resp, err := client.Get("http://apiary/status")
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("status returned HTTP %d", resp.StatusCode)
+	}
+	var st daemon.StatusResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&st); err != nil {
+		return 0, err
+	}
+	if st.PID <= 0 {
+		return 0, errors.New("the daemon reported no pid")
+	}
+	return st.PID, nil
+}
+
+// resourceTree returns the usage of pid and everything under it, or a zero
+// figure when there is no snapshot yet.
+func (a *App) resourceTree(pid int) procstat.TreeStats {
+	if a.resourceUsage == nil || pid <= 0 {
+		return procstat.TreeStats{}
+	}
+	return a.resourceUsage.Tree(pid)
+}
+
+// resourcesAvailable reports whether a non-baseline snapshot has landed, which
+// is what makes a CPU percentage meaningful.
+func (a *App) resourcesAvailable() bool {
+	return a.resourceUsage != nil && !a.resourceUsage.Baseline
+}
+
+// runningResourceCells renders one agent's CPU and memory for its Running row.
+//
+// The figure is the agent's whole tree, not just its own process: an agent CLI
+// is a thin front end over the MCP servers and node children it spawns, and
+// those hold most of the memory. A pid with no measurement shows an em dash
+// rather than 0 — the process may simply have exited between the database
+// query and the sample.
+func (a *App) runningResourceCells(pid int) (cpu, mem string) {
+	if pid <= 0 || a.resourceUsage == nil {
+		return "—", "—"
+	}
+	t := a.resourceTree(pid)
+	if t.Processes == 0 {
+		return "—", "—"
+	}
+	mem = procstat.FormatBytes(t.RSS)
+	if a.resourceUsage.Baseline {
+		// Every CPU percentage is zero on the first sample because there is
+		// nothing to difference against; 0% would read as "idle".
+		return "—", mem
+	}
+	return fmt.Sprintf("%.1f%%", t.CPUPercent), mem
+}
+
 func (a *App) fetchAgents() tea.Cmd {
 	dbConn := a.dbConn
 	return func() tea.Msg {
@@ -4114,7 +4248,44 @@ func (a *App) renderOverviewTab(height int) string {
 		valueOr(o.AvgDuration, "0.0s"),
 		valueOr(o.SuccessRate, "0.0%"),
 	)
+	b.WriteString(a.renderOverviewResources())
 	return a.box("OVERVIEW", b.String(), height)
+}
+
+// renderOverviewResources renders the live CPU and memory of the hive.
+//
+// It is a separate section because it answers a different question from the
+// counters above: those say what the hive did, and this says what it is costing
+// right now. "Hive" is the daemon and its whole tree — the agent CLIs and the
+// MCP servers and node children under them — which is where the memory
+// actually goes; "daemon" alone is just the process the user started.
+func (a *App) renderOverviewResources() string {
+	var b strings.Builder
+	b.WriteString("\n" + StyleTableHeader.Render("Resources (measured on this machine)") + "\n")
+
+	if a.resourceUsage == nil {
+		return b.String() + StyleMuted.Render("  measuring…") + "\n"
+	}
+
+	cpu := func(percent float64) string {
+		if a.resourceUsage.Baseline {
+			// The first sample has nothing to difference against; 0% would be a
+			// lie that reads as "idle".
+			return "—"
+		}
+		return fmt.Sprintf("%.1f%%", percent)
+	}
+	hive := a.resourceTree(a.daemonPID)
+	if a.daemonPID <= 0 || hive.Processes == 0 {
+		return b.String() + StyleMuted.Render("  daemon not reachable — its tree cannot be measured") + "\n"
+	}
+	fmt.Fprintf(&b, "  Hive:    %6s CPU  %s  %d processes\n",
+		cpu(hive.CPUPercent), procstat.FormatBytes(hive.RSS), hive.Processes)
+	if own, ok := a.resourceUsage.Process(a.daemonPID); ok {
+		fmt.Fprintf(&b, "  Daemon:  %6s CPU  %s\n",
+			cpu(own.CPUPercent), procstat.FormatBytes(own.RSS))
+	}
+	return b.String()
 }
 
 func (a *App) renderUsageTab(height int) string {
@@ -5603,6 +5774,8 @@ func (a *App) renderRunningList(rt *RunningTab, height int) string {
 		runnerW  = 8
 		pidW     = 8
 		elapsedW = 10
+		cpuW     = 7
+		memW     = 9
 	)
 	// The TASK column is sized to the widest reference actually on screen, the
 	// way the Tasks tab does it: a routine occurrence id
@@ -5620,7 +5793,7 @@ func (a *App) renderRunningList(rt *RunningTab, height int) string {
 	}
 
 	inner := a.model.width - 2
-	titleW := inner - cursorW - statusW - agentW - numW - modelW - runnerW - pidW - elapsedW - 8
+	titleW := inner - cursorW - statusW - agentW - numW - modelW - runnerW - pidW - elapsedW - cpuW - memW - 10
 	if titleW < 12 {
 		titleW = 12
 	}
@@ -5628,7 +5801,8 @@ func (a *App) renderRunningList(rt *RunningTab, height int) string {
 	var b strings.Builder
 	header := pad("", cursorW) + " " + pad("", statusW) + " " + pad("AGENT", agentW) + " " +
 		pad("TASK", numW) + " " + pad("TITLE", titleW) + " " + pad("MODEL", modelW) + " " +
-		pad("RUNNER", runnerW) + " " + padLeft("PID", pidW) + " " + padLeft("ELAPSED", elapsedW)
+		pad("RUNNER", runnerW) + " " + padLeft("PID", pidW) + " " + padLeft("ELAPSED", elapsedW) + " " +
+		padLeft("CPU", cpuW) + " " + padLeft("MEM", memW)
 	b.WriteString(StyleTableHeader.Render(header) + "\n")
 
 	for i, ag := range rt.Agents {
@@ -5654,6 +5828,9 @@ func (a *App) renderRunningList(rt *RunningTab, height int) string {
 		}
 		pid = padLeft(pid, pidW)
 		elapsed := padLeft(runningElapsed(ag.StartedAt), elapsedW)
+		cpu, mem := a.runningResourceCells(ag.PID)
+		cpu = padLeft(cpu, cpuW)
+		mem = padLeft(mem, memW)
 
 		if selected {
 			cursor = StyleFocusedArrow.Render("▶") + " "
@@ -5664,14 +5841,17 @@ func (a *App) renderRunningList(rt *RunningTab, height int) string {
 			runner = StyleSelectedRow.Render(runner)
 			pid = StyleSelectedRow.Render(pid)
 			elapsed = StyleSelectedRow.Render(elapsed)
+			cpu = StyleSelectedRow.Render(cpu)
+			mem = StyleSelectedRow.Render(mem)
 		}
 		b.WriteString(cursor + " " + status + " " + agent + " " + num + " " + title + " " +
-			model + " " + runner + " " + pid + " " + elapsed + "\n")
+			model + " " + runner + " " + pid + " " + elapsed + " " + cpu + " " + mem + "\n")
 	}
 	// Legend: the dot is the only thing that distinguishes a provably live
 	// process from a row the database still calls 'running'.
 	b.WriteString("\n" + StyleSuccess.Render("●") + StyleMuted.Render(" alive   ") +
-		StyleError.Render("●") + StyleMuted.Render(" stale heartbeat — the row says running but the process is gone"))
+		StyleError.Render("●") + StyleMuted.Render(" stale heartbeat — the row says running but the process is gone") +
+		StyleMuted.Render("   CPU/MEM are the agent's whole tree"))
 
 	// The waiting section gets whatever height the running section did not
 	// use: the header row, one row per running process, the blank line and the
