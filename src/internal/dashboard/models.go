@@ -466,7 +466,11 @@ type WaitingInstance struct {
 	WorkflowID string
 	TaskID     string
 	CellID     string
-	Title      string
+	// TaskURL is the task's deep link in its source UI, when it has one. It is
+	// what makes `o` work on a waiting row: unlike a running agent, a parked
+	// workflow has no execution row to carry the link.
+	TaskURL string
+	Title   string
 	// State is the instance state: running, queued, blocked, interrupted.
 	State string
 	// WaitReason names what the instance is waiting on: approval | ci |
