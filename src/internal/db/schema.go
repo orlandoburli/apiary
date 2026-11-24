@@ -155,12 +155,13 @@ CREATE TABLE IF NOT EXISTS step_runs (
 -- CI poll checks: one row per poll of a wait_for step's external status (CI).
 -- A parked CI wait re-polls the PR every cycle; recording each poll makes the
 -- wait auditable — how many times it checked, when, and what each poll returned
--- (passed|failed|pending|timeout|error) — instead of an opaque "waiting".
+-- (passed|failed|pending|no_checks|timeout|error) — instead of an opaque
+-- "waiting".
 CREATE TABLE IF NOT EXISTS ci_poll_checks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   workflow_instance_id TEXT NOT NULL,
   step_id TEXT NOT NULL,
-  status TEXT NOT NULL,           -- passed|failed|pending|timeout|error|unknown
+  status TEXT NOT NULL,           -- passed|failed|pending|no_checks|timeout|error|unknown
   pr_url TEXT,
   detail TEXT,                    -- JSON of per-check states, or an error message
   checked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
