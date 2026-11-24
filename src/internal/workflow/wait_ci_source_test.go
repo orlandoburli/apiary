@@ -108,3 +108,72 @@ func TestWaitCISource_UnsupportedFailsImmediately(t *testing.T) {
 		t.Error("instance parked on a permanently unsupported ci_source; want a terminal failure")
 	}
 }
+
+// A repository that reports no CI for its PRs concludes the wait as a terminal
+// success — not as a pending that burns max_duration, and not as a failure: the
+// absence of CI is not a red CI (#8151).
+func TestWaitCISource_NoChecksCompletesTheWait(t *testing.T) {
+	store := newFakeStore()
+	clock := time.Unix(1000, 0)
+	eng := ciSourceEngine(store, &fakeExecutor{}, &clock,
+		func(CIStatusRequest) (source.CIStatus, error) {
+			return source.CIStatus{Status: "no_checks", URL: "https://github.com/o/r/pull/7"}, nil
+		})
+
+	instID, success, _ := eng.RunInstance(context.Background(), ciSourceWorkflow(), model.InternalTask{ID: "t1"})
+	if !success {
+		t.Fatal("a no_checks wait must complete the instance, not park or fail it")
+	}
+	if state := store.instances[instID].State; state != db.InstanceStateDone {
+		t.Errorf("instance state = %q, want done", state)
+	}
+
+	// The wait's history says no_checks, so the dashboard (and the reviewer
+	// reading poll history) can tell "CI never ran" from "CI still running".
+	statuses := store.pollStatuses()
+	found := false
+	for _, s := range statuses {
+		if s == "no_checks" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("recorded poll statuses = %v, want one no_checks", statuses)
+	}
+}
+
+// The step's own result carries the verdict and an empty check list: no checks
+// ran, and the step output is what downstream steps and the completion comment
+// read.
+func TestWaitCISource_NoChecksStructuredOutput(t *testing.T) {
+	store := newFakeStore()
+	clock := time.Unix(1000, 0)
+	eng := ciSourceEngine(store, &fakeExecutor{}, &clock,
+		func(CIStatusRequest) (source.CIStatus, error) {
+			return source.CIStatus{Status: "no_checks", URL: "https://github.com/o/r/pull/7"}, nil
+		})
+
+	res, err := eng.RunWaitStep(context.Background(), "inst-1",
+		config.StepConfig{ID: "check-ci", Type: config.StepTypeWaitFor,
+			WaitFor: &config.WaitForConfig{Kind: "ci", CISource: "github", MaxDuration: "2h"}},
+		WaitTarget{TaskID: "t1"}, time.Time{})
+	if err != nil {
+		t.Fatalf("RunWaitStep: %v", err)
+	}
+	if !res.Success || res.Pending {
+		t.Fatalf("result = %+v, want a terminal success", res)
+	}
+	if got := res.StructuredOutput["ci_status"]; got != "no_checks" {
+		t.Errorf("ci_status = %v, want no_checks", got)
+	}
+	if got := res.StructuredOutput["url"]; got != "https://github.com/o/r/pull/7" {
+		t.Errorf("url = %v, want the PR URL", got)
+	}
+	checks, ok := res.StructuredOutput["checks"].([]map[string]string)
+	if !ok {
+		t.Fatalf("checks = %T %v, want an empty list", res.StructuredOutput["checks"], res.StructuredOutput["checks"])
+	}
+	if len(checks) != 0 {
+		t.Errorf("checks = %v, want none", checks)
+	}
+}

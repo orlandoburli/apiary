@@ -16,6 +16,7 @@ func (a *Adapter) ConfigSchema() source.ConfigSchema {
 			{Name: "repo", Required: true, Desc: `repository in "owner/repo" format`},
 			{Name: "api_key", Secret: true, Desc: "GitHub personal access token"},
 			{Name: "base_url", Desc: "API base URL, for GitHub Enterprise Server"},
+			{Name: "ci_repos", Desc: `other repositories whose PRs this source may poll for CI, each as {repo, require_checks, no_checks_after}`},
 		},
 		Aliases: map[string]string{
 			"token":        "api_key",

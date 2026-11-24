@@ -941,7 +941,7 @@ type CIPollCheck struct {
 	ID                 int64
 	WorkflowInstanceID string
 	StepID             string
-	Status             string // passed|failed|pending|timeout|error|unknown
+	Status             string // passed|failed|pending|no_checks|timeout|error|unknown
 	PRURL              string
 	Detail             string // JSON of per-check states, or an error message
 	CheckedAt          time.Time

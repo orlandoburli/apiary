@@ -169,7 +169,7 @@ repository rather than as a credential that was never sent.
 
 | Type | Required | Optional |
 |---|---|---|
-| `github` | `repo` | `api_key`, `base_url` |
+| `github` | `repo` | `api_key`, `base_url`, `ci_repos` |
 | `plane` | `api_key`, `project`, `workspace` | `base_url` |
 | `jira` | `api_token`, `base_url`, `email` | `project`, `started_state` |
 | `prometheus` | `alertmanager_url` | `ack_via_silence`, `basic_auth_password`, `basic_auth_user`, `bearer_token`, `dispatch_by`, `max_new_per_poll`, `min_age`, `silence_duration` |
@@ -181,7 +181,7 @@ distance would catch:
 
 ```text
 ✗ sources[0] "gh": config: unknown key "token" — did you mean "api_key"?
-  accepted keys for type "github": api_key, base_url, repo
+  accepted keys for type "github": api_key, base_url, ci_repos, repo
 ```
 
 Notes:

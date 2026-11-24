@@ -32,12 +32,38 @@ var (
 	_ source.PREventPoller    = (*Adapter)(nil)
 )
 
+// ciRepoPolicy governs how this source polls CI for a pull request living in a
+// repository other than its own (config.ci_repos). The source's own repository
+// is never described by a policy: its PRs are always polled and always require
+// checks, so a permanently check-less PR cannot slip through as "no CI".
+type ciRepoPolicy struct {
+	owner string
+	repo  string
+	// requireChecks keeps a PR with no check signal at all pending, exactly like
+	// the source's own repository. False means the repository is taken not to
+	// report CI for PRs, so a signal-less PR concludes as no_checks once it is
+	// older than noChecksAfter.
+	requireChecks bool
+	// noChecksAfter is the grace period, counted from the PR's created_at, before
+	// a signal-less PR is concluded as no_checks. It exists to tell "this repo
+	// never runs CI" apart from "CI has not registered a check yet".
+	noChecksAfter time.Duration
+}
+
+// defaultNoChecksAfter is how long a signal-less PR in a require_checks: false
+// repository keeps waiting before the wait concludes no_checks.
+const defaultNoChecksAfter = 10 * time.Minute
+
 type Adapter struct {
 	id         string
 	client     *client
 	owner      string
 	repo       string
 	webBaseURL string
+
+	// ciRepos lists the foreign repositories whose PRs this source may poll for
+	// CI (config.ci_repos). Empty means only its own repository is pollable.
+	ciRepos []ciRepoPolicy
 
 	filterStates []string
 	filterLabels []string
@@ -58,16 +84,22 @@ func (a *Adapter) Connect(_ context.Context, cfg map[string]any) error {
 		return fmt.Errorf("github: config.repo is required (e.g. \"owner/repo\")")
 	}
 
-	parts := strings.SplitN(repoStr, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	owner, repo, ok := splitRepo(repoStr)
+	if !ok {
 		return fmt.Errorf("github: config.repo %q must be in \"owner/repo\" format", repoStr)
+	}
+
+	ciRepos, err := parseCIRepos(cfg["ci_repos"], owner, repo)
+	if err != nil {
+		return err
 	}
 
 	apiKey, _ := cfg["api_key"].(string)
 	baseURL, _ := cfg["base_url"].(string)
 
-	a.owner = parts[0]
-	a.repo = parts[1]
+	a.owner = owner
+	a.repo = repo
+	a.ciRepos = ciRepos
 	a.client = newClient(baseURL, apiKey)
 
 	if baseURL == "" || baseURL == defaultBaseURL {
@@ -81,8 +113,86 @@ func (a *Adapter) Connect(_ context.Context, cfg map[string]any) error {
 		}
 	}
 
-	aplog.Info("github: configured  repo=%s/%s  host=%s", a.owner, a.repo, a.webBaseURL)
+	aplog.Info("github: configured  repo=%s/%s  host=%s  ci_repos=%d", a.owner, a.repo, a.webBaseURL, len(a.ciRepos))
 	return nil
+}
+
+// splitRepo parses an "owner/repo" string, rejecting anything that does not name
+// both halves.
+func splitRepo(s string) (owner, repo string, ok bool) {
+	parts := strings.SplitN(s, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+// parseCIRepos reads config.ci_repos — the foreign repositories whose PRs this
+// source may poll for CI, each with its own waiting policy. A malformed entry is
+// a configuration error, not something to guess around: silently dropping it
+// would leave the wait pending until max_duration for a repo the operator
+// believed was allowed. Naming the source's own repository is rejected too — it
+// always requires checks, so the entry can only be a mistake.
+func parseCIRepos(raw any, srcOwner, srcRepo string) ([]ciRepoPolicy, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	entries, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("github: config.ci_repos must be a list of {repo, require_checks, no_checks_after} entries")
+	}
+
+	policies := make([]ciRepoPolicy, 0, len(entries))
+	for i, entry := range entries {
+		fields, ok := entry.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("github: config.ci_repos[%d] must be a mapping with a repo key", i)
+		}
+
+		repoStr, _ := fields["repo"].(string)
+		owner, repo, ok := splitRepo(repoStr)
+		if !ok {
+			return nil, fmt.Errorf("github: config.ci_repos[%d].repo %q must be in \"owner/repo\" format", i, repoStr)
+		}
+		if strings.EqualFold(owner, srcOwner) && strings.EqualFold(repo, srcRepo) {
+			return nil, fmt.Errorf("github: config.ci_repos[%d] names %s/%s, which is this source's own repository — its PRs are always polled and always require checks", i, owner, repo)
+		}
+
+		policy := ciRepoPolicy{owner: owner, repo: repo, noChecksAfter: defaultNoChecksAfter}
+		for key, value := range fields {
+			switch key {
+			case "repo":
+				// already read
+			case "require_checks":
+				b, ok := value.(bool)
+				if !ok {
+					return nil, fmt.Errorf("github: config.ci_repos[%d].require_checks %v must be true or false", i, value)
+				}
+				policy.requireChecks = b
+			case "no_checks_after":
+				s, ok := value.(string)
+				if !ok {
+					return nil, fmt.Errorf("github: config.ci_repos[%d].no_checks_after %v must be a duration string (e.g. \"10m\")", i, value)
+				}
+				if strings.TrimSpace(s) == "" {
+					continue
+				}
+				d, err := time.ParseDuration(strings.TrimSpace(s))
+				if err != nil {
+					return nil, fmt.Errorf("github: config.ci_repos[%d].no_checks_after %q: %w", i, s, err)
+				}
+				if d <= 0 {
+					return nil, fmt.Errorf("github: config.ci_repos[%d].no_checks_after %q must be positive", i, s)
+				}
+				policy.noChecksAfter = d
+			default:
+				// A typo (require_check) would otherwise silently do nothing.
+				return nil, fmt.Errorf("github: config.ci_repos[%d] has unknown key %q (accepted: repo, require_checks, no_checks_after)", i, key)
+			}
+		}
+		policies = append(policies, policy)
+	}
+	return policies, nil
 }
 
 func (a *Adapter) SetFilters(states, labels []string) {
@@ -417,7 +527,7 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 		}
 	}
 
-	return a.ciStatusFromPRBody(ctx, prBody, cellID)
+	return a.ciStatusFromPRBody(ctx, prBody, cellID, a.owner, a.repo, nil)
 }
 
 // branchReferencesIssue reports whether a PR head branch names the issue number
@@ -450,7 +560,13 @@ func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 // request payload. It is the half of the CI check that is the same whether the
 // PR was resolved from an issue (PollCIStatus) or addressed directly by number
 // (PollCIStatusForPR); ref only labels log lines and error messages.
-func (a *Adapter) ciStatusFromPRBody(ctx context.Context, prBody []byte, ref string) (source.CIStatus, error) {
+//
+// owner/repo are the repository the PR actually lives in — the source's own for
+// PollCIStatus and for a same-repo ref, otherwise the ci_repos entry that
+// allowed it — so the commit-status and check-run calls follow a foreign PR to
+// its own repository. policy is nil for the source's own repository, which
+// always requires checks.
+func (a *Adapter) ciStatusFromPRBody(ctx context.Context, prBody []byte, ref, owner, repo string, policy *ciRepoPolicy) (source.CIStatus, error) {
 	var pr pullRequest
 	if err := json.Unmarshal(prBody, &pr); err != nil {
 		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: decoding PR %s: %w", ref, err)
@@ -474,7 +590,7 @@ func (a *Adapter) ciStatusFromPRBody(ctx context.Context, prBody []byte, ref str
 	}
 
 	// Get the combined status for this commit.
-	statusPath := fmt.Sprintf("/repos/%s/%s/commits/%s/status", a.owner, a.repo, headSHA)
+	statusPath := fmt.Sprintf("/repos/%s/%s/commits/%s/status", owner, repo, headSHA)
 	statusBody, err := a.client.get(ctx, statusPath)
 	if err != nil {
 		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: fetching status for %s: %w", headSHA, err)
@@ -486,7 +602,7 @@ func (a *Adapter) ciStatusFromPRBody(ctx context.Context, prBody []byte, ref str
 	}
 
 	// Get check runs for more detailed status information.
-	checksPath := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs", a.owner, a.repo, headSHA)
+	checksPath := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs", owner, repo, headSHA)
 	checksBody, err := a.client.get(ctx, checksPath)
 	if err != nil {
 		// Check runs might not be available; fall back to status.
@@ -504,7 +620,9 @@ func (a *Adapter) ciStatusFromPRBody(ctx context.Context, prBody []byte, ref str
 	//   - any failed signal      → failed
 	//   - else any still-running → pending
 	//   - else (≥1 signal, all good) → passed
-	//   - else (no signals at all)   → pending (CI hasn't started)
+	//   - else (no signals at all)   → pending (CI hasn't started) — or
+	//     no_checks for a ci_repos entry that does not require checks whose PR
+	//     is past its grace period (that repository reports no CI for PRs)
 	anyFail, anyPending, anySignal := false, false, false
 
 	checks := make([]struct {
@@ -557,29 +675,53 @@ func (a *Adapter) ciStatusFromPRBody(ctx context.Context, prBody []byte, ref str
 	case anySignal:
 		overall = "passed"
 	default:
+		// No checks and no statuses. Normally that means CI has not started yet.
+		// For a ci_repos entry that does not require checks, the PR's age decides:
+		// past the grace period the repository is taken to report no CI at all for
+		// its PRs, so the wait concludes no_checks instead of burning max_duration.
+		if policy != nil && !policy.requireChecks && pastGrace(pr.CreatedAt, policy.noChecksAfter) {
+			aplog.Info("github: PR #%d for %s in %s/%s has no CI signal after its %v grace period — reporting no_checks",
+				pr.Number, ref, owner, repo, policy.noChecksAfter)
+			return source.CIStatus{Status: "no_checks", URL: pr.HTMLURL, Checks: checks}, nil
+		}
 		overall = "pending" // no checks and no statuses yet — CI not started
 	}
 
 	return source.CIStatus{Status: overall, URL: pr.HTMLURL, Checks: checks}, nil
 }
 
-// PollCIStatusForPR checks the CI status of one pull request in this adapter's
-// repository, for tasks whose own source cannot resolve a PR (a Jira-sourced
-// task whose agents push to GitHub). Implements source.PRCIStatusPoller.
+// pastGrace reports whether a PR created at createdAt (RFC3339, as returned by
+// GitHub) is at least grace old. A missing or unparseable created_at yields
+// false: without an age there is no evidence the repository skips CI, so the
+// wait keeps going rather than concluding no_checks on a guess.
+func pastGrace(createdAt string, grace time.Duration) bool {
+	created, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil || created.IsZero() {
+		return false
+	}
+	return time.Since(created) >= grace
+}
+
+// PollCIStatusForPR checks the CI status of one pull request, for tasks whose
+// own source cannot resolve a PR (a Jira-sourced task whose agents push to
+// GitHub). Implements source.PRCIStatusPoller.
 //
-// A ref whose URL points at a different repository is a configuration error, not
-// a transient one: reporting some same-numbered PR of the configured repo would
-// be worse than failing. A ref with no URL is trusted as-is — the number is all
-// the caller had.
+// The PR may live in this source's own repository or in one declared under
+// config.ci_repos, which is what lets a pipeline hosted elsewhere poll a
+// repository that runs no CI at all (#8151). A ref whose URL points at a
+// repository neither of those covers is a configuration error, not a transient
+// one: reporting some same-numbered PR of another repo would be worse than
+// failing. A ref with no URL is trusted as-is — the number is all the caller had.
 func (a *Adapter) PollCIStatusForPR(ctx context.Context, pr source.PullRequestRef) (source.CIStatus, error) {
 	if pr.Number <= 0 {
 		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: pull request ref has no number")
 	}
-	if err := a.checkPRRefRepo(pr); err != nil {
+	owner, repo, policy, err := a.resolvePRRepo(pr)
+	if err != nil {
 		return source.CIStatus{Status: "unknown"}, err
 	}
 
-	prPath := fmt.Sprintf("/repos/%s/%s/pulls/%d", a.owner, a.repo, pr.Number)
+	prPath := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, pr.Number)
 	body, err := a.client.get(ctx, prPath)
 	if err != nil {
 		if isAuthError(err) {
@@ -587,34 +729,95 @@ func (a *Adapter) PollCIStatusForPR(ctx context.Context, pr source.PullRequestRe
 		}
 		return source.CIStatus{Status: "unknown"}, fmt.Errorf("github: fetching PR #%d: %w", pr.Number, err)
 	}
-	return a.ciStatusFromPRBody(ctx, body, fmt.Sprintf("#%d", pr.Number))
+	return a.ciStatusFromPRBody(ctx, body, fmt.Sprintf("#%d", pr.Number), owner, repo, policy)
 }
 
-// checkPRRefRepo rejects a PR ref whose URL names a repository other than the
-// one this adapter is configured for. An unparseable or repo-less URL is
-// tolerated: the check only fires on a URL that clearly identifies a different
-// owner/repo.
-func (a *Adapter) checkPRRefRepo(pr source.PullRequestRef) error {
+// resolvePRRepo maps a PR ref to the repository it lives in and the policy that
+// governs waiting on it:
+//
+//   - no URL, or a URL naming no owner/repo → this source's repository, which
+//     always requires checks (the number is all the caller had);
+//   - a URL served by a different host → ErrUnsupported (not a PR of this forge);
+//   - this source's own owner/repo → its repository, always requiring checks;
+//   - an entry of config.ci_repos → that entry's policy;
+//   - anything else → ErrUnsupported, naming the allowed ci_repos.
+//
+// Both URL shapes are accepted: https://github.com/o/r/pull/N and
+// https://api.github.com/repos/o/r/pulls/N.
+func (a *Adapter) resolvePRRepo(pr source.PullRequestRef) (owner, repo string, policy *ciRepoPolicy, err error) {
 	if strings.TrimSpace(pr.URL) == "" {
-		return nil
+		return a.owner, a.repo, nil, nil
 	}
-	u, err := url.Parse(pr.URL)
-	if err != nil {
-		return nil
+	u, perr := url.Parse(pr.URL)
+	if perr != nil {
+		return a.owner, a.repo, nil, nil
 	}
+	if !a.servesHost(u.Host) {
+		return "", "", nil, fmt.Errorf("github: pull request %s is served by %s, not by this source's host %s: %w",
+			pr.URL, u.Host, a.webBaseURL, source.ErrUnsupported)
+	}
+
 	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(segs) < 2 || segs[0] == "" || segs[1] == "" {
-		return nil
-	}
 	// An API URL (/repos/<owner>/<repo>/pulls/N) carries the pair one level in.
-	if segs[0] == "repos" && len(segs) >= 3 {
+	if len(segs) >= 3 && segs[0] == "repos" {
 		segs = segs[1:]
 	}
-	if !strings.EqualFold(segs[0], a.owner) || !strings.EqualFold(segs[1], a.repo) {
-		return fmt.Errorf("github: pull request %s belongs to %s/%s, but source %q is configured for %s/%s: %w",
-			pr.URL, segs[0], segs[1], a.id, a.owner, a.repo, source.ErrUnsupported)
+	if len(segs) < 2 || segs[0] == "" || segs[1] == "" {
+		return a.owner, a.repo, nil, nil
 	}
-	return nil
+
+	if strings.EqualFold(segs[0], a.owner) && strings.EqualFold(segs[1], a.repo) {
+		return a.owner, a.repo, nil, nil
+	}
+	for i := range a.ciRepos {
+		if strings.EqualFold(segs[0], a.ciRepos[i].owner) && strings.EqualFold(segs[1], a.ciRepos[i].repo) {
+			return a.ciRepos[i].owner, a.ciRepos[i].repo, &a.ciRepos[i], nil
+		}
+	}
+
+	return "", "", nil, fmt.Errorf("github: pull request %s belongs to %s/%s, but source %q is configured for %s/%s and its ci_repos allow %s: %w",
+		pr.URL, segs[0], segs[1], a.id, a.owner, a.repo, a.allowedCIRepos(), source.ErrUnsupported)
+}
+
+// servesHost reports whether host is one this adapter's client can reach — the
+// web host of PR URLs and the API host (they differ for github.com, where a
+// linked PR may arrive in either form). An empty host, or an adapter connected
+// without a web host to compare against, is tolerated: only a host that clearly
+// belongs to another forge is refused.
+func (a *Adapter) servesHost(host string) bool {
+	if host == "" || a.webBaseURL == "" {
+		return true
+	}
+	for _, base := range []string{a.webBaseURL, a.apiBaseURL()} {
+		u, err := url.Parse(base)
+		if err != nil || u.Host == "" {
+			continue
+		}
+		if strings.EqualFold(u.Host, host) {
+			return true
+		}
+	}
+	return false
+}
+
+// apiBaseURL is the API base the client calls, or "" when no client is wired.
+func (a *Adapter) apiBaseURL() string {
+	if a.client == nil {
+		return ""
+	}
+	return a.client.baseURL
+}
+
+// allowedCIRepos renders the configured ci_repos for an error message.
+func (a *Adapter) allowedCIRepos() string {
+	if len(a.ciRepos) == 0 {
+		return "none (no ci_repos configured)"
+	}
+	names := make([]string, 0, len(a.ciRepos))
+	for _, p := range a.ciRepos {
+		names = append(names, p.owner+"/"+p.repo)
+	}
+	return strings.Join(names, ", ")
 }
 
 // ListPullRequests returns every pull request cross-referenced from the issue,

@@ -157,6 +157,23 @@ func (e *Engine) checkCIWaitStep(
 			},
 		}, nil
 
+	case "no_checks":
+		// The repository reports no CI for this PR — there is nothing to wait
+		// for, so the step succeeds now. This is deliberately ahead of both the
+		// pending and the fail branches: the wait would otherwise sit until
+		// max_duration, and fail_if_not_passed is about CI going RED, not about
+		// CI being absent (the adapter only reports it after its own grace
+		// period, and never for a repository that requires checks).
+		aplog.Info("wait_for step %q: repository reports no CI for this PR — completing as no_checks", step.ID)
+		return StepResult{
+			Success: true,
+			StructuredOutput: map[string]any{
+				"ci_status": "no_checks",
+				"url":       status.URL,
+				"checks":    []map[string]string{},
+			},
+		}, nil
+
 	case "pending":
 		aplog.Debug("wait_for step %q: CI still pending", step.ID)
 		return StepResult{Pending: true}, nil
@@ -328,7 +345,7 @@ func checksToMap(checks []struct {
 // recorded poll always carries a meaningful, non-empty status.
 func normalizeCIStatus(s string) string {
 	switch s {
-	case "passed", "failed", "pending", "conflict":
+	case "passed", "failed", "pending", "conflict", "no_checks":
 		return s
 	default:
 		return "unknown"

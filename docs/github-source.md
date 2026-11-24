@@ -27,8 +27,9 @@ sources:
 | `repo` | yes | — | Repository in `owner/repo` format |
 | `api_key` | no | — | GitHub personal access token (see permissions below) |
 | `base_url` | no | `https://api.github.com` | API base URL for GHES |
+| `ci_repos` | no | — | Other repositories whose PRs this source may poll for CI (see [below](#as-a-ci-source-for-another-tracker)) |
 
-These three are the only keys accepted; `apiary validate` rejects anything else
+These are the only keys accepted; `apiary validate` rejects anything else
 (see [Accepted `config` keys](configuration.md#accepted-config-keys)). The token
 key is `api_key`, **not** `token`: a private repo polled without a token gets a
 `404` from GitHub, not a `401`, so the mistake reads as a missing repository.
@@ -62,9 +63,47 @@ resolved from its own issues. That makes it usable as the `ci_source` of a
 workflow whose tasks come from somewhere else — a Jira- or Plane-sourced
 pipeline whose agents push here. Configure it as a second source pointing at
 the repository the PRs live in, and point the wait at it with
-[`ci_source`](workflows.md#waiting-on-ci-hosted-elsewhere-ci_source). A PR URL
-belonging to another repository is refused rather than answered with this
-repository's same-numbered PR.
+[`ci_source`](workflows.md#waiting-on-ci-hosted-elsewhere-ci_source).
+
+A PR URL is resolved by repository, and only two repositories are pollable: the
+source's own (`repo`), and any listed in `ci_repos`. Anything else is refused
+rather than answered with a same-numbered PR of another repository:
+
+```yaml
+sources:
+  - id: github
+    type: github
+    config:
+      repo: my-org/my-repo          # where the issues live
+      api_key: ${GITHUB_TOKEN}
+      ci_repos:                     # repos whose PRs this source may poll (default: none)
+        - repo: my-org/my-engine
+          require_checks: false     # default false: conclude no_checks when the PR shows no CI signal
+          no_checks_after: 10m      # grace period from the PR's created_at (default 10m)
+```
+
+| PR URL | Result |
+|---|---|
+| empty, or no `owner/repo` in it | the source's own repository — checks are always required |
+| a different host from the source's `base_url` | refused: not a PR of this forge |
+| the source's own `owner/repo` | its repository — checks are always required |
+| matches a `ci_repos` entry | that entry's policy |
+| anything else | refused, naming the configured `ci_repos` |
+
+`require_checks: false` is for a repository that runs no CI on the paths the
+agents touch (only a release workflow, say). Without it the wait would stay
+pending until `max_duration` and then fail, because no check ever registers.
+With it, a PR that shows **no check run and no commit status** concludes as
+`no_checks` once it is older than `no_checks_after`, which the
+[`wait_for` step](workflows.md#waiting-on-ci-hosted-elsewhere-ci_source)
+treats as a terminal success. A PR that *does* report checks is aggregated
+normally — red still fails, running still waits. The source's own repository can
+never be relaxed this way, and naming it in `ci_repos` is a configuration error.
+
+Known limitation: `ListBlockers`/`blockerHasMergedPR` still assume the blocker's
+PR lives in the source's own repository, so a `blocked_by` issue whose PR lives
+in another repo is satisfied only by closing the issue (`satisfied_when: done`),
+not by its PR merging.
 
 ## PR event polling (`trigger.on: pr_*`)
 
