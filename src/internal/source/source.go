@@ -134,7 +134,7 @@ type BlockerRef struct {
 	Number string // human-facing reference (e.g. "PSP-49", "#42")
 	Title  string // blocker summary, for poll-history/debug detail
 	State  string // normalized: "done" when resolved/closed, otherwise the source status
-	Merged bool   // true when a pull request linked to the blocker is merged
+	Merged bool   // true when a merged pull request resolves the blocker (not merely references it)
 }
 
 // BlockerLister is an optional interface a source may implement to enumerate a

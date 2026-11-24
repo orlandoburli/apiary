@@ -670,9 +670,9 @@ func (a *Adapter) ListPullRequests(ctx context.Context, cellID string) ([]source
 // dependencies API (GET .../issues/{n}/dependencies/blocked_by). linkType is
 // ignored — GitHub has a single "blocked by" relation. State is normalized to
 // "done" when the blocker is closed, otherwise its raw state. For an open
-// blocker, Merged reports whether any pull request cross-referenced from it is
-// merged (best-effort: a PR lookup failure leaves Merged false rather than
-// failing the whole check). Implements source.BlockerLister.
+// blocker, Merged reports whether a merged pull request actually resolves it
+// (best-effort: a PR lookup failure leaves Merged false rather than failing the
+// whole check). Implements source.BlockerLister.
 func (a *Adapter) ListBlockers(ctx context.Context, cellID, _ string) ([]source.BlockerRef, error) {
 	path := fmt.Sprintf("/repos/%s/%s/issues/%s/dependencies/blocked_by", a.owner, a.repo, cellID)
 	body, err := a.client.get(ctx, path)
@@ -705,10 +705,14 @@ func (a *Adapter) ListBlockers(ctx context.Context, cellID, _ string) ([]source.
 	return blockers, nil
 }
 
-// blockerHasMergedPR reports whether any pull request cross-referenced from the
-// blocker issue is merged. Best-effort: any lookup failure returns false (the
-// dependency wait just keeps polling), so a transient API error cannot fail the
-// workflow step.
+// blockerHasMergedPR reports whether a pull request that RESOLVES the blocker
+// issue has been merged. A cross-reference alone is not resolution: the issue
+// timeline lists every PR that merely mentions the blocker — including PRs from
+// sibling issues that cite it in passing — so trusting it released
+// `await-blockers` with the blocker still open (#8148). Only a PR whose body
+// carries a closing keyword for this issue counts. Best-effort: any lookup
+// failure returns false (the dependency wait just keeps polling), so a transient
+// API error cannot fail the workflow step.
 func (a *Adapter) blockerHasMergedPR(ctx context.Context, issueNumber int) bool {
 	prs, err := a.ListPullRequests(ctx, fmt.Sprintf("%d", issueNumber))
 	if err != nil {
@@ -723,12 +727,34 @@ func (a *Adapter) blockerHasMergedPR(ctx context.Context, issueNumber int) bool 
 			continue
 		}
 		var pr struct {
-			Merged bool `json:"merged"`
+			Merged bool   `json:"merged"`
+			Body   string `json:"body"`
 		}
 		if err := json.Unmarshal(body, &pr); err != nil {
 			continue
 		}
-		if pr.Merged {
+		if pr.Merged && a.prClosesIssue(pr.Body, issueNumber) {
+			return true
+		}
+	}
+	return false
+}
+
+// prClosesIssue reports whether a pull request body declares that it resolves
+// issueNumber with a GitHub closing keyword ("Closes #42", "fixes owner/repo#42")
+// — the signal GitHub itself honours when it closes the issue on merge. A keyword
+// qualified with another repository is ignored: it closes that repo's issue, not
+// ours. An issue closed by the merge already reports state "done", so this only
+// answers the remaining question: did a merged PR promise to resolve a blocker
+// that is still open?
+func (a *Adapter) prClosesIssue(body string, issueNumber int) bool {
+	own := a.owner + "/" + a.repo
+	want := fmt.Sprintf("%d", issueNumber)
+	for _, m := range closingRefRe.FindAllStringSubmatch(body, -1) {
+		if qualifier := m[1]; qualifier != "" && !strings.EqualFold(qualifier, own) {
+			continue
+		}
+		if m[2] == want {
 			return true
 		}
 	}

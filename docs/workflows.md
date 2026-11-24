@@ -870,9 +870,11 @@ How it works:
   exactly like a CI wait) while any blocker is unsatisfied, re-checking every
   poll cycle, and resumes the pipeline automatically once all are.
 - `satisfied_when` lists the conditions under which a blocker counts as
-  satisfied — `merged` (a pull request linked to the blocker is merged)
-  and/or `done` (the blocker's status is Done-category/closed). ANY listed
-  condition satisfies a blocker. Default: `[merged, done]`.
+  satisfied — `merged` (a merged pull request **resolves** the blocker: on
+  GitHub, the PR body carries a closing keyword for it, e.g. `Closes #42` —
+  merely citing the blocker in a comment or from a sibling issue's PR does not
+  count) and/or `done` (the blocker's status is Done-category/closed). ANY
+  listed condition satisfies a blocker. Default: `[merged, done]`.
 - Blockers come from the source adapter: **Jira** reads the inward side of
   the issue's `Blocks` links (*"is blocked by"*; `blocker_link_type`
   overrides the link type); **GitHub** reads the issue dependencies API

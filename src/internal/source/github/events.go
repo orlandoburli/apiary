@@ -23,8 +23,9 @@ var prPathRe = regexp.MustCompile(`/pull/(\d+)(?:[#/]|$)`)
 
 // closingRefRe matches a closing-keyword issue reference in a PR body
 // ("Closes #42", "fixes owner/repo#42"), the strongest signal of the PR's
-// originating work item.
-var closingRefRe = regexp.MustCompile(`(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)[\s:]+(?:[\w.-]+/[\w.-]+)?#(\d+)`)
+// originating work item. Submatches: 1 is the optional owner/repo qualifier
+// (empty when the reference is bare), 2 is the issue number.
+var closingRefRe = regexp.MustCompile(`(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)[\s:]+((?:[\w.-]+/[\w.-]+)?)#(\d+)`)
 
 // issueRefRe matches any plain issue reference ("#42") as the fallback signal.
 var issueRefRe = regexp.MustCompile(`#(\d+)`)
@@ -289,8 +290,8 @@ func prNumberFromAPIURL(apiURL string) int {
 // closing-keyword reference ("Closes #42") wins, else the first plain "#N" that
 // is not the PR itself. Returns "" when no reference is found.
 func findRelatedIssue(body string, prNumber int) string {
-	if m := closingRefRe.FindStringSubmatch(body); len(m) == 2 {
-		return m[1]
+	if m := closingRefRe.FindStringSubmatch(body); len(m) == 3 {
+		return m[2]
 	}
 	for _, m := range issueRefRe.FindAllStringSubmatch(body, -1) {
 		if n, _ := strconv.Atoi(m[1]); n != 0 && n != prNumber {
