@@ -244,3 +244,9 @@ The execution timeline records `approval.requested`, `approval.reminder`,
 `approval.escalated`, `approval.granted`, `approval.rejected`, and
 `approval.timed_out`. Actor, channel, feedback, form values, request identity, and
 escalation targets are retained in redacted event metadata.
+
+## See also
+
+An approval is a gate the workflow declares ahead of time. When a *running*
+agent needs an answer it did not know it would need, it asks through
+[agent questions](agent-questions.md) instead.

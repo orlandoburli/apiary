@@ -52,6 +52,26 @@ type Model struct {
 	approvalErr      string               // local validation message, cleared on edit
 	approvalMsg      []string             // the request's message, markdown-rendered once on open
 
+	// Question sheet (an ask_human question from a running agent). Same shell as
+	// the approval sheet, and auto-opened when it will not interrupt an overlay.
+	// See question_sheet.go.
+	pendingQuestions []db.AgentQuestion // newest first, as the store returns them
+	questionActive   bool
+	question         *db.AgentQuestion
+	questionMsg      []string // the agent's question, markdown-rendered once on open
+	questionFocus    int      // which section owns the cursor (questionFocus*)
+	questionCursor   int      // ▶ over the option rows; equals the selection
+	questionOption   int      // chosen option, or -1 when the answer is typed text
+	questionAnswer   string
+	questionNote     string
+	questionErr      string // daemon's message when a submit failed
+	// questionSnoozed holds the questions the operator explicitly put aside.
+	// Without it, `esc` would be undone by the very next two-second poll: "later"
+	// would mean "immediately", and a modal that reopens every tick is impossible
+	// to work around. A question is un-snoozed by pressing `?`, and a new question
+	// (an id that is not in here) still auto-opens.
+	questionSnoozed map[string]bool
+
 	notice      string    // one-line result banner for the last IPC action
 	noticeIsErr bool      // render the banner as an error
 	noticeUntil time.Time // banner expiry; zero means no banner
@@ -579,8 +599,9 @@ type WorkflowsTab struct {
 // NewModel creates a new dashboard model.
 func NewModel() *Model {
 	return &Model{
-		activeTab: 0,
-		tabs:      []string{"Overview", "Tasks", "Running", "Agents", "Usage", "Logs", "Workflows"},
+		activeTab:       0,
+		tabs:            []string{"Overview", "Tasks", "Running", "Agents", "Usage", "Logs", "Workflows"},
+		questionSnoozed: map[string]bool{},
 		overviewTab: &OverviewTab{
 			Status:      "Loading...",
 			Uptime:      "0s",

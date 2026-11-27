@@ -223,6 +223,28 @@ func (a *App) closeApprovalForm() {
 	a.model.approvalMsg = nil
 }
 
+// approvalCapturesText reports whether the open approval sheet is on a row where
+// `?` is text. It exists so the question badge's shortcut cannot eat a question
+// mark someone is typing into a reason; on the outcome list `?` is free.
+func (a *App) approvalCapturesText() bool {
+	if !a.model.approvalActive || a.model.approvalReq == nil {
+		return false
+	}
+	switch a.model.approvalFocus {
+	case approvalFocusReason:
+		return true
+	case approvalFocusFields:
+		fields := approvalFields(a.model.approvalReq)
+		if a.model.approvalIdx < len(fields) {
+			switch fields[a.model.approvalIdx].Type {
+			case "", "string", "text", "number":
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // handleApprovalFormKey owns every key while the sheet is open.
 //
 // The outcome radio, the typed fields, and the reason all take printable
