@@ -272,10 +272,10 @@ type logsDataMsg struct{ logs []LogEntry }
 type usageDataMsg struct{ data UsageTab }
 type workflowsConfigMsg struct {
 	workflows []WorkflowConfigItem
-	// metricsUnavailable is set when the activity query failed. The rows
-	// still render; only the stats are withheld.
+	// metricsUnavailable is set when the durations query failed. The rows
+	// still render; only the figures are withheld.
 	metricsUnavailable bool
-	// window and since are the window the activity was measured over, so a
+	// window and since are the window the durations were measured over, so a
 	// result for a window the operator has cycled past can be dropped and the
 	// summary always describes the window the header names.
 	window MetricsWindow
@@ -2740,17 +2740,18 @@ func (a *App) fetchWorkflowStepLogs(cellID, stepID string, from, to *time.Time, 
 }
 
 // fetchWorkflowsConfig fetches workflow definitions from the local config and
-// enriches them with the selected window's activity from the database.
+// enriches them with how long their runs took in the selected window.
 //
 // The two reads are deliberately independent: the tab's primary job is showing
 // what the config defines, so a locked, missing or slow database must cost it
-// the stats, not the rows. The metrics query is bounded like every other tab
-// query, and a workflow or step with no row simply did not run in the window.
+// the figures, not the rows. The durations query is bounded like every other tab
+// query, and a workflow or step with no finished run simply has no distribution
+// to show.
 func (a *App) fetchWorkflowsConfig() tea.Cmd {
 	cfg := a.cfg
 	dbConn := a.dbConn
 	// Captured on the event loop; the goroutine must not read the model. Sent
-	// back in the message so a stale window's activity is dropped rather than
+	// back in the message so a stale window's durations are dropped rather than
 	// printed under a header naming another window.
 	window := a.model.metricsWindow
 	return func() tea.Msg {
@@ -2793,41 +2794,33 @@ func (a *App) fetchWorkflowsConfig() tea.Cmd {
 		defer cancel()
 
 		// A zero since is all time; the store reads it as "no lower bound".
-		workflowRows, stepRows, err := dbConn.GetWorkflowMetrics(ctx, since)
+		workflowRows, stepRows, err := dbConn.GetWorkflowDurations(ctx, since)
 		if err != nil {
 			msg.metricsUnavailable = true
 			return msg
 		}
 
-		byWorkflow := make(map[string]*WorkflowActivity, len(workflowRows))
-		for _, m := range workflowRows {
-			byWorkflow[m.WorkflowID] = &WorkflowActivity{
-				Runs:          m.Runs,
-				Completed:     m.Completed,
-				Failed:        m.Failed,
-				AvgDurationMs: m.AvgDurationMs,
-			}
+		byWorkflow := make(map[string]*db.WorkflowDurations, len(workflowRows))
+		for i := range workflowRows {
+			r := workflowRows[i] // its own copy, so the map does not share one loop variable
+			byWorkflow[r.WorkflowID] = &r
 		}
-		byStep := make(map[string]map[string]*WorkflowActivity, len(items))
-		for _, m := range stepRows {
-			if byStep[m.WorkflowID] == nil {
-				byStep[m.WorkflowID] = make(map[string]*WorkflowActivity, len(stepRows))
+		byStep := make(map[string]map[string]*db.StepDurations, len(items))
+		for i := range stepRows {
+			r := stepRows[i]
+			if byStep[r.WorkflowID] == nil {
+				byStep[r.WorkflowID] = make(map[string]*db.StepDurations, len(stepRows))
 			}
-			byStep[m.WorkflowID][m.StepID] = &WorkflowActivity{
-				Runs:          m.Runs,
-				Completed:     m.Completed,
-				Failed:        m.Failed,
-				AvgDurationMs: m.AvgDurationMs,
-			}
+			byStep[r.WorkflowID][r.StepID] = &r
 		}
 
 		// Attach by id rather than relying on the query's ordering: the config
-		// list has its own order and the metrics come back busiest-first.
+		// list has its own order and the durations come back busiest-first.
 		for i := range items {
-			items[i].Activity = byWorkflow[items[i].ID]
+			items[i].Durations = byWorkflow[items[i].ID]
 			steps := byStep[items[i].ID]
 			for j := range items[i].Steps {
-				items[i].Steps[j].Activity = steps[items[i].Steps[j].ID]
+				items[i].Steps[j].Durations = steps[items[i].Steps[j].ID]
 			}
 		}
 		return msg
@@ -7659,7 +7652,7 @@ func (a *App) renderWorkflowsTab(height int) string {
 		rightW = 1
 	}
 
-	// ── left panel: workflow list, one activity hint line per row ──────────
+	// ── left panel: workflow list, one duration hint line per row ──────────
 	var left strings.Builder
 	left.WriteString(StyleTableHeader.Render(fitLine("WORKFLOW", leftW)) + "\n")
 	if wt.MetricsUnavailable {
@@ -7678,16 +7671,16 @@ func (a *App) renderWorkflowsTab(height int) string {
 		}
 
 		// The hint gets its own line rather than sharing the id's: 28 columns
-		// cannot hold both a readable workflow id and 12·10✓·1✗ 45m.
+		// cannot hold both a readable workflow id and a duration pair.
 		if wt.MetricsUnavailable {
 			continue
 		}
-		if hint := workflowActivityHint(wf.Activity); hint != "" {
+		if hint := workflowDurationHint(wf.Durations, leftW-5); hint != "" {
 			left.WriteString(fitLine("     "+StyleMuted.Render(hint), leftW) + "\n")
 		} else {
-			// No row is not a row of zeros: this workflow did not run in the
-			// window. The window is part of the sentence so the absence is
-			// scoped — "no runs" alone would read as all time.
+			// No row is not a row of zeros: nothing finished in the window. The
+			// window is part of the sentence so the absence is scoped — "no
+			// runs" alone would read as all time.
 			left.WriteString(fitLine("     "+StyleFooterDim.Render("no runs "+window.Label()), leftW) + "\n")
 		}
 	}
@@ -7702,9 +7695,9 @@ func (a *App) renderWorkflowsTab(height int) string {
 		wf := wt.Workflows[wt.SelectedIdx]
 		desc := valueOr(wf.Description, "(no description)")
 
-		// Header: title, the window's summary, divider.
+		// Header: title, the window's distribution, divider.
 		right.WriteString(StyleValueStrong.Render(wf.ID) + "  " + StyleMuted.Render(desc) + "\n")
-		right.WriteString(workflowSummaryLine(wf.Activity, wt.MetricsUnavailable, window) + "\n")
+		right.WriteString(workflowDurationsSummary(wf.Durations, wt.MetricsUnavailable, window, rightW) + "\n")
 		right.WriteString(StyleMuted.Render(strings.Repeat("─", rightW)) + "\n")
 
 		if len(wf.Steps) == 0 {
@@ -7735,10 +7728,10 @@ func (a *App) renderWorkflowsTab(height int) string {
 					bl = append(bl, fitLine("  "+headline, rightW))
 				}
 
-				// The window's stats, only for a step that has activity: a step
-				// nobody reached in the window says nothing rather than "0 ran".
-				if step.Activity.Any() {
-					bl = append(bl, "    "+StyleMuted.Render(stepActivitySummary(step.Activity)))
+				// The step's duration, only for a step that ran: a step nobody
+				// reached in the window says nothing rather than "0 ran".
+				if step.Durations != nil && step.Durations.Runs > 0 {
+					bl = append(bl, "    "+StyleMuted.Render(stepDurationSummary(step.Durations)))
 				}
 
 				// Sub-lines: always rendered, height stable regardless of selection.
@@ -7838,56 +7831,96 @@ func (a *App) renderWorkflowsTab(height int) string {
 	return a.box(a.metricsBoxTitle("WORKFLOWS"), body.String(), height)
 }
 
-// workflowActivityHint is the left panel's compact form of a workflow's
-// activity: runs · completed✓ · failed✗, then the average duration when there
-// is one. The full words live in the right panel's summary; here every column
-// counts.
-func workflowActivityHint(m *WorkflowActivity) string {
-	if !m.Any() {
+// formatCompactDuration is formatMetricDuration with the trailing ".0" dropped:
+// the Workflows summary and hints put three or four figures on one line, where
+// "54.0m" costs a column and reads no more precisely than "54m".
+func formatCompactDuration(d time.Duration) string {
+	s := formatMetricDuration(d.Milliseconds())
+	// Only the "%.1f" forms end in a decimal and a one-character unit, and the
+	// suffix is ASCII, so slicing the bytes at the tail is safe.
+	if n := len(s); n >= 3 && s[n-3:n-1] == ".0" {
+		return s[:n-3] + s[n-1:]
+	}
+	return s
+}
+
+// workflowDurationHint is the left panel's compact second line: the run count
+// and the two p50s, "114 · 54m/4.4h" — active over wall, in that order, the
+// same order the right panel spells out. It is meant to be compared between
+// rows, not read as a full figure; the distribution lives on the right.
+//
+// When even that will not fit, the run count alone is the fallback: it still
+// says the workflow finished something in the window, and a clipped
+// "114 · 54m/4." would read as a different number.
+func workflowDurationHint(d *db.WorkflowDurations, width int) string {
+	if d == nil || d.Runs == 0 {
 		return ""
 	}
-	s := fmt.Sprintf("%d·%d✓·%d✗", m.Runs, m.Completed, m.Failed)
-	if m.AvgDurationMs > 0 {
-		s += " " + formatMetricDuration(m.AvgDurationMs)
+	hint := fmt.Sprintf("%d · %s/%s", d.Runs,
+		formatCompactDuration(d.Active.P50), formatCompactDuration(d.Wall.P50))
+	if lipgloss.Width(hint) <= width {
+		return hint
 	}
-	return s
+	return strconv.Itoa(d.Runs)
 }
 
-// stepActivitySummary is the one muted line under a step that ran in the
-// window. Duration is omitted when zero: an unfinished run has no average yet,
-// and "avg 0s" would read as very fast rather than unknown.
-func stepActivitySummary(m *WorkflowActivity) string {
-	s := fmt.Sprintf("ran %d · %d ok · %d failed", m.Runs, m.Completed, m.Failed)
-	if m.AvgDurationMs > 0 {
-		s += " · avg " + formatMetricDuration(m.AvgDurationMs)
-	}
-	return s
+// stepDurationSummary is the one muted line under a step that ran in the
+// window: its own interval as a distribution, not a mean. A step is the unit
+// of execution, so there is no active/wall split to draw for it.
+func stepDurationSummary(d *db.StepDurations) string {
+	return fmt.Sprintf("ran %d · p50 %s · p90 %s", d.Runs,
+		formatMetricDuration(d.Duration.P50.Milliseconds()),
+		formatMetricDuration(d.Duration.P90.Milliseconds()))
 }
 
-// workflowSummaryLine spells out the same numbers the left panel abbreviates,
-// so the glyphs there have a legend on the selected workflow. The window is
-// part of the line — "All time: 12 runs" and "Last 7 days: 12 runs" are
-// different claims — so the figures are never read without one.
-func workflowSummaryLine(m *WorkflowActivity, unavailable bool, window MetricsWindow) string {
+// workflowDurationsSummary puts the run count first and then the two
+// distributions side by side — active over wall — because their gap is the
+// answer: a workflow that sat on CI for hours has a wall p50 far above its
+// active p50, and one number alone would hide that.
+//
+// The line is built widest-first and takes the first layout that fits the
+// panel: with the maxima, then without them, then without the p90s. Percentiles
+// are shown rather than a mean because these distributions are heavy-tailed —
+// a mean describes no run in particular. The run count and the active/wall
+// split are never dropped; they are the comparison the tab exists for, so on a
+// terminal too narrow for even the shortest layout the line is clipped rather
+// than reduced to a single figure.
+func workflowDurationsSummary(d *db.WorkflowDurations, unavailable bool, window MetricsWindow, width int) string {
 	const indent = "  "
 	if unavailable {
 		return indent + StyleMuted.Render("metrics unavailable — the database could not be read")
 	}
-	if !m.Any() {
+	if d == nil || d.Runs == 0 {
+		// No finished run is not a run of zero seconds; the window scopes the
+		// absence, or it would read as "never" on a seven-day window.
 		return indent + StyleFooterDim.Render("no runs "+window.Label())
 	}
+
 	runs := "runs"
-	if m.Runs == 1 {
+	if d.Runs == 1 {
 		runs = "run"
 	}
-	s := indent + StyleMuted.Render(window.TitleLabel()+": ") +
-		StyleValueStrong.Render(strconv.Itoa(m.Runs)) + StyleMuted.Render(" "+runs+" · ") +
-		StyleValueStrong.Render(strconv.Itoa(m.Completed)) + StyleMuted.Render(" completed · ") +
-		StyleValueStrong.Render(strconv.Itoa(m.Failed)) + StyleMuted.Render(" failed")
-	if m.AvgDurationMs > 0 {
-		s += StyleMuted.Render(" · avg ") + StyleValueStrong.Render(formatMetricDuration(m.AvgDurationMs))
+	half := func(sep, name string, s db.DurationStats, withMax, withP90 bool) string {
+		out := StyleMuted.Render(sep+name+" p50 ") + StyleValueStrong.Render(formatCompactDuration(s.P50))
+		if withP90 {
+			out += StyleMuted.Render(" · p90 ") + StyleValueStrong.Render(formatCompactDuration(s.P90))
+		}
+		if withMax {
+			out += StyleMuted.Render(" · max ") + StyleValueStrong.Render(formatCompactDuration(s.Max))
+		}
+		return out
 	}
-	return s
+	line := func(withMax, withP90 bool) string {
+		return indent + StyleValueStrong.Render(strconv.Itoa(d.Runs)) + StyleMuted.Render(" "+runs) +
+			half(" · ", "active", d.Active, withMax, withP90) +
+			half(" — ", "wall", d.Wall, withMax, withP90)
+	}
+	for _, layout := range [][2]bool{{true, true}, {false, true}, {false, false}} {
+		if s := line(layout[0], layout[1]); lipgloss.Width(s) <= width {
+			return s
+		}
+	}
+	return line(false, false)
 }
 
 func styleStepType(t string) string {

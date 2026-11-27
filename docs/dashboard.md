@@ -91,7 +91,7 @@ the same one, so the two tabs always describe the same stretch of time. Press
 | `all time` | everything the store holds |
 
 Every header names the window it is showing — `Tasks (last 30 days)`,
-`Runs (all time)`, `Last 90 days: 12 runs · 10 completed · 1 failed` — so no
+`Runs (all time)`, `WORKFLOWS · last 90 days`, `no runs last 30 days` — so no
 figure appears without the period it was measured over. Rates are always **per
 day** across the chosen window: a 90-day throughput stays readable as
 `9.0 tasks/day` instead of collapsing to a fraction of a task per hour. "All
@@ -589,27 +589,47 @@ failures.
 
 ### Workflows
 
-The workflows your config defines, and how much of that work ran in the
-selected window. The left list shows every workflow with a compact hint: runs
-started in the window, how many completed and how many failed, plus the average
-duration (`12·10✓·1✗ 45m`). A workflow with no activity in the window says so
-(`no runs last 7 days`) instead of showing a row of zeros.
+The workflows your config defines, and **how long their runs take**. The left
+list shows every workflow with a compact second line: the number of finished
+runs and the two median durations, active over wall (`114 · 54m/4.4h`). A
+workflow with no finished run in the window says so (`no runs last 7 days`)
+instead of showing a row of zeros.
 
-Select a workflow with `↑` / `↓` to see its steps on the right. The summary
-under the title spells out the same numbers and leads with the window
-(`Last 7 days: 12 runs · 10 completed · 1 failed · avg 45.0m`), and every step
-that was reached in the window carries one muted stats line
-(`ran 3 · 2 ok · 1 failed · avg 30m`). Steps nobody reached show no stats line
-at all.
+Select a workflow with `↑` / `↓` to see its steps on the right. The line under
+the title is the full comparison:
 
-The activity covers the **selected metrics window** — the same one the Overview
-uses (see [Choosing the metrics window](#choosing-the-metrics-window)) — so a
-long run that started before the window counts as a completion inside it but not
-as a run, and durations average only the runs that both started and finished in
-the window. Press `w` to change the window, `Enter` / `→` to move into the step
-list, `Esc` / `←` to come back, and `j` / `k` to move between steps. If the
-activity query fails, the definitions still show and the stats are marked
-*metrics unavailable* rather than reading as zero.
+```
+114 runs · active p50 54m · p90 2.6h · max 13h — wall p50 4.4h · p90 21.5h · max 47.8h
+```
+
+**Wall** is the life of a run from creation to finish, waiting included.
+**Active** is the time something was actually executing: the union of the
+instance's step intervals, so approvals, CI waits and other parked time are
+excluded, and steps that ran in parallel are counted once rather than twice. The
+gap between the two is the point of showing them side by side — a workflow that
+spends most of its life waiting for a person has a high wall and a low active
+time, while one that is genuinely slow has both high.
+
+The figures are **percentiles, not averages**. Run durations are heavy-tailed —
+one workflow in this hive has a mean of 481 minutes over a p50 of 261 — and a
+mean describes no run in particular. `p50` is the typical run, `p90` is the slow
+tail, and `max` is the worst one. On a narrow terminal the line drops `max`
+first and then the p90s; the run count and the active/wall distinction always
+stay, because they are what the line exists to compare.
+
+Each step that ran gets its own line with its own distribution
+(`ran 3 · p50 1.0m · p90 5.0m`). A step's duration is its wall interval —
+started to finished — so there is no active/wall pair to draw for it. Steps
+nobody reached show no line at all.
+
+The durations cover the **selected metrics window** — the same one the Overview
+uses (see [Choosing the metrics window](#choosing-the-metrics-window)) — and
+count runs that **finished** in it, however long they took to get there, so a
+run that started before the window is still measured. Press `w` to change the
+window, `Enter` / `→` to move into the step list, `Esc` / `←` to come back, and
+`j` / `k` to move between steps. If the durations query fails, the definitions
+still show and the figures are marked *metrics unavailable* rather than reading
+as zero.
 
 ## Troubleshooting
 

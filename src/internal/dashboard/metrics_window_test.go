@@ -16,20 +16,16 @@ func TestMetricsWindowLabels(t *testing.T) {
 	cases := []struct {
 		w     MetricsWindow
 		label string
-		title string
 		short string
 	}{
-		{MetricsWindowLast7Days, "last 7 days", "Last 7 days", "7d"},
-		{MetricsWindowLast30Days, "last 30 days", "Last 30 days", "30d"},
-		{MetricsWindowLast90Days, "last 90 days", "Last 90 days", "90d"},
-		{MetricsWindowAllTime, "all time", "All time", "all"},
+		{MetricsWindowLast7Days, "last 7 days", "7d"},
+		{MetricsWindowLast30Days, "last 30 days", "30d"},
+		{MetricsWindowLast90Days, "last 90 days", "90d"},
+		{MetricsWindowAllTime, "all time", "all"},
 	}
 	for _, tc := range cases {
 		if got := tc.w.Label(); got != tc.label {
 			t.Errorf("Label() = %q, want %q", got, tc.label)
-		}
-		if got := tc.w.TitleLabel(); got != tc.title {
-			t.Errorf("TitleLabel() = %q, want %q", got, tc.title)
 		}
 		if got := tc.w.ShortLabel(); got != tc.short {
 			t.Errorf("ShortLabel() = %q, want %q", got, tc.short)
@@ -271,14 +267,16 @@ func TestMetricsWindowAppearsInHeaders(t *testing.T) {
 		t.Errorf("Overview did not name the all-time window:\n%s", out)
 	}
 
-	// The Workflows summary leads with the window, capitalised.
-	line := stripANSI(workflowSummaryLine(&WorkflowActivity{Runs: 3, Completed: 2, Failed: 1}, false, MetricsWindowLast90Days))
-	if !strings.Contains(line, "Last 90 days: 3 runs") {
-		t.Errorf("summary = %q, want it to lead with the window", line)
+	// The Workflows tab names the window in its title; the distribution line
+	// below belongs to that window by position, and the empty state repeats it
+	// in words for a workflow that finished nothing.
+	a.model.workflowsTab = &WorkflowsTab{Workflows: []WorkflowConfigItem{{ID: "impl"}}}
+	a.model.SetActiveTab("Workflows")
+	if out := stripANSI(a.renderWorkflowsTab(40)); !strings.Contains(out, "WORKFLOWS · all time") {
+		t.Errorf("Workflows title did not name the all-time window:\n%s", out)
 	}
-	all := stripANSI(workflowSummaryLine(&WorkflowActivity{Runs: 1}, false, MetricsWindowAllTime))
-	if !strings.Contains(all, "All time: 1 run") {
-		t.Errorf("summary = %q, want all time named", all)
+	if out := stripANSI(a.renderWorkflowsTab(40)); !strings.Contains(out, "no runs all time") {
+		t.Errorf("Workflows empty state did not name the window:\n%s", out)
 	}
 }
 

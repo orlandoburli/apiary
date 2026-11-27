@@ -1,7 +1,6 @@
 package dashboard
 
 import (
-	"strings"
 	"time"
 
 	"github.com/orlandoburli/apiary/internal/db"
@@ -119,14 +118,6 @@ func (w MetricsWindow) Label() string {
 	default:
 		return "last 7 days"
 	}
-}
-
-// TitleLabel is Label as it begins a line — the Workflows summary reads
-// "Last 30 days: 12 runs · ...". Capitalising here rather than at the call site
-// keeps every label in one place.
-func (w MetricsWindow) TitleLabel() string {
-	l := w.Label()
-	return strings.ToUpper(l[:1]) + l[1:]
 }
 
 // ShortLabel is the window in the fewest columns, for a box title that would
@@ -688,28 +679,6 @@ type LogEntry struct {
 	Message   string
 }
 
-// WorkflowActivity is how one workflow or one step fared in the Workflows tab's
-// window — the model's selected MetricsWindow, stated in the tab's headers.
-//
-// Runs counts what started in the window, while Completed/Failed count what
-// reached that state in it. A run that began yesterday and finished this
-// morning is therefore a completion but not a run; the two halves are kept
-// apart rather than flattened, because "busy" and "finishing" are different
-// questions.
-type WorkflowActivity struct {
-	Runs          int
-	Completed     int
-	Failed        int
-	AvgDurationMs int64
-}
-
-// Any reports whether there is anything to show. A workflow or step absent from
-// the metrics result has no activity at all, and printing zeros for it would
-// claim it was tried and failed to move.
-func (m *WorkflowActivity) Any() bool {
-	return m != nil && m.Runs+m.Completed+m.Failed > 0
-}
-
 // WorkflowStepDef is one step definition shown in the Workflows config tab.
 type WorkflowStepDef struct {
 	ID        string
@@ -717,9 +686,10 @@ type WorkflowStepDef struct {
 	Agent     string
 	Condition string
 	Prompt    string
-	// Activity is this step's stats in the selected window, or nil when it
-	// did not run in it.
-	Activity *WorkflowActivity
+	// Durations is this step's distribution in the selected window, or nil
+	// when it did not run in it. A step's duration is its own wall interval —
+	// started → finished — so there is no active/wall split to show here.
+	Durations *db.StepDurations
 }
 
 // WorkflowConfigItem is one workflow shown in the Workflows config tab.
@@ -727,9 +697,11 @@ type WorkflowConfigItem struct {
 	ID          string
 	Description string
 	Steps       []WorkflowStepDef
-	// Activity is this workflow's stats in the selected window, or nil when it
-	// did not run in it.
-	Activity *WorkflowActivity
+	// Durations is this workflow's wall and active distribution in the selected
+	// window, or nil when no run finished in it. The two are kept side by side
+	// because their gap is the answer: wall includes the waits, active is the
+	// time something was actually executing.
+	Durations *db.WorkflowDurations
 }
 
 // WorkflowsView is which panel the Workflows tab has focus on.
@@ -740,16 +712,16 @@ const (
 	WorkflowsViewSteps
 )
 
-// WorkflowsTab shows the workflow config definitions (read-only) and the
-// window's activity for each workflow and step.
+// WorkflowsTab shows the workflow config definitions (read-only) and how long
+// their runs took in the selected window, per workflow and per step.
 type WorkflowsTab struct {
 	Workflows   []WorkflowConfigItem
 	SelectedIdx int // selected workflow in the left panel
 	StepIdx     int // selected step in the right panel
 	StepScroll  int // scroll offset in the step list
 	Focus       WorkflowsView
-	// MetricsUnavailable records that the activity query failed. The config
-	// definitions are still worth showing, but their stats are unknown rather
+	// MetricsUnavailable records that the durations query failed. The config
+	// definitions are still worth showing, but their figures are unknown rather
 	// than zero, and the tab says so instead of implying nothing ran.
 	MetricsUnavailable bool
 }
