@@ -36,16 +36,41 @@ type Model struct {
 	pickerTaskID     string // focused task at open time; empty means nothing was focused
 	pickerStandalone bool   // run with no source item even though one is focused
 
-	// Approval form (a, or y/n on a request that carries fields). Renders the
-	// request's declared fields as editable rows and posts decision + values in
-	// one response. See approval_form.go.
-	approvalActive bool
-	approvalReq    *db.ApprovalRequest
-	approvalIdx    int               // cursor over the field rows
-	approvalVals   map[string]any    // committed values, by field name
-	approvalDraft  map[string]string // in-progress text for typed fields
-	approvalErr    string            // local validation message, cleared on edit
-	approvalMsg    []string          // the request's message, markdown-rendered once on open
+	// Approval sheet (a, y, or n on a parked request). Renders the request's
+	// declared outcomes and fields, takes an optional reason, and posts decision
+	// + outcome + values + feedback in one response. See approval_form.go.
+	approvalActive   bool
+	approvalReq      *db.ApprovalRequest
+	approvalOutcomes []db.ApprovalOutcome // the gate's answers; the implicit pair when undeclared
+	approvalOutcome  int                  // the radio selection, which is what gets submitted
+	approvalCursor   int                  // the ▶ row; enter moves it into approvalOutcome
+	approvalFocus    int                  // which section owns the cursor (approvalFocus*)
+	approvalIdx      int                  // cursor over the field rows
+	approvalVals     map[string]any       // committed values, by field name
+	approvalDraft    map[string]string    // in-progress text for typed fields
+	approvalReason   string               // the optional free-text reason, sent as feedback
+	approvalErr      string               // local validation message, cleared on edit
+	approvalMsg      []string             // the request's message, markdown-rendered once on open
+
+	// Question sheet (an ask_human question from a running agent). Same shell as
+	// the approval sheet, and auto-opened when it will not interrupt an overlay.
+	// See question_sheet.go.
+	pendingQuestions []db.AgentQuestion // newest first, as the store returns them
+	questionActive   bool
+	question         *db.AgentQuestion
+	questionMsg      []string // the agent's question, markdown-rendered once on open
+	questionFocus    int      // which section owns the cursor (questionFocus*)
+	questionCursor   int      // ▶ over the option rows; equals the selection
+	questionOption   int      // chosen option, or -1 when the answer is typed text
+	questionAnswer   string
+	questionNote     string
+	questionErr      string // daemon's message when a submit failed
+	// questionSnoozed holds the questions the operator explicitly put aside.
+	// Without it, `esc` would be undone by the very next two-second poll: "later"
+	// would mean "immediately", and a modal that reopens every tick is impossible
+	// to work around. A question is un-snoozed by pressing `?`, and a new question
+	// (an id that is not in here) still auto-opens.
+	questionSnoozed map[string]bool
 
 	notice      string    // one-line result banner for the last IPC action
 	noticeIsErr bool      // render the banner as an error
@@ -574,8 +599,9 @@ type WorkflowsTab struct {
 // NewModel creates a new dashboard model.
 func NewModel() *Model {
 	return &Model{
-		activeTab: 0,
-		tabs:      []string{"Overview", "Tasks", "Running", "Agents", "Usage", "Logs", "Workflows"},
+		activeTab:       0,
+		tabs:            []string{"Overview", "Tasks", "Running", "Agents", "Usage", "Logs", "Workflows"},
+		questionSnoozed: map[string]bool{},
 		overviewTab: &OverviewTab{
 			Status:      "Loading...",
 			Uptime:      "0s",

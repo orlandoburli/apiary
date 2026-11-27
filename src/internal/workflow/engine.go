@@ -240,11 +240,15 @@ func (e *Engine) stillRoutable(r *dagRun) bool {
 // StepRequest is the input to executing one agent step.
 type StepRequest struct {
 	InstanceID string
-	Cell       model.SourceItem
-	Step       config.StepConfig
-	Agent      config.AgentConfig
-	Model      string // resolved model (step override or agent default)
-	MemoryDoc  string // workflow memory document to prepend (empty if memory.read is false)
+	// TaskID is the InternalTask the instance belongs to, exported to the agent
+	// as APIARY_TASK_ID so the ask_human MCP tool can file its question against
+	// the task rather than only the workflow instance.
+	TaskID    string
+	Cell      model.SourceItem
+	Step      config.StepConfig
+	Agent     config.AgentConfig
+	Model     string // resolved model (step override or agent default)
+	MemoryDoc string // workflow memory document to prepend (empty if memory.read is false)
 	// Prompt is the step-level instruction (step.prompt) with any foreach item
 	// templates already rendered. The executor folds it into the agent's prompt.
 	Prompt string
@@ -909,6 +913,7 @@ func (e *Engine) runStep(ctx context.Context, instID string, step config.StepCon
 
 	res := e.exec.ExecuteStep(ctx, StepRequest{
 		InstanceID:         instID,
+		TaskID:             task.ID,
 		Cell:               cell,
 		Step:               step,
 		Agent:              ag,

@@ -57,13 +57,24 @@ Exit codes make the commands scriptable:
 
 ### Answering from the dashboard
 
-On a parked instance — in the task detail or the workflow monitor:
+On a parked instance — in the task detail or the workflow monitor — `a` opens
+the decision sheet: the step's question, the answers it offers, any declared
+fields, and a reason box. `y` and `n` open the same sheet with an approve or
+reject answer preselected, so a reason is always available.
 
 | Key | Action |
 |---|---|
-| `y` | approve (opens the form instead when the step declares fields) |
-| `n` | reject |
-| `a` | open the form |
+| `a` | open the decision sheet |
+| `y` / `n` | open it with approve / reject preselected |
+| `↑` / `↓` | move between rows; at a section edge, into the next section |
+| `←` / `→` or `1`-`9` | choose an answer |
+| `tab` / `shift+tab` | move between Answers, Fields and Reason |
+| `enter` | on an answer: select it; on a field or the reason: submit |
+| `ctrl+s` | submit from anywhere |
+| `esc` | cancel — nothing is recorded |
+
+The reason is optional. Whatever you type there is recorded with the answer and
+reaches the workflow as `${{ memory.approval_feedback }}`.
 
 ## Asking a question, not just yes/no
 
@@ -279,3 +290,9 @@ The execution timeline records `approval.requested`, `approval.reminder`,
 `approval.escalated`, `approval.granted`, `approval.rejected`, and
 `approval.timed_out`. Actor, channel, feedback, form values, request identity, and
 escalation targets are retained in redacted event metadata.
+
+## See also
+
+An approval is a gate the workflow declares ahead of time. When a *running*
+agent needs an answer it did not know it would need, it asks through
+[agent questions](agent-questions.md) instead.

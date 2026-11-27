@@ -438,6 +438,7 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 	}
 
 	env := withMemoryDir(withInputEnv(stepEnv(req.Agent, req.WorkflowEnv, req.Step.Env), req.Inputs), x.d.memDir)
+	env = x.d.withQuestionEnv(env, req)
 
 	rr := model.RunRequest{
 		Cell:               req.Cell,
@@ -1081,6 +1082,29 @@ func stepEnv(agent config.AgentConfig, wfEnv, stepEnv map[string]string) map[str
 	for k, v := range stepEnv {
 		env[k] = v
 	}
+	return env
+}
+
+// withQuestionEnv exports the run identity the ask_human MCP tool needs. The
+// values are applied after the explicit env layers because they describe this
+// particular run: a stale APIARY_INSTANCE_ID (an inherited process value, or a
+// deliberate override) would file a question against the wrong instance and hide
+// who is actually blocked. APIARY_SOCKET points the MCP server at this project's
+// daemon.
+// withQuestionEnv gives the run what the ask_human tool needs: the socket to
+// reach this daemon, and the identity of the run, step and task the question
+// belongs to.
+//
+// These overwrite whatever the env layers below produced. That is deliberate:
+// a question is only meaningful attached to the run that asked it, and an
+// operator-set APIARY_TASK_ID would silently point the answer at another task.
+// The socket is likewise this daemon's, not whatever PATH or an older env var
+// might suggest.
+func (d *Dispatcher) withQuestionEnv(env map[string]string, req workflow.StepRequest) map[string]string {
+	env["APIARY_SOCKET"] = SocketPath(config.DataDir(d.configFile))
+	env["APIARY_INSTANCE_ID"] = req.InstanceID
+	env["APIARY_STEP_ID"] = req.Step.ID
+	env["APIARY_TASK_ID"] = req.TaskID
 	return env
 }
 

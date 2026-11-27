@@ -69,6 +69,7 @@ func init() {
 		newImproveCmd(),
 		newExportCmd(),
 		newMigrateCmd(),
+		newMCPServeCmd(),
 	)
 }
 

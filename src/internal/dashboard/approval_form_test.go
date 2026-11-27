@@ -2,6 +2,12 @@ package dashboard
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -29,32 +35,63 @@ func fieldRequest() *db.ApprovalRequest {
 	}
 }
 
-// y answers a field-less gate in one key, but a gate that declares fields opens
-// the form — the values are part of the answer and cannot be guessed.
-func TestAnswerApprovalRouting(t *testing.T) {
+// y and n used to answer in one keystroke. They now only open the sheet with an
+// outcome preselected, so there is always somewhere to type a reason; a opens it
+// on the first declared outcome without expressing a preference.
+func TestAnswerApprovalOpensTheSheet(t *testing.T) {
+	cases := []struct{ key, want string }{
+		{"y", "approve"},
+		{"n", "reject"},
+		{"a", "approve"},
+	}
+	for _, tc := range cases {
+		a := newFormApp()
+		if _, cmd := a.answerApproval(&db.ApprovalRequest{ID: "wf:gate"}, tc.key); cmd != nil {
+			t.Fatalf("%q answered immediately; it should open the sheet", tc.key)
+		}
+		if !a.model.approvalActive {
+			t.Fatalf("%q did not open the sheet", tc.key)
+		}
+		if got := a.model.approvalOutcomes[a.model.approvalOutcome].Value; got != tc.want {
+			t.Fatalf("%q preselected %q, want %q", tc.key, got, tc.want)
+		}
+	}
+
+	// The same keys work on a gate with fields; the fields are seeded so the
+	// operator can answer in one pass.
 	a := newFormApp()
-	if _, cmd := a.answerApproval(&db.ApprovalRequest{ID: "wf:gate"}, "y"); cmd == nil {
-		t.Fatal("y on a field-less gate should post a response")
-	}
-	if a.model.approvalActive {
-		t.Fatal("a field-less gate should not open the form")
-	}
-
-	a = newFormApp()
 	if _, cmd := a.answerApproval(fieldRequest(), "y"); cmd != nil {
-		t.Fatal("y on a gate with fields should open the form, not post")
+		t.Fatal("y on a gate with fields should open the sheet, not post")
 	}
-	if !a.model.approvalActive {
-		t.Fatal("expected the form to open")
+	if a.model.approvalVals["strategy"] != "canary" {
+		t.Fatal("declared fields were not seeded")
 	}
+}
 
-	// n rejects outright even with fields: a refusal never fills in a form.
-	a = newFormApp()
-	if _, cmd := a.answerApproval(fieldRequest(), "n"); cmd == nil {
-		t.Fatal("n should post a rejection directly")
+// A workflow may name its answers freely; y/n still land on the nearest thing to
+// approve/reject, by the outcome's own Fail flag.
+func TestAnswerApprovalPreselectsCustomOutcomes(t *testing.T) {
+	req := &db.ApprovalRequest{
+		ID: "wf:gate",
+		Outcomes: []db.ApprovalOutcome{
+			{Value: "ship", Label: "Ship it"},
+			{Value: "hold", Label: "Hold", Fail: true},
+		},
 	}
-	if a.model.approvalActive {
-		t.Fatal("rejection should not open the form")
+	a := newFormApp()
+	a.answerApproval(req, "n")
+	if got := a.model.approvalOutcomes[a.model.approvalOutcome].Value; got != "hold" {
+		t.Fatalf("n preselected %q, want hold", got)
+	}
+	a = newFormApp()
+	a.answerApproval(req, "y")
+	if got := a.model.approvalOutcomes[a.model.approvalOutcome].Value; got != "ship" {
+		t.Fatalf("y preselected %q, want ship", got)
+	}
+	a = newFormApp()
+	a.answerApproval(req, "a")
+	if got := a.model.approvalOutcomes[a.model.approvalOutcome].Value; got != "ship" {
+		t.Fatalf("a should preselect the first outcome, got %q", got)
 	}
 }
 
@@ -112,29 +149,44 @@ func TestApprovalFormRequiresDeclaredFields(t *testing.T) {
 		t.Fatalf("expected a required-field error naming change_ticket, got %v", err)
 	}
 
-	// enter keeps the form open and shows the reason.
+	// enter submits from a field row, and keeps the sheet open when invalid.
+	a.model.approvalFocus = approvalFocusFields
 	a.model.approvalIdx = 1
 	if _, cmd := a.handleApprovalFormKey("enter"); cmd != nil {
 		t.Fatal("enter should not submit an incomplete form")
 	}
 	if !a.model.approvalActive {
-		t.Fatal("an invalid submit should keep the form open")
+		t.Fatal("an invalid submit should keep the sheet open")
 	}
 	if a.model.approvalErr == "" {
 		t.Fatal("expected the validation message to be shown")
 	}
 }
 
-// ctrl+r rejects from inside the form without collecting anything.
-func TestApprovalFormRejectSkipsValidation(t *testing.T) {
+// A failing outcome ends the gate, so its fields are never validated or sent —
+// the same rule a direct rejection always had.
+func TestApprovalSheetFailOutcomeSkipsValidation(t *testing.T) {
+	req := fieldRequest()
+	req.Outcomes = []db.ApprovalOutcome{
+		{Value: "ship"},
+		{Value: "hold", Label: "Hold the release", Fail: true},
+	}
 	a := newFormApp()
-	a.openApprovalForm(fieldRequest())
-	_, cmd := a.handleApprovalFormKey("ctrl+r")
+	a.openApprovalFormWith(req, "reject")
+	if got := a.model.approvalOutcomes[a.model.approvalOutcome].Value; got != "hold" {
+		t.Fatalf("reject preselected %q, want hold", got)
+	}
+
+	// The required change_ticket is blank, yet a failing answer submits.
+	_, cmd := a.handleApprovalFormKey("ctrl+s")
 	if cmd == nil {
-		t.Fatal("ctrl+r should post a rejection")
+		t.Fatal("a fail outcome should submit without filling in the fields")
 	}
 	if a.model.approvalActive {
-		t.Fatal("rejecting should close the form")
+		t.Fatal("submitting should close the sheet")
+	}
+	if a.model.approvalErr != "" {
+		t.Fatalf("a failing answer should not validate fields, got %q", a.model.approvalErr)
 	}
 }
 
@@ -149,16 +201,107 @@ func TestApprovalFormEscCancels(t *testing.T) {
 	}
 }
 
-// The form renders every option of a choice so the alternatives are visible
-// without cycling through them.
+// The sheet renders every choice option, both outcomes, and the always-present
+// reason row, so none of the answers is hidden behind a cycle.
 func TestApprovalFormRendersOptions(t *testing.T) {
 	a := newFormApp()
 	a.openApprovalForm(fieldRequest())
 	out := stripANSI(a.renderApprovalForm(""))
-	for _, want := range []string{"Rollout strategy", "canary", "blue_green", "full", "approve", "reject"} {
+	for _, want := range []string{
+		"Rollout strategy", "canary", "blue_green", "full",
+		"Outcome", "approve", "reject", "Reason (optional)", "▶", "●",
+	} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("form is missing %q:\n%s", want, out)
+			t.Fatalf("sheet is missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// The context line names what is being answered without hunting in the task.
+func TestApprovalSheetShowsContext(t *testing.T) {
+	a := newFormApp()
+	req := fieldRequest()
+	req.StepID = "gate"
+	req.TicketRef = "OPS-482"
+	req.PRNumber = 91
+	a.openApprovalForm(req)
+
+	out := stripANSI(a.renderApprovalForm(""))
+	for _, want := range []string{"wf-1:gate", "step gate", "ticket OPS-482", "PR #91"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("context is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// ↑/↓ move the ▶ cursor without deciding; enter turns the cursor into the
+// selection and must not submit. Digits and ←/→ select directly.
+func TestApprovalSheetOutcomeSelection(t *testing.T) {
+	req := &db.ApprovalRequest{
+		ID: "wf:gate",
+		Outcomes: []db.ApprovalOutcome{
+			{Value: "ship", Label: "Ship it"},
+			{Value: "hold", Label: "Hold", Fail: true},
+			{Value: "kill", Label: "Kill", Fail: true},
+		},
+	}
+	a := newFormApp()
+	a.openApprovalFormWith(req, "reject")
+	if a.model.approvalOutcome != 1 {
+		t.Fatalf("selected = %d, want 1 (hold)", a.model.approvalOutcome)
+	}
+
+	if _, cmd := a.handleApprovalFormKey("down"); cmd != nil {
+		t.Fatal("down on an outcome must not submit")
+	}
+	if a.model.approvalCursor != 2 || a.model.approvalOutcome != 1 {
+		t.Fatalf("cursor=%d selected=%d; down should move only the cursor",
+			a.model.approvalCursor, a.model.approvalOutcome)
+	}
+	if _, cmd := a.handleApprovalFormKey("enter"); cmd != nil {
+		t.Fatal("enter on an outcome selects it; it must not submit")
+	}
+	if a.model.approvalOutcome != 2 {
+		t.Fatalf("enter selected %d, want 2", a.model.approvalOutcome)
+	}
+
+	// A digit jumps and selects.
+	a.handleApprovalFormKey("1")
+	if a.model.approvalOutcome != 0 || a.model.approvalCursor != 0 {
+		t.Fatalf("1 selected %d (cursor %d), want 0", a.model.approvalOutcome, a.model.approvalCursor)
+	}
+	// ←/→ move the selection and bring the cursor along.
+	a.handleApprovalFormKey("right")
+	if a.model.approvalOutcome != 1 || a.model.approvalCursor != 1 {
+		t.Fatalf("right selected %d (cursor %d), want 1", a.model.approvalOutcome, a.model.approvalCursor)
+	}
+}
+
+// Tab cycles outcomes → fields → reason and back, skipping the fields section
+// when the gate declares none.
+func TestApprovalSheetTabCyclesSections(t *testing.T) {
+	a := newFormApp()
+	a.openApprovalForm(fieldRequest())
+	if a.model.approvalFocus != approvalFocusOutcome {
+		t.Fatal("the sheet should open on the outcomes")
+	}
+	a.handleApprovalFormKey("tab")
+	if a.model.approvalFocus != approvalFocusFields {
+		t.Fatal("tab should move to the fields")
+	}
+	a.handleApprovalFormKey("tab")
+	if a.model.approvalFocus != approvalFocusReason {
+		t.Fatal("tab should move to the reason")
+	}
+	a.handleApprovalFormKey("tab")
+	if a.model.approvalFocus != approvalFocusOutcome {
+		t.Fatal("tab should wrap back to the outcomes")
+	}
+
+	a.openApprovalForm(&db.ApprovalRequest{ID: "wf:gate"})
+	a.handleApprovalFormKey("tab")
+	if a.model.approvalFocus != approvalFocusReason {
+		t.Fatal("with no fields, tab should go straight to the reason")
 	}
 }
 
@@ -257,7 +400,7 @@ func TestApprovalFormRendersMessageAsMarkdown(t *testing.T) {
 // the screen — the operator would have no way left to answer the gate.
 func TestApprovalFormTruncatesLongMessage(t *testing.T) {
 	a := newFormApp()
-	a.model.width, a.model.height = 100, 20
+	a.model.width, a.model.height = 100, 32
 	req := fieldRequest()
 	req.Message = strings.Repeat("- a bullet\n", 40)
 	a.openApprovalForm(req)
@@ -266,8 +409,9 @@ func TestApprovalFormTruncatesLongMessage(t *testing.T) {
 	if !strings.Contains(out, "more lines") {
 		t.Fatalf("long message should be trimmed with a hint:\n%s", out)
 	}
-	if !strings.Contains(out, "approve") || !strings.Contains(out, "Rollout strategy") {
-		t.Fatalf("fields and key hints must survive a long message:\n%s", out)
+	if !strings.Contains(out, "approve") || !strings.Contains(out, "Rollout strategy") ||
+		!strings.Contains(out, "Reason (optional)") {
+		t.Fatalf("outcomes, fields and key hints must survive a long message:\n%s", out)
 	}
 	if got := lipgloss.Height(a.renderApprovalForm("")); got > a.model.height {
 		t.Fatalf("dialog is %d lines tall, taller than the %d-line terminal", got, a.model.height)
@@ -280,6 +424,7 @@ func TestApprovalFormTruncatesLongMessage(t *testing.T) {
 func TestApprovalFormOwnsGlobalLetterKeys(t *testing.T) {
 	a := &App{model: &Model{width: 100, height: 40, tabs: []string{"Overview", "Tasks"}, activeTab: 1}}
 	a.openApprovalForm(fieldRequest())
+	a.model.approvalFocus = approvalFocusFields
 	a.model.approvalIdx = 1 // the string field
 
 	for _, key := range []string{"o", "k", "q", "t", "p"} {
@@ -292,5 +437,139 @@ func TestApprovalFormOwnsGlobalLetterKeys(t *testing.T) {
 	}
 	if got := a.model.approvalDraft["change_ticket"]; got != "okqtp" {
 		t.Fatalf("field got %q, want %q", got, "okqtp")
+	}
+}
+
+// startApprovalSocket stands in for the daemon's Unix socket, capturing the JSON
+// the dashboard posts to /respond.
+func startApprovalSocket(t *testing.T) (string, <-chan map[string]any) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "apiary-approval")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "apiary.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		os.RemoveAll(dir)
+		t.Fatal(err)
+	}
+	captured := make(chan map[string]any, 1)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		captured <- payload
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"resolved":true,"approvals":1,"required":1}`)
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = os.RemoveAll(dir)
+	})
+	return sock, captured
+}
+
+// The whole sheet round-trips: the selected outcome, the typed reason, and the
+// declared field values reach the daemon in one response.
+func TestApprovalSheetSubmitsOutcomeReasonAndValues(t *testing.T) {
+	sock, captured := startApprovalSocket(t)
+	a := newFormApp()
+	a.socketPath = sock
+	a.openApprovalFormWith(fieldRequest(), "approve")
+
+	a.model.approvalVals["strategy"] = "blue_green"
+	a.model.approvalDraft["change_ticket"] = "OPS-482"
+
+	// Tab to the reason and type it, including a space.
+	a.handleApprovalFormKey("tab") // fields
+	a.handleApprovalFormKey("tab") // reason
+	if a.model.approvalFocus != approvalFocusReason {
+		t.Fatal("tab did not reach the reason")
+	}
+	for _, key := range []string{"n", "e", "e", "d", "s", " ", "l", "o", "o", "k"} {
+		a.handleApprovalFormKey(key)
+	}
+	if got := a.model.approvalReason; got != "needs look" {
+		t.Fatalf("reason = %q, want %q", got, "needs look")
+	}
+
+	_, cmd := a.handleApprovalFormKey("ctrl+s")
+	if cmd == nil {
+		t.Fatal("ctrl+s should submit")
+	}
+	cmd() // the request lands on the socket synchronously
+
+	payload := <-captured
+	if payload["decision"] != "approve" {
+		t.Fatalf("decision = %v, want approve", payload["decision"])
+	}
+	if payload["outcome"] != "approve" {
+		t.Fatalf("outcome = %v, want approve", payload["outcome"])
+	}
+	if payload["feedback"] != "needs look" {
+		t.Fatalf("feedback = %v, want the typed reason", payload["feedback"])
+	}
+	values, _ := payload["values"].(map[string]any)
+	if values["strategy"] != "blue_green" || values["change_ticket"] != "OPS-482" {
+		t.Fatalf("values = %#v", payload["values"])
+	}
+}
+
+// A declared outcome that fails submits decision=reject, sends its own value,
+// and carries the reason — without asking for fields.
+func TestApprovalSheetFailOutcomeSubmitsReject(t *testing.T) {
+	sock, captured := startApprovalSocket(t)
+	req := fieldRequest()
+	req.Outcomes = []db.ApprovalOutcome{
+		{Value: "ship"},
+		{Value: "hold", Label: "Hold", Fail: true},
+	}
+	a := newFormApp()
+	a.socketPath = sock
+	a.openApprovalFormWith(req, "reject")
+
+	a.handleApprovalFormKey("tab") // fields
+	a.handleApprovalFormKey("tab") // reason
+	for _, key := range []string{"n", "o", "t", " ", "y", "e", "t"} {
+		a.handleApprovalFormKey(key)
+	}
+	_, cmd := a.handleApprovalFormKey("ctrl+s")
+	if cmd == nil {
+		t.Fatal("ctrl+s should submit a fail outcome")
+	}
+	cmd()
+
+	payload := <-captured
+	if payload["decision"] != "reject" {
+		t.Fatalf("decision = %v, want reject", payload["decision"])
+	}
+	if payload["outcome"] != "hold" {
+		t.Fatalf("outcome = %v, want hold", payload["outcome"])
+	}
+	if payload["feedback"] != "not yet" {
+		t.Fatalf("feedback = %v, want not yet", payload["feedback"])
+	}
+	if _, ok := payload["values"]; ok {
+		t.Fatalf("a failing outcome must not send field values: %#v", payload["values"])
+	}
+}
+
+// Enter inside the reason is a submit gesture; esc on the sheet records nothing.
+func TestApprovalSheetReasonEnterSubmits(t *testing.T) {
+	a := newFormApp()
+	a.openApprovalForm(&db.ApprovalRequest{ID: "wf:gate"})
+	a.model.approvalFocus = approvalFocusReason
+	if _, cmd := a.handleApprovalFormKey("enter"); cmd == nil {
+		t.Fatal("enter in the reason should submit")
+	}
+
+	a = newFormApp()
+	a.openApprovalForm(fieldRequest())
+	if _, cmd := a.handleApprovalFormKey("esc"); cmd != nil {
+		t.Fatal("esc must not send a response")
+	}
+	if a.model.approvalActive {
+		t.Fatal("esc should close the sheet")
 	}
 }

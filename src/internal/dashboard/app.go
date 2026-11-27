@@ -297,6 +297,7 @@ func (a *App) Init() tea.Cmd {
 		tea.EnterAltScreen,
 		a.fetchActiveTab(),
 		a.fetchWorkflowsConfig(),
+		a.fetchQuestions(),
 		tickCmd(),
 		spinnerTickCmd(),
 	)
@@ -350,6 +351,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a.answerApproval(msg.req, msg.key)
 
+	case questionsMsg:
+		return a.handleQuestionsMsg(msg)
+
+	case questionAnsweredMsg:
+		return a.handleQuestionAnswered(msg)
+
 	case noticeMsg:
 		// Show the banner and refresh straight away: a restart that dispatched
 		// work has already created the instance the user is looking for.
@@ -359,9 +366,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.fetchActiveTab()
 
 	case tickMsg:
-		// Re-query the active tab and schedule the next tick.
+		// Re-query the active tab, poll questions, and schedule the next tick.
+		// Questions are polled on every tab: a blocked agent may be on a tab the
+		// operator is not looking at.
 		a.model.tickCount++
-		return a, tea.Batch(a.fetchActiveTab(), tickCmd())
+		return a, tea.Batch(a.fetchActiveTab(), a.fetchQuestions(), tickCmd())
 
 	case spinnerTickMsg:
 		// Advance the loading-spinner animation and keep the fast tick alive. The
@@ -756,6 +765,23 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// whole table on every edit rather than narrowed in memory.
 			return a, a.resetTaskList(t)
 		}
+		return a, nil
+	}
+
+	// A question sheet owns every key while it is open, including `?` (which
+	// cycles the queue). It sits above the picker so answering can interrupt a
+	// half-finished picker; the picker resumes underneath when the sheet closes.
+	if a.model.questionActive {
+		return a.handleQuestionSheetKey(key)
+	}
+
+	// `?` opens the question queue when a badge is what auto-open left behind.
+	// It is checked here, above the picker and approval guards, so the badge's
+	// promise holds even while those overlays own the other keys — except where
+	// `?` is legitimate text: a typed filter returns above, and the approval
+	// sheet's text rows are left to take the keystroke themselves.
+	if key == "?" && len(a.model.pendingQuestions) > 0 && !a.approvalCapturesText() {
+		a.openNextQuestion()
 		return a, nil
 	}
 
@@ -4051,6 +4077,9 @@ func (a *App) View() string {
 	if a.model.approvalActive {
 		view = a.renderApprovalForm(view)
 	}
+	if a.model.questionActive {
+		view = a.renderQuestionSheet(view)
+	}
 	return view
 }
 
@@ -6955,7 +6984,21 @@ func (a *App) footerStatus(updated string) string {
 			}
 		}
 	}
-	return pos + "updated " + updated
+	return a.questionBadge() + pos + "updated " + updated
+}
+
+// questionBadge is the wait-free half of auto-open: when something else owns the
+// screen, pending questions turn into a footer to-do rather than a focus steal.
+func (a *App) questionBadge() string {
+	n := len(a.model.pendingQuestions)
+	if n == 0 || a.model.questionActive {
+		return ""
+	}
+	label := "question"
+	if n != 1 {
+		label = "questions"
+	}
+	return StyleWarning.Render(fmt.Sprintf("? %d %s   ", n, label))
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
