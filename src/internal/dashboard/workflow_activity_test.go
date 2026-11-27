@@ -12,8 +12,8 @@ import (
 )
 
 // activityTestConfig is the config the Workflows tab reads its rows from: one
-// workflow that ran today, with three steps of which only two were reached, and
-// one workflow that did not run at all.
+// workflow that ran recently, with three steps of which only two were reached,
+// and one workflow that did not run at all.
 func activityTestConfig() *config.Config {
 	return &config.Config{Workflows: []config.WorkflowConfig{
 		{
@@ -33,11 +33,12 @@ func activityTestConfig() *config.Config {
 // step with a five-minute duration, and a failed step whose start and finish are
 // the same instant.
 //
-// The step timestamps sit at local midnight plus a fixed offset rather than "now
-// minus an hour": the metrics window is open-ended at midnight, so a fixed
-// offset keeps the expected average deterministic even when the test starts at
-// 00:00:01. The instance is stamped by the store with the wall clock, so its
-// average is only asserted as "present", not as an exact value.
+// The step timestamps sit at local midnight plus a fixed offset rather than
+// "now minus an hour": a fixed offset keeps the expected average deterministic
+// even when the test starts at 00:00:01, and local midnight is inside the
+// default seven-day window whatever time the suite runs. The instance is
+// stamped by the store with the wall clock, so its average is only asserted as
+// "present", not as an exact value.
 func seedActivity(t *testing.T, c *db.Client) {
 	t.Helper()
 	ctx := context.Background()
@@ -64,10 +65,10 @@ func seedActivity(t *testing.T, c *db.Client) {
 	}
 }
 
-// The Workflows tab is where an operator asks "did my workflows run today?": the
-// list carries a compact hint, the selected workflow a spelled-out summary, and
-// each step that was reached one muted stats line.
-func TestWorkflowsTabShowsTodayActivity(t *testing.T) {
+// The Workflows tab is where an operator asks "did my workflows run?": the list
+// carries a compact hint, the selected workflow a spelled-out summary naming the
+// window, and each step that was reached one muted stats line.
+func TestWorkflowsTabShowsWindowActivity(t *testing.T) {
 	ctx := context.Background()
 	c, err := db.New(ctx, filepath.Join(t.TempDir(), "wf-activity.db"))
 	if err != nil {
@@ -86,7 +87,7 @@ func TestWorkflowsTabShowsTodayActivity(t *testing.T) {
 
 	for _, want := range []string{
 		"impl", "implementation",
-		"Today: 1 run · 1 completed · 0 failed",
+		"Last 7 days: 1 run · 1 completed · 0 failed",
 		"1·1✓·0✗",                            // the compact left-panel hint
 		"ran 1 · 1 ok · 0 failed · avg 5.0m", // implement
 		"ran 1 · 0 ok · 1 failed",            // review: finished in the same instant
@@ -115,16 +116,17 @@ func TestWorkflowsTabShowsTodayActivity(t *testing.T) {
 func TestWorkflowSummaryLineShowsAverage(t *testing.T) {
 	line := stripANSI(workflowSummaryLine(&WorkflowActivity{
 		Runs: 12, Completed: 10, Failed: 1, AvgDurationMs: 45 * 60 * 1000,
-	}, false))
-	for _, want := range []string{"Today: 12 runs", "10 completed", "1 failed", "avg 45.0m"} {
+	}, false, MetricsWindowLast7Days))
+	for _, want := range []string{"Last 7 days: 12 runs", "10 completed", "1 failed", "avg 45.0m"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("summary missing %q: %q", want, line)
 		}
 	}
 }
 
-// A workflow that did not start anything today shows a dimmed "no runs today"
-// rather than a row of zeros — absence of a stat is not zero.
+// A workflow that did not start anything in the window shows a dimmed
+// "no runs last 7 days" rather than a row of zeros — absence of a stat is not
+// zero.
 func TestWorkflowsTabNeverRunShowsDimmedEmptyState(t *testing.T) {
 	ctx := context.Background()
 	c, err := db.New(ctx, filepath.Join(t.TempDir(), "wf-idle.db"))
@@ -144,17 +146,17 @@ func TestWorkflowsTabNeverRunShowsDimmedEmptyState(t *testing.T) {
 	out := a.renderWorkflowsTab(40)
 	plain := stripANSI(out)
 
-	if !strings.Contains(plain, "no runs today") {
-		t.Fatalf("idle workflow should say it did not run today:\n%s", plain)
+	if !strings.Contains(plain, "no runs last 7 days") {
+		t.Fatalf("idle workflow should say it did not run in the window:\n%s", plain)
 	}
-	if !strings.Contains(plain, "no runs since midnight") {
+	if !strings.Contains(plain, "no runs last 7 days") {
 		t.Fatalf("idle workflow summary missing:\n%s", plain)
 	}
 	// The empty state is dimmed, not dressed as a statistic.
-	if !strings.Contains(out, StyleFooterDim.Render("no runs today")) {
+	if !strings.Contains(out, StyleFooterDim.Render("no runs last 7 days")) {
 		t.Errorf("empty state should use the dim style:\n%q", out)
 	}
-	if strings.Contains(plain, "Today: 0 runs") {
+	if strings.Contains(plain, "Last 7 days: 0 runs") {
 		t.Errorf("idle workflow printed a row of zeros:\n%s", plain)
 	}
 }
@@ -181,7 +183,7 @@ func TestWorkflowsTabMetricsUnavailableStillRendersDefinitions(t *testing.T) {
 	}
 	// Unknown is not "no runs": the empty state would be a claim the query
 	// could not make.
-	if strings.Contains(plain, "no runs today") {
+	if strings.Contains(plain, "no runs last 7 days") {
 		t.Errorf("a failed query must not read as an idle workflow:\n%s", plain)
 	}
 }

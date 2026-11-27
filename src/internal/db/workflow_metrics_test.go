@@ -107,3 +107,74 @@ func TestWorkflowMetricsSeparateRunsFromCompletions(t *testing.T) {
 		t.Errorf("impl/review = %+v, want one failure", reviewStep)
 	}
 }
+
+// A zero start means "all time". The dashboard's widest window passes exactly
+// that, so the store has to read it as "no lower bound" rather than as an error
+// or as the year one: the driver serialises a zero time as a bound any stored
+// timestamp sorts after, and every row has to survive the comparison.
+func TestWorkflowMetricsAllTimeAcceptsZeroStart(t *testing.T) {
+	ctx := context.Background()
+	c, err := New(ctx, filepath.Join(t.TempDir(), "wf-all-time.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	now := time.Now()
+
+	mkInstance := func(id, workflowID, state string, created, updated time.Time) {
+		if err := c.CreateWorkflowInstance(ctx, &WorkflowInstance{
+			ID: id, WorkflowID: workflowID, CellID: id, State: state, CreatedAt: created,
+		}); err != nil {
+			t.Fatalf("create instance %s: %v", id, err)
+		}
+		if _, err := c.db.ExecContext(ctx,
+			"UPDATE workflow_instances SET updated_at=? WHERE id=?", updated, id); err != nil {
+			t.Fatalf("stamp instance %s: %v", id, err)
+		}
+	}
+
+	// One instance inside a week and one well outside it: the second is what
+	// tells "all time" apart from the narrowest window.
+	mkInstance("recent", "impl", "done", now.Add(-24*time.Hour), now.Add(-time.Hour))
+	mkInstance("old", "audit", "done", now.AddDate(0, 0, -40), now.AddDate(0, 0, -40))
+
+	mkStep := func(instanceID, stepID, agent, state string, started, finished time.Time) {
+		if err := c.CreateStepRun(ctx, &StepRun{
+			ID: instanceID + ":" + stepID, WorkflowInstanceID: instanceID,
+			StepID: stepID, AgentID: agent, State: state,
+		}); err != nil {
+			t.Fatalf("create step run %s/%s: %v", instanceID, stepID, err)
+		}
+		if _, err := c.db.ExecContext(ctx,
+			"UPDATE step_runs SET started_at=?, finished_at=? WHERE id=?",
+			started, finished, instanceID+":"+stepID); err != nil {
+			t.Fatalf("stamp step run: %v", err)
+		}
+	}
+	mkStep("recent", "implement", "engineer", "done", now.Add(-23*time.Hour), now.Add(-22*time.Hour))
+	mkStep("old", "audit", "janitor", "done", now.AddDate(0, 0, -40), now.AddDate(0, 0, -40))
+
+	workflows, steps, err := c.GetWorkflowMetrics(ctx, time.Time{})
+	if err != nil {
+		t.Fatalf("GetWorkflowMetrics with a zero start: %v", err)
+	}
+
+	byID := map[string]WorkflowMetrics{}
+	for _, w := range workflows {
+		byID[w.WorkflowID] = w
+	}
+	for _, id := range []string{"impl", "audit"} {
+		w, ok := byID[id]
+		if !ok {
+			t.Fatalf("%s missing from all-time result %+v", id, workflows)
+		}
+		if w.Runs != 1 || w.Completed != 1 {
+			t.Errorf("%s = %+v, want one run and one completion", id, w)
+		}
+	}
+
+	if len(steps) != 2 {
+		t.Errorf("steps = %+v, want both steps across the whole history", steps)
+	}
+}

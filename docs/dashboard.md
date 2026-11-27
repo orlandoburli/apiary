@@ -77,6 +77,30 @@ how long ago the data was last loaded, so you always know how fresh it is.
 Contextual help in the footer shows which keys are available in the current
 view.
 
+### Choosing the metrics window
+
+The Overview and Workflows tabs measure over a window you choose, and both use
+the same one, so the two tabs always describe the same stretch of time. Press
+`w` on either tab to cycle it:
+
+| Window | Covers |
+|--------|--------|
+| `last 7 days` (default) | the last 168 hours |
+| `last 30 days` | the last 720 hours |
+| `last 90 days` | the last 2,160 hours |
+| `all time` | everything the store holds |
+
+Every header names the window it is showing — `Tasks (last 30 days)`,
+`Runs (all time)`, `Last 90 days: 12 runs · 10 completed · 1 failed` — so no
+figure appears without the period it was measured over. Rates are always **per
+day** across the chosen window: a 90-day throughput stays readable as
+`9.0 tasks/day` instead of collapsing to a fraction of a task per hour. "All
+time" divides by the hive's real history, starting at its first recorded
+execution, not by an invented span.
+
+The key is scoped to the screen: on the Logs tab `w` toggles word wrap, and in
+the Agents detail view it cycles an agent's `max_workers`, exactly as before.
+
 ## The tabs
 
 ### Overview
@@ -89,25 +113,28 @@ Your at-a-glance health check. Use this tab to answer "is everything moving?"
 - **Active Agents** — agents that have processed work in the last hour.
 - **Running** — how many tasks are being worked on this instant.
 - **Queued** — tasks that failed and are waiting to be retried automatically.
-- **Completed / Failed** — how many **tasks** reached `done` / `failed` today.
-- **Success Rate** — done ÷ (done + failed) over today's finished tasks. Work
-  still in flight is not in the denominator, so the rate does not dip merely
+- **Completed / Failed** — how many **tasks** reached `done` / `failed` in the
+  selected window.
+- **Success Rate** — done ÷ (done + failed) over the window's finished tasks.
+  Work still in flight is not in the denominator, so the rate does not dip merely
   because something is running. A sudden drop is your cue to check the Logs tab.
 - **Avg Duration** — how long a task takes, measured over the tasks that both
-  **started and finished today**. A task created three days ago and finished
-  today is counted as finished, but its multi-day life is not treated as "how
+  **started and finished in the window**. A task created weeks ago and finished
+  today is counted as finished, but its multi-week life is not treated as "how
   long the work takes".
-- **Throughput** — **tasks/hour** since midnight, over the hours actually
-  elapsed (clamped to one hour, so the first minutes after midnight do not turn
-  a single task into a huge rate).
+- **Throughput** — **tasks/day** across the window, divided by the days
+  actually elapsed (clamped to one hour, so a single task in a short window does
+  not turn into an enormous rate).
 
 The **Runs** block is the detail underneath those task figures: one run is one
 agent process, and a task that takes four steps is four runs. It shows the
-total with its outcome split, the average run duration, and runs/hour. Finished
+total with its outcome split, the average run duration, and runs/day. Finished
 runs only are averaged and rated — a run still in flight has no duration.
 
-Both blocks cover **today since local midnight** and reset each day. Running,
-Queued and the run split's "running" are live right-now numbers.
+Both blocks cover the **selected metrics window** (see
+[Choosing the metrics window](#choosing-the-metrics-window)) and the headers
+name it. Running, Queued and the run split's "running" are live right-now
+numbers, not windowed ones.
 
 **Task** counts come from the task registry, so a retried task is one task that
 eventually finished, not a failure plus a success. **Run** counts come from
@@ -562,24 +589,27 @@ failures.
 
 ### Workflows
 
-The workflows your config defines, and how much of that work ran today. The
-left list shows every workflow with a compact hint: runs started today, how many
-completed and how many failed, plus the average duration (`12·10✓·1✗ 45m`). A
-workflow that has not run since midnight says so instead of showing a row of
-zeros.
+The workflows your config defines, and how much of that work ran in the
+selected window. The left list shows every workflow with a compact hint: runs
+started in the window, how many completed and how many failed, plus the average
+duration (`12·10✓·1✗ 45m`). A workflow with no activity in the window says so
+(`no runs last 7 days`) instead of showing a row of zeros.
 
 Select a workflow with `↑` / `↓` to see its steps on the right. The summary
-under the title spells out the same numbers, and every step that was reached
-today carries one muted stats line (`ran 3 · 2 ok · 1 failed · avg 30m`). Steps
-nobody reached show no stats line at all.
+under the title spells out the same numbers and leads with the window
+(`Last 7 days: 12 runs · 10 completed · 1 failed · avg 45.0m`), and every step
+that was reached in the window carries one muted stats line
+(`ran 3 · 2 ok · 1 failed · avg 30m`). Steps nobody reached show no stats line
+at all.
 
-The activity covers **since local midnight** — the same window the Overview
-uses — so a long run that started yesterday counts as a completion today but not
+The activity covers the **selected metrics window** — the same one the Overview
+uses (see [Choosing the metrics window](#choosing-the-metrics-window)) — so a
+long run that started before the window counts as a completion inside it but not
 as a run, and durations average only the runs that both started and finished in
-the window. Press `Enter` / `→` to move into the step list, `Esc` / `←` to come
-back, and `j` / `k` to move between steps. If the activity query fails, the
-definitions still show and the stats are marked *metrics unavailable* rather
-than reading as zero.
+the window. Press `w` to change the window, `Enter` / `→` to move into the step
+list, `Esc` / `←` to come back, and `j` / `k` to move between steps. If the
+activity query fails, the definitions still show and the stats are marked
+*metrics unavailable* rather than reading as zero.
 
 ## Troubleshooting
 

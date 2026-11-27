@@ -27,8 +27,8 @@ func TestOverviewRendersTaskAndRunMetricsSeparately(t *testing.T) {
 
 	out := stripANSI(a.renderOverviewTab(60))
 	for _, want := range []string{
-		"Tasks (since midnight)",
-		"Runs (since midnight)",
+		"Tasks (last 7 days)",
+		"Runs (last 7 days)",
 		"55 ok · 1 failed · 2 running",
 		"3.0 tasks/day",
 		"3.6m per task",
