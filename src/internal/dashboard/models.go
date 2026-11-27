@@ -28,6 +28,12 @@ type Model struct {
 	confirmAction string // "restart" or "clear" or "stop" when awaiting confirmation
 	confirmTaskID string
 
+	// metricsWindow is how far back the Overview and Workflows figures look.
+	// One value for both tabs: they are read side by side ("are we busy" and
+	// "what is the work"), and a window that differed between them would make
+	// the same history look different depending on which tab was open.
+	metricsWindow MetricsWindow
+
 	// Manual workflow picker (W). Unlike confirmAction's yes/no prompt this one
 	// selects among the configured workflows, then starts the chosen one on the
 	// task that was focused when it opened — or standalone, with no source item.
@@ -77,13 +83,110 @@ type Model struct {
 	noticeUntil time.Time // banner expiry; zero means no banner
 }
 
-// OverviewTab shows dispatcher status and summary metrics.
+// MetricsWindow is the look-back over which the Overview and Workflows tabs
+// measure their figures.
+//
+// The choices are deliberately long. These tabs answer "how is the hive doing",
+// and a single day is too short to answer it: one quiet morning is not a trend,
+// and a workflow that runs weekly is invisible in a 24-hour window. The store
+// holds weeks of history precisely so the window can be wide.
+type MetricsWindow int
+
+const (
+	// MetricsWindowLast7Days is the default, and the zero value, so a model
+	// built without NewModel still starts on a sensible window. A week is the
+	// narrowest window that can show a daily rhythm at all.
+	MetricsWindowLast7Days MetricsWindow = iota
+	MetricsWindowLast30Days
+	MetricsWindowLast90Days
+	// MetricsWindowAllTime has no lower bound: everything the store holds. The
+	// store resolves its rate denominator to the first execution, so an
+	// all-time rate is not divided by two thousand years.
+	MetricsWindowAllTime
+)
+
+// Label names the window mid-sentence, as the headers print it:
+// "Tasks (last 30 days)", "Runs (all time)".
+func (w MetricsWindow) Label() string {
+	switch w {
+	case MetricsWindowLast30Days:
+		return "last 30 days"
+	case MetricsWindowLast90Days:
+		return "last 90 days"
+	case MetricsWindowAllTime:
+		return "all time"
+	default:
+		return "last 7 days"
+	}
+}
+
+// ShortLabel is the window in the fewest columns, for a box title that would
+// otherwise overrun a narrow terminal. The body headers still spell the window
+// out, so a figure is never left with its window unstated.
+func (w MetricsWindow) ShortLabel() string {
+	switch w {
+	case MetricsWindowLast30Days:
+		return "30d"
+	case MetricsWindowLast90Days:
+		return "90d"
+	case MetricsWindowAllTime:
+		return "all"
+	default:
+		return "7d"
+	}
+}
+
+// Start resolves the window to the lower bound the store queries are given, as
+// seen from now. Both metric fetches call this one helper: duplicated date math
+// is how a header and the figures under it start disagreeing.
+//
+// All time is the zero time, which the store reads as "no lower bound". The
+// trailing windows are exact hour counts rather than calendar days: "last 7
+// days" should mean 168 hours whatever the time zone does with a month
+// boundary.
+func (w MetricsWindow) Start(now time.Time) time.Time {
+	switch w {
+	case MetricsWindowLast30Days:
+		return now.Add(-30 * 24 * time.Hour)
+	case MetricsWindowLast90Days:
+		return now.Add(-90 * 24 * time.Hour)
+	case MetricsWindowAllTime:
+		return time.Time{}
+	default:
+		return now.Add(-7 * 24 * time.Hour)
+	}
+}
+
+// Next is the window one press of `w` moves to. The ring widens in the order
+// the docs list, then starts again at the week; an unrecognised value lands on
+// the default rather than stranding the key.
+func (w MetricsWindow) Next() MetricsWindow {
+	switch w {
+	case MetricsWindowLast7Days:
+		return MetricsWindowLast30Days
+	case MetricsWindowLast30Days:
+		return MetricsWindowLast90Days
+	case MetricsWindowLast90Days:
+		return MetricsWindowAllTime
+	default:
+		return MetricsWindowLast7Days
+	}
+}
+
+// AgentCount is one agent's live worker usage in the Overview's agent list.
 type AgentCount struct {
 	ID         string
 	Running    int
 	MaxWorkers int
 }
 
+// OverviewTab shows dispatcher status, live activity, and how long work took in
+// the selected metrics window (see MetricsWindow).
+//
+// The windowed part is a set of duration distributions, not a tally: "how long
+// does a run take" is the question the hive has to answer, and counting tasks
+// says nothing about it. Counts survive only as sample sizes, because a
+// percentile without its N is not interpretable.
 type OverviewTab struct {
 	Status       string
 	Uptime       string
@@ -96,23 +199,18 @@ type OverviewTab struct {
 	// with no timeout waits forever, and until now nothing outside the Tasks tab
 	// said one was waiting.
 	PendingApprovals int
-	CompletedToday   int
-	FailedToday      int
-	// TasksPerHour and AvgDuration are task-level: a task is one unit of work
-	// however many agent runs it took.
-	TasksPerHour string
-	AvgDuration  string
-	SuccessRate  string
 
-	// Runs are the agent processes underneath the tasks: how many actually
-	// executed, how much of that failed, and how long one run takes.
-	RunsTotal      int
-	RunsCompleted  int
-	RunsFailed     int
-	RunsRunning    int
-	AvgRunDuration string
-	RunsPerHour    string
-	RunSuccessRate string
+	// TasksDone and TasksFailed are task outcomes in the window. They are no
+	// longer the headline — the durations below are — but a failure is still
+	// the thing an operator must notice, and the counts state the sample size
+	// behind the workflow distributions.
+	TasksDone   int
+	TasksFailed int
+
+	// Durations is the window's wall and active workflow distributions plus the
+	// agent-run distribution, or nil when the query failed. Nil means unknown,
+	// which is not the same claim as "nothing finished".
+	Durations *db.ActivityDurations
 
 	AgentBreakdown    []AgentCount
 	TodayCostUSD      float64
@@ -576,28 +674,6 @@ type LogEntry struct {
 	Message   string
 }
 
-// WorkflowActivity is how one workflow or one step fared in the Workflows tab's
-// window — today, since local midnight.
-//
-// Runs counts what started in the window, while Completed/Failed count what
-// reached that state in it. A run that began yesterday and finished this
-// morning is therefore a completion but not a run; the two halves are kept
-// apart rather than flattened, because "busy" and "finishing" are different
-// questions.
-type WorkflowActivity struct {
-	Runs          int
-	Completed     int
-	Failed        int
-	AvgDurationMs int64
-}
-
-// Any reports whether there is anything to show. A workflow or step absent from
-// the metrics result has no activity at all, and printing zeros for it would
-// claim it was tried and failed to move.
-func (m *WorkflowActivity) Any() bool {
-	return m != nil && m.Runs+m.Completed+m.Failed > 0
-}
-
 // WorkflowStepDef is one step definition shown in the Workflows config tab.
 type WorkflowStepDef struct {
 	ID        string
@@ -605,8 +681,10 @@ type WorkflowStepDef struct {
 	Agent     string
 	Condition string
 	Prompt    string
-	// Activity is today's stats for this step, or nil when it did not run.
-	Activity *WorkflowActivity
+	// Durations is this step's distribution in the selected window, or nil
+	// when it did not run in it. A step's duration is its own wall interval —
+	// started → finished — so there is no active/wall split to show here.
+	Durations *db.StepDurations
 }
 
 // WorkflowConfigItem is one workflow shown in the Workflows config tab.
@@ -614,8 +692,11 @@ type WorkflowConfigItem struct {
 	ID          string
 	Description string
 	Steps       []WorkflowStepDef
-	// Activity is today's stats for this workflow, or nil when it did not run.
-	Activity *WorkflowActivity
+	// Durations is this workflow's wall and active distribution in the selected
+	// window, or nil when no run finished in it. The two are kept side by side
+	// because their gap is the answer: wall includes the waits, active is the
+	// time something was actually executing.
+	Durations *db.WorkflowDurations
 }
 
 // WorkflowsView is which panel the Workflows tab has focus on.
@@ -626,16 +707,16 @@ const (
 	WorkflowsViewSteps
 )
 
-// WorkflowsTab shows the workflow config definitions (read-only) and today's
-// activity for each workflow and step.
+// WorkflowsTab shows the workflow config definitions (read-only) and how long
+// their runs took in the selected window, per workflow and per step.
 type WorkflowsTab struct {
 	Workflows   []WorkflowConfigItem
 	SelectedIdx int // selected workflow in the left panel
 	StepIdx     int // selected step in the right panel
 	StepScroll  int // scroll offset in the step list
 	Focus       WorkflowsView
-	// MetricsUnavailable records that the activity query failed. The config
-	// definitions are still worth showing, but their stats are unknown rather
+	// MetricsUnavailable records that the durations query failed. The config
+	// definitions are still worth showing, but their figures are unknown rather
 	// than zero, and the tab says so instead of implying nothing ran.
 	MetricsUnavailable bool
 }
@@ -670,6 +751,7 @@ func NewModel() *Model {
 		},
 		workflowsTab:   &WorkflowsTab{},
 		lastTabRefresh: make(map[int]time.Time),
+		metricsWindow:  MetricsWindowLast7Days,
 		loading:        true,
 	}
 }
