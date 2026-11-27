@@ -112,9 +112,10 @@ decides what runs next:
   if: ${{ memory.strategy == 'full' }}
 ```
 
-In the dashboard, `a` opens a form: arrow keys move between fields, a choice is
-selected with `←`/`→` or its number, a boolean toggles with space, `⏎` approves,
-`^r` rejects, `esc` cancels.
+In the dashboard those fields appear in the same decision sheet: `tab` moves
+to the Fields section, a choice is picked with `←`/`→` or its number, a boolean
+toggles with space, and `ctrl+s` submits. The sheet's own keys are listed under
+[Answering from the dashboard](#answering-from-the-dashboard).
 
 From the CLI, fields are prompted for on a terminal and passed as flags off one:
 
