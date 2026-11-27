@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -109,6 +110,50 @@ func TestStallTimeoutSparesAChattyRun(t *testing.T) {
 	}
 	if !strings.Contains(res.Output, "line12") {
 		t.Errorf("the run should have completed, output: %q", res.Output)
+	}
+}
+
+// An agent inside ask_human emits nothing while it waits, so the silence the
+// watchdog sees is a person taking their time, not a wedged process. The clock
+// restarts while a question is pending; once it is resolved the silence counts
+// again and the run is killed like any other.
+func TestStallTimeoutSparesARunWaitingOnHuman(t *testing.T) {
+	r := shellRunner(t, "sleep 30")
+
+	var waiting atomic.Bool
+	waiting.Store(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resCh := make(chan model.RunResult, 1)
+	go func() {
+		res, _ := r.Run(ctx, model.RunRequest{
+			Timeout:        time.Minute,
+			StallTimeout:   300 * time.Millisecond,
+			WaitingOnHuman: waiting.Load,
+		})
+		resCh <- res
+	}()
+
+	// Several stall bounds pass with no output at all: the child must survive
+	// because the question is still pending.
+	select {
+	case res := <-resCh:
+		t.Fatalf("the run was killed while waiting on a human: %+v", res)
+	case <-time.After(1200 * time.Millisecond):
+	}
+
+	// The question is gone (answered or expired) and the child stays silent.
+	waiting.Store(false)
+	select {
+	case res := <-resCh:
+		if !res.TimedOut {
+			t.Error("a silent run after the question resolved must be marked TimedOut")
+		}
+		if res.Error == nil || !strings.Contains(res.Error.Error(), "no output") {
+			t.Errorf("want the stall diagnosis, got: %v", res.Error)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stall watchdog never fired once the question was resolved")
 	}
 }
 

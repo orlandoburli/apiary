@@ -127,6 +127,45 @@ func (c *Client) ListPendingQuestions(ctx context.Context, limit int) ([]AgentQu
 	return c.ListQuestions(ctx, QuestionPending, limit)
 }
 
+// HasPendingQuestion reports whether the given step of a workflow instance is
+// currently blocked on an unanswered question. The runner asks this before
+// treating silence as a hang. An expired-but-not-yet-swept row does not count:
+// the asking process is already gone or past its deadline.
+func (c *Client) HasPendingQuestion(ctx context.Context, workflowInstanceID, stepID string) (bool, error) {
+	if workflowInstanceID == "" || stepID == "" {
+		return false, nil
+	}
+	var n int
+	err := c.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM agent_questions
+		 WHERE workflow_instance_id=? AND step_id=? AND status=? AND (expires_at IS NULL OR expires_at > ?)`,
+		workflowInstanceID, stepID, QuestionPending, time.Now().UTC()).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// ExpireStepQuestions closes every pending question left behind by one step run.
+// When the process exits — answered, stalled, timed out, crashed or cancelled —
+// nobody is left to receive an answer, so the dashboard must stop offering the
+// question. Abandoned questions are recorded as timed_out: the run's deadline or
+// death is the timeout, and no new status is needed for it.
+func (c *Client) ExpireStepQuestions(ctx context.Context, workflowInstanceID, stepID string) (int64, error) {
+	if workflowInstanceID == "" || stepID == "" {
+		// An empty id pair would widen the UPDATE to unrelated rows, including
+		// plain-route questions that carry no workflow identity.
+		return 0, nil
+	}
+	res, err := c.db.ExecContext(ctx,
+		`UPDATE agent_questions SET status=? WHERE workflow_instance_id=? AND step_id=? AND status=?`,
+		QuestionTimedOut, workflowInstanceID, stepID, QuestionPending)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // ListQuestions returns questions newest-first, optionally filtered by status.
 // The dashboard polls this to show what agents are blocked on.
 func (c *Client) ListQuestions(ctx context.Context, status string, limit int) ([]AgentQuestion, error) {

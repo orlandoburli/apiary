@@ -56,6 +56,13 @@ type RunRequest struct {
 	// The dispatcher uses it to update last_heartbeat_at in the DB so the
 	// dashboard can detect stale/zombie processes.
 	Heartbeat func() `json:"-"`
+
+	// WaitingOnHuman answers "is this run currently blocked on a human
+	// question?". An agent inside ask_human emits nothing until a person
+	// answers, so a silent child may simply be waiting; the stall watchdog
+	// consults this before deciding the silence means the run is wedged.
+	// A nil callback means "never" — silence is the only signal.
+	WaitingOnHuman func() bool `json:"-"`
 }
 
 type Usage struct {

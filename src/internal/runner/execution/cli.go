@@ -414,13 +414,24 @@ func (r *CliRunner) Run(ctx context.Context, req model.RunRequest) (model.RunRes
 					lastOutputMu.Lock()
 					idle := time.Since(lastOutput)
 					lastOutputMu.Unlock()
-					if idle >= req.StallTimeout {
-						stalledOnce.Do(func() { close(stalled) })
-						if cmd.Process != nil {
-							_ = cmd.Process.Kill()
-						}
-						return
+					if idle < req.StallTimeout {
+						continue
 					}
+					// A run blocked on ask_human is not wedged: the agent cannot
+					// emit anything until a human answers or the question expires.
+					// Restarting the stall clock makes the bound measure the
+					// silence around the wait, not the wait itself; task_timeout
+					// still bounds the step as a whole, so this cannot pin a run
+					// open forever.
+					if req.WaitingOnHuman != nil && req.WaitingOnHuman() {
+						noteOutput()
+						continue
+					}
+					stalledOnce.Do(func() { close(stalled) })
+					if cmd.Process != nil {
+						_ = cmd.Process.Kill()
+					}
+					return
 				case <-heartbeatDone:
 					return
 				}
