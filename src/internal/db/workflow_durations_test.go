@@ -116,3 +116,80 @@ func TestSummariseDurationsUsesNearestRank(t *testing.T) {
 		t.Errorf("stats = %+v, want n=10 p50=50m p90=90m max=100m", got)
 	}
 }
+
+// The Overview needs one distribution across every workflow. It cannot be
+// built from the per-workflow p90s — a p90 of p90s is not the overall p90 — so
+// the samples are aggregated before summarising.
+func TestActivityDurationsAggregateAcrossWorkflows(t *testing.T) {
+	ctx := context.Background()
+	c, err := New(ctx, filepath.Join(t.TempDir(), "activity.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	now := time.Now()
+	since := now.Add(-24 * time.Hour)
+
+	mkInstance := func(id, workflowID string, created, finished time.Time) {
+		if err := c.CreateWorkflowInstance(ctx, &WorkflowInstance{
+			ID: id, WorkflowID: workflowID, CellID: id, State: "done", CreatedAt: created,
+		}); err != nil {
+			t.Fatalf("create instance %s: %v", id, err)
+		}
+		if _, err := c.db.ExecContext(ctx,
+			"UPDATE workflow_instances SET updated_at=? WHERE id=?", finished, id); err != nil {
+			t.Fatalf("stamp instance %s: %v", id, err)
+		}
+	}
+	mkStep := func(instanceID, stepID string, started, finished time.Time) {
+		if err := c.CreateStepRun(ctx, &StepRun{
+			ID: instanceID + ":" + stepID, WorkflowInstanceID: instanceID,
+			StepID: stepID, AgentID: "engineer", State: "done",
+		}); err != nil {
+			t.Fatalf("create step: %v", err)
+		}
+		if _, err := c.db.ExecContext(ctx,
+			"UPDATE step_runs SET started_at=?, finished_at=? WHERE id=?",
+			started, finished, instanceID+":"+stepID); err != nil {
+			t.Fatalf("stamp step: %v", err)
+		}
+	}
+	mkRun := func(taskID, status string, duration time.Duration, created time.Time) {
+		exec, err := c.CreateExecution(ctx, taskID, "engineer", "t", "#1", "", "m", "cli", 1)
+		if err != nil {
+			t.Fatalf("create execution: %v", err)
+		}
+		if _, err := c.db.ExecContext(ctx,
+			"UPDATE task_executions SET status=?, duration_ms=?, created_at=? WHERE id=?",
+			status, duration.Milliseconds(), created, exec.ID); err != nil {
+			t.Fatalf("stamp execution: %v", err)
+		}
+	}
+
+	// Two workflows, so an overall figure that merely echoed one of them would
+	// be visible: 4h/2h and 1h/1h.
+	mkInstance("a1", "impl", now.Add(-5*time.Hour), now.Add(-time.Hour))
+	mkStep("a1", "implement", now.Add(-5*time.Hour), now.Add(-4*time.Hour))
+	mkStep("a1", "review", now.Add(-4*time.Hour-30*time.Minute), now.Add(-3*time.Hour))
+	mkInstance("b1", "review", now.Add(-3*time.Hour), now.Add(-2*time.Hour))
+	mkStep("b1", "approve", now.Add(-3*time.Hour), now.Add(-2*time.Hour))
+
+	mkRun("a1", "success", 30*time.Minute, now.Add(-4*time.Hour))
+	mkRun("b1", "failed", 90*time.Minute, now.Add(-3*time.Hour))
+	mkRun("b1", "running", time.Hour, now.Add(-2*time.Hour)) // unfinished: no duration
+
+	got, err := c.GetActivityDurations(ctx, since)
+	if err != nil {
+		t.Fatalf("GetActivityDurations: %v", err)
+	}
+	if got.Instances.N != 2 || got.Instances.Max != 4*time.Hour || got.Instances.P50 != time.Hour {
+		t.Errorf("instances = %+v, want n=2 max=4h p50=1h (nearest rank)", got.Instances)
+	}
+	if got.Active.N != 2 || got.Active.Max != 2*time.Hour {
+		t.Errorf("active = %+v, want n=2 max=2h (the union, not the 2.5h sum)", got.Active)
+	}
+	if got.Runs.N != 2 || got.Runs.P50 != 30*time.Minute || got.Runs.Max != 90*time.Minute {
+		t.Errorf("runs = %+v, want n=2 p50=30m max=90m — the running run has no duration", got.Runs)
+	}
+}

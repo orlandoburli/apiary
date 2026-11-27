@@ -43,6 +43,37 @@ type StepDurations struct {
 	Duration   DurationStats
 }
 
+// ActivityDurations is the same measurement across every workflow, for the
+// Overview.
+//
+// It cannot be assembled from the per-workflow percentiles: a p90 of p90s is
+// not the overall p90. The samples are collected first and summarised once.
+type ActivityDurations struct {
+	Runs      DurationStats // finished agent executions in the window
+	Instances DurationStats // wall, every finished instance
+	Active    DurationStats // union of step intervals, every finished instance
+}
+
+// activity is the raw sample set both public views are built from.
+type activity struct {
+	instances []instanceSample
+	steps     []stepSample
+	runs      []time.Duration
+}
+
+type instanceSample struct {
+	workflowID string
+	wall       time.Duration
+	active     time.Duration
+}
+
+type stepSample struct {
+	workflowID string
+	stepID     string
+	agentID    string
+	duration   time.Duration
+}
+
 // GetWorkflowDurations returns, per workflow, the distribution of wall and
 // active durations for runs that finished in the window, plus the same per
 // step.
@@ -51,91 +82,16 @@ type StepDurations struct {
 // that ran in parallel would otherwise be counted twice and a fast fan-out
 // would look slower than a sequential one.
 func (c *Client) GetWorkflowDurations(ctx context.Context, since time.Time) ([]WorkflowDurations, []StepDurations, error) {
-	// Instances that finished in the window. created_at gives the wall start.
-	instRows, err := c.db.QueryContext(ctx, `
-		SELECT id, workflow_id, created_at, updated_at
-		FROM workflow_instances
-		WHERE state IN ('done','failed') AND updated_at >= ?
-		ORDER BY workflow_id, id
-	`, since)
+	a, err := c.collectActivity(ctx, since)
 	if err != nil {
-		return nil, nil, err
-	}
-	defer instRows.Close()
-
-	type instance struct {
-		id         string
-		workflowID string
-		wall       time.Duration
-	}
-	var instances []instance
-	workflowOf := map[string]string{}
-	for instRows.Next() {
-		var (
-			id, workflowID string
-			created, upd   time.Time
-		)
-		if err := instRows.Scan(&id, &workflowID, &created, &upd); err != nil {
-			return nil, nil, err
-		}
-		instances = append(instances, instance{id: id, workflowID: workflowID, wall: upd.Sub(created)})
-		workflowOf[id] = workflowID
-	}
-	if err := instRows.Err(); err != nil {
-		return nil, nil, err
-	}
-	if len(instances) == 0 {
-		return nil, nil, nil
-	}
-
-	// Step intervals for those instances. A step that started before the window
-	// still counts: the run it belongs to finished inside it.
-	stepRows, err := c.db.QueryContext(ctx, `
-		SELECT sr.workflow_instance_id, sr.step_id, COALESCE(sr.agent_id,''), sr.started_at, sr.finished_at
-		FROM step_runs sr
-		JOIN workflow_instances wi ON wi.id = sr.workflow_instance_id
-		WHERE wi.state IN ('done','failed') AND wi.updated_at >= ?
-		  AND sr.started_at IS NOT NULL AND sr.finished_at IS NOT NULL
-	`, since)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer stepRows.Close()
-
-	intervalsByInstance := map[string][]timeInterval{}
-	stepSamples := map[string][]time.Duration{}
-	stepAgents := map[string]string{}
-	for stepRows.Next() {
-		var (
-			instanceID, stepID, agentID string
-			start, end                  time.Time
-		)
-		if err := stepRows.Scan(&instanceID, &stepID, &agentID, &start, &end); err != nil {
-			return nil, nil, err
-		}
-		if end.Before(start) {
-			continue
-		}
-		intervalsByInstance[instanceID] = append(intervalsByInstance[instanceID], timeInterval{start, end})
-
-		// Keyed by workflow and step, not by instance: the distribution is
-		// across every run of that workflow, which is the comparison asked for.
-		key := workflowOf[instanceID] + "\x00" + stepID
-		stepSamples[key] = append(stepSamples[key], end.Sub(start))
-		if agentID != "" {
-			stepAgents[key] = agentID
-		}
-	}
-	if err := stepRows.Err(); err != nil {
 		return nil, nil, err
 	}
 
 	wallByWorkflow := map[string][]time.Duration{}
 	activeByWorkflow := map[string][]time.Duration{}
-	for _, inst := range instances {
+	for _, inst := range a.instances {
 		wallByWorkflow[inst.workflowID] = append(wallByWorkflow[inst.workflowID], inst.wall)
-		active := unionDuration(intervalsByInstance[inst.id])
-		activeByWorkflow[inst.workflowID] = append(activeByWorkflow[inst.workflowID], active)
+		activeByWorkflow[inst.workflowID] = append(activeByWorkflow[inst.workflowID], inst.active)
 	}
 
 	workflows := make([]WorkflowDurations, 0, len(wallByWorkflow))
@@ -154,13 +110,22 @@ func (c *Client) GetWorkflowDurations(ctx context.Context, since time.Time) ([]W
 		return workflows[i].WorkflowID < workflows[j].WorkflowID
 	})
 
+	stepSamples := map[string][]time.Duration{}
+	stepAgent := map[string]string{}
+	for _, s := range a.steps {
+		key := s.workflowID + "\x00" + s.stepID
+		stepSamples[key] = append(stepSamples[key], s.duration)
+		if s.agentID != "" {
+			stepAgent[key] = s.agentID
+		}
+	}
 	steps := make([]StepDurations, 0, len(stepSamples))
 	for key, samples := range stepSamples {
 		parts := splitStepKey(key)
 		steps = append(steps, StepDurations{
 			WorkflowID: parts[0],
 			StepID:     parts[1],
-			AgentID:    stepAgents[key],
+			AgentID:    stepAgent[key],
 			Runs:       len(samples),
 			Duration:   summariseDurations(samples),
 		})
@@ -175,6 +140,134 @@ func (c *Client) GetWorkflowDurations(ctx context.Context, since time.Time) ([]W
 	return workflows, steps, nil
 }
 
+// GetActivityDurations returns the distributions across every workflow, which
+// is what the Overview leads with.
+func (c *Client) GetActivityDurations(ctx context.Context, since time.Time) (ActivityDurations, error) {
+	a, err := c.collectActivity(ctx, since)
+	if err != nil {
+		return ActivityDurations{}, err
+	}
+	walls := make([]time.Duration, 0, len(a.instances))
+	active := make([]time.Duration, 0, len(a.instances))
+	for _, inst := range a.instances {
+		walls = append(walls, inst.wall)
+		active = append(active, inst.active)
+	}
+	return ActivityDurations{
+		Runs:      summariseDurations(a.runs),
+		Instances: summariseDurations(walls),
+		Active:    summariseDurations(active),
+	}, nil
+}
+
+// collectActivity reads the raw durations both public views are built from.
+func (c *Client) collectActivity(ctx context.Context, since time.Time) (activity, error) {
+	var out activity
+
+	// Instances that finished in the window. created_at gives the wall start.
+	instRows, err := c.db.QueryContext(ctx, `
+		SELECT id, workflow_id, created_at, updated_at
+		FROM workflow_instances
+		WHERE state IN ('done','failed') AND updated_at >= ?
+		ORDER BY workflow_id, id
+	`, since)
+	if err != nil {
+		return out, err
+	}
+	defer instRows.Close()
+
+	workflowOf := map[string]string{}
+	wallOf := map[string]time.Duration{}
+	for instRows.Next() {
+		var (
+			id, workflowID string
+			created, upd   time.Time
+		)
+		if err := instRows.Scan(&id, &workflowID, &created, &upd); err != nil {
+			return out, err
+		}
+		workflowOf[id] = workflowID
+		wallOf[id] = upd.Sub(created)
+	}
+	if err := instRows.Err(); err != nil {
+		return out, err
+	}
+	if len(wallOf) == 0 {
+		return out, nil
+	}
+
+	// Step intervals for those instances. A step that started before the window
+	// still counts: the run it belongs to finished inside it.
+	stepRows, err := c.db.QueryContext(ctx, `
+		SELECT sr.workflow_instance_id, sr.step_id, COALESCE(sr.agent_id,''), sr.started_at, sr.finished_at
+		FROM step_runs sr
+		JOIN workflow_instances wi ON wi.id = sr.workflow_instance_id
+		WHERE wi.state IN ('done','failed') AND wi.updated_at >= ?
+		  AND sr.started_at IS NOT NULL AND sr.finished_at IS NOT NULL
+	`, since)
+	if err != nil {
+		return out, err
+	}
+	defer stepRows.Close()
+
+	intervalsByInstance := map[string][]timeInterval{}
+	for stepRows.Next() {
+		var (
+			instanceID, stepID, agentID string
+			start, end                  time.Time
+		)
+		if err := stepRows.Scan(&instanceID, &stepID, &agentID, &start, &end); err != nil {
+			return out, err
+		}
+		if end.Before(start) {
+			continue
+		}
+		if _, known := wallOf[instanceID]; !known {
+			continue
+		}
+		intervalsByInstance[instanceID] = append(intervalsByInstance[instanceID], timeInterval{start, end})
+		out.steps = append(out.steps, stepSample{
+			workflowID: workflowOf[instanceID],
+			stepID:     stepID,
+			agentID:    agentID,
+			duration:   end.Sub(start),
+		})
+	}
+	if err := stepRows.Err(); err != nil {
+		return out, err
+	}
+
+	for id, wall := range wallOf {
+		out.instances = append(out.instances, instanceSample{
+			workflowID: workflowOf[id],
+			wall:       wall,
+			active:     unionDuration(intervalsByInstance[id]),
+		})
+	}
+
+	// Agent executions are their own distribution: a run is one process, and
+	// its duration says how long a single agent took, independent of how many
+	// steps a task had.
+	runRows, err := c.db.QueryContext(ctx, `
+		SELECT duration_ms FROM task_executions
+		WHERE status IN ('success','failed') AND created_at >= ? AND duration_ms IS NOT NULL
+	`, since)
+	if err != nil {
+		return out, err
+	}
+	defer runRows.Close()
+	for runRows.Next() {
+		var ms int64
+		if err := runRows.Scan(&ms); err != nil {
+			return out, err
+		}
+		if ms > 0 {
+			out.runs = append(out.runs, time.Duration(ms)*time.Millisecond)
+		}
+	}
+	return out, runRows.Err()
+}
+
 func splitStepKey(key string) [2]string {
 	for i := 0; i < len(key); i++ {
 		if key[i] == 0 {
@@ -184,13 +277,13 @@ func splitStepKey(key string) [2]string {
 	return [2]string{key, ""}
 }
 
+// timeInterval is one step run's occupied span.
+type timeInterval struct{ start, end time.Time }
+
 // unionDuration merges overlapping intervals and returns their total length.
 //
 // Summing would count two parallel steps twice and make a fan-out look like it
 // took longer than the sequential path it replaced.
-// timeInterval is one step run's occupied span.
-type timeInterval struct{ start, end time.Time }
-
 func unionDuration(intervals []timeInterval) time.Duration {
 	if len(intervals) == 0 {
 		return 0
