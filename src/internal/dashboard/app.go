@@ -4264,14 +4264,16 @@ func (a *App) renderOverviewTab(height int) string {
 	}
 
 	for _, ac := range o.AgentBreakdown {
-		label := fmt.Sprintf("  %-*s", idWidth, truncate(ac.ID, idWidth))
 		runStr := fmt.Sprintf("%d/%d", ac.Running, ac.MaxWorkers)
 		if ac.Running >= ac.MaxWorkers {
 			runStr = StyleWarning.Render(runStr)
 		} else if ac.Running > 0 {
 			runStr = StyleSuccess.Render(runStr)
 		}
-		b.WriteString(label + runStr + "\n")
+		// The separator is explicit: an id that exactly fills idWidth would
+		// otherwise run into the count ("qa-mobile-explorer0/1").
+		label := fmt.Sprintf("  %-*s %s", idWidth, truncate(ac.ID, idWidth), runStr)
+		b.WriteString(label + "\n")
 	}
 
 	costStr := "—"
