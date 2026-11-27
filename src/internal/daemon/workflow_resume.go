@@ -314,7 +314,7 @@ func (d *Dispatcher) taskForInstance(ctx context.Context, inst *db.WorkflowInsta
 // cellForInstance rebuilds the cell to resume against: a fresh poll when the
 // source supports it, otherwise a minimal cell from the stored id/title.
 func (d *Dispatcher) cellForInstance(ctx context.Context, inst *db.WorkflowInstance) model.SourceItem {
-	if adapter, ok := d.sources[inst.SourceID]; ok {
+	if adapter := d.source(inst.SourceID); adapter != nil {
 		if poller, ok := adapter.(source.TaskPoller); ok {
 			if c, err := poller.PollTask(ctx, inst.CellID); err == nil {
 				return c

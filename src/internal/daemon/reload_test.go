@@ -158,7 +158,10 @@ agents:
 	}
 }
 
-func TestReloadConfigRejectsSourceChanges(t *testing.T) {
+// A source whose adapter cannot be built rejects the whole reload: an added
+// source that cannot connect must not leave the daemon half-configured. Full
+// add/remove/edit coverage lives in source_reload_test.go.
+func TestReloadConfigRejectsUnbuildableSource(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "apiary.yaml")
 	writeReloadConfig(t, path, reloadBaseConfig)
 	d := newReloadTestDispatcher(t, path)
@@ -172,13 +175,12 @@ sources:
 
 	res := d.ReloadConfig(context.Background())
 	if res.Applied {
-		t.Fatal("a source change must be rejected in this stage")
+		t.Fatal("a source whose adapter cannot be built must be rejected")
 	}
-	want := "source changes require a restart (poll loops and adapters are built at startup)"
-	if res.Error != want {
-		t.Errorf("error = %q, want %q", res.Error, want)
+	if !strings.Contains(res.Error, `unknown type "github"`) {
+		t.Errorf("error = %q, want it to name the unknown source type", res.Error)
 	}
-	if res.Sources.Added[0] != "github" {
+	if res.Sources.Added == nil || res.Sources.Added[0] != "github" {
 		t.Errorf("sources added = %v, want [github]", res.Sources.Added)
 	}
 	if d.config() != before {

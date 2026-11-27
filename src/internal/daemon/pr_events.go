@@ -117,7 +117,7 @@ func (d *Dispatcher) routePREvent(ctx context.Context, ev model.SourceEvent) {
 			aplog.Debug("event %s: workflow %s already dispatched, skipping", ev.ID, m.Route.ID)
 			continue
 		}
-		d.dispatchPREvent(ctx, ev, task, ticketRef, persisted, m)
+		d.dispatchPREvent(d.runContext(ctx), ev, task, ticketRef, persisted, m)
 	}
 }
 

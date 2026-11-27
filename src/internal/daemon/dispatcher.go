@@ -45,6 +45,17 @@ type sourceStat struct {
 	inFlight  int
 }
 
+// sourceLoop is one running poll loop. done closes when pollLoop returns, which
+// is what lets a reload stop a changed source completely before starting its
+// replacement: cancelling alone would let two loops poll the same source until
+// the old one noticed.
+type sourceLoop struct {
+	cancel  context.CancelFunc
+	done    chan struct{}
+	adapter source.Adapter
+	cfg     config.SourceConfig
+}
+
 // Dispatcher polls configured sources, routes cells to workers, and manages
 // concurrent runner invocations.
 type Dispatcher struct {
@@ -60,8 +71,28 @@ type Dispatcher struct {
 	// defaultConfigWatchInterval; a test sets it to something short.
 	watchInterval time.Duration
 
-	router      *router.Router
+	router *router.Router
+	// srcMu guards sources and sourceLoops. Reloading replaces adapters while
+	// poll loops and routing read them, so every access goes through source or
+	// the helpers below; the maps are never iterated unlocked.
+	srcMu       sync.RWMutex
 	sources     map[string]source.Adapter
+	sourceLoops map[string]*sourceLoop
+	// rootCtx is the context Start received, the parent of every poll loop
+	// including ones a reload starts later. started says whether Start has run:
+	// before that a reload only updates adapters, and Start reads the new config.
+	rootCtx context.Context
+	started bool
+	// sourcePlugins resolves plugin-bridged sources at adapter build time. It is
+	// discovered once at New; reloads reuse the same clients.
+	sourcePlugins map[string]*plugin.Client
+	// sourceFactory builds a fresh adapter for a source type. Nil means
+	// source.New; tests replace it to observe polling and force build failures.
+	sourceFactory func(typeName string) (source.Adapter, bool)
+	// loopWG tracks poll-loop goroutines so a reload can wait for a stopped loop
+	// and the daemon can wait for loops a reload started.
+	loopWG sync.WaitGroup
+
 	runners     map[string]runnerimpl.Runner
 	agentRunner map[string]string
 	// agentFallbacks holds each agent's rate-limit failover chain (primary
@@ -264,6 +295,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		startedAt:       time.Now(),
 		router:          r,
 		sources:         make(map[string]source.Adapter),
+		sourceLoops:     make(map[string]*sourceLoop),
 		runners:         make(map[string]runnerimpl.Runner),
 		agentRunner:     make(map[string]string),
 		agentFallbacks:  make(map[string][]runnerCandidate),
@@ -295,6 +327,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 	for _, client := range sourceClients {
 		sourcePlugins[client.ID()] = client
 	}
+	d.sourcePlugins = sourcePlugins
 	if dbClient != nil {
 		dbClient.SetEventSensitiveFields(cfg.Settings.Events.SensitiveFields)
 	}
@@ -331,45 +364,15 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		d.agentSem[ac.ID] = make(chan struct{}, maxW)
 	}
 
-	for _, sc := range cfg.Sources {
-		adapter, ok := source.New(sc.Type)
-		if !ok {
-			return nil, fmt.Errorf("source %q: unknown type %q", sc.ID, sc.Type)
-		}
-
-		// Set the source ID on the adapter if it supports it
-		if si, ok := adapter.(interface {
-			SetID(id string)
-		}); ok {
-			si.SetID(sc.ID)
-		}
-
-		// Plugin-bridged sources resolve their plugin client at Connect; hand
-		// them the enabled source-capable clients before connecting.
-		if pb, ok := adapter.(interface {
-			BindPluginLookup(func(pluginID string) (pluginsource.Invoker, bool))
-		}); ok {
-			pb.BindPluginLookup(func(pluginID string) (pluginsource.Invoker, bool) {
-				client, ok := sourcePlugins[pluginID]
-				return client, ok
-			})
-		}
-
-		if err := adapter.Connect(ctx, sc.Config); err != nil {
-			return nil, fmt.Errorf("source %q: connect: %w", sc.ID, err)
-		}
-		if fs, ok := adapter.(interface {
-			SetFilters(states, labels []string)
-		}); ok {
-			fs.SetFilters(sc.Filters.States, sc.Filters.Labels)
-		}
-		if js, ok := adapter.(interface {
-			SetJQL(jql string)
-		}); ok {
-			js.SetJQL(sc.Filters.JQL)
-		}
-		d.sources[sc.ID] = adapter
-		d.stats[sc.ID] = &sourceStat{}
+	adapters, sourceErrs := d.buildSourceAdapters(ctx, cfg)
+	if len(sourceErrs) > 0 {
+		// Preserve the original first-error semantics: New named the first
+		// source that failed to build, and callers act on that message.
+		return nil, sourceErrs[0]
+	}
+	for id, adapter := range adapters {
+		d.sources[id] = adapter
+		d.stats[id] = &sourceStat{}
 	}
 
 	// Build runner ID map for lookup
@@ -518,10 +521,185 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 	return d, nil
 }
 
+// buildSourceAdapters constructs and connects one adapter per configured source
+// and returns them by id, without installing anything on the Dispatcher. New and
+// ReloadConfig both use it; keeping installation at the call site is what lets a
+// reload reject a bad source before it disturbs the running set.
+func (d *Dispatcher) buildSourceAdapters(ctx context.Context, cfg *config.Config) (map[string]source.Adapter, []error) {
+	ids := make(map[string]bool, len(cfg.Sources))
+	for _, sc := range cfg.Sources {
+		ids[sc.ID] = true
+	}
+	return d.buildSourceAdaptersFor(ctx, cfg, ids)
+}
+
+// buildSourceAdaptersFor builds only the named source ids. It stops at the first
+// failure, preserving New's original behaviour: a source that cannot connect
+// must not be followed by connecting adapters nobody will use.
+func (d *Dispatcher) buildSourceAdaptersFor(ctx context.Context, cfg *config.Config, ids map[string]bool) (map[string]source.Adapter, []error) {
+	adapters := make(map[string]source.Adapter, len(ids))
+	for _, sc := range cfg.Sources {
+		if !ids[sc.ID] {
+			continue
+		}
+		adapter, err := d.buildSourceAdapter(ctx, sc)
+		if err != nil {
+			return nil, []error{err}
+		}
+		adapters[sc.ID] = adapter
+	}
+	return adapters, nil
+}
+
+// buildSourceAdapter constructs, binds, and connects one source adapter. It is
+// the per-source half of New that used to be inlined there.
+func (d *Dispatcher) buildSourceAdapter(ctx context.Context, sc config.SourceConfig) (source.Adapter, error) {
+	factory := d.sourceFactory
+	if factory == nil {
+		factory = source.New
+	}
+	adapter, ok := factory(sc.Type)
+	if !ok {
+		return nil, fmt.Errorf("source %q: unknown type %q", sc.ID, sc.Type)
+	}
+
+	// Set the source ID on the adapter if it supports it
+	if si, ok := adapter.(interface {
+		SetID(id string)
+	}); ok {
+		si.SetID(sc.ID)
+	}
+
+	// Plugin-bridged sources resolve their plugin client at Connect; hand them
+	// the enabled source-capable clients before connecting. sourcePlugins is
+	// discovered once at New and never mutated afterwards, so reloads can share
+	// the same clients without a lock.
+	if pb, ok := adapter.(interface {
+		BindPluginLookup(func(pluginID string) (pluginsource.Invoker, bool))
+	}); ok {
+		pb.BindPluginLookup(func(pluginID string) (pluginsource.Invoker, bool) {
+			client, ok := d.sourcePlugins[pluginID]
+			return client, ok
+		})
+	}
+
+	if err := adapter.Connect(ctx, sc.Config); err != nil {
+		return nil, fmt.Errorf("source %q: connect: %w", sc.ID, err)
+	}
+	if fs, ok := adapter.(interface {
+		SetFilters(states, labels []string)
+	}); ok {
+		fs.SetFilters(sc.Filters.States, sc.Filters.Labels)
+	}
+	if js, ok := adapter.(interface {
+		SetJQL(jql string)
+	}); ok {
+		js.SetJQL(sc.Filters.JQL)
+	}
+	return adapter, nil
+}
+
+// source returns the live adapter for id, or nil when no such source is
+// configured. Routing and workflow side effects call this instead of reading the
+// map, because ReloadConfig swaps entries while they run.
+func (d *Dispatcher) source(id string) source.Adapter {
+	d.srcMu.RLock()
+	defer d.srcMu.RUnlock()
+	return d.sources[id]
+}
+
+// sourceRunContextKey carries the daemon-lifetime context a poll loop's
+// dispatched runs should use. A source loop's own context is cancelled when the
+// source is removed or edited; a run it already dispatched must survive that.
+type sourceRunContextKey struct{}
+
+// runContext returns the context a dispatched run should inherit. Inside a poll
+// loop that is the daemon context (the loop's parent), so stopping the loop for
+// a reload does not cancel work it started; on daemon shutdown the parent is
+// cancelled too, so runs still stop. Every other caller gets ctx back unchanged.
+func (d *Dispatcher) runContext(ctx context.Context) context.Context {
+	if parent, ok := ctx.Value(sourceRunContextKey{}).(context.Context); ok {
+		return parent
+	}
+	return ctx
+}
+
+// startSourceLoop runs pollLoop for one source as a child of parent and records
+// how to stop it. Holding the cancel and done channel in a registry is what makes
+// a loop restartable: ReloadConfig can cancel a changed source and prove the old
+// loop exited before the replacement polls.
+func (d *Dispatcher) startSourceLoop(parent context.Context, sc config.SourceConfig, adapter source.Adapter) {
+	ctx, cancel := context.WithCancel(parent)
+	ctx = context.WithValue(ctx, sourceRunContextKey{}, parent)
+	done := make(chan struct{})
+	loop := &sourceLoop{cancel: cancel, done: done, adapter: adapter, cfg: sc}
+
+	d.srcMu.Lock()
+	if d.sourceLoops == nil {
+		d.sourceLoops = make(map[string]*sourceLoop)
+	}
+	var previousDone chan struct{}
+	if previous, ok := d.sourceLoops[sc.ID]; ok {
+		// Nothing should reach here; if it does, stop the old loop rather than
+		// leave two polling the same source forever.
+		previous.cancel()
+		previousDone = previous.done
+		aplog.Warn("source %s: replacing a poll loop that was still registered", sc.ID)
+	}
+	d.sourceLoops[sc.ID] = loop
+	d.srcMu.Unlock()
+
+	if previousDone != nil {
+		<-previousDone
+	}
+
+	d.loopWG.Add(1)
+	go func() {
+		defer d.loopWG.Done()
+		defer close(done)
+		d.pollLoop(ctx, sc, adapter)
+	}()
+}
+
+// stopSourceLoop cancels a source's poll loop and waits for pollLoop to return.
+// Waiting is the point: a changed source must never have two loops polling it,
+// even briefly, and its in-flight runs keep the adapter they captured.
+func (d *Dispatcher) stopSourceLoop(id string) {
+	d.srcMu.Lock()
+	loop := d.sourceLoops[id]
+	delete(d.sourceLoops, id)
+	d.srcMu.Unlock()
+	if loop == nil {
+		return
+	}
+	loop.cancel()
+	<-loop.done
+}
+
+// sourceLoopParent reports the context a reload should start new loops under and
+// whether Start has run. Before Start there is no daemon lifetime to attach to,
+// so a reload installs adapters only; Start then starts every configured source,
+// including the new ones.
+func (d *Dispatcher) sourceLoopParent() (context.Context, bool) {
+	d.srcMu.RLock()
+	defer d.srcMu.RUnlock()
+	if !d.started || d.rootCtx == nil {
+		return nil, false
+	}
+	return d.rootCtx, true
+}
+
 // Start launches one poll goroutine per source.
 // Cancel ctx to initiate a graceful shutdown; then call wg.Wait().
 func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 	cfg := d.config()
+	// Remember the daemon lifetime now: a reload may start poll loops later, and
+	// they must be children of this context, not of the request that asked for the
+	// reload (which returns and cancels).
+	d.srcMu.Lock()
+	d.rootCtx = ctx
+	d.started = true
+	d.srcMu.Unlock()
 	// Enforce the shared git hooks directory on the agents' repo checkouts
 	// (settings.git_hooks) before the first dispatch, so pre-push hooks gate
 	// agent pushes from the very first run.
@@ -726,18 +904,31 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		d.startConfigWatcher(ctx, wg)
 	}
 
-	for _, sc := range cfg.Sources {
-		sc := sc
-		adapter, ok := d.sources[sc.ID]
-		if !ok {
+	// Keep the poll-loop WaitGroup above zero for the daemon's lifetime. Without
+	// this sentinel, a reload that stops the last source takes the counter to
+	// zero, and the next reload's Add races the waiter below — the runtime
+	// rejects reusing a WaitGroup while Wait is still returning.
+	d.loopWG.Add(1)
+	go func() {
+		defer d.loopWG.Done()
+		<-ctx.Done()
+	}()
+
+	for _, sc := range d.config().Sources {
+		adapter := d.source(sc.ID)
+		if adapter == nil {
 			continue
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			d.pollLoop(ctx, sc, adapter)
-		}()
+		d.startSourceLoop(ctx, sc, adapter)
 	}
+	// Wait for every poll loop, including ones a reload starts after this
+	// returns. The sentinel above guarantees the counter cannot hit zero while
+	// the daemon is running, so those Add calls are safe.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		d.loopWG.Wait()
+	}()
 }
 
 // pruneLogsLoop deletes DB log rows older than maxAge, at startup and then
@@ -855,8 +1046,8 @@ func (d *Dispatcher) DryRun(ctx context.Context) error {
 	matched := 0
 
 	for _, sc := range d.config().Sources {
-		adapter, ok := d.sources[sc.ID]
-		if !ok {
+		adapter := d.source(sc.ID)
+		if adapter == nil {
 			continue
 		}
 
@@ -901,8 +1092,8 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 	var failedIDs []string
 
 	for _, sc := range d.config().Sources {
-		adapter, ok := d.sources[sc.ID]
-		if !ok {
+		adapter := d.source(sc.ID)
+		if adapter == nil {
 			continue
 		}
 
@@ -1266,7 +1457,7 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, ref string) (RestartResul
 
 	// Reset the source state (set back to todo) so the next poll picks it up
 	for _, sc := range cfg.Sources {
-		if adapter, ok := d.sources[sc.ID]; ok {
+		if adapter := d.source(sc.ID); adapter != nil {
 			if ss, ok := adapter.(source.StateSetter); ok {
 				_ = ss.SetState(ctx, model.SourceItem{ID: cellID}, "todo")
 			}
@@ -1284,8 +1475,8 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, ref string) (RestartResul
 		restartAdapter source.Adapter
 	)
 	for _, sc := range cfg.Sources {
-		adapter, ok := d.sources[sc.ID]
-		if !ok {
+		adapter := d.source(sc.ID)
+		if adapter == nil {
 			continue
 		}
 		poller, ok := adapter.(source.TaskPoller)
@@ -2023,7 +2214,7 @@ func (d *Dispatcher) poll(ctx context.Context, sc config.SourceConfig, adapter s
 			continue
 		}
 		d.dropNotified.Delete(task.ID)
-		d.fanOut(ctx, cell, adapter, task, persisted, matches, fanOutOpts{ownsInFlight: true})
+		d.fanOut(d.runContext(ctx), cell, adapter, task, persisted, matches, fanOutOpts{ownsInFlight: true})
 	}
 
 	// PR events (trigger.on: pr_*) ride the same poll cadence, after item

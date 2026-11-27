@@ -638,16 +638,20 @@ What applies live:
   per-agent `max_workers` semaphore are built at startup, so changing `runner`
   or `max_workers` is accepted into the config but only takes effect on a
   restart.
+- **Sources** — added, removed, and edited definitions. A reload builds the
+  adapters for added and changed sources first; if any adapter fails to connect,
+  the whole reload is rejected and the old config and poll loops keep running.
+  It then stops the removed and changed poll loops (waiting for each to exit, so
+  a changed source is never polled twice), installs the new adapters, starts
+  their loops, and only then swaps the config pointer. An edit includes
+  `poll_interval`, `filters`, and the adapter `config`. Removing a source stops
+  only its poll loop: runs it already dispatched keep running to completion.
 - **Settings that are read on use** — for example `log_level`, `max_attempts`,
   `task_timeout`, `stall_timeout`, `credit_exhausted_cooldown`, `approvals`,
   and `least_privilege_agents`.
 
 What does **not** apply live:
 
-- **Sources** — each adapter is connected and its poll loop started at startup.
-  A config that adds, removes, or edits a source is rejected whole rather than
-  leaving a source nothing polls. Restart the daemon to change sources. (This is
-  a deliberate first-stage restriction; source hot-reload comes later.)
 - **Startup-only settings**, reported as `requires_restart` in the reload
   result: `plugin_dirs` and `plugins` (discovered at startup), log rotation and
   retention (`log_max_size_mb`, `log_max_backups`, `log_max_age_days`),
@@ -655,9 +659,11 @@ What does **not** apply live:
   `cursor_cost`, `refuse_root`, `default_fallbacks`, whose internals are
   constructed once at startup.
 
-A reload is validated exactly like `apiary run` (`Load`, then `Validate`). A
-file that does not parse or does not validate is rejected as a whole and the
-daemon keeps running its previous configuration — reloads never half-apply.
+A reload is validated exactly like `apiary run` (`Load`, then `Validate`), and
+adapters for added or changed sources must connect. A file that does not parse,
+does not validate, or has a source whose adapter cannot be built is rejected as
+a whole and the daemon keeps running its previous configuration — reloads never
+half-apply.
 `apiary reload` prints the diff by id (`workflows: +a ~b -c`), the settings
 that changed, and anything that needs a restart; it exits `0` when applied and
 `1` when rejected or the daemon cannot be reached. `--json` emits the full

@@ -77,7 +77,7 @@ func TestReloadCommandReportsAppliedDiff(t *testing.T) {
 func TestReloadCommandRejectedExitsOne(t *testing.T) {
 	serveReloadSocket(t, http.StatusConflict, daemon.ReloadResult{
 		Applied: false,
-		Error:   "source changes require a restart (poll loops and adapters are built at startup)",
+		Error:   `source adapters: source "github": connect: token expired`,
 		Sources: daemon.ChangeSet{Added: []string{"github"}},
 	})
 
@@ -89,7 +89,7 @@ func TestReloadCommandRejectedExitsOne(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"reload rejected",
-		"source changes require a restart",
+		"source adapters: source",
 		"sources: +github",
 		"previous configuration is still running",
 	} {
