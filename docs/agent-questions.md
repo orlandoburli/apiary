@@ -32,6 +32,17 @@ If nobody answers before the question expires (30 minutes by default, capped at
 24 hours), the tool returns "no answer" as a normal result. The agent continues
 rather than hanging — a question that is never answered should not strand a run.
 
+While the question is pending, the agent is silent: it is blocked inside the tool
+call and emits nothing. That matters for `settings.stall_timeout`, which kills a
+run that has produced no output for too long. A step with a pending, unexpired
+question is not counted as stalled — the timer restarts when the question is
+answered or expires, so a twenty-minute stall bound does not cut off a
+thirty-minute wait. `task_timeout` still bounds the step as a whole.
+
+If the run ends anyway — stall, task timeout, crash, cancel — its pending
+questions are expired with it. The dashboard then stops offering a question
+nobody is left to receive an answer.
+
 ## Using it
 
 Nothing to configure in a workflow. Any agent run whose CLI supports MCP gets

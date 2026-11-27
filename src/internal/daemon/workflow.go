@@ -440,6 +440,11 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 	env := withMemoryDir(withInputEnv(stepEnv(req.Agent, req.WorkflowEnv, req.Step.Env), req.Inputs), x.d.memDir)
 	env = x.d.withQuestionEnv(env, req)
 
+	// Whatever ends the run — success, failure, stall, timeout or a cancelled
+	// step — no process remains to receive an answer, so the question must stop
+	// appearing in the dashboard. Deferred so it covers every return path.
+	defer x.expireStepQuestions(ctx, req)
+
 	rr := model.RunRequest{
 		Cell:               req.Cell,
 		WorkerID:           req.Step.Agent,
@@ -455,6 +460,25 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		Env:                env,
 		Timeout:            x.d.cfg.Settings.TaskTimeoutDuration(),
 		StallTimeout:       x.d.cfg.Settings.StallTimeoutDuration(),
+	}
+
+	// Tell the stall watchdog when this run is blocked on a human rather than
+	// wedged. The question row is the only evidence of that: the agent is inside
+	// the ask_human tool call and emits nothing. A short timeout keeps a sick DB
+	// from delaying the watchdog, and an error answers false on purpose — an
+	// unreadable question table must not pin a run open, and task_timeout still
+	// bounds the step.
+	if x.d.db != nil {
+		rr.WaitingOnHuman = func() bool {
+			qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			pending, err := x.d.db.HasPendingQuestion(qctx, req.InstanceID, req.Step.ID)
+			if err != nil {
+				aplog.Debug("step %s: check pending question: %v", req.Step.ID, err)
+				return false
+			}
+			return pending
+		}
 	}
 
 	if x.d.logger != nil {
@@ -676,6 +700,27 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		Timing:           timing,
 		InputPrompt:      res.InputPrompt,
 		Err:              res.Error,
+	}
+}
+
+// expireStepQuestions closes the questions a finished step left pending. It runs
+// on its own context: the step's ctx is usually cancelled by the time a run
+// exits, and cancelling the cleanup would leave the dashboard offering a
+// question nobody can answer. Failure is logged, never propagated — expiring a
+// stale question is housekeeping and must not decide the step's outcome.
+func (x *wfStepExecutor) expireStepQuestions(ctx context.Context, req workflow.StepRequest) {
+	if x.d.db == nil || req.InstanceID == "" || req.Step.ID == "" {
+		return
+	}
+	qctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	n, err := x.d.db.ExpireStepQuestions(qctx, req.InstanceID, req.Step.ID)
+	if err != nil {
+		aplog.Debug("step %s: expire pending questions: %v", req.Step.ID, err)
+		return
+	}
+	if n > 0 {
+		aplog.Info("step %s: expired %d unanswered question(s) left by the finished run", req.Step.ID, n)
 	}
 }
 

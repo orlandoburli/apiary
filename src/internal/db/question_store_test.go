@@ -106,6 +106,96 @@ func TestAgentQuestionExpirySweep(t *testing.T) {
 	}
 }
 
+// The runner asks this of every silent step: only a pending, unexpired question
+// means the silence is a person thinking.
+func TestAgentQuestionHasPendingForStep(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+
+	q := &AgentQuestion{WorkflowInstanceID: "wf_1", StepID: "implement", Question: "which env?", AllowFreeText: true}
+	if err := c.CreateQuestion(ctx, q); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := c.HasPendingQuestion(ctx, "wf_1", "implement")
+	if err != nil || !pending {
+		t.Fatalf("pending=%v err=%v, want true", pending, err)
+	}
+	// Another step of the same instance is not waiting on anything.
+	if pending, err := c.HasPendingQuestion(ctx, "wf_1", "review"); err != nil || pending {
+		t.Fatalf("other step: pending=%v err=%v, want false", pending, err)
+	}
+	// Neither is a plain run with no workflow identity.
+	if pending, err := c.HasPendingQuestion(ctx, "", ""); err != nil || pending {
+		t.Fatalf("empty ids: pending=%v err=%v, want false", pending, err)
+	}
+
+	if _, _, err := c.AnswerQuestion(ctx, q.ID, "staging", "", "human"); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := c.HasPendingQuestion(ctx, "wf_1", "implement"); err != nil || pending {
+		t.Fatalf("answered step: pending=%v err=%v, want false", pending, err)
+	}
+}
+
+func TestAgentQuestionHasPendingIgnoresExpired(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+	past := time.Now().UTC().Add(-time.Minute)
+	q := &AgentQuestion{WorkflowInstanceID: "wf_1", StepID: "implement", Question: "still there?", ExpiresAt: &past}
+	if err := c.CreateQuestion(ctx, q); err != nil {
+		t.Fatal(err)
+	}
+	// Even before the sweeper flips the row, an expired deadline means the tool
+	// is no longer waiting, so the stall clock must start again.
+	if pending, err := c.HasPendingQuestion(ctx, "wf_1", "implement"); err != nil || pending {
+		t.Fatalf("pending=%v err=%v, want false for an expired question", pending, err)
+	}
+}
+
+// A finished run leaves nobody to answer, so its questions are closed with the
+// existing timed_out status and stop appearing as pending.
+func TestAgentQuestionExpireStepQuestions(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+
+	mine := &AgentQuestion{WorkflowInstanceID: "wf_1", StepID: "implement", Question: "mine?", AllowFreeText: true}
+	otherStep := &AgentQuestion{WorkflowInstanceID: "wf_1", StepID: "review", Question: "other step?", AllowFreeText: true}
+	otherInstance := &AgentQuestion{WorkflowInstanceID: "wf_2", StepID: "implement", Question: "other instance?", AllowFreeText: true}
+	answered := &AgentQuestion{WorkflowInstanceID: "wf_1", StepID: "implement", Question: "answered?", AllowFreeText: true}
+	for _, q := range []*AgentQuestion{mine, otherStep, otherInstance, answered} {
+		if err := c.CreateQuestion(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := c.AnswerQuestion(ctx, answered.ID, "yes", "", "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := c.ExpireStepQuestions(ctx, "wf_1", "implement")
+	if err != nil || n != 1 {
+		t.Fatalf("expire: n=%d err=%v, want 1", n, err)
+	}
+	if stored, _ := c.GetQuestion(ctx, mine.ID); stored.Status != QuestionTimedOut {
+		t.Fatalf("mine status=%s, want timed_out", stored.Status)
+	}
+	if stored, _ := c.GetQuestion(ctx, answered.ID); stored.Status != QuestionAnswered || stored.Answer != "yes" {
+		t.Fatalf("answered row was touched: %+v", stored)
+	}
+	for _, q := range []*AgentQuestion{otherStep, otherInstance} {
+		if stored, _ := c.GetQuestion(ctx, q.ID); stored.Status != QuestionPending {
+			t.Fatalf("%s status=%s, want pending", q.Question, stored.Status)
+		}
+	}
+	// Nothing left to expire is a no-op, not an error.
+	if n, err := c.ExpireStepQuestions(ctx, "wf_1", "implement"); err != nil || n != 0 {
+		t.Fatalf("second expire: n=%d err=%v, want 0", n, err)
+	}
+	if n, err := c.ExpireStepQuestions(ctx, "", ""); err != nil || n != 0 {
+		t.Fatalf("empty ids: n=%d err=%v, want 0", n, err)
+	}
+}
+
 func TestAgentQuestionListPending(t *testing.T) {
 	ctx := context.Background()
 	c := newTestClient(t)

@@ -253,6 +253,13 @@ A step streaming tool calls for ninety minutes is working. A step that has
 emitted nothing for twenty is usually wedged. Only the second is worth killing
 early, and only `stall_timeout` can tell them apart.
 
+One silence is not a hang: a step blocked on an [`ask_human`](agent-questions.md)
+question emits nothing while it waits for a person. The watchdog checks for a
+pending question before it kills and restarts the stall clock when it finds one,
+so the bound measures the quiet around the wait rather than the wait itself.
+`task_timeout` still bounds the whole step, so a question cannot keep a run alive
+forever. When a run ends with a question still pending, that question is expired.
+
 `stall_timeout` is **off by default**. It measures silence, so a runner that
 buffers its output until exit instead of streaming would look permanently
 stalled — enabling it globally would kill those runs on upgrade. Turn it on for
