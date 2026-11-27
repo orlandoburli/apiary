@@ -67,6 +67,7 @@ func newApproveCmd() *cobra.Command {
 	var (
 		fields  []string
 		comment string
+		outcome string
 		yes     bool
 		asJSON  bool
 	)
@@ -83,11 +84,12 @@ func newApproveCmd() *cobra.Command {
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(_ *cobra.Command, args []string) error {
-			return respondToApproval(args[0], "approve", fields, comment, yes, asJSON)
+			return respondToApproval(args[0], "approve", outcome, fields, comment, yes, asJSON)
 		},
 	}
 	cmd.Flags().StringArrayVar(&fields, "field", nil, "field value as name=value (repeatable)")
 	cmd.Flags().StringVar(&comment, "comment", "", "feedback recorded with the response")
+	cmd.Flags().StringVar(&outcome, "outcome", "", "declared outcome to answer with (default: approve)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON")
 	return cmd
@@ -96,6 +98,7 @@ func newApproveCmd() *cobra.Command {
 func newRejectCmd() *cobra.Command {
 	var (
 		comment string
+		outcome string
 		yes     bool
 		asJSON  bool
 	)
@@ -110,10 +113,11 @@ func newRejectCmd() *cobra.Command {
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(_ *cobra.Command, args []string) error {
-			return respondToApproval(args[0], "reject", nil, comment, yes, asJSON)
+			return respondToApproval(args[0], "reject", outcome, nil, comment, yes, asJSON)
 		},
 	}
 	cmd.Flags().StringVar(&comment, "comment", "", "reason recorded with the rejection")
+	cmd.Flags().StringVar(&outcome, "outcome", "", "declared outcome to answer with (default: reject)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON")
 	return cmd
@@ -233,7 +237,7 @@ func showApproval(id string, asJSON bool) error {
 }
 
 // respondToApproval collects the response and posts it.
-func respondToApproval(id, decision string, fieldFlags []string, comment string, yes, asJSON bool) error {
+func respondToApproval(id, decision, outcome string, fieldFlags []string, comment string, yes, asJSON bool) error {
 	request, err := fetchApproval(id)
 	if err != nil {
 		return err
@@ -246,6 +250,12 @@ func respondToApproval(id, decision string, fieldFlags []string, comment string,
 		fmt.Println(instErr.Render("Already answered: ") + id +
 			instMuted.Render(" (status "+request.Status+")"))
 		os.Exit(4)
+	}
+	// The workflow defines the answers; the command name is just the shorthand.
+	// An explicit --outcome wins, and a request with declared outcomes is
+	// answered by value rather than by the approve/reject verb.
+	if outcome == "" {
+		outcome = decision
 	}
 
 	// Show what this request is actually for before asking anything else —
@@ -305,7 +315,7 @@ func respondToApproval(id, decision string, fieldFlags []string, comment string,
 		}
 	}
 
-	return postApprovalResponse(request, decision, values, comment, asJSON)
+	return postApprovalResponse(request, decision, outcome, values, comment, asJSON)
 }
 
 // printApprovalContext prints the ticket/PR this request resolves to, when
@@ -352,17 +362,20 @@ func approvalContextLabel(r db.ApprovalRequest) string {
 //
 // The actor is recorded for the audit timeline; the daemon only authorizes it
 // when the request names approvers, which an operator gate does not.
-func postApprovalResponse(request *db.ApprovalRequest, decision string, values map[string]any, comment string, asJSON bool) error {
+func postApprovalResponse(request *db.ApprovalRequest, decision, outcome string, values map[string]any, comment string, asJSON bool) error {
 	actor := approvalActor()
 	payload := db.ApprovalResponse{
 		Decision: decision,
+		Outcome:  outcome,
 		Actor:    actor,
 		Channel:  "cli",
 		Feedback: comment,
 		Values:   values,
 		// Stable across retries: re-running the same command after a dropped
-		// connection records the answer once, never twice.
-		IdempotencyKey: fmt.Sprintf("cli:%s:%s:%s", request.ID, actor, decision),
+		// connection records the answer once, never twice. The outcome is part
+		// of the key because two different answers to the same gate are
+		// different decisions, not a retry of one.
+		IdempotencyKey: fmt.Sprintf("cli:%s:%s:%s", request.ID, actor, outcome),
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -405,11 +418,11 @@ func postApprovalResponse(request *db.ApprovalRequest, decision string, values m
 				result.Approvals, result.Required)))
 		os.Exit(3)
 	}
-	outcome := "workflow resuming"
+	effect := "workflow resuming"
 	if decision == "reject" {
-		outcome = "workflow aborting"
+		effect = "workflow aborting"
 	}
-	fmt.Printf("%s %s %s\n", instOK.Render("✓"), verb, instMuted.Render("— "+outcome))
+	fmt.Printf("%s %s %s\n", instOK.Render("✓"), verb, instMuted.Render("— "+effect))
 	return nil
 }
 

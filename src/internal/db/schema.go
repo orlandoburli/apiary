@@ -330,6 +330,12 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   -- visit needs its own answerable request; keying uniqueness on the pair alone
   -- resurfaced lap 1's already-resolved row forever (#462).
   attempt INTEGER NOT NULL DEFAULT 1,
+  -- outcomes are the answers the gate offers, as [{value,label,goto,fail}].
+  -- Stored with the request so an answer channel renders the gate's choices
+  -- without reading the workflow config. Empty means approve/reject.
+  outcomes TEXT NOT NULL DEFAULT '[]',
+  -- outcome is the chosen value once answered. feedback is the reason.
+  outcome TEXT,
   UNIQUE(workflow_instance_id, step_id, attempt)
 );
 CREATE TABLE IF NOT EXISTS approval_responses (
@@ -337,6 +343,7 @@ CREATE TABLE IF NOT EXISTS approval_responses (
   request_id TEXT NOT NULL, decision TEXT NOT NULL, actor TEXT NOT NULL, approver TEXT NOT NULL,
   channel TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
   feedback TEXT, values_json TEXT NOT NULL DEFAULT '{}', created_at DATETIME NOT NULL,
+  outcome TEXT,
   UNIQUE(request_id, approver), FOREIGN KEY(request_id) REFERENCES approval_requests(id)
 );
 CREATE INDEX IF NOT EXISTS idx_approval_requests_status ON approval_requests(status, created_at);
@@ -506,6 +513,12 @@ var migrations = []string{
 	// constraint it belongs to is widened by rebuildApprovalRequestsAttempt,
 	// since SQLite cannot alter a table-level constraint in place.
 	`ALTER TABLE approval_requests ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1`,
+	// Parameterized approval outcomes: the answers the gate offers, and the one
+	// that was chosen. Both are additive; an existing database simply has no
+	// declared outcomes and keeps the implicit approve/reject pair.
+	`ALTER TABLE approval_requests ADD COLUMN outcomes TEXT NOT NULL DEFAULT '[]'`,
+	`ALTER TABLE approval_requests ADD COLUMN outcome TEXT`,
+	`ALTER TABLE approval_responses ADD COLUMN outcome TEXT`,
 	// Canonical state model (#465): the reason a row is parked or was skipped is
 	// stored beside the state rather than encoded into it. This is what lets
 	// 'approval_waiting'/'waiting'/'interrupted' collapse to 'blocked', and
@@ -654,15 +667,17 @@ func rebuildApprovalRequestsAttempt(ctx context.Context, db *sql.DB) error {
 		  idempotency_key TEXT UNIQUE, created_at DATETIME NOT NULL, expires_at DATETIME,
 		  reminded_at DATETIME, escalated_at DATETIME, responded_at DATETIME,
 		  attempt INTEGER NOT NULL DEFAULT 1,
+		  outcomes TEXT NOT NULL DEFAULT '[]',
+		  outcome TEXT,
 		  UNIQUE(workflow_instance_id, step_id, attempt)
 		)`,
 		`INSERT INTO approval_requests_new
 		  (id, workflow_instance_id, task_id, workflow_id, step_id, message, approvers, delegates, required_approvals, fields,
 		   status, response_values, feedback, responded_by, response_channel, idempotency_key, created_at, expires_at,
-		   reminded_at, escalated_at, responded_at, attempt)
+		   reminded_at, escalated_at, responded_at, attempt, outcomes, outcome)
 		 SELECT id, workflow_instance_id, task_id, workflow_id, step_id, message, approvers, delegates, required_approvals, fields,
 		   status, response_values, feedback, responded_by, response_channel, idempotency_key, created_at, expires_at,
-		   reminded_at, escalated_at, responded_at, COALESCE(attempt, 1)
+		   reminded_at, escalated_at, responded_at, COALESCE(attempt, 1), COALESCE(outcomes, '[]'), outcome
 		 FROM approval_requests`,
 		`DROP TABLE approval_requests`,
 		`ALTER TABLE approval_requests_new RENAME TO approval_requests`,

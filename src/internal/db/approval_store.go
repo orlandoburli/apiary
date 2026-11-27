@@ -29,12 +29,17 @@ type ApprovalRequest struct {
 	Delegates          map[string][]string `json:"delegates,omitempty"`
 	RequiredApprovals  int                 `json:"required_approvals"`
 	Fields             []map[string]any    `json:"fields,omitempty"`
-	Status             string              `json:"status"`
-	Values             map[string]any      `json:"values,omitempty"`
-	Feedback           string              `json:"feedback,omitempty"`
-	RespondedBy        string              `json:"responded_by,omitempty"`
-	ResponseChannel    string              `json:"response_channel,omitempty"`
-	IdempotencyKey     string              `json:"idempotency_key,omitempty"`
+	// Outcomes are the answers this gate offers, as declared by the workflow.
+	// Empty means the implicit approve/reject pair.
+	Outcomes []ApprovalOutcome `json:"outcomes,omitempty"`
+	// Outcome is the chosen value once the gate is answered.
+	Outcome         string         `json:"outcome,omitempty"`
+	Status          string         `json:"status"`
+	Values          map[string]any `json:"values,omitempty"`
+	Feedback        string         `json:"feedback,omitempty"`
+	RespondedBy     string         `json:"responded_by,omitempty"`
+	ResponseChannel string         `json:"response_channel,omitempty"`
+	IdempotencyKey  string         `json:"idempotency_key,omitempty"`
 	// Attempt counts this step's visits within the instance, starting at 1. A
 	// rework loop re-enters the same approval step on the same instance and each
 	// lap gets its own answerable request (#462).
@@ -59,13 +64,29 @@ type ApprovalRequest struct {
 }
 
 type ApprovalResponse struct {
-	Decision       string         `json:"decision"`
+	Decision string `json:"decision"`
+	// Outcome is the declared answer the actor chose. When the request declares
+	// outcomes, this is what the caller sends and Decision is derived from it;
+	// empty means the classic approve/reject pair.
+	Outcome        string         `json:"outcome,omitempty"`
 	Actor          string         `json:"actor"`
 	Approver       string         `json:"for_approver,omitempty"`
 	Channel        string         `json:"channel"`
 	IdempotencyKey string         `json:"idempotency_key"`
 	Feedback       string         `json:"feedback,omitempty"`
 	Values         map[string]any `json:"values,omitempty"`
+}
+
+// ApprovalOutcome is one answer a gate offers, as stored with the request.
+//
+// It mirrors the config type rather than importing it: the store is a transport
+// for what the workflow declared, and an answer channel must be able to render
+// the choices without loading the config.
+type ApprovalOutcome struct {
+	Value string `json:"value"`
+	Label string `json:"label,omitempty"`
+	Goto  string `json:"goto,omitempty"`
+	Fail  bool   `json:"fail,omitempty"`
 }
 
 // CreateApprovalRequest persists a request for one visit to an approval step.
@@ -127,10 +148,11 @@ func (c *Client) CreateApprovalRequest(ctx context.Context, req *ApprovalRequest
 	approvers, _ := json.Marshal(req.Approvers)
 	delegates, _ := json.Marshal(req.Delegates)
 	fields, _ := json.Marshal(req.Fields)
+	outcomes, _ := json.Marshal(req.Outcomes)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO approval_requests
-		(id, workflow_instance_id, task_id, workflow_id, step_id, message, approvers, delegates, required_approvals, fields, status, created_at, expires_at, attempt)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workflow_instance_id, step_id, attempt) DO NOTHING`,
-		req.ID, req.WorkflowInstanceID, nullStr(req.TaskID), nullStr(req.WorkflowID), req.StepID, nullStr(req.Message), string(approvers), string(delegates), req.RequiredApprovals, string(fields), req.Status, req.CreatedAt, req.ExpiresAt, req.Attempt); err != nil {
+		(id, workflow_instance_id, task_id, workflow_id, step_id, message, approvers, delegates, required_approvals, fields, status, created_at, expires_at, attempt, outcomes)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workflow_instance_id, step_id, attempt) DO NOTHING`,
+		req.ID, req.WorkflowInstanceID, nullStr(req.TaskID), nullStr(req.WorkflowID), req.StepID, nullStr(req.Message), string(approvers), string(delegates), req.RequiredApprovals, string(fields), req.Status, req.CreatedAt, req.ExpiresAt, req.Attempt, string(outcomes)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -207,7 +229,7 @@ func (c *Client) ResolveApprovalRequest(ctx context.Context, id string, response
 	if approver == "" {
 		approver = response.Actor
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO approval_responses (request_id, decision, actor, approver, channel, idempotency_key, feedback, values_json, created_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, id, status, response.Actor, approver, response.Channel, response.IdempotencyKey, nullStr(response.Feedback), string(values), now)
+	res, err := tx.ExecContext(ctx, `INSERT INTO approval_responses (request_id, decision, actor, approver, channel, idempotency_key, feedback, values_json, created_at, outcome) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, id, status, response.Actor, approver, response.Channel, response.IdempotencyKey, nullStr(response.Feedback), string(values), now, nullStr(response.Outcome))
 	if err != nil {
 		return nil, false, err
 	}
@@ -226,7 +248,7 @@ func (c *Client) ResolveApprovalRequest(ctx context.Context, id string, response
 		resolved = approvals >= required
 	}
 	if resolved {
-		if _, err := tx.ExecContext(ctx, `UPDATE approval_requests SET status=?, response_values=?, feedback=?, responded_by=?, response_channel=?, idempotency_key=?, responded_at=? WHERE id=? AND status IN (?,?)`, status, string(values), nullStr(response.Feedback), response.Actor, response.Channel, response.IdempotencyKey, now, id, ApprovalPending, ApprovalEscalated); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE approval_requests SET status=?, response_values=?, feedback=?, responded_by=?, response_channel=?, idempotency_key=?, responded_at=?, outcome=? WHERE id=? AND status IN (?,?)`, status, string(values), nullStr(response.Feedback), response.Actor, response.Channel, response.IdempotencyKey, now, nullStr(response.Outcome), id, ApprovalPending, ApprovalEscalated); err != nil {
 			return nil, false, err
 		}
 	}
@@ -293,7 +315,7 @@ func (c *Client) updateApprovalStatus(ctx context.Context, id, status string, fr
 	return n == 1, nil
 }
 
-const approvalSelect = `SELECT id, workflow_instance_id, COALESCE(task_id,''), COALESCE(workflow_id,''), step_id, COALESCE(message,''), approvers, delegates, required_approvals, fields, status, response_values, COALESCE(feedback,''), COALESCE(responded_by,''), COALESCE(response_channel,''), COALESCE(idempotency_key,''), attempt, created_at, expires_at, reminded_at, escalated_at, responded_at FROM approval_requests`
+const approvalSelect = `SELECT id, workflow_instance_id, COALESCE(task_id,''), COALESCE(workflow_id,''), step_id, COALESCE(message,''), approvers, delegates, required_approvals, fields, status, response_values, COALESCE(feedback,''), COALESCE(responded_by,''), COALESCE(response_channel,''), COALESCE(idempotency_key,''), attempt, created_at, expires_at, reminded_at, escalated_at, responded_at, outcomes, COALESCE(outcome,'') FROM approval_requests`
 
 type approvalScanner interface{ Scan(...any) error }
 
@@ -306,8 +328,8 @@ func (c *Client) scanApproval(row approvalScanner) (*ApprovalRequest, error) {
 }
 func scanApprovalRow(row approvalScanner) (*ApprovalRequest, error) {
 	var req ApprovalRequest
-	var approvers, delegates, fields, values string
-	err := row.Scan(&req.ID, &req.WorkflowInstanceID, &req.TaskID, &req.WorkflowID, &req.StepID, &req.Message, &approvers, &delegates, &req.RequiredApprovals, &fields, &req.Status, &values, &req.Feedback, &req.RespondedBy, &req.ResponseChannel, &req.IdempotencyKey, &req.Attempt, &req.CreatedAt, &req.ExpiresAt, &req.RemindedAt, &req.EscalatedAt, &req.RespondedAt)
+	var approvers, delegates, fields, values, outcomes string
+	err := row.Scan(&req.ID, &req.WorkflowInstanceID, &req.TaskID, &req.WorkflowID, &req.StepID, &req.Message, &approvers, &delegates, &req.RequiredApprovals, &fields, &req.Status, &values, &req.Feedback, &req.RespondedBy, &req.ResponseChannel, &req.IdempotencyKey, &req.Attempt, &req.CreatedAt, &req.ExpiresAt, &req.RemindedAt, &req.EscalatedAt, &req.RespondedAt, &outcomes, &req.Outcome)
 	if err != nil {
 		return nil, err
 	}
@@ -315,6 +337,7 @@ func scanApprovalRow(row approvalScanner) (*ApprovalRequest, error) {
 	_ = json.Unmarshal([]byte(delegates), &req.Delegates)
 	_ = json.Unmarshal([]byte(fields), &req.Fields)
 	_ = json.Unmarshal([]byte(values), &req.Values)
+	_ = json.Unmarshal([]byte(outcomes), &req.Outcomes)
 	return &req, nil
 }
 func (c *Client) getApprovalByKey(ctx context.Context, key string) (*ApprovalRequest, error) {

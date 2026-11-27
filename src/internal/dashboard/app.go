@@ -2379,13 +2379,16 @@ func approvalActor() string {
 // It reports what the daemon said. The previous version discarded the response
 // entirely, so a refusal — an unauthorized actor, a missing required field, a
 // gate someone else had already answered — looked exactly like success.
-func (a *App) approvalResponseCmd(requestID, decision string, values map[string]any, feedback string) tea.Cmd {
+func (a *App) approvalResponseCmd(requestID, decision, outcome string, values map[string]any, feedback string) tea.Cmd {
 	return func() tea.Msg {
 		actor := approvalActor()
 		payload := map[string]any{
 			"decision":        decision,
 			"actor":           actor,
-			"idempotency_key": fmt.Sprintf("dashboard:%s:%s:%s", requestID, actor, decision),
+			"idempotency_key": fmt.Sprintf("dashboard:%s:%s:%s", requestID, actor, outcome),
+		}
+		if outcome != "" {
+			payload["outcome"] = outcome
 		}
 		if len(values) > 0 {
 			payload["values"] = values
