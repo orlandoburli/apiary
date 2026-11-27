@@ -160,6 +160,10 @@ unavailable rather than implying nothing ran. Everything here covers the
 [Choosing the metrics window](#choosing-the-metrics-window)); the box title and
 each header name it.
 
+**Metrics help.** Press `H` for an in-place explanation of these figures: what
+the window covers, how wall differs from active, and what `p50`, `p90`, `max`
+and `N` mean. It scrolls on a short terminal; `H` or `Esc` closes it.
+
 **Running** counts the task executions the database still marks as running.
 That is not the same as the number of processes actually working: a process
 that died without closing its row out keeps counting until the next dispatcher
@@ -635,7 +639,8 @@ one workflow in this hive has a mean of 481 minutes over a p50 of 261 — and a
 mean describes no run in particular. `p50` is the typical run, `p90` is the slow
 tail, and `max` is the worst one. On a narrow terminal the line drops `max`
 first and then the p90s; the run count and the active/wall distinction always
-stay, because they are what the line exists to compare.
+stay, because they are what the line exists to compare. Press `H` for the same
+in-place explanation the Overview offers (`H` or `Esc` to close).
 
 Each step that ran gets its own line with its own distribution
 (`ran 3 · p50 1.0m · p90 5.0m`). A step's duration is its wall interval —

@@ -807,6 +807,13 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleQuestionSheetKey(key)
 	}
 
+	// The metrics help overlay owns every key while it is open, above `?` and
+	// the other overlays: a reading modal that let a keystroke through would
+	// move the tab underneath it.
+	if a.model.metricsHelpActive {
+		return a.handleMetricsHelpKey(key)
+	}
+
 	// `?` opens the question queue when a badge is what auto-open left behind.
 	// It is checked here, above the picker and approval guards, so the badge's
 	// promise holds even while those overlays own the other keys — except where
@@ -828,6 +835,16 @@ func (a *App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// the dashboard), o (open the task in a browser), t, or p instead of typing.
 	if a.model.approvalActive {
 		return a.handleApprovalFormKey(key)
+	}
+
+	// `H` explains the duration figures on the two tabs that print them. It sits
+	// below every overlay guard for the same reason the other single-letter
+	// bindings do: a letter typed into a filter or a form field must never be
+	// read as a shortcut. overlayOwnsKeys also covers the confirm modal, whose
+	// guard is further down.
+	if key == "H" && metricsHelpTab(a.model.ActiveTab()) && !a.overlayOwnsKeys() {
+		a.openMetricsHelp()
+		return a, nil
 	}
 
 	if key == "q" {
@@ -4198,6 +4215,9 @@ func (a *App) View() string {
 	if a.model.questionActive {
 		view = a.renderQuestionSheet(view)
 	}
+	if a.model.metricsHelpActive {
+		view = a.renderMetricsHelp(view)
+	}
 	return view
 }
 
@@ -7162,6 +7182,15 @@ func (a *App) renderFooter() string {
 
 	gap := a.model.width - lipgloss.Width(left) - lipgloss.Width(right) - 1
 	if gap < 1 {
+		// The right side carries what the operator has to act on — a pending
+		// question, the approval count, how fresh the data is — while the left
+		// only says what the keys do. On a cramped line the hints give way, not
+		// the alert: clip them at the boundary and keep the status whole.
+		avail := a.model.width - lipgloss.Width(right) - 2
+		if avail < 0 {
+			avail = 0
+		}
+		left = ansi.Truncate(left, avail, "…")
 		gap = 1
 	}
 	line := " " + left + strings.Repeat(" ", gap) + right
@@ -7204,9 +7233,9 @@ func (a *App) footerKeys() []fkey {
 		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"/", "filter"}, {"T", "tickets-only"}, {"A", "approvals"}, {"d", "details"}, {"o", "open"}, {"p", "open PR"}, {"t", "transcript"}, {"R", "restart"}, {"W", "run wf"}, {"C", "clear"}, {"D", "delete"}, {"tab", "switch"}, {"q", "quit"}}
 	case "Workflows":
 		if wt := a.model.workflowsTab; wt != nil && wt.Focus == WorkflowsViewSteps {
-			return []fkey{{"↑/↓", "step"}, {"esc/←", "back"}, {"w", "window"}, {"tab", "next tab"}, {"q", "quit"}}
+			return []fkey{{"↑/↓", "step"}, {"esc/←", "back"}, {"w", "window"}, {"H", "help"}, {"tab", "next tab"}, {"q", "quit"}}
 		}
-		return []fkey{{"↑/↓", "workflow"}, {"enter/→", "steps"}, {"W", "run now"}, {"w", "window"}, {"tab", "next tab"}, {"q", "quit"}}
+		return []fkey{{"↑/↓", "workflow"}, {"enter/→", "steps"}, {"W", "run now"}, {"w", "window"}, {"H", "help"}, {"tab", "next tab"}, {"q", "quit"}}
 	case "Running":
 		return []fkey{{"↑/↓", "select"}, {"enter", "workflow"}, {"o", "open"}, {"tab", "switch"}, {"r", "refresh"}, {"q", "quit"}}
 	case "Agents":
@@ -7239,7 +7268,9 @@ func (a *App) footerKeys() []fkey {
 			wrap = "wrap on"
 		}
 		return []fkey{{"w", wrap}, {"←/→", "scroll"}, {"↑/↓", "lines"}, {"pgup/dn", "page"}, {"home/end", "ends"}, {"tab", "switch"}, {"q", "quit"}}
-	default: // Overview
+	case "Overview":
+		return []fkey{{"tab", "next"}, {"⇧tab", "prev"}, {"A", "approvals"}, {"W", "run wf"}, {"w", "window"}, {"H", "help"}, {"r", "refresh"}, {"q", "quit"}}
+	default: // Usage shares the Overview's navigation hints, but not its help key
 		return []fkey{{"tab", "next"}, {"⇧tab", "prev"}, {"A", "approvals"}, {"W", "run wf"}, {"w", "window"}, {"r", "refresh"}, {"q", "quit"}}
 	}
 }

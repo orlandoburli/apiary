@@ -78,6 +78,13 @@ type Model struct {
 	// (an id that is not in here) still auto-opens.
 	questionSnoozed map[string]bool
 
+	// Metrics help overlay (H) on the two tabs that print duration figures.
+	// metricsHelpScroll is its first visible body line; the copy is longer than
+	// a short terminal, so the rest is reached by scrolling rather than clipped.
+	// See metrics_help.go.
+	metricsHelpActive bool
+	metricsHelpScroll int
+
 	notice      string    // one-line result banner for the last IPC action
 	noticeIsErr bool      // render the banner as an error
 	noticeUntil time.Time // banner expiry; zero means no banner

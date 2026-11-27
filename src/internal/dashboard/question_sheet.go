@@ -91,7 +91,8 @@ func liveQuestions(qs []db.AgentQuestion, now time.Time) []db.AgentQuestion {
 // keyboard. Auto-open checks it so a question never interrupts an answer in
 // progress; the footer badge is the alternative while this is true.
 func (a *App) overlayOwnsKeys() bool {
-	if a.model.approvalActive || a.model.pickerActive || a.model.confirmAction != "" || a.model.questionActive {
+	if a.model.approvalActive || a.model.pickerActive || a.model.confirmAction != "" ||
+		a.model.questionActive || a.model.metricsHelpActive {
 		return true
 	}
 	return a.model.tasksTab != nil && a.model.tasksTab.FilterActive
