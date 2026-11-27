@@ -109,6 +109,10 @@ func (a *Adapter) Poll(ctx context.Context, _ time.Time) ([]model.SourceItem, er
 
 	issues, err := a.client.getAllIssues(ctx, path, params)
 	if err != nil {
+		if pollInterrupted(ctx) {
+			aplog.Info("github: poll of %s/%s interrupted by shutdown", a.owner, a.repo)
+			return nil, nil
+		}
 		return nil, fmt.Errorf("github: polling issues: %w", err)
 	}
 
@@ -128,6 +132,12 @@ func (a *Adapter) Poll(ctx context.Context, _ time.Time) ([]model.SourceItem, er
 	}
 	return cells, nil
 }
+
+// pollInterrupted reports a poll whose only failure is the daemon going away.
+// The dispatcher logs every returned poll error at ERROR, so reporting success
+// here keeps a shutdown from reading like a GitHub outage; the context is
+// already done, so there is no watermark to advance and no work to lose (#558).
+func pollInterrupted(ctx context.Context) bool { return ctx.Err() != nil }
 
 func (a *Adapter) matchesFilters(item issue) bool {
 	if len(a.filterStates) > 0 {
@@ -317,6 +327,21 @@ func (a *Adapter) RemoveLabels(ctx context.Context, cell model.SourceItem, names
 	return nil
 }
 
+// timelineEvent is the slice of an issue timeline event that identifies a
+// cross-referenced pull request.
+type timelineEvent struct {
+	Event  string `json:"event"`
+	Source struct {
+		Type  string `json:"type"`
+		Issue struct {
+			Number      int `json:"number"`
+			PullRequest struct {
+				URL string `json:"url"`
+			} `json:"pull_request"`
+		} `json:"issue"`
+	} `json:"source"`
+}
+
 // PollCIStatus fetches the CI status of a PR/issue from GitHub. It queries the
 // combined status and check runs for the PR and synthesizes an overall status.
 // Implements source.CIStatusPoller.
@@ -329,25 +354,14 @@ func (a *Adapter) PollCIStatus(ctx context.Context, cellID string) (source.CISta
 	// If direct lookup fails, find PR via issue timeline cross-reference.
 	if err != nil {
 		timelinePath := fmt.Sprintf("/repos/%s/%s/issues/%s/timeline", a.owner, a.repo, cellID)
-		timelineBody, timelineErr := a.client.get(ctx, timelinePath)
+		// Walk every page: the cross-reference is ordered by when it happened,
+		// so a PR opened after 100 events is invisible on page 1 (#557).
+		timeline, timelineErr := fetchPages[timelineEvent](ctx, a.client, timelinePath, nil)
 		if timelineErr != nil {
-			return source.CIStatus{Status: "pending"}, nil // No timeline; still pending
-		}
-
-		var timeline []struct {
-			Event  string `json:"event"`
-			Source struct {
-				Type  string `json:"type"`
-				Issue struct {
-					Number      int `json:"number"`
-					PullRequest struct {
-						URL string `json:"url"`
-					} `json:"pull_request"`
-				} `json:"issue"`
-			} `json:"source"`
-		}
-		if err := json.Unmarshal(timelineBody, &timeline); err != nil {
-			return source.CIStatus{Status: "pending"}, nil
+			// Not being able to read the timeline is not "CI has not started".
+			// Return the error so the caller logs it; only a readable timeline
+			// with no PR reference may stay silently pending.
+			return source.CIStatus{Status: "pending"}, fmt.Errorf("github: fetching timeline for issue %s: %w", cellID, timelineErr)
 		}
 
 		// Collect every cross-referenced PR, most recent first. Any PR that merely
