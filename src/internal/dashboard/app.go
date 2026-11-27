@@ -4221,6 +4221,14 @@ func fitLine(s string, w int) string {
 	}
 }
 
+// The id column is sized from the data. The floor keeps a list of short ids
+// from looking cramped; the cap keeps one pathological id from pushing the
+// counts past the right border.
+const (
+	overviewAgentIDMin = 16
+	overviewAgentIDMax = 32
+)
+
 func (a *App) renderOverviewTab(height int) string {
 	o := a.model.overviewTab
 	if o == nil {
@@ -4243,8 +4251,20 @@ func (a *App) renderOverviewTab(height int) string {
 		o.Concurrency,
 		o.ActiveAgents)
 
+	// Long agent ids are common (workspace-role pairs), so a fixed pad lines up
+	// only the ids that happen to match it.
+	idWidth := overviewAgentIDMin
 	for _, ac := range o.AgentBreakdown {
-		label := fmt.Sprintf("  %-16s", ac.ID)
+		if w := lipgloss.Width(ac.ID); w > idWidth {
+			idWidth = w
+		}
+	}
+	if idWidth > overviewAgentIDMax {
+		idWidth = overviewAgentIDMax
+	}
+
+	for _, ac := range o.AgentBreakdown {
+		label := fmt.Sprintf("  %-*s", idWidth, truncate(ac.ID, idWidth))
 		runStr := fmt.Sprintf("%d/%d", ac.Running, ac.MaxWorkers)
 		if ac.Running >= ac.MaxWorkers {
 			runStr = StyleWarning.Render(runStr)
