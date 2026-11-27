@@ -108,8 +108,17 @@ func (d *Dispatcher) rehydrateParkedApprovals(ctx context.Context) {
 		inst := instances[i]
 		wf, ok := d.workflowByID(inst.WorkflowID)
 		if !ok {
-			aplog.Warn("rehydrate parked approval %s: workflow %q no longer defined — leaving parked", inst.ID, inst.WorkflowID)
-			continue
+			// A hot reload can remove or rename a workflow while instances are
+			// parked on it. Each instance wrote its definition at start, so the
+			// run can still finish what it began instead of waiting forever for
+			// a workflow that will never come back.
+			var snapOK bool
+			wf, snapOK = d.workflowFromSnapshot(ctx, inst.ID)
+			if !snapOK {
+				aplog.Warn("rehydrate parked approval %s: workflow %q is no longer defined and the instance has no usable snapshot — leaving parked", inst.ID, inst.WorkflowID)
+				continue
+			}
+			aplog.Info("rehydrate parked approval %s: workflow %q is no longer defined; resuming from the instance's snapshot", inst.ID, inst.WorkflowID)
 		}
 		steps, err := d.db.ListStepRuns(ctx, inst.ID)
 		if err != nil {
@@ -155,8 +164,13 @@ func (d *Dispatcher) rehydrateParkedWaits(ctx context.Context) {
 		inst := instances[i]
 		wf, ok := d.workflowByID(inst.WorkflowID)
 		if !ok {
-			aplog.Warn("rehydrate parked wait %s: workflow %q no longer defined — leaving parked", inst.ID, inst.WorkflowID)
-			continue
+			var snapOK bool
+			wf, snapOK = d.workflowFromSnapshot(ctx, inst.ID)
+			if !snapOK {
+				aplog.Warn("rehydrate parked wait %s: workflow %q is no longer defined and the instance has no usable snapshot — leaving parked", inst.ID, inst.WorkflowID)
+				continue
+			}
+			aplog.Info("rehydrate parked wait %s: workflow %q is no longer defined; resuming from the instance's snapshot", inst.ID, inst.WorkflowID)
 		}
 		steps, err := d.db.ListStepRuns(ctx, inst.ID)
 		if err != nil {
