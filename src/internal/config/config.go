@@ -451,6 +451,7 @@ type Settings struct {
 	Memory        MemorySettings     `yaml:"memory"`
 	Events        EventSettings      `yaml:"events"`
 	Approvals     ApprovalSettings   `yaml:"approvals"`
+	Questions     QuestionsSettings  `yaml:"questions"`
 	Telemetry     Telemetry          `yaml:"telemetry"`
 	CursorCost    CursorCostSettings `yaml:"cursor_cost"`
 	Improve       ImproveSettings    `yaml:"improve"`
@@ -539,6 +540,18 @@ type ApprovalSettings struct {
 	WebhookSecret string   `yaml:"webhook_secret,omitempty"`
 	RequireFor    []string `yaml:"require_for,omitempty"`
 }
+
+// QuestionsSettings controls the built-in ask_human MCP tool. It is on by
+// default: an agent that suddenly needs a decision mid-run should be able to
+// ask instead of guessing or stalling, and the daemon already owns the channel.
+// Turn it off when a hive must never wait on a human.
+type QuestionsSettings struct {
+	Enabled *bool `yaml:"enabled,omitempty"`
+}
+
+// IsEnabled reports whether the ask_human MCP server is injected into agent
+// runners. The pointer keeps an absent setting meaning "yes".
+func (q QuestionsSettings) IsEnabled() bool { return q.Enabled == nil || *q.Enabled }
 
 // DashboardSettings holds per-hive terminal dashboard preferences.
 type DashboardSettings struct {

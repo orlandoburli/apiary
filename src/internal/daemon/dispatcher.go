@@ -429,7 +429,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			return nil, fmt.Errorf("agent %q: runner type %q not found", ac.ID, rc.Type)
 		}
 
-		if err := ra.Configure(injectRunnerSecurity(runnerConfigWithMCPs(rc.Config, rc.MCPs, ac.MCPs), rc.Sandbox, rc.EnvPassthrough)); err != nil {
+		if err := ra.Configure(injectRunnerSecurity(d.runnerConfigWithMCPs(rc.Config, rc.MCPs, ac.MCPs), rc.Sandbox, rc.EnvPassthrough)); err != nil {
 			return nil, fmt.Errorf("agent %q: configure runner: %w", ac.ID, err)
 		}
 
@@ -461,7 +461,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 			if !ok {
 				return nil, fmt.Errorf("agent %q: fallback runner type %q not found", ac.ID, fAdapterName)
 			}
-			if err := fra.Configure(injectRunnerSecurity(runnerConfigWithMCPs(frc.Config, frc.MCPs, ac.MCPs), frc.Sandbox, frc.EnvPassthrough)); err != nil {
+			if err := fra.Configure(injectRunnerSecurity(d.runnerConfigWithMCPs(frc.Config, frc.MCPs, ac.MCPs), frc.Sandbox, frc.EnvPassthrough)); err != nil {
 				return nil, fmt.Errorf("agent %q: configure fallback runner %q: %w", ac.ID, fb.Runner, err)
 			}
 			if fAdapterName == "opencode" {
@@ -1552,6 +1552,11 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 	mux.HandleFunc("/approvals/", func(w http.ResponseWriter, r *http.Request) {
 		d.handleApprovalResponse(ctx, w, r)
 	})
+	// Mid-run questions from the ask_human MCP tool. The long-poll handler owns
+	// its own request context: when the agent's HTTP client gives up, the handler
+	// must stop waiting too.
+	mux.HandleFunc("/questions", d.handleQuestions)
+	mux.HandleFunc("/questions/", d.handleQuestion)
 	mux.HandleFunc("/restart/", func(w http.ResponseWriter, r *http.Request) {
 		// Human references reach this route too (CDT-123, #1953), and '#' must be
 		// percent-encoded by the caller or it would be read as a URL fragment and
@@ -2690,8 +2695,29 @@ func (d *Dispatcher) registerAgentInConfig(workDir string, ac config.AgentConfig
 // keyed by name) under the "mcps" key, which CliRunner.Configure consumes. The
 // base map is never mutated — a shallow copy is returned only when there are
 // servers to inject, so MCP-less runners keep their original config untouched.
-func runnerConfigWithMCPs(base map[string]any, runnerMCPs, agentMCPs []model.MCPServer) map[string]any {
+//
+// The built-in "apiary" server (apiary mcp-serve) is appended unless the user
+// already declared one by that name, so ask_human is available to every agent
+// that can run an MCP client. Its MCP config carries only APIARY_SOCKET: the
+// per-run ids (instance/step/task) reach the server through the agent
+// subprocess's inherited environment instead, because this config is written
+// once per provider while the ids change on every run.
+func (d *Dispatcher) runnerConfigWithMCPs(base map[string]any, runnerMCPs, agentMCPs []model.MCPServer) map[string]any {
 	merged := model.MergeMCPServers(runnerMCPs, agentMCPs)
+	if srv, ok := d.questionMCPServer(); ok {
+		declared := false
+		for _, m := range merged {
+			if m.Name == srv.Name {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			// Copy before appending: MergeMCPServers may return one of its inputs,
+			// and appending to it would mutate the config slice the caller owns.
+			merged = append(append([]model.MCPServer{}, merged...), srv)
+		}
+	}
 	if len(merged) == 0 {
 		return base
 	}
@@ -2701,6 +2727,27 @@ func runnerConfigWithMCPs(base map[string]any, runnerMCPs, agentMCPs []model.MCP
 	}
 	out["mcps"] = merged
 	return out
+}
+
+// questionMCPServer builds the MCP entry that gives an agent the ask_human
+// tool, or reports false when it is disabled or the binary path is unknown.
+// os.Executable is used rather than "apiary" from PATH so a run always talks to
+// the same build as its daemon, even from a development tree.
+func (d *Dispatcher) questionMCPServer() (model.MCPServer, bool) {
+	if d.cfg == nil || !d.cfg.Settings.Questions.IsEnabled() {
+		return model.MCPServer{}, false
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		aplog.Warn("questions: cannot resolve apiary executable, ask_human disabled: %v", err)
+		return model.MCPServer{}, false
+	}
+	return model.MCPServer{
+		Name:    "apiary",
+		Command: exe,
+		Args:    []string{"mcp-serve"},
+		Env:     map[string]string{"APIARY_SOCKET": SocketPath(config.DataDir(d.configFile))},
+	}, true
 }
 
 // injectRunnerSecurity folds a runner's sandbox and env-passthrough settings into
