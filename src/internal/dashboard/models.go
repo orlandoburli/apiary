@@ -95,12 +95,25 @@ type OverviewTab struct {
 	// the only Overview number that is a to-do rather than a measurement: a gate
 	// with no timeout waits forever, and until now nothing outside the Tasks tab
 	// said one was waiting.
-	PendingApprovals  int
-	CompletedToday    int
-	FailedToday       int
-	ThroughputRatio   string
-	AvgDuration       string
-	SuccessRate       string
+	PendingApprovals int
+	CompletedToday   int
+	FailedToday      int
+	// TasksPerHour and AvgDuration are task-level: a task is one unit of work
+	// however many agent runs it took.
+	TasksPerHour string
+	AvgDuration  string
+	SuccessRate  string
+
+	// Runs are the agent processes underneath the tasks: how many actually
+	// executed, how much of that failed, and how long one run takes.
+	RunsTotal      int
+	RunsCompleted  int
+	RunsFailed     int
+	RunsRunning    int
+	AvgRunDuration string
+	RunsPerHour    string
+	RunSuccessRate string
+
 	AgentBreakdown    []AgentCount
 	TodayCostUSD      float64
 	TodayTokens       int

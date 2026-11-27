@@ -89,15 +89,29 @@ Your at-a-glance health check. Use this tab to answer "is everything moving?"
 - **Active Agents** — agents that have processed work in the last hour.
 - **Running** — how many tasks are being worked on this instant.
 - **Queued** — tasks that failed and are waiting to be retried automatically.
-- **Completed / Failed** — how much work finished today, and how much didn't.
-- **Success Rate** — the share of today's work that succeeded. A sudden drop is
-  your cue to check the Logs tab.
-- **Avg Duration** and **Throughput** — how long tasks take and how fast they're
-  clearing, so you can spot slowdowns.
+- **Completed / Failed** — how many **tasks** reached `done` / `failed` today.
+- **Success Rate** — done ÷ (done + failed) over today's finished tasks. Work
+  still in flight is not in the denominator, so the rate does not dip merely
+  because something is running. A sudden drop is your cue to check the Logs tab.
+- **Avg Duration** — how long a task takes, measured over the tasks that both
+  **started and finished today**. A task created three days ago and finished
+  today is counted as finished, but its multi-day life is not treated as "how
+  long the work takes".
+- **Throughput** — **tasks/hour** since midnight, over the hours actually
+  elapsed (clamped to one hour, so the first minutes after midnight do not turn
+  a single task into a huge rate).
 
-Counts like Completed, Failed, Success Rate and Avg Duration cover **today**
-(since midnight) and reset each day. Running and Queued are live right-now
-numbers.
+The **Runs** block is the detail underneath those task figures: one run is one
+agent process, and a task that takes four steps is four runs. It shows the
+total with its outcome split, the average run duration, and runs/hour. Finished
+runs only are averaged and rated — a run still in flight has no duration.
+
+Both blocks cover **today since local midnight** and reset each day. Running,
+Queued and the run split's "running" are live right-now numbers.
+
+**Task** counts come from the task registry, so a retried task is one task that
+eventually finished, not a failure plus a success. **Run** counts come from
+executions, so they show the actual work underneath.
 
 **Running** counts the task executions the database still marks as running.
 That is not the same as the number of processes actually working: a process
