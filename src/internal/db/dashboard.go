@@ -7,29 +7,58 @@ import (
 )
 
 // DashboardStats holds overview statistics.
+//
+// Two units are reported side by side. A task is the unit a person cares about:
+// a task that runs four agent steps is one task, and a task retried twice is
+// still one task that eventually finished. A run is one agent process. The
+// task figures are the headline; the run figures are the detail that shows how
+// much work each task actually took.
 type DashboardStats struct {
-	DispatcherStatus  string
-	Uptime            time.Duration
-	ActiveAgents      int
-	ActiveRuns        int
-	QueuedTasks       int
-	CompletedToday    int
-	FailedToday       int
-	AvgDurationMs     int64
-	SuccessRate       float64
+	DispatcherStatus string
+	Uptime           time.Duration
+	ActiveAgents     int
+	ActiveRuns       int
+	QueuedTasks      int
+
+	// Task-level, over the window.
+	TasksCompleted    int
+	TasksFailed       int
+	AvgTaskDurationMs int64
+
+	// Run-level, over the window.
+	RunsCompleted    int
+	RunsFailed       int
+	AvgRunDurationMs int64
+
+	// Rates over the window, per hour.
+	TasksPerHour float64
+	RunsPerHour  float64
+
+	// SuccessRate is task-level; RunSuccessRate is the detail underneath it.
+	// Both exclude work that has not finished: counting a running row in the
+	// denominator made the rate move whenever anything was in flight.
+	SuccessRate    float64
+	RunSuccessRate float64
+
 	TodayCostUSD      float64
 	TodayTokens       int
 	TodayInputTokens  int
 	TodayOutputTokens int
 }
 
-// GetDashboardStats retrieves overall statistics.
+// GetDashboardStats retrieves the figures for one window, normally local
+// midnight to now.
+//
+// The window start comes from the caller because "today" is a local-day
+// question. Deriving it here with time.Now().Truncate(24*time.Hour) truncates
+// to UTC midnight, which in any non-UTC zone is the wrong day — it silently
+// included the previous evening's work while the page said "since midnight".
 func (c *Client) GetDashboardStats(ctx context.Context, startTime time.Time) (*DashboardStats, error) {
 	stats := &DashboardStats{
 		DispatcherStatus: "Healthy",
 	}
 
-	// Get active runs
+	// Active runs are a right-now figure, not a windowed one.
 	row := c.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM task_executions WHERE status = 'running'
 	`)
@@ -42,28 +71,66 @@ func (c *Client) GetDashboardStats(ctx context.Context, startTime time.Time) (*D
 	`, time.Now())
 	_ = row.Scan(&stats.QueuedTasks)
 
-	// Get today's statistics
-	todayStart := time.Now().Truncate(24 * time.Hour)
+	// Task-level counts: tasks that reached a terminal state in the window.
+	// internal_tasks is the registry every execution hangs off, so it counts a
+	// task once however many agent runs or retries it took.
+	row = c.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(CASE WHEN state = 'done' THEN 1 END),
+			COUNT(CASE WHEN state = 'failed' THEN 1 END)
+		FROM internal_tasks
+		WHERE updated_at >= ? AND state IN ('done','failed')
+	`, startTime)
+	_ = row.Scan(&stats.TasksCompleted, &stats.TasksFailed)
+
+	// Average task duration over the cohort that both started and finished in
+	// the window. A task created days ago and finished today (blocked, waiting
+	// on a human) would otherwise report its whole blocked life as duration —
+	// seen at 80 hours for one failed task, which says nothing about how long
+	// the work takes.
+	row = c.db.QueryRowContext(ctx, `
+		SELECT CAST(AVG((julianday(updated_at) - julianday(created_at)) * 86400000) AS INTEGER)
+		FROM internal_tasks
+		WHERE state IN ('done','failed') AND created_at >= ? AND updated_at >= ?
+	`, startTime, startTime)
+	var avgTask sql.NullInt64
+	_ = row.Scan(&avgTask)
+	if avgTask.Valid {
+		stats.AvgTaskDurationMs = avgTask.Int64
+	}
+
+	// Run-level counts over the window. Running rows are left out of the
+	// average and the rate on purpose: a run that has not finished has no
+	// duration, and counting it in the denominator made the success rate dip
+	// whenever work was in flight.
 	row = c.db.QueryRowContext(ctx, `
 		SELECT
 			COUNT(CASE WHEN status = 'success' THEN 1 END),
 			COUNT(CASE WHEN status = 'failed' THEN 1 END),
-			CAST(AVG(duration_ms) AS INTEGER),
-			CAST(COUNT(CASE WHEN status = 'success' THEN 1 END) AS FLOAT) /
-				NULLIF(COUNT(*), 0)
+			CAST(AVG(CASE WHEN status IN ('success','failed') THEN duration_ms END) AS INTEGER)
 		FROM task_executions
 		WHERE created_at >= ?
-	`, todayStart)
-	var avgMs sql.NullInt64
-	var successRate sql.NullFloat64
-	err := row.Scan(&stats.CompletedToday, &stats.FailedToday, &avgMs, &successRate)
-	if err == nil {
-		if avgMs.Valid {
-			stats.AvgDurationMs = avgMs.Int64
-		}
-		if successRate.Valid {
-			stats.SuccessRate = successRate.Float64
-		}
+	`, startTime)
+	var avgRun sql.NullInt64
+	_ = row.Scan(&stats.RunsCompleted, &stats.RunsFailed, &avgRun)
+	if avgRun.Valid {
+		stats.AvgRunDurationMs = avgRun.Int64
+	}
+
+	// Rates. The denominator is clamped to one hour so the first minutes after
+	// midnight do not turn a single task into "20 tasks/hour".
+	hours := time.Since(startTime).Hours()
+	if hours < 1 {
+		hours = 1
+	}
+	stats.TasksPerHour = float64(stats.TasksCompleted) / hours
+	stats.RunsPerHour = float64(stats.RunsCompleted+stats.RunsFailed) / hours
+
+	if finished := stats.TasksCompleted + stats.TasksFailed; finished > 0 {
+		stats.SuccessRate = float64(stats.TasksCompleted) / float64(finished)
+	}
+	if finished := stats.RunsCompleted + stats.RunsFailed; finished > 0 {
+		stats.RunSuccessRate = float64(stats.RunsCompleted) / float64(finished)
 	}
 
 	// Count active agents (those with recent activity).
@@ -93,7 +160,7 @@ func (c *Client) GetDashboardStats(ctx context.Context, startTime time.Time) (*D
 			COALESCE(SUM(cost_usd),0)
 		FROM task_executions
 		WHERE created_at >= ?
-	`, todayStart)
+	`, startTime)
 	_ = row.Scan(&stats.TodayInputTokens, &stats.TodayOutputTokens, &stats.TodayTokens, &stats.TodayCostUSD)
 
 	return stats, nil

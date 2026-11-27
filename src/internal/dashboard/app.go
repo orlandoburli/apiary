@@ -2966,27 +2966,40 @@ func (a *App) fetchOverview() tea.Cmd {
 
 		if dbConn != nil {
 			// Independent of the stats rollup: a waiting approval must still be
-			// reported when the 24h aggregate query fails.
+			// reported when the aggregate query fails.
 			data.PendingApprovals, _ = dbConn.CountPendingApprovals(ctx)
 
-			if stats, err := dbConn.GetDashboardStats(ctx, time.Now().AddDate(0, 0, -1)); err == nil && stats != nil {
+			// "Today" is a local-day question: time.Now().Truncate(24h) would
+			// truncate to UTC midnight and quietly include the previous evening.
+			now := time.Now()
+			startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+
+			if stats, err := dbConn.GetDashboardStats(ctx, startOfDay); err == nil && stats != nil {
 				data.Status = stats.DispatcherStatus
 				data.ActiveAgents = stats.ActiveAgents
 				data.ActiveRuns = stats.ActiveRuns
 				data.QueuedTasks = stats.QueuedTasks
-				data.CompletedToday = stats.CompletedToday
-				data.FailedToday = stats.FailedToday
-				data.AvgDuration = fmt.Sprintf("%.1fs", float64(stats.AvgDurationMs)/1000)
+
+				// Task headline.
+				data.CompletedToday = stats.TasksCompleted
+				data.FailedToday = stats.TasksFailed
+				data.AvgDuration = formatMetricDuration(stats.AvgTaskDurationMs)
 				data.SuccessRate = fmt.Sprintf("%.1f%%", stats.SuccessRate*100)
+				data.TasksPerHour = fmt.Sprintf("%.1f", stats.TasksPerHour)
+
+				// Run detail.
+				data.RunsTotal = stats.RunsCompleted + stats.RunsFailed + stats.ActiveRuns
+				data.RunsCompleted = stats.RunsCompleted
+				data.RunsFailed = stats.RunsFailed
+				data.RunsRunning = stats.ActiveRuns
+				data.AvgRunDuration = formatMetricDuration(stats.AvgRunDurationMs)
+				data.RunsPerHour = fmt.Sprintf("%.1f", stats.RunsPerHour)
+				data.RunSuccessRate = fmt.Sprintf("%.1f%%", stats.RunSuccessRate*100)
+
 				data.TodayCostUSD = stats.TodayCostUSD
 				data.TodayTokens = stats.TodayTokens
 				data.TodayInputTokens = stats.TodayInputTokens
 				data.TodayOutputTokens = stats.TodayOutputTokens
-				if stats.CompletedToday > 0 {
-					data.ThroughputRatio = fmt.Sprintf("%.1f", float64(stats.CompletedToday)/24)
-				} else {
-					data.ThroughputRatio = "0.0"
-				}
 			}
 			// Fill agent running counts from agent stats
 			if agentRows, err := dbConn.GetAgentStats(ctx); err == nil {
@@ -4292,35 +4305,71 @@ func (a *App) renderOverviewTab(height int) string {
 		approvals = StyleWarning.Render(fmt.Sprintf("%d ⏸ — Shift+A to list, a on the task to answer", o.PendingApprovals))
 	}
 
+	// Two blocks, because they answer different questions: the task block is
+	// how much work finished, the run block is how many agent processes that
+	// took. Mixing them in one list is what produced a "tasks/min" figure that
+	// was neither per task nor per minute.
 	fmt.Fprintf(&b,
-		"\nTasks (24h):\n"+
+		"\nTasks (since midnight):\n"+
 			"  Running:    %d\n"+
 			"  Queued:     %d\n"+
 			"  Approvals:  %s\n"+
 			"  Completed:  %s\n"+
-			"  Failed:     %s\n"+
-			"\n"+
-			"Usage (24h):\n"+
-			"  Cost:     %s\n"+
-			"  Tokens:   %s\n"+
-			"\n"+
-			"Metrics:\n"+
-			"  Throughput:   %s tasks/min\n"+
-			"  Avg Duration: %s\n"+
-			"  Success Rate: %s\n",
+			"  Failed:     %s\n",
 		o.ActiveRuns,
 		o.QueuedTasks,
 		approvals,
 		StyleSuccess.Render(fmt.Sprintf("%d ✓", o.CompletedToday)),
 		StyleError.Render(fmt.Sprintf("%d ✗", o.FailedToday)),
+	)
+
+	fmt.Fprintf(&b,
+		"\nRuns (since midnight):\n"+
+			"  Total:      %d — %d ok · %d failed · %d running\n"+
+			"  Avg Run:    %s\n"+
+			"  Throughput: %s runs/hour\n",
+		o.RunsTotal, o.RunsCompleted, o.RunsFailed, o.RunsRunning,
+		valueOr(o.AvgRunDuration, "—"),
+		valueOr(o.RunsPerHour, "0.0"),
+	)
+
+	fmt.Fprintf(&b,
+		"\nUsage (since midnight):\n"+
+			"  Cost:     %s\n"+
+			"  Tokens:   %s\n",
 		costStr,
 		tokensStr,
-		valueOr(o.ThroughputRatio, "0.0"),
-		valueOr(o.AvgDuration, "0.0s"),
-		valueOr(o.SuccessRate, "0.0%"),
+	)
+
+	fmt.Fprintf(&b,
+		"\nMetrics:\n"+
+			"  Throughput:   %s tasks/hour\n"+
+			"  Avg Duration: %s per task (started and finished today)\n"+
+			"  Success Rate: %s of finished tasks\n",
+		valueOr(o.TasksPerHour, "0.0"),
+		valueOr(o.AvgDuration, "—"),
+		valueOr(o.SuccessRate, "—"),
 	)
 	b.WriteString(a.renderOverviewResources())
 	return a.box("OVERVIEW", b.String(), height)
+}
+
+// formatMetricDuration renders a millisecond figure the way an operator reads
+// it — seconds, minutes or hours — instead of always in seconds, where a
+// 5-hour task shows as "21600.0s".
+func formatMetricDuration(ms int64) string {
+	if ms <= 0 {
+		return "—"
+	}
+	d := time.Duration(ms) * time.Millisecond
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%.0fs", d.Seconds())
+	case d < time.Hour:
+		return fmt.Sprintf("%.1fm", d.Minutes())
+	default:
+		return fmt.Sprintf("%.1fh", d.Hours())
+	}
 }
 
 // renderOverviewResources renders the live CPU and memory of the hive.
