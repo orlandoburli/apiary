@@ -105,6 +105,9 @@ func (a *Adapter) PollPREvents(ctx context.Context, since time.Time) ([]model.So
 		fmt.Sprintf("/repos/%s/%s/issues/comments", a.owner, a.repo),
 		url.Values{"sort": {"updated"}, "direction": {"asc"}, "since": {sinceParam}})
 	if err != nil {
+		if pollInterrupted(ctx) {
+			return nil, nil // shutdown, not an outage — see pollInterrupted
+		}
 		return nil, fmt.Errorf("github: polling issue comments: %w", err)
 	}
 	for _, cm := range comments {
@@ -143,6 +146,9 @@ func (a *Adapter) PollPREvents(ctx context.Context, since time.Time) ([]model.So
 		fmt.Sprintf("/repos/%s/%s/pulls/comments", a.owner, a.repo),
 		url.Values{"sort": {"updated"}, "direction": {"asc"}, "since": {sinceParam}})
 	if err != nil {
+		if pollInterrupted(ctx) {
+			return nil, nil // shutdown, not an outage — see pollInterrupted
+		}
 		return nil, fmt.Errorf("github: polling review comments: %w", err)
 	}
 	for _, rc := range rcomments {
@@ -181,6 +187,9 @@ func (a *Adapter) PollPREvents(ctx context.Context, since time.Time) ([]model.So
 		fmt.Sprintf("/repos/%s/%s/pulls", a.owner, a.repo),
 		url.Values{"state": {"all"}, "sort": {"updated"}, "direction": {"desc"}})
 	if err != nil {
+		if pollInterrupted(ctx) {
+			return nil, nil // shutdown, not an outage — see pollInterrupted
+		}
 		return nil, fmt.Errorf("github: polling pull requests: %w", err)
 	}
 	for _, pr := range prs {

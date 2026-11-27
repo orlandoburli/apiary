@@ -756,7 +756,11 @@ next section).
 How it works:
 
 - The PR is discovered through the issue's timeline (a PR that references
-  the issue), so the agent just needs to open a PR that links the task.
+  the issue), so the agent just needs to open a PR that links the task. The
+  whole timeline is paged (100 events per page, capped at 20 pages), so a
+  cross-reference that lands after the first page is still found; if the
+  timeline cannot be read the poll returns an error and the step logs a
+  warning instead of waiting as if CI had not started.
 - `kind: ci` needs a source that can poll check runs (GitHub today). Against a
   source that cannot — Jira, Plane, an alert source — `apiary validate` rejects
   the step at config time, wherever it sits, including inside a `parallel:`
