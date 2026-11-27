@@ -15,13 +15,12 @@ import (
 func pendingTestDispatcher(t *testing.T) (*Dispatcher, *db.Client) {
 	t.Helper()
 	dbc := openDropTestDB(t, "pending.db")
-	d := &Dispatcher{
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{
 		db:             dbc,
 		dispatchQueue:  dbc.Queue(),
 		queueProjectID: "project",
-		cfg:            &config.Config{},
 		agentRunner:    map[string]string{},
-	}
+	})
 	return d, dbc
 }
 

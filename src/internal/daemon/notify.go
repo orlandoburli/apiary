@@ -50,7 +50,7 @@ func matchedEscalationLabels(cfg *config.NotificationsConfig, added []string) []
 // asynchronously — notification is observability, it must never block or fail
 // a hook. Errors are logged and swallowed.
 func (d *Dispatcher) notifyEscalation(ev escalationEvent) {
-	n := d.cfg.Notifications
+	n := d.config().Notifications
 	if n == nil {
 		return
 	}

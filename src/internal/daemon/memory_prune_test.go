@@ -25,13 +25,12 @@ func TestPruneTaskMemoryOnce(t *testing.T) {
 		t.Fatalf("memory.Open: %v", err)
 	}
 
-	d := &Dispatcher{
+	d := dispatcherWithConfig(&config.Config{Settings: config.Settings{
+		Memory: config.MemorySettings{Enabled: true, TaskRetention: "1ms"},
+	}}, &Dispatcher{
 		db:       dbc,
 		memStore: ms,
-		cfg: &config.Config{Settings: config.Settings{
-			Memory: config.MemorySettings{Enabled: true, TaskRetention: "1ms"},
-		}},
-	}
+	})
 
 	tasks := dbc.InternalTasks()
 	mk := func(id string, state model.TaskState, parent string) {

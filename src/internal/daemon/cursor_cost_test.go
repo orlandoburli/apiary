@@ -103,7 +103,7 @@ func TestBackfillCursorCosts(t *testing.T) {
 		},
 	}}
 
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 	attempts := make(map[int64]int)
 	if err := d.backfillCursorCosts(ctx, fetcher, attempts); err != nil {
 		t.Fatalf("backfill: %v", err)
@@ -144,7 +144,7 @@ func TestBackfillCursorCostsGivesUpAfterMaxAttempts(t *testing.T) {
 
 	// No events ever match (e.g. billing data never appeared).
 	fetcher := &fakeFetcher{}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 	attempts := make(map[int64]int)
 	for i := 0; i < cursorCostMaxAttempts; i++ {
 		if err := d.backfillCursorCosts(ctx, fetcher, attempts); err != nil {
@@ -183,7 +183,7 @@ func TestBackfillCursorCostsSkipsSuspectedPollution(t *testing.T) {
 		ChargedCents: 500,
 		TokenUsage:   &cursorusage.TokenUsage{InputTokens: 4000, OutputTokens: 1000},
 	}}}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 	if err := d.backfillCursorCosts(ctx, fetcher, make(map[int64]int)); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestBackfillCursorCostsOverlapStaysUnpriced(t *testing.T) {
 		Kind:         "USAGE_EVENT_KIND_USAGE_BASED",
 		ChargedCents: 100,
 	}}}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 	if err := d.backfillCursorCosts(ctx, fetcher, make(map[int64]int)); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestBackfillCursorCostsFingerprintResolvesOverlap(t *testing.T) {
 			TokenUsage:   &cursorusage.TokenUsage{InputTokens: 105608, OutputTokens: 153},
 		},
 	}}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 	if err := d.backfillCursorCosts(ctx, fetcher, make(map[int64]int)); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}

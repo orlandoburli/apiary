@@ -31,7 +31,7 @@ func TestDropCappedMatches(t *testing.T) {
 		ID: "h0", WorkflowID: "hatch", CellID: "1", TaskID: "T1", State: db.InstanceStateFailed,
 	})
 
-	d := &Dispatcher{cfg: &config.Config{Settings: config.Settings{MaxAttempts: 3}}, db: dbc}
+	d := dispatcherWithConfig(&config.Config{Settings: config.Settings{MaxAttempts: 3}}, &Dispatcher{db: dbc})
 	task := model.InternalTask{ID: "T1"}
 	matches := []router.Match{
 		{Route: config.RouteConfig{ID: "impl"}},
@@ -44,7 +44,7 @@ func TestDropCappedMatches(t *testing.T) {
 	}
 
 	// max_attempts <= 0 disables the cap entirely.
-	d.cfg.Settings.MaxAttempts = 0
+	d.config().Settings.MaxAttempts = 0
 	if got, _ := d.dropCappedMatches(ctx, task, matches); len(got) != 2 {
 		t.Errorf("disabled cap should keep all, got %d", len(got))
 	}

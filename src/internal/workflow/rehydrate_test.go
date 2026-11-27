@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orlandoburli/apiary/internal/config"
 	"github.com/orlandoburli/apiary/internal/db"
 	"github.com/orlandoburli/apiary/internal/model"
 	"github.com/orlandoburli/apiary/internal/state"
@@ -109,7 +110,7 @@ func TestRehydrateApproval_PreservesTimeout(t *testing.T) {
 
 	parkedAt := time.Unix(0, 0)
 	clock := parkedAt
-	eng := NewEngine(cfg, store, &fakeExecutor{},
+	eng := NewEngine(func() *config.Config { return cfg }, store, &fakeExecutor{},
 		WithSideEffects(&fakeSide{}),
 		WithClock(func() time.Time { return clock }),
 		WithIDGen(func(p string) string { return p + "-1" }),

@@ -53,7 +53,7 @@ func TestRenderNotifyCommandQuotesValues(t *testing.T) {
 func TestNotifyEscalationRunsCommand(t *testing.T) {
 	dir := t.TempDir()
 	outFile := filepath.Join(dir, "out.txt")
-	d := &Dispatcher{cfg: &config.Config{
+	d := dispatcherWithConfig(&config.Config{
 		Notifications: &config.NotificationsConfig{
 			OnLabels: []string{"needs-attention"},
 			Channels: []config.NotificationChannel{{
@@ -61,7 +61,7 @@ func TestNotifyEscalationRunsCommand(t *testing.T) {
 				Run:  `printf '%s|%s|%s' {{cell_id}} {{label}} "$APIARY_TITLE" > ` + outFile,
 			}},
 		},
-	}}
+	}, &Dispatcher{})
 	d.notifyEscalation(escalationEvent{
 		CellID: "owner/repo#42",
 		Label:  "needs-attention",
@@ -90,18 +90,17 @@ func TestApplyHookFiresEscalationNotification(t *testing.T) {
 	dir := t.TempDir()
 	outFile := filepath.Join(dir, "out.txt")
 	fake := &fakeHookSource{}
-	d := &Dispatcher{
-		sources: map[string]source.Adapter{"fake": fake},
-		cfg: &config.Config{
-			Notifications: &config.NotificationsConfig{
-				OnLabels: []string{"needs-attention"},
-				Channels: []config.NotificationChannel{{
-					Type: "command",
-					Run:  `printf '%s %s' {{number}} {{label}} > ` + outFile,
-				}},
-			},
+	d := dispatcherWithConfig(&config.Config{
+		Notifications: &config.NotificationsConfig{
+			OnLabels: []string{"needs-attention"},
+			Channels: []config.NotificationChannel{{
+				Type: "command",
+				Run:  `printf '%s %s' {{number}} {{label}} > ` + outFile,
+			}},
 		},
-	}
+	}, &Dispatcher{
+		sources: map[string]source.Adapter{"fake": fake},
+	})
 	task := model.InternalTask{ID: "T-9", Title: "Deploy staging"}
 	bindings := []model.SourceBinding{{SourceID: "fake", SourceItemID: "I-9", SourceItemNumber: "ERP-42"}}
 	hook := config.OnComplete{AddLabels: []string{"needs-attention"}}

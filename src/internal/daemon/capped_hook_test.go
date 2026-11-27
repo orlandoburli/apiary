@@ -36,12 +36,12 @@ func TestParkCappedTaskPrefersOnExhausted(t *testing.T) {
 		OnFail:      &config.OnComplete{AddLabels: []string{"needs-attention"}},
 		OnExhausted: &config.OnComplete{AddLabels: []string{"needs-human"}},
 	}
-	d := &Dispatcher{cfg: &config.Config{Workflows: []config.WorkflowConfig{wf}}, db: dbc}
+	d := dispatcherWithConfig(&config.Config{Workflows: []config.WorkflowConfig{wf}}, &Dispatcher{db: dbc})
 
 	// The hook applier needs a source adapter, which this harness has none
 	// of — so assert on the hook *selection*, which is the part that was
 	// wrong before.
-	hook := cappedTaskHook(d.cfg, "impl")
+	hook := cappedTaskHook(d.config(), "impl")
 	if hook == nil {
 		t.Fatal("no hook selected for a capped workflow")
 	}
@@ -55,15 +55,15 @@ func TestParkCappedTaskPrefersOnExhausted(t *testing.T) {
 		ID:     "legacy",
 		OnFail: &config.OnComplete{AddLabels: []string{"needs-attention"}},
 	}
-	d2 := &Dispatcher{cfg: &config.Config{Workflows: []config.WorkflowConfig{wf2}}, db: dbc}
-	hook2 := cappedTaskHook(d2.cfg, "legacy")
+	d2 := dispatcherWithConfig(&config.Config{Workflows: []config.WorkflowConfig{wf2}}, &Dispatcher{db: dbc})
+	hook2 := cappedTaskHook(d2.config(), "legacy")
 	if hook2 == nil || len(hook2.AddLabels) != 1 || hook2.AddLabels[0] != "needs-attention" {
 		t.Errorf("a workflow without on_exhausted must keep on_fail, got %+v", hook2)
 	}
 
 	// A workflow with neither has nothing to apply.
-	d3 := &Dispatcher{cfg: &config.Config{Workflows: []config.WorkflowConfig{{ID: "bare"}}}, db: dbc}
-	if hook := cappedTaskHook(d3.cfg, "bare"); hook != nil {
+	d3 := dispatcherWithConfig(&config.Config{Workflows: []config.WorkflowConfig{{ID: "bare"}}}, &Dispatcher{db: dbc})
+	if hook := cappedTaskHook(d3.config(), "bare"); hook != nil {
 		t.Errorf("a workflow with no hook must select none, got %+v", hook)
 	}
 	_ = model.InternalTask{}

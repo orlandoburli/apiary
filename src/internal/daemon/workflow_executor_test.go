@@ -43,12 +43,11 @@ func TestWfStepExecutor_RecordsExecution(t *testing.T) {
 		Usage:       &model.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, CostUSD: 0.02, NumTurns: 3},
 	}}
 
-	d := &Dispatcher{
-		cfg:         &config.Config{},
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{
 		db:          dbc,
 		runners:     map[string]runnerpkg.Runner{"agent-architect": runner},
 		agentRunner: map[string]string{"architect": "claude"},
-	}
+	})
 	x := &wfStepExecutor{d: d}
 
 	res := x.ExecuteStep(ctx, workflow.StepRequest{
@@ -123,15 +122,14 @@ func TestWfStepExecutor_SumsUsageAcrossFailover(t *testing.T) {
 		Usage:   &model.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, CostUSD: 0.02, NumTurns: 3, NumToolCalls: 4},
 	}}
 
-	d := &Dispatcher{
-		cfg:         &config.Config{},
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{
 		db:          dbc,
 		runners:     map[string]runnerpkg.Runner{"agent-architect": primary},
 		agentRunner: map[string]string{"architect": "claude"},
 		agentFallbacks: map[string][]runnerCandidate{
 			"architect": {{adapter: fallback, runnerType: "claude-2", model: "claude-sonnet-4-6"}},
 		},
-	}
+	})
 	x := &wfStepExecutor{d: d}
 
 	res := x.ExecuteStep(ctx, workflow.StepRequest{
@@ -177,12 +175,11 @@ func TestWfStepExecutor_PublishPropagation(t *testing.T) {
 		Output:         "done",
 		PublishPayload: "## Result\nshipped",
 	}}
-	d := &Dispatcher{
-		cfg:         &config.Config{},
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{
 		db:          dbc,
 		runners:     map[string]runnerpkg.Runner{"agent-architect": runner},
 		agentRunner: map[string]string{"architect": "claude"},
-	}
+	})
 	x := &wfStepExecutor{d: d}
 
 	// Default (publish unset == auto): payload propagates.
@@ -218,12 +215,11 @@ func TestWfStepExecutor_SpawnPropagationAndError(t *testing.T) {
 	t.Cleanup(func() { _ = dbc.Close() })
 
 	newExec := func(res model.RunResult) *wfStepExecutor {
-		d := &Dispatcher{
-			cfg:         &config.Config{},
+		d := dispatcherWithConfig(&config.Config{}, &Dispatcher{
 			db:          dbc,
 			runners:     map[string]runnerpkg.Runner{"agent-architect": &fakeRunner{result: res}},
 			agentRunner: map[string]string{"architect": "claude"},
-		}
+		})
 		return &wfStepExecutor{d: d}
 	}
 	step := config.StepConfig{ID: "plan", Agent: "architect"}

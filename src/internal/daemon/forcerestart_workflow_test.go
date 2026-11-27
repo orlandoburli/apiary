@@ -23,7 +23,7 @@ func TestForceRestart_InterruptsWorkflowInstance(t *testing.T) {
 
 	// Sanity: the running instance shadows its workflow before the restart.
 	match := router.Match{Route: config.RouteConfig{ID: "wf"}}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 	if kept, _ := d.dropActiveMatches(ctx, taskID, []router.Match{match}); len(kept) != 0 {
 		t.Fatalf("precondition: running instance should shadow the workflow, got %d kept", len(kept))
 	}

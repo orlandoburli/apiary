@@ -52,8 +52,7 @@ func exclusiveSuppressionFixture(t *testing.T) (*Dispatcher, *db.Client, *record
 	if err != nil {
 		t.Fatalf("router: %v", err)
 	}
-	d := &Dispatcher{
-		cfg:         cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:          dbc,
 		router:      rt,
 		sources:     map[string]source.Adapter{"src": adapter},
@@ -61,7 +60,7 @@ func exclusiveSuppressionFixture(t *testing.T) (*Dispatcher, *db.Client, *record
 		agentRunner: map[string]string{"a": "claude"},
 		agentSem:    map[string]chan struct{}{},
 		stats:       map[string]*sourceStat{"src": {}},
-	}
+	})
 	d.binder = source.NewSourceBinder(dbc)
 
 	// Bind the item exactly as a poll would, then record the spent `once` run so

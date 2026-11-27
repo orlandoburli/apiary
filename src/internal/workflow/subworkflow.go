@@ -167,9 +167,9 @@ func (e *Engine) runChildInstance(ctx context.Context, parentInstID string, chil
 
 // findWorkflow looks up a workflow definition by ID in the config.
 func (e *Engine) findWorkflow(id string) *config.WorkflowConfig {
-	for i := range e.cfg.Workflows {
-		if e.cfg.Workflows[i].ID == id {
-			return &e.cfg.Workflows[i]
+	for i := range e.conf().Workflows {
+		if e.conf().Workflows[i].ID == id {
+			return &e.conf().Workflows[i]
 		}
 	}
 	return nil

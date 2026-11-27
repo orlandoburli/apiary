@@ -135,8 +135,7 @@ func TestCheckWaits_SlowAdvanceDoesNotStarveRecheck(t *testing.T) {
 	runner := &gateRunner{blockCell: "A", blockStep: "review",
 		entered: make(chan struct{}), release: make(chan struct{})}
 
-	d := &Dispatcher{
-		cfg:         cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:          dbc,
 		sources:     map[string]source.Adapter{"src": adapter},
 		runners:     map[string]runnerpkg.Runner{"agent-eng": runner},
@@ -144,7 +143,7 @@ func TestCheckWaits_SlowAdvanceDoesNotStarveRecheck(t *testing.T) {
 		// Capacity 1: a wedged advance saturates the agent, so a re-check that is
 		// (incorrectly) gated behind it would starve.
 		agentSem: map[string]chan struct{}{"eng": make(chan struct{}, 1)},
-	}
+	})
 	d.binder = source.NewSourceBinder(dbc)
 
 	// Bind two source items so each instance's cell id matches its CI key.

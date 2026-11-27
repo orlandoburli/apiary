@@ -82,7 +82,7 @@ func taskHookCfg() *config.Config {
 
 func trackerEngine(cfg *config.Config, store Store, exec StepExecutor, side SideEffects, tr TaskTracker) *Engine {
 	var seq atomic.Int64
-	return NewEngine(cfg, store, exec,
+	return NewEngine(func() *config.Config { return cfg }, store, exec,
 		WithSideEffects(side),
 		WithTaskTracker(tr),
 		WithClock(func() time.Time { return time.Unix(1000, 0) }),
@@ -176,7 +176,7 @@ func TestEngine_TaskHookNoTrackerIsNoOp(t *testing.T) {
 	side := &fakeSide{}
 	// No WithTaskTracker.
 	var seq atomic.Int64
-	eng := NewEngine(cfg, store, exec,
+	eng := NewEngine(func() *config.Config { return cfg }, store, exec,
 		WithSideEffects(side),
 		WithClock(func() time.Time { return time.Unix(1000, 0) }),
 		WithIDGen(func(prefix string) string { return prefix + "-" + itoa(int(seq.Add(1))) }),

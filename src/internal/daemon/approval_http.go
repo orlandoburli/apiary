@@ -114,7 +114,7 @@ func (d *Dispatcher) handleApprovalResponse(ctx context.Context, w http.Response
 	// cli — and anything else is normalized away rather than trusted verbatim.
 	// On /webhook it is forced, because that label carries the signature check.
 	if parts[1] == "webhook" {
-		if !validApprovalSignature(d.cfg.Settings.Approvals.WebhookSecret, body, r.Header.Get("X-Apiary-Signature")) {
+		if !validApprovalSignature(d.config().Settings.Approvals.WebhookSecret, body, r.Header.Get("X-Apiary-Signature")) {
 			http.Error(w, "invalid webhook signature", http.StatusUnauthorized)
 			return
 		}

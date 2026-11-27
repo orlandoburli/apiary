@@ -34,7 +34,7 @@ type cursorEventFetcher interface {
 // executions from Cursor's dashboard usage API. Runs once at startup and then
 // every settings.cursor_cost.interval until ctx is cancelled.
 func (d *Dispatcher) cursorCostLoop(ctx context.Context) {
-	cc := d.cfg.Settings.CursorCost
+	cc := d.config().Settings.CursorCost
 	token := cc.SessionToken
 	if token == "" {
 		token = os.Getenv("CURSOR_SESSION_TOKEN")
@@ -71,7 +71,7 @@ func (d *Dispatcher) cursorCostLoop(ctx context.Context) {
 // tracks per-execution retries across sweeps so rows whose events never
 // resolve are eventually abandoned.
 func (d *Dispatcher) backfillCursorCosts(ctx context.Context, fetcher cursorEventFetcher, attempts map[int64]int) error {
-	since := time.Now().Add(-d.cfg.Settings.CursorCost.MaxAgeDuration())
+	since := time.Now().Add(-d.config().Settings.CursorCost.MaxAgeDuration())
 	rows, err := d.db.ListUnpricedExecutions(ctx, cursorCostRunner, since)
 	if err != nil {
 		return err

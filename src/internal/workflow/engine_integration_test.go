@@ -33,7 +33,7 @@ func TestEngine_PersistsToRealSQLite(t *testing.T) {
 
 	// Real db.Client satisfies the Store interface.
 	var store Store = client
-	eng := NewEngine(cfg, store, exec)
+	eng := NewEngine(func() *config.Config { return cfg }, store, exec)
 
 	wf := synthWF(config.RouteConfig{
 		ID: "backend-bugs", Agent: "backend-dev",
@@ -101,7 +101,7 @@ func TestEngine_FailedStepPersistsFailedState(t *testing.T) {
 
 	cfg := &config.Config{Agents: []config.AgentConfig{{ID: "a", Model: "m"}}}
 	exec := &fakeExecutor{results: map[string]StepResult{"run": {Success: false, Output: "boom"}}}
-	eng := NewEngine(cfg, client, exec)
+	eng := NewEngine(func() *config.Config { return cfg }, client, exec)
 
 	wf := synthWF(config.RouteConfig{ID: "r", Agent: "a"})
 	instID, success, _ := eng.RunInstance(ctx, wf, model.InternalTask{ID: "C1"})

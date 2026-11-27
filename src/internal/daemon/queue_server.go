@@ -14,7 +14,8 @@ import (
 )
 
 func (d *Dispatcher) startQueueProtocolServer(ctx context.Context, wg *sync.WaitGroup) error {
-	address := strings.TrimSpace(d.cfg.Settings.Queue.Listen)
+	cfg := d.config()
+	address := strings.TrimSpace(cfg.Settings.Queue.Listen)
 	if address == "" {
 		return nil
 	}
@@ -26,9 +27,9 @@ func (d *Dispatcher) startQueueProtocolServer(ctx context.Context, wg *sync.Wait
 		return fmt.Errorf("listen for queue workers on %s: %w", address, err)
 	}
 	handler := queuehttp.Server{
-		Store: d.dispatchQueue, Token: d.cfg.Settings.Queue.WorkerToken,
-		LeaseDuration: d.cfg.Settings.Queue.LeaseDurationValue(),
-		WorkerTimeout: d.cfg.Settings.Queue.WorkerTimeoutValue(), Policy: d.queuePolicy(),
+		Store: d.dispatchQueue, Token: cfg.Settings.Queue.WorkerToken,
+		LeaseDuration: cfg.Settings.Queue.LeaseDurationValue(),
+		WorkerTimeout: cfg.Settings.Queue.WorkerTimeoutValue(), Policy: d.queuePolicy(),
 		OnTerminal: d.settleRemoteQueueJob,
 	}.Handler()
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}

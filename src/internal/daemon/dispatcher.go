@@ -48,7 +48,7 @@ type sourceStat struct {
 // Dispatcher polls configured sources, routes cells to workers, and manages
 // concurrent runner invocations.
 type Dispatcher struct {
-	cfg        *config.Config
+	cfgPtr     atomic.Pointer[config.Config]
 	configFile string
 	startedAt  time.Time
 
@@ -200,8 +200,8 @@ func (d *Dispatcher) pauseRunnerWithKind(runnerType string, until time.Time, kin
 		switch kind {
 		case model.FailureCreditExhausted:
 			cooldown := 24 * time.Hour
-			if d.cfg != nil {
-				cooldown = d.cfg.Settings.CreditExhaustedCooldownDuration()
+			if cfg := d.config(); cfg != nil {
+				cooldown = cfg.Settings.CreditExhaustedCooldownDuration()
 			}
 			until = time.Now().Add(cooldown)
 		case model.FailureAborted:
@@ -222,6 +222,12 @@ func (d *Dispatcher) pauseRunnerWithKind(runnerType string, until time.Time, kin
 		d.rateLimitPaused[runnerType] = until
 	}
 	return until
+}
+
+// config returns the current configuration. Reload swaps the pointer
+// wholesale and never mutates a live config, so readers need no lock.
+func (d *Dispatcher) config() *config.Config {
+	return d.cfgPtr.Load()
 }
 
 // New builds and connects a Dispatcher from the given config.
@@ -246,7 +252,6 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 	}
 
 	d := &Dispatcher{
-		cfg:             cfg,
 		configFile:      configFile,
 		startedAt:       time.Now(),
 		router:          r,
@@ -261,6 +266,7 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 		agentSem:        make(map[string]chan struct{}),
 		stats:           make(map[string]*sourceStat),
 	}
+	d.cfgPtr.Store(cfg)
 
 	registry, pluginErrs := plugin.DiscoverConfigured(cfg.PluginDirs, configFile, version.Version)
 	pluginErrs = append(pluginErrs, plugin.ValidateConfigured(registry, cfg.Plugins)...)
@@ -507,10 +513,11 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 // Start launches one poll goroutine per source.
 // Cancel ctx to initiate a graceful shutdown; then call wg.Wait().
 func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
+	cfg := d.config()
 	// Enforce the shared git hooks directory on the agents' repo checkouts
 	// (settings.git_hooks) before the first dispatch, so pre-push hooks gate
 	// agent pushes from the very first run.
-	installGitHooks(d.cfg.Settings.GitHooks)
+	installGitHooks(cfg.Settings.GitHooks)
 
 	// Say so, once, before the first dispatch when an agent declares a skill
 	// that is not on disk: the run would otherwise proceed with the agent
@@ -600,7 +607,7 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		}()
 	}
 	if d.db != nil {
-		if retention := d.cfg.Settings.Events.RetentionDuration(); retention > 0 {
+		if retention := cfg.Settings.Events.RetentionDuration(); retention > 0 {
 			if n, err := d.db.PruneExecutionEventsBefore(ctx, time.Now().Add(-retention)); err != nil {
 				aplog.Warn("prune execution events: %v", err)
 			} else if n > 0 {
@@ -662,8 +669,8 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 	// Prune old service_logs/task_logs rows once at startup and then daily,
 	// mirroring the file-side retention (settings.log_max_age_days). Without
 	// this the log tables dominate apiary.db on long-lived deployments.
-	if d.db != nil && d.cfg.Settings.LogMaxAgeDays > 0 {
-		maxAge := time.Duration(d.cfg.Settings.LogMaxAgeDays) * 24 * time.Hour
+	if d.db != nil && cfg.Settings.LogMaxAgeDays > 0 {
+		maxAge := time.Duration(cfg.Settings.LogMaxAgeDays) * 24 * time.Hour
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -685,7 +692,7 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 	// Back-fill cost_usd on finished cursor-cli executions from Cursor's
 	// dashboard usage API (settings.cursor_cost), at startup and then every
 	// sweep interval. The Cursor agent CLI streams token counts but no cost.
-	if d.db != nil && d.cfg.Settings.CursorCost.Enabled {
+	if d.db != nil && cfg.Settings.CursorCost.Enabled {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -705,7 +712,7 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		}()
 	}
 
-	for _, sc := range d.cfg.Sources {
+	for _, sc := range cfg.Sources {
 		sc := sc
 		adapter, ok := d.sources[sc.ID]
 		if !ok {
@@ -768,7 +775,7 @@ func (d *Dispatcher) pruneMemoryLoop(ctx context.Context) {
 // pruneTaskMemoryOnce runs one retention sweep over the task-memory note files
 // and returns how many were deleted.
 func (d *Dispatcher) pruneTaskMemoryOnce(ctx context.Context) int {
-	retention := d.cfg.Settings.Memory.TaskRetentionDuration()
+	retention := d.config().Settings.Memory.TaskRetentionDuration()
 	notes, err := d.memStore.ListTaskNotes()
 	if err != nil {
 		aplog.Warn("prune task memory: %v", err)
@@ -833,7 +840,7 @@ func (d *Dispatcher) DryRun(ctx context.Context) error {
 	total := 0
 	matched := 0
 
-	for _, sc := range d.cfg.Sources {
+	for _, sc := range d.config().Sources {
 		adapter, ok := d.sources[sc.ID]
 		if !ok {
 			continue
@@ -879,7 +886,7 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 	var mu sync.Mutex
 	var failedIDs []string
 
-	for _, sc := range d.cfg.Sources {
+	for _, sc := range d.config().Sources {
 		adapter, ok := d.sources[sc.ID]
 		if !ok {
 			continue
@@ -933,6 +940,7 @@ func (d *Dispatcher) RunOnce(ctx context.Context) error {
 
 // Status returns a snapshot for the IPC status endpoint.
 func (d *Dispatcher) Status() StatusResponse {
+	cfg := d.config()
 	// Build per-agent concurrency status.
 	//
 	// This counts the agent processes that are actually running, not the
@@ -947,7 +955,7 @@ func (d *Dispatcher) Status() StatusResponse {
 	// it uses the same liveness rule as the dashboard's Running tab, so the
 	// status and the dashboard cannot disagree about the same process.
 	agentStatus := make(map[string]int)
-	for _, ac := range d.cfg.Agents {
+	for _, ac := range cfg.Agents {
 		agentStatus[ac.ID] = 0
 	}
 	if d.db != nil {
@@ -968,13 +976,13 @@ func (d *Dispatcher) Status() StatusResponse {
 		ConfigFile: d.configFile,
 		Uptime:     humanDuration(time.Since(d.startedAt)),
 		Concurrency: ConcurrencyStatus{
-			Max:         d.cfg.Settings.Concurrency,
+			Max:         cfg.Settings.Concurrency,
 			Active:      int(d.active.Load()),
 			AgentActive: agentStatus,
 		},
 	}
 
-	for _, sc := range d.cfg.Sources {
+	for _, sc := range cfg.Sources {
 		st := d.getStat(sc.ID)
 		ago := "never"
 		if !st.lastPoll.IsZero() {
@@ -1012,7 +1020,7 @@ func (d *Dispatcher) Status() StatusResponse {
 		}
 		if workers, err := d.dispatchQueue.ListWorkers(context.Background()); err == nil {
 			for _, worker := range workers {
-				resp.Queue.Workers = append(resp.Queue.Workers, QueueWorkerStatus{ID: worker.ID, Pool: worker.Pool, Ready: worker.Ready, Healthy: time.Since(worker.LastHeartbeat) <= d.cfg.Settings.Queue.WorkerTimeoutValue(), Draining: worker.Draining, Capacity: worker.Capacity, ActiveJobs: worker.ActiveJobs, LastHeartbeat: humanDuration(time.Since(worker.LastHeartbeat)) + " ago"})
+				resp.Queue.Workers = append(resp.Queue.Workers, QueueWorkerStatus{ID: worker.ID, Pool: worker.Pool, Ready: worker.Ready, Healthy: time.Since(worker.LastHeartbeat) <= cfg.Settings.Queue.WorkerTimeoutValue(), Draining: worker.Draining, Capacity: worker.Capacity, ActiveJobs: worker.ActiveJobs, LastHeartbeat: humanDuration(time.Since(worker.LastHeartbeat)) + " ago"})
 			}
 		}
 	}
@@ -1169,6 +1177,7 @@ func (d *Dispatcher) resolveHistoryTaskID(ctx context.Context, source, item stri
 // id; that, and anything else that resolves to nothing, returns ErrUnknownCell
 // and touches nothing.
 func (d *Dispatcher) ForceRestart(ctx context.Context, ref string) (RestartResult, error) {
+	cfg := d.config()
 	cellID, number, err := d.resolveCellRef(ctx, ref, "")
 	if err != nil {
 		return RestartResult{CellID: ref}, err
@@ -1241,7 +1250,7 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, ref string) (RestartResul
 	}
 
 	// Reset the source state (set back to todo) so the next poll picks it up
-	for _, sc := range d.cfg.Sources {
+	for _, sc := range cfg.Sources {
 		if adapter, ok := d.sources[sc.ID]; ok {
 			if ss, ok := adapter.(source.StateSetter); ok {
 				_ = ss.SetState(ctx, model.SourceItem{ID: cellID}, "todo")
@@ -1259,7 +1268,7 @@ func (d *Dispatcher) ForceRestart(ctx context.Context, ref string) (RestartResul
 		restartCell    model.SourceItem
 		restartAdapter source.Adapter
 	)
-	for _, sc := range d.cfg.Sources {
+	for _, sc := range cfg.Sources {
 		adapter, ok := d.sources[sc.ID]
 		if !ok {
 			continue
@@ -1498,7 +1507,7 @@ func (d *Dispatcher) controlLabels(cell model.SourceItem) []string {
 			excluded[strings.ToLower(l)] = true
 		}
 	}
-	for _, wf := range d.cfg.Workflows {
+	for _, wf := range d.config().Workflows {
 		if wf.Trigger != nil {
 			collect(wf.Trigger.Match)
 		}
@@ -2419,7 +2428,7 @@ func (d *Dispatcher) dropOnceMatches(ctx context.Context, taskID string, matches
 // set when the workflow defines one). Fail-open: on a count error the match is
 // kept (the cap is a safety net, not a correctness guard).
 func (d *Dispatcher) dropCappedMatches(ctx context.Context, task model.InternalTask, matches []router.Match) ([]router.Match, []droppedMatch) {
-	limit := d.cfg.Settings.MaxAttempts
+	limit := d.config().Settings.MaxAttempts
 	if limit <= 0 {
 		return matches, nil
 	}
@@ -2449,7 +2458,7 @@ func (d *Dispatcher) dropCappedMatches(ctx context.Context, task model.InternalT
 // the workflow has no on_fail (e.g. the hatch-* escape hatches) — the cap still
 // stops re-dispatch, the item just keeps being polled harmlessly.
 func (d *Dispatcher) parkCappedTask(ctx context.Context, task model.InternalTask, workflowID string) {
-	hook := cappedTaskHook(d.cfg, workflowID)
+	hook := cappedTaskHook(d.config(), workflowID)
 	if hook == nil {
 		return
 	}
@@ -2611,7 +2620,7 @@ func (d *Dispatcher) writeOpencodeAgent(ctx context.Context, ac config.AgentConf
 	fmt.Fprintf(&b, "description: %s\n", ac.Description)
 	b.WriteString("mode: primary\n")
 	b.WriteString("permission:\n")
-	perms := agentPermissions(ac, d.cfg.Settings.LeastPrivilegeAgents)
+	perms := agentPermissions(ac, d.config().Settings.LeastPrivilegeAgents)
 	for _, tool := range agentTools {
 		fmt.Fprintf(&b, "  %s: %s\n", tool, perms[tool])
 	}
@@ -2673,7 +2682,7 @@ func (d *Dispatcher) registerAgentInConfig(workDir string, ac config.AgentConfig
 		"mode":        "primary",
 		"prompt":      "{file:./agents/" + ac.ID + ".md}",
 		"skills":      ac.Skills,
-		"permission":  permissionMap(ac, d.cfg.Settings.LeastPrivilegeAgents),
+		"permission":  permissionMap(ac, d.config().Settings.LeastPrivilegeAgents),
 	}
 
 	agents, _ := cfg["agent"].(map[string]any)
@@ -2734,7 +2743,8 @@ func (d *Dispatcher) runnerConfigWithMCPs(base map[string]any, runnerMCPs, agent
 // os.Executable is used rather than "apiary" from PATH so a run always talks to
 // the same build as its daemon, even from a development tree.
 func (d *Dispatcher) questionMCPServer() (model.MCPServer, bool) {
-	if d.cfg == nil || !d.cfg.Settings.Questions.IsEnabled() {
+	cfg := d.config()
+	if cfg == nil || !cfg.Settings.Questions.IsEnabled() {
 		return model.MCPServer{}, false
 	}
 	exe, err := os.Executable()
@@ -2798,13 +2808,14 @@ func workerRunConfig(wc config.WorkerConfig) map[string]any {
 // the per-agent semaphore, and persists the YAML file.
 // Supported fields: model, max_workers, runner.
 func (d *Dispatcher) UpdateAgentConfig(ctx context.Context, agentID, newModel, newRunner string, maxWorkers int) error {
+	cfg := d.config()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	var agent *config.AgentConfig
-	for i := range d.cfg.Agents {
-		if d.cfg.Agents[i].ID == agentID {
-			agent = &d.cfg.Agents[i]
+	for i := range cfg.Agents {
+		if cfg.Agents[i].ID == agentID {
+			agent = &cfg.Agents[i]
 			break
 		}
 	}
@@ -2815,9 +2826,9 @@ func (d *Dispatcher) UpdateAgentConfig(ctx context.Context, agentID, newModel, n
 	if newRunner != "" && newRunner != agent.Runner {
 		// Look up the runner config
 		var rc *config.RunnerConfig
-		for i := range d.cfg.Runners {
-			if d.cfg.Runners[i].ID == newRunner {
-				rc = &d.cfg.Runners[i]
+		for i := range cfg.Runners {
+			if cfg.Runners[i].ID == newRunner {
+				rc = &cfg.Runners[i]
 				break
 			}
 		}
@@ -2859,7 +2870,7 @@ func (d *Dispatcher) UpdateAgentConfig(ctx context.Context, agentID, newModel, n
 	// Persist to YAML (surgical update preserving env vars)
 	if d.configFile != "" {
 		diff := config.AgentDiff{ID: agentID, Model: newModel, Runner: newRunner, MaxWorkers: maxWorkers}
-		if err := d.cfg.ApplyAgentDiff(d.configFile, diff); err != nil {
+		if err := cfg.ApplyAgentDiff(d.configFile, diff); err != nil {
 			return fmt.Errorf("persisting config: %w", err)
 		}
 	}

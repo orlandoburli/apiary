@@ -29,7 +29,7 @@ func ciSourceWorkflow() config.WorkflowConfig {
 func ciSourceEngine(store Store, exec StepExecutor, clock *time.Time,
 	ci func(CIStatusRequest) (source.CIStatus, error)) *Engine {
 	var seq atomic.Int64
-	return NewEngine(baseCfg(), store, exec,
+	return NewEngine(func() *config.Config { return baseCfg() }, store, exec,
 		WithSideEffects(&fakeSide{}),
 		WithClock(func() time.Time { return *clock }),
 		WithIDGen(func(prefix string) string { return prefix + "-" + itoa(int(seq.Add(1))) }),

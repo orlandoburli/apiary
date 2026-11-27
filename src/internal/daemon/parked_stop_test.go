@@ -102,19 +102,18 @@ func newParkedStopFixture(t *testing.T, ctx context.Context, wf config.WorkflowC
 // dispatcher builds a Dispatcher over the fixture's database. Calling it again
 // models a daemon restart: the new engine starts with an empty parked set.
 func (f *parkedStopFixture) dispatcher(wf config.WorkflowConfig) *Dispatcher {
-	d := &Dispatcher{
-		cfg: &config.Config{
-			Version:   "1",
-			Sources:   []config.SourceConfig{{ID: "src", Type: "fake"}},
-			Agents:    []config.AgentConfig{{ID: "eng", Model: "test/model"}},
-			Workflows: []config.WorkflowConfig{wf},
-		},
+	d := dispatcherWithConfig(&config.Config{
+		Version:   "1",
+		Sources:   []config.SourceConfig{{ID: "src", Type: "fake"}},
+		Agents:    []config.AgentConfig{{ID: "eng", Model: "test/model"}},
+		Workflows: []config.WorkflowConfig{wf},
+	}, &Dispatcher{
 		db:          f.dbc,
 		sources:     map[string]source.Adapter{"src": f.adapter},
 		runners:     map[string]runnerpkg.Runner{"agent-eng": f.runner},
 		agentRunner: map[string]string{"eng": "claude"},
 		agentSem:    map[string]chan struct{}{"eng": make(chan struct{}, 1)},
-	}
+	})
 	d.binder = source.NewSourceBinder(f.dbc)
 	return d
 }

@@ -68,7 +68,7 @@ func startManual(t *testing.T, d *Dispatcher) ManualRunResult {
 func TestRunWorkflowManual_InstanceExistsWhenItReturns(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, dbc := manualDispatcher(t)
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 
 	res := startManual(t, d)
 
@@ -115,7 +115,7 @@ func TestManualRunHandler_ReturnsInstanceID(t *testing.T) {
 func TestQueuedManualRun_AdoptsReservedInstance(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, dbc := manualDispatcher(t)
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	res := startManual(t, d)
 
 	job := queueJobFor(t, dbc, "impl")
@@ -169,7 +169,7 @@ func TestInlineManualRun_AdoptsReservedInstance(t *testing.T) {
 func TestStopInstance_CancelsQueuedReservation(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, dbc := manualDispatcher(t)
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	res := startManual(t, d)
 	before := outstanding(t, dbc, res.TaskID)
 
@@ -216,7 +216,7 @@ func TestSettleQueueJob_ResolvesReservation(t *testing.T) {
 		t.Run(string(tc.job), func(t *testing.T) {
 			ctx := context.Background()
 			d, adapter, dbc := manualDispatcher(t)
-			d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+			d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 			res := startManual(t, d)
 			before := outstanding(t, dbc, res.TaskID)
 
@@ -245,7 +245,7 @@ func TestSettleQueueJob_ResolvesReservation(t *testing.T) {
 func TestSettleQueueJob_LeavesAdoptedInstanceAlone(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, dbc := manualDispatcher(t)
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	res := startManual(t, d)
 	before := outstanding(t, dbc, res.TaskID)
 
@@ -273,7 +273,7 @@ func TestSettleQueueJob_LeavesAdoptedInstanceAlone(t *testing.T) {
 func TestQueuedManualRun_RedeliveryRunsAsNewInstance(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, dbc := manualDispatcher(t)
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	res := startManual(t, d)
 
 	if ok, err := dbc.LeaveQueuedState(ctx, res.InstanceID, db.InstanceStateBlocked, "interrupted"); !ok || err != nil {
@@ -301,7 +301,7 @@ func (failingQueue) Enqueue(context.Context, *queue.Job) (bool, error) {
 func TestRunWorkflowManual_EnqueueFailureIsAnError(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, dbc := manualDispatcher(t)
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	d.dispatchQueue = failingQueue{d.dispatchQueue}
 
 	res, err := d.RunWorkflowManual(ctx, ManualRunRequest{WorkflowID: "impl", ItemRef: "c1"})
@@ -318,7 +318,7 @@ func TestRunWorkflowManual_EnqueueFailureIsAnError(t *testing.T) {
 func TestPollDispatch_ReservesNothing(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, dbc := manualDispatcher(t)
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 
 	job := queueJobFor(t, dbc, "triage")
 	if strings.Contains(string(job.Payload), "instance_id") {

@@ -55,7 +55,7 @@ func TestCheckResolved_OffByDefault(t *testing.T) {
 	_, instID := seedBoundTask(ctx, t, dbc, "prod-alerts", "fp:2026-01-01T00:00:00Z")
 
 	adapter := &fakeResolver{resolved: []string{"fp:2026-01-01T00:00:00Z"}}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 	d.checkResolved(ctx, srcCfg(false), adapter)
 
 	if len(adapter.asked) != 0 {
@@ -74,7 +74,7 @@ func TestCheckResolved_StopsInstance(t *testing.T) {
 	_, instID := seedBoundTask(ctx, t, dbc, "prod-alerts", itemID)
 
 	adapter := &fakeResolver{resolved: []string{itemID}}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 	d.checkResolved(ctx, srcCfg(true), adapter)
 
 	if len(adapter.asked) != 1 || len(adapter.asked[0]) != 1 || adapter.asked[0][0] != itemID {
@@ -92,7 +92,7 @@ func TestCheckResolved_LeavesUnresolvedRunning(t *testing.T) {
 	_, instID := seedBoundTask(ctx, t, dbc, "prod-alerts", "fp:2026-01-01T00:00:00Z")
 
 	adapter := &fakeResolver{} // nothing resolved
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 	d.checkResolved(ctx, srcCfg(true), adapter)
 
 	if got := instanceState(ctx, t, dbc, instID); got != db.InstanceStateRunning {
@@ -108,7 +108,7 @@ func TestCheckResolved_FailsClosedOnError(t *testing.T) {
 	_, instID := seedBoundTask(ctx, t, dbc, "prod-alerts", itemID)
 
 	adapter := &fakeResolver{resolved: []string{itemID}, err: errors.New("alertmanager unreachable")}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 	d.checkResolved(ctx, srcCfg(true), adapter)
 
 	if got := instanceState(ctx, t, dbc, instID); got != db.InstanceStateRunning {
@@ -124,7 +124,7 @@ func TestCheckResolved_IgnoresOtherSources(t *testing.T) {
 	_, otherInst := seedBoundTask(ctx, t, dbc, "github", "1956")
 
 	adapter := &fakeResolver{resolved: []string{"1956"}}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 	d.checkResolved(ctx, srcCfg(true), adapter)
 
 	if len(adapter.asked) != 0 {
@@ -148,7 +148,7 @@ func TestCheckResolved_StopsParkedInstance(t *testing.T) {
 			}
 
 			adapter := &fakeResolver{resolved: []string{itemID}}
-			d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+			d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 			d.checkResolved(ctx, srcCfg(true), adapter)
 
 			if got := instanceState(ctx, t, dbc, instID); got != db.InstanceStateBlocked {
@@ -169,7 +169,7 @@ func TestCheckResolved_LeavesTerminalInstances(t *testing.T) {
 	}
 
 	adapter := &fakeResolver{resolved: []string{itemID}}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 	d.checkResolved(ctx, srcCfg(true), adapter)
 
 	if len(adapter.asked) != 0 {
@@ -186,7 +186,7 @@ func TestCheckResolved_NoInFlightWork(t *testing.T) {
 	dbc := openTestDB(ctx, t)
 
 	adapter := &fakeResolver{}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 	d.checkResolved(ctx, srcCfg(true), adapter)
 
 	if len(adapter.asked) != 0 {

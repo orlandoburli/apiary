@@ -260,7 +260,7 @@ func (f *fakeSpawner) lastRequest() (model.SpawnRequest, bool) {
 
 func testEngine(cfg *config.Config, store Store, exec StepExecutor, side SideEffects) *Engine {
 	var seq atomic.Int64
-	return NewEngine(cfg, store, exec,
+	return NewEngine(func() *config.Config { return cfg }, store, exec,
 		WithSideEffects(side),
 		WithClock(func() time.Time { return time.Unix(1000, 0) }),
 		WithIDGen(func(prefix string) string {
@@ -272,7 +272,7 @@ func testEngine(cfg *config.Config, store Store, exec StepExecutor, side SideEff
 // testEngineWithSpawner builds a test engine wired with a spawner.
 func testEngineWithSpawner(cfg *config.Config, store Store, exec StepExecutor, side SideEffects, sp WorkflowSpawner) *Engine {
 	var seq atomic.Int64
-	return NewEngine(cfg, store, exec,
+	return NewEngine(func() *config.Config { return cfg }, store, exec,
 		WithSideEffects(side),
 		WithSpawner(sp),
 		WithClock(func() time.Time { return time.Unix(1000, 0) }),
@@ -901,7 +901,7 @@ func TestSynthWF(t *testing.T) {
 // the id the caller was given, or the two sides would disagree about the run.
 func TestRunReservedInstance_CreatesMissingRowUnderTheSameID(t *testing.T) {
 	store := newFakeStore()
-	e := NewEngine(&config.Config{}, store, &fakeExecutor{})
+	e := NewEngine(func() *config.Config { return &config.Config{} }, store, &fakeExecutor{})
 	wf := config.WorkflowConfig{ID: "w", Steps: []config.StepConfig{{ID: "s", Agent: "a"}}}
 
 	id, _, err := e.RunReservedInstance(context.Background(), wf, model.InternalTask{ID: "t1"}, "wf_reserved")

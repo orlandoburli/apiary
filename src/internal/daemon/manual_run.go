@@ -299,11 +299,12 @@ func (d *Dispatcher) RunWorkflowManual(ctx context.Context, req ManualRunRequest
 // workflowIDs returns every configured workflow id, sorted — the "did you mean"
 // list on an unknown id.
 func (d *Dispatcher) workflowIDs() []string {
-	if d.cfg == nil {
+	cfg := d.config()
+	if cfg == nil {
 		return nil
 	}
-	ids := make([]string, 0, len(d.cfg.Workflows))
-	for _, wf := range d.cfg.Workflows {
+	ids := make([]string, 0, len(cfg.Workflows))
+	for _, wf := range cfg.Workflows {
 		if wf.ID != "" {
 			ids = append(ids, wf.ID)
 		}
@@ -467,7 +468,7 @@ func (d *Dispatcher) manualSourceForDiscovery(sourceID string) (string, error) {
 	}
 
 	var candidates []string
-	for _, sc := range d.cfg.Sources {
+	for _, sc := range d.config().Sources {
 		if adapter, ok := d.sources[sc.ID]; ok {
 			if _, ok := adapter.(source.TaskPoller); ok {
 				candidates = append(candidates, sc.ID)
@@ -488,11 +489,12 @@ func (d *Dispatcher) manualSourceForDiscovery(sourceID string) (string, error) {
 
 // sourceIDs returns every configured source id, sorted.
 func (d *Dispatcher) sourceIDs() []string {
-	if d.cfg == nil {
+	cfg := d.config()
+	if cfg == nil {
 		return nil
 	}
-	ids := make([]string, 0, len(d.cfg.Sources))
-	for _, sc := range d.cfg.Sources {
+	ids := make([]string, 0, len(cfg.Sources))
+	for _, sc := range cfg.Sources {
 		ids = append(ids, sc.ID)
 	}
 	sort.Strings(ids)
@@ -506,7 +508,7 @@ func (d *Dispatcher) sourceIDs() []string {
 //
 // sourceID, when set, restricts the scan to that source.
 func (d *Dispatcher) fetchCell(ctx context.Context, cellID, sourceID string) (model.SourceItem, source.Adapter, bool) {
-	for _, sc := range d.cfg.Sources {
+	for _, sc := range d.config().Sources {
 		if sourceID != "" && sc.ID != sourceID {
 			continue
 		}

@@ -48,7 +48,7 @@ func TestForceRestart_DispatchesImmediately(t *testing.T) {
 	d.sources["src"] = adapter
 
 	// One normal poll puts the cell in flight with a queued job.
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	if got := len(jobsFor(t, d, "triage")); got != 1 {
 		t.Fatalf("setup: %d triage job(s) after the first poll, want 1", got)
 	}
@@ -108,7 +108,7 @@ func TestForceRestart_BumpsGenerationForRunningTask(t *testing.T) {
 	adapter := &pollableAdapter{mutableAdapter: *base}
 	d.sources["src"] = adapter
 
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	task := taskForCell(t, dbc, "src", "c1")
 	if task.State == model.TaskStateDone || task.State == model.TaskStateFailed {
 		t.Fatalf("setup: task is %q; this test needs the running case", task.State)
@@ -148,7 +148,7 @@ func TestForceRestart_OverridesOnceGuard(t *testing.T) {
 	adapter := &pollableAdapter{mutableAdapter: *base}
 	d.sources["src"] = adapter
 
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	first := queueJobFor(t, dbc, "triage")
 	if res := d.ExecuteQueuedJob(ctx, first, "w1"); !res.Success {
 		t.Fatalf("triage job failed: %+v", res)
@@ -156,7 +156,7 @@ func TestForceRestart_OverridesOnceGuard(t *testing.T) {
 	task := taskForCell(t, dbc, "src", "c1")
 
 	// A normal poll is now a no-op: the once guard drops the only match.
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Now())
+	d.poll(ctx, d.config().Sources[0], adapter, time.Now())
 	if got := len(jobsFor(t, d, "triage")); got != 1 {
 		t.Fatalf("setup: poll enqueued %d triage job(s), want 1 — the once guard should have dropped it", got)
 	}
@@ -189,7 +189,7 @@ func TestForceRestart_ReportsNothingDispatched(t *testing.T) {
 	adapter := &pollableAdapter{mutableAdapter: *base}
 	d.sources["src"] = adapter
 
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 
 	// Drop the label every trigger matches on, so nothing routes any more.
 	adapter.items[0].Labels = nil
@@ -213,7 +213,7 @@ func TestForceRestart_ReleasesInFlightWhenNothingDispatches(t *testing.T) {
 	adapter := &pollableAdapter{mutableAdapter: *base}
 	d.sources["src"] = adapter
 
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	adapter.items[0].Labels = nil
 
 	if _, err := d.ForceRestart(ctx, "c1"); err != nil {

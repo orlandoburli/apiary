@@ -59,8 +59,7 @@ func newParkingWorkerDispatcher(t *testing.T, dbPath string, adapter *lockedAdap
 	if err != nil {
 		t.Fatalf("router: %v", err)
 	}
-	d := &Dispatcher{
-		cfg:         cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:          dbc,
 		router:      r,
 		sources:     map[string]source.Adapter{"src": adapter},
@@ -69,7 +68,7 @@ func newParkingWorkerDispatcher(t *testing.T, dbPath string, adapter *lockedAdap
 		agentSem:    map[string]chan struct{}{},
 		stats:       map[string]*sourceStat{"src": {}},
 		configFile:  filepath.Join(filepath.Dir(dbPath), "apiary.yaml"),
-	}
+	})
 	d.binder = source.NewSourceBinder(dbc)
 	if err := d.configureDispatchQueue(); err != nil {
 		t.Fatalf("configure dispatch queue: %v", err)
@@ -139,7 +138,7 @@ func TestReconcileTerminalQueueJobs_LeavesParkedInstanceAlone(t *testing.T) {
 
 	d1, dbc1 := newParkingWorkerDispatcher(t, dbPath, adapter)
 	stop1 := runWorker(t, d1)
-	d1.poll(ctx, d1.cfg.Sources[0], adapter, time.Time{})
+	d1.poll(ctx, d1.config().Sources[0], adapter, time.Time{})
 	if !waitForInstanceState(t, dbc1, "c1", "triage", db.InstanceStateBlocked, 15*time.Second) {
 		t.Fatalf("workflow never parked at the approval gate:%s", queueDiagnostics(t, dbc1))
 	}
