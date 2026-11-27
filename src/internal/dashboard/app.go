@@ -3051,7 +3051,7 @@ func (a *App) fetchOverview() tea.Cmd {
 				data.FailedToday = stats.TasksFailed
 				data.AvgDuration = formatMetricDuration(stats.AvgTaskDurationMs)
 				data.SuccessRate = fmt.Sprintf("%.1f%%", stats.SuccessRate*100)
-				data.TasksPerHour = fmt.Sprintf("%.1f", stats.TasksPerHour)
+				data.TasksPerDay = fmt.Sprintf("%.1f", stats.TasksPerDay)
 
 				// Run detail.
 				data.RunsTotal = stats.RunsCompleted + stats.RunsFailed + stats.ActiveRuns
@@ -3059,7 +3059,7 @@ func (a *App) fetchOverview() tea.Cmd {
 				data.RunsFailed = stats.RunsFailed
 				data.RunsRunning = stats.ActiveRuns
 				data.AvgRunDuration = formatMetricDuration(stats.AvgRunDurationMs)
-				data.RunsPerHour = fmt.Sprintf("%.1f", stats.RunsPerHour)
+				data.RunsPerDay = fmt.Sprintf("%.1f", stats.RunsPerDay)
 				data.RunSuccessRate = fmt.Sprintf("%.1f%%", stats.RunSuccessRate*100)
 
 				data.TodayCostUSD = stats.TodayCostUSD
@@ -4393,10 +4393,10 @@ func (a *App) renderOverviewTab(height int) string {
 		"\nRuns (since midnight):\n"+
 			"  Total:      %d — %d ok · %d failed · %d running\n"+
 			"  Avg Run:    %s\n"+
-			"  Throughput: %s runs/hour\n",
+			"  Throughput: %s runs/day\n",
 		o.RunsTotal, o.RunsCompleted, o.RunsFailed, o.RunsRunning,
 		valueOr(o.AvgRunDuration, "—"),
-		valueOr(o.RunsPerHour, "0.0"),
+		valueOr(o.RunsPerDay, "0.0"),
 	)
 
 	fmt.Fprintf(&b,
@@ -4409,10 +4409,10 @@ func (a *App) renderOverviewTab(height int) string {
 
 	fmt.Fprintf(&b,
 		"\nMetrics:\n"+
-			"  Throughput:   %s tasks/hour\n"+
+			"  Throughput:   %s tasks/day\n"+
 			"  Avg Duration: %s per task (started and finished today)\n"+
 			"  Success Rate: %s of finished tasks\n",
-		valueOr(o.TasksPerHour, "0.0"),
+		valueOr(o.TasksPerDay, "0.0"),
 		valueOr(o.AvgDuration, "—"),
 		valueOr(o.SuccessRate, "—"),
 	)

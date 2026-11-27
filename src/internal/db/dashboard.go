@@ -30,9 +30,10 @@ type DashboardStats struct {
 	RunsFailed       int
 	AvgRunDurationMs int64
 
-	// Rates over the window, per hour.
-	TasksPerHour float64
-	RunsPerHour  float64
+	// Rates over the window, per day. Per hour is noise once the window is a
+	// week or longer: 0.4 tasks/hour reads worse than 9 tasks/day.
+	TasksPerDay float64
+	RunsPerDay  float64
 
 	// SuccessRate is task-level; RunSuccessRate is the detail underneath it.
 	// Both exclude work that has not finished: counting a running row in the
@@ -56,6 +57,19 @@ type DashboardStats struct {
 func (c *Client) GetDashboardStats(ctx context.Context, startTime time.Time) (*DashboardStats, error) {
 	stats := &DashboardStats{
 		DispatcherStatus: "Healthy",
+	}
+
+	// A zero start means "all time". The queries accept it as a lower bound, but
+	// the rate denominator must be the span the hive has actually existed, not
+	// two thousand years — so resolve it to the earliest execution.
+	if startTime.IsZero() {
+		var earliest sql.NullTime
+		row := c.db.QueryRowContext(ctx, `SELECT MIN(created_at) FROM task_executions`)
+		if err := row.Scan(&earliest); err == nil && earliest.Valid {
+			startTime = earliest.Time
+		} else {
+			startTime = time.Now().Add(-24 * time.Hour)
+		}
 	}
 
 	// Active runs are a right-now figure, not a windowed one.
@@ -117,14 +131,14 @@ func (c *Client) GetDashboardStats(ctx context.Context, startTime time.Time) (*D
 		stats.AvgRunDurationMs = avgRun.Int64
 	}
 
-	// Rates. The denominator is clamped to one hour so the first minutes after
-	// midnight do not turn a single task into "20 tasks/hour".
-	hours := time.Since(startTime).Hours()
-	if hours < 1 {
-		hours = 1
+	// Rates. The denominator is clamped to one hour so a very short window does
+	// not turn a single task into "20 tasks/hour".
+	days := time.Since(startTime).Hours() / 24
+	if days < 1.0/24 {
+		days = 1.0 / 24
 	}
-	stats.TasksPerHour = float64(stats.TasksCompleted) / hours
-	stats.RunsPerHour = float64(stats.RunsCompleted+stats.RunsFailed) / hours
+	stats.TasksPerDay = float64(stats.TasksCompleted) / days
+	stats.RunsPerDay = float64(stats.RunsCompleted+stats.RunsFailed) / days
 
 	if finished := stats.TasksCompleted + stats.TasksFailed; finished > 0 {
 		stats.SuccessRate = float64(stats.TasksCompleted) / float64(finished)

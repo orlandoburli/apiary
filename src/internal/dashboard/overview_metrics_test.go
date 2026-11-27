@@ -16,13 +16,13 @@ func TestOverviewRendersTaskAndRunMetricsSeparately(t *testing.T) {
 		FailedToday:    4,
 		AvgDuration:    "3.6m",
 		SuccessRate:    "93.0%",
-		TasksPerHour:   "3.0",
+		TasksPerDay:    "3.0",
 		RunsTotal:      58,
 		RunsCompleted:  55,
 		RunsFailed:     1,
 		RunsRunning:    2,
 		AvgRunDuration: "3.5m",
-		RunsPerHour:    "3.3",
+		RunsPerDay:     "3.3",
 	}
 
 	out := stripANSI(a.renderOverviewTab(60))
@@ -30,10 +30,10 @@ func TestOverviewRendersTaskAndRunMetricsSeparately(t *testing.T) {
 		"Tasks (since midnight)",
 		"Runs (since midnight)",
 		"55 ok · 1 failed · 2 running",
-		"3.0 tasks/hour",
+		"3.0 tasks/day",
 		"3.6m per task",
 		"93.0% of finished tasks",
-		"3.3 runs/hour",
+		"3.3 runs/day",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("Overview is missing %q:\n%s", want, out)

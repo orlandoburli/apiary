@@ -100,9 +100,9 @@ type OverviewTab struct {
 	FailedToday      int
 	// TasksPerHour and AvgDuration are task-level: a task is one unit of work
 	// however many agent runs it took.
-	TasksPerHour string
-	AvgDuration  string
-	SuccessRate  string
+	TasksPerDay string
+	AvgDuration string
+	SuccessRate string
 
 	// Runs are the agent processes underneath the tasks: how many actually
 	// executed, how much of that failed, and how long one run takes.
@@ -111,7 +111,7 @@ type OverviewTab struct {
 	RunsFailed     int
 	RunsRunning    int
 	AvgRunDuration string
-	RunsPerHour    string
+	RunsPerDay     string
 	RunSuccessRate string
 
 	AgentBreakdown    []AgentCount

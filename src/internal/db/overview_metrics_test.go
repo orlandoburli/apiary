@@ -90,12 +90,12 @@ func TestDashboardStatsSeparateTasksFromRuns(t *testing.T) {
 		t.Errorf("ActiveRuns = %d, want 1 — a right-now figure, not a windowed one", stats.ActiveRuns)
 	}
 
-	// Six-hour window: 2 tasks and 3 finished runs.
-	if math.Abs(stats.TasksPerHour-2.0/6.0) > 1e-3 {
-		t.Errorf("TasksPerHour = %v, want %v", stats.TasksPerHour, 2.0/6.0)
+	// Six-hour window: 2 tasks and 3 finished runs, expressed per day.
+	if math.Abs(stats.TasksPerDay-2.0/0.25) > 1e-3 {
+		t.Errorf("TasksPerDay = %v, want %v", stats.TasksPerDay, 2.0/0.25)
 	}
-	if math.Abs(stats.RunsPerHour-3.0/6.0) > 1e-3 {
-		t.Errorf("RunsPerHour = %v, want %v", stats.RunsPerHour, 3.0/6.0)
+	if math.Abs(stats.RunsPerDay-3.0/0.25) > 1e-3 {
+		t.Errorf("RunsPerDay = %v, want %v", stats.RunsPerDay, 3.0/0.25)
 	}
 }
 
@@ -125,7 +125,7 @@ func TestDashboardStatsRateIsClampedForATinyWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDashboardStats: %v", err)
 	}
-	if stats.TasksPerHour > 1.0001 {
-		t.Errorf("TasksPerHour = %v for one task in one minute, want it clamped to 1", stats.TasksPerHour)
+	if stats.TasksPerDay > 24.001 {
+		t.Errorf("TasksPerDay = %v for one task in one minute, want it clamped to 24", stats.TasksPerDay)
 	}
 }
