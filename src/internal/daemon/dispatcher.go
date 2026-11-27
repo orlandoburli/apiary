@@ -52,6 +52,14 @@ type Dispatcher struct {
 	configFile string
 	startedAt  time.Time
 
+	// reloadMu serializes reloads and guards lastReload, the most recent
+	// attempt reported by /status.
+	reloadMu   sync.Mutex
+	lastReload *ReloadResult
+	// watchInterval is how often the config watcher stats the file. Zero means
+	// defaultConfigWatchInterval; a test sets it to something short.
+	watchInterval time.Duration
+
 	router      *router.Router
 	sources     map[string]source.Adapter
 	runners     map[string]runnerimpl.Runner
@@ -712,6 +720,12 @@ func (d *Dispatcher) Start(ctx context.Context, wg *sync.WaitGroup) {
 		}()
 	}
 
+	// Watch the config file last, so its baseline is taken after every startup
+	// pass has read the config this process booted with.
+	if cfg.Settings.WatchConfigEnabled() {
+		d.startConfigWatcher(ctx, wg)
+	}
+
 	for _, sc := range cfg.Sources {
 		sc := sc
 		adapter, ok := d.sources[sc.ID]
@@ -975,6 +989,7 @@ func (d *Dispatcher) Status() StatusResponse {
 		PID:        os.Getpid(),
 		ConfigFile: d.configFile,
 		Uptime:     humanDuration(time.Since(d.startedAt)),
+		LastReload: d.lastReloadResult(),
 		Concurrency: ConcurrencyStatus{
 			Max:         cfg.Settings.Concurrency,
 			Active:      int(d.active.Load()),
@@ -1552,6 +1567,23 @@ func (d *Dispatcher) StartServer(ctx context.Context, wg *sync.WaitGroup) error 
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/reload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		res := d.ReloadConfig(ctx)
+		// The body always carries the result, including on rejection: the CLI
+		// prints the diff and the error from it. 409 (not 400) because the
+		// request was well-formed — the daemon declined to apply this config.
+		status := http.StatusOK
+		if !res.Applied {
+			status = http.StatusConflict
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(res)
 	})
 	mux.HandleFunc("/events", d.handleExecutionEvents)
 	mux.HandleFunc("/events/stream", d.handleExecutionEventStream)

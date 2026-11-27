@@ -445,19 +445,24 @@ type Settings struct {
 	MaxAttempts int `yaml:"max_attempts"`
 	// Log rotation for the shared apiary.log file and retention for rotated
 	// backups and per-task log files. 0 means default; negative disables.
-	LogMaxSizeMB  int                `yaml:"log_max_size_mb"`  // rotate apiary.log past this size; default 50
-	LogMaxBackups int                `yaml:"log_max_backups"`  // rotated files to keep; default 5
-	LogMaxAgeDays int                `yaml:"log_max_age_days"` // prune backups and task logs older than this; default 30
-	Memory        MemorySettings     `yaml:"memory"`
-	Events        EventSettings      `yaml:"events"`
-	Approvals     ApprovalSettings   `yaml:"approvals"`
-	Questions     QuestionsSettings  `yaml:"questions"`
-	Telemetry     Telemetry          `yaml:"telemetry"`
-	CursorCost    CursorCostSettings `yaml:"cursor_cost"`
-	Improve       ImproveSettings    `yaml:"improve"`
-	Dashboard     DashboardSettings  `yaml:"dashboard,omitempty"`
-	GitHooks      GitHooksSettings   `yaml:"git_hooks"`
-	Queue         QueueSettings      `yaml:"queue"`
+	LogMaxSizeMB  int               `yaml:"log_max_size_mb"`  // rotate apiary.log past this size; default 50
+	LogMaxBackups int               `yaml:"log_max_backups"`  // rotated files to keep; default 5
+	LogMaxAgeDays int               `yaml:"log_max_age_days"` // prune backups and task logs older than this; default 30
+	Memory        MemorySettings    `yaml:"memory"`
+	Events        EventSettings     `yaml:"events"`
+	Approvals     ApprovalSettings  `yaml:"approvals"`
+	Questions     QuestionsSettings `yaml:"questions"`
+	// WatchConfig makes the daemon poll the config file and apply the changes
+	// that can be applied live (workflows, agents, non-startup settings). Nil
+	// means on: a daemon that can reload should, because the alternative is a
+	// restart for a one-line workflow edit.
+	WatchConfig *bool              `yaml:"watch_config,omitempty"`
+	Telemetry   Telemetry          `yaml:"telemetry"`
+	CursorCost  CursorCostSettings `yaml:"cursor_cost"`
+	Improve     ImproveSettings    `yaml:"improve"`
+	Dashboard   DashboardSettings  `yaml:"dashboard,omitempty"`
+	GitHooks    GitHooksSettings   `yaml:"git_hooks"`
+	Queue       QueueSettings      `yaml:"queue"`
 	// DefaultFallbacks is a fallback chain applied to every agent that does not
 	// define its own fallbacks[]. Entries must reference defined runner IDs.
 	DefaultFallbacks []FallbackConfig `yaml:"default_fallbacks,omitempty"`
@@ -552,6 +557,10 @@ type QuestionsSettings struct {
 // IsEnabled reports whether the ask_human MCP server is injected into agent
 // runners. The pointer keeps an absent setting meaning "yes".
 func (q QuestionsSettings) IsEnabled() bool { return q.Enabled == nil || *q.Enabled }
+
+// WatchConfigEnabled reports whether the daemon watches the config file. The
+// pointer keeps an absent setting meaning "yes", like QuestionsSettings.
+func (s Settings) WatchConfigEnabled() bool { return s.WatchConfig == nil || *s.WatchConfig }
 
 // DashboardSettings holds per-hive terminal dashboard preferences.
 type DashboardSettings struct {

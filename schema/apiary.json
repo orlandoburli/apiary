@@ -626,6 +626,11 @@
           "description": "Delete rotated backups, per-task log files, and SQLite log rows (service_logs/task_logs) older than this many days. Files are checked at startup and after each rotation; DB rows at startup and then daily. Default 30; negative disables",
           "default": 30
         },
+        "watch_config": {
+          "type": "boolean",
+          "description": "Poll apiary.yaml every two seconds and apply changes that can be reloaded live (workflows, agents, most settings). A rejected config keeps the previous one running; source changes and startup-only settings still need a restart. `apiary reload` asks for a reload on demand",
+          "default": true
+        },
         "memory": {
           "type": "object",
           "description": "Persistent agent memory: per-task working notes plus daemon-wide durable facts, written via the APIARY_MEMORIZE marker and stored as markdown files under the memory root. Disabled by default",

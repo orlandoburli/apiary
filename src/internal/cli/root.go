@@ -43,6 +43,7 @@ func init() {
 
 	rootCmd.AddCommand(
 		newRunCmd(),
+		newReloadCmd(),
 		newDashboardCmd(),
 		newStatusCmd(),
 		newValidateCmd(),

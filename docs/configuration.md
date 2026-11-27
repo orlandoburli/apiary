@@ -394,6 +394,7 @@ settings:
 | `log_max_backups` | 5 | Rotated files kept as `apiary.log.1` … `.N`, oldest dropped; negative keeps none |
 | `log_max_age_days` | 30 | Prune rotated backups, per-task logs (`logs/tasks/*.log`) **and** SQLite log rows (`service_logs`/`task_logs`) older than this; negative disables |
 | `dashboard.default_view` | `list` | Which Tasks view the [dashboard](dashboard.md#the-board) opens on: `list` or `board`. Overridden per invocation by `apiary dashboard --view=` |
+| `watch_config` | `true` | Poll `apiary.yaml` and apply changes that can be reloaded live — see [Hot reload](#hot-reload). Set `false` to require an explicit `apiary reload` (or a restart) |
 
 ### Log rotation
 
@@ -617,6 +618,61 @@ settings:
 The default retention is 30 days. Non-positive durations disable pruning. See
 [Structured execution events](execution-events.md) for the envelope, local query
 API, SSE subscription, compatibility contract, and built-in redaction behavior.
+
+## Hot reload
+
+The daemon re-reads `apiary.yaml` and applies what it can without dropping
+in-flight work. Run `apiary reload` to ask for a reload explicitly; with
+`settings.watch_config: true` (the default) the daemon also polls the file every
+two seconds and reloads after a write settles, so editing a workflow does not
+require a restart.
+
+What applies live:
+
+- **Workflows** — added, removed, and edited definitions. The workflow engine
+  reads the current config on every dispatch, so the next poll uses the new
+  definition. Instances already running keep the definition they started with.
+- **Agents** — the agent list is diffed and reported. A changed `model`, prompt
+  settings, env, or permissions apply from the next step, because the workflow
+  engine resolves the agent from the live config. The runner adapter and the
+  per-agent `max_workers` semaphore are built at startup, so changing `runner`
+  or `max_workers` is accepted into the config but only takes effect on a
+  restart.
+- **Settings that are read on use** — for example `log_level`, `max_attempts`,
+  `task_timeout`, `stall_timeout`, `credit_exhausted_cooldown`, `approvals`,
+  and `least_privilege_agents`.
+
+What does **not** apply live:
+
+- **Sources** — each adapter is connected and its poll loop started at startup.
+  A config that adds, removes, or edits a source is rejected whole rather than
+  leaving a source nothing polls. Restart the daemon to change sources. (This is
+  a deliberate first-stage restriction; source hot-reload comes later.)
+- **Startup-only settings**, reported as `requires_restart` in the reload
+  result: `plugin_dirs` and `plugins` (discovered at startup), log rotation and
+  retention (`log_max_size_mb`, `log_max_backups`, `log_max_age_days`),
+  `git_hooks` (installed at startup), and `queue`, `memory`, `events`,
+  `cursor_cost`, `refuse_root`, `default_fallbacks`, whose internals are
+  constructed once at startup.
+
+A reload is validated exactly like `apiary run` (`Load`, then `Validate`). A
+file that does not parse or does not validate is rejected as a whole and the
+daemon keeps running its previous configuration — reloads never half-apply.
+`apiary reload` prints the diff by id (`workflows: +a ~b -c`), the settings
+that changed, and anything that needs a restart; it exits `0` when applied and
+`1` when rejected or the daemon cannot be reached. `--json` emits the full
+result. The last attempt is also part of the status payload (`last_reload`),
+so a dashboard or script can show whether the config in effect is the one on
+disk.
+
+```console
+$ apiary reload
+✓ config reloaded
+  workflows: +triage ~code-review
+  agents: ~reviewer
+  settings: log_level
+  requires restart: log_max_age_days
+```
 
 ## Environment variables
 

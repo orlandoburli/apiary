@@ -18,6 +18,9 @@ type StatusResponse struct {
 	ActiveRuns  []ActiveRunStatus `json:"active_runs"`
 	Concurrency ConcurrencyStatus `json:"concurrency"`
 	Queue       QueueStatus       `json:"queue"`
+	// LastReload is the most recent ReloadConfig attempt (applied or rejected).
+	// Nil until the daemon has reloaded at least once.
+	LastReload *ReloadResult `json:"last_reload,omitempty"`
 }
 
 type QueueStatus struct {
