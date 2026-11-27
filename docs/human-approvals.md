@@ -134,6 +134,52 @@ A **rejection never collects fields**. Refusing a change should not require
 filling in its change ticket; only `--comment` is recorded, as
 `memory.approval_feedback`.
 
+## Answers the workflow defines
+
+`approve` and `reject` are only the default. A gate can offer any answers it
+likes, and each answer says what it does — there is no fixed list of kinds:
+
+```yaml
+- id: review
+  type: approval
+  message: Release 2.4 is staged. How should it go out?
+  outcomes:
+    - value: approve            # continues; later steps can branch on it
+      label: Ship it
+    - value: rework
+      label: Needs another pass
+      goto: implement           # resets `implement` and everything after it
+    - value: abort
+      fail: true                # the rejection path: on_reject / on_fail apply
+  timeout: 24h
+```
+
+- An outcome with no routing keys simply continues. Later steps branch on
+  `${{ memory.approval_outcome }}`, which is how a "ship early" answer can skip
+  a step that a normal approval runs.
+- `fail: true` ends the gate the way a rejection always has, so rejection loops
+  and failure hooks keep working unchanged.
+- `goto:` continues at a named step, resetting it and everything downstream. A
+  backward target re-enters the gate on a new attempt — that is how a "needs
+  rework" answer loops.
+
+Leaving `outcomes:` out keeps the implicit pair: `approve` continues, `reject`
+fails.
+
+### The reason
+
+Every answer may carry a reason. It is optional everywhere, is recorded with
+the response, and reaches the workflow as `${{ memory.approval_feedback }}` —
+the same field the CLI has always filled with `--comment`.
+
+```bash
+apiary approve wf-8a31:review --outcome rework --comment "Missing the migration"
+apiary reject  wf-8a31:review --comment "Not this release"
+```
+
+An outcome that is not declared by the gate is refused, so an invented answer
+can never reach the workflow.
+
 ## Multi-party gates
 
 Naming `approvers` changes the gate's character: source signals are ignored
