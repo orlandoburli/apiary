@@ -560,6 +560,27 @@ failures.
 
 ![Logs tab](screenshots/logs.png)
 
+### Workflows
+
+The workflows your config defines, and how much of that work ran today. The
+left list shows every workflow with a compact hint: runs started today, how many
+completed and how many failed, plus the average duration (`12·10✓·1✗ 45m`). A
+workflow that has not run since midnight says so instead of showing a row of
+zeros.
+
+Select a workflow with `↑` / `↓` to see its steps on the right. The summary
+under the title spells out the same numbers, and every step that was reached
+today carries one muted stats line (`ran 3 · 2 ok · 1 failed · avg 30m`). Steps
+nobody reached show no stats line at all.
+
+The activity covers **since local midnight** — the same window the Overview
+uses — so a long run that started yesterday counts as a completion today but not
+as a run, and durations average only the runs that both started and finished in
+the window. Press `Enter` / `→` to move into the step list, `Esc` / `←` to come
+back, and `j` / `k` to move between steps. If the activity query fails, the
+definitions still show and the stats are marked *metrics unavailable* rather
+than reading as zero.
+
 ## Troubleshooting
 
 **The dashboard says there's no data / a tab looks empty.**

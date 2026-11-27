@@ -576,6 +576,28 @@ type LogEntry struct {
 	Message   string
 }
 
+// WorkflowActivity is how one workflow or one step fared in the Workflows tab's
+// window — today, since local midnight.
+//
+// Runs counts what started in the window, while Completed/Failed count what
+// reached that state in it. A run that began yesterday and finished this
+// morning is therefore a completion but not a run; the two halves are kept
+// apart rather than flattened, because "busy" and "finishing" are different
+// questions.
+type WorkflowActivity struct {
+	Runs          int
+	Completed     int
+	Failed        int
+	AvgDurationMs int64
+}
+
+// Any reports whether there is anything to show. A workflow or step absent from
+// the metrics result has no activity at all, and printing zeros for it would
+// claim it was tried and failed to move.
+func (m *WorkflowActivity) Any() bool {
+	return m != nil && m.Runs+m.Completed+m.Failed > 0
+}
+
 // WorkflowStepDef is one step definition shown in the Workflows config tab.
 type WorkflowStepDef struct {
 	ID        string
@@ -583,6 +605,8 @@ type WorkflowStepDef struct {
 	Agent     string
 	Condition string
 	Prompt    string
+	// Activity is today's stats for this step, or nil when it did not run.
+	Activity *WorkflowActivity
 }
 
 // WorkflowConfigItem is one workflow shown in the Workflows config tab.
@@ -590,6 +614,8 @@ type WorkflowConfigItem struct {
 	ID          string
 	Description string
 	Steps       []WorkflowStepDef
+	// Activity is today's stats for this workflow, or nil when it did not run.
+	Activity *WorkflowActivity
 }
 
 // WorkflowsView is which panel the Workflows tab has focus on.
@@ -600,13 +626,18 @@ const (
 	WorkflowsViewSteps
 )
 
-// WorkflowsTab shows the static workflow config definitions (read-only).
+// WorkflowsTab shows the workflow config definitions (read-only) and today's
+// activity for each workflow and step.
 type WorkflowsTab struct {
 	Workflows   []WorkflowConfigItem
 	SelectedIdx int // selected workflow in the left panel
 	StepIdx     int // selected step in the right panel
 	StepScroll  int // scroll offset in the step list
 	Focus       WorkflowsView
+	// MetricsUnavailable records that the activity query failed. The config
+	// definitions are still worth showing, but their stats are unknown rather
+	// than zero, and the tab says so instead of implying nothing ran.
+	MetricsUnavailable bool
 }
 
 // NewModel creates a new dashboard model.
