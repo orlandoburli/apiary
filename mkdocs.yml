@@ -52,6 +52,8 @@ nav:
       - Rate Limits & Resilience: resilience.md
       - Self-Improvement: improve.md
       - Distributed Workers: distributed-workers.md
+      - Approvals: human-approvals.md
+      - Agent Questions: agent-questions.md
   - Sources:
       - Supported Integrations: supported-integrations.md
       - GitHub: github-source.md
