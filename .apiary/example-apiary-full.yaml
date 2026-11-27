@@ -586,6 +586,10 @@ settings:
   log_max_size_mb: 50
   log_max_backups: 5
   log_max_age_days: 30
+  # Poll apiary.yaml and apply workflow/agent/setting changes live; `apiary
+  # reload` asks for one on demand. Source edits and startup-only settings
+  # (plugin_dirs, log retention, git_hooks) still need a restart.
+  watch_config: true
   # Persistent agent memory (opt-in): agents save durable facts and per-task
   # working notes via the APIARY_MEMORIZE marker, stored as markdown under
   # <data-dir>/memory (next to apiary.db). The MEMORY.md index plus the task's
