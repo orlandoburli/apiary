@@ -150,6 +150,13 @@ func (e *Engine) ResolveApproval(ctx context.Context, instanceID string, decisio
 
 // ResolveApprovalResponse applies a persisted multi-channel response and exposes
 // its feedback and values to subsequent steps as approval.<field> memory values.
+//
+// When the gate declares outcomes, the chosen one decides what happens next:
+// `fail` ends the gate as a rejection (so on_reject and on_fail apply, exactly
+// as before), `goto` continues at a named step, and an outcome with neither
+// simply continues — later steps branch on memory.approval_outcome. The binary
+// approve/reject mapping is what a gate without declared outcomes, a source
+// trigger, or an older client produces.
 func (e *Engine) ResolveApprovalResponse(ctx context.Context, instanceID string, response db.ApprovalResponse) (bool, error) {
 	decision := ApprovalResume
 	if strings.EqualFold(response.Decision, "reject") || strings.EqualFold(response.Decision, "rejected") {
@@ -159,16 +166,37 @@ func (e *Engine) ResolveApprovalResponse(ctx context.Context, instanceID string,
 	if !ok {
 		return false, fmt.Errorf("instance %q is not awaiting approval", instanceID)
 	}
+	stepID := r.waitingStep
+	outcomeValue := strings.TrimSpace(response.Outcome)
+	var gotoTarget string
+	if cfgStep, found := r.byID[stepID]; found {
+		if outcomeValue == "" {
+			outcomeValue = "approve"
+			if decision == ApprovalAbort {
+				outcomeValue = "reject"
+			}
+		}
+		if o, declared := config.ApprovalOutcomeByValue(cfgStep.ApprovalOutcomesOr(), outcomeValue); declared {
+			// The declared outcome is authoritative: it is the workflow that
+			// defines what an answer means, so a `fail` outcome rejects even if
+			// the caller phrased its decision as an approval.
+			if o.Fail {
+				decision = ApprovalAbort
+			} else if o.Goto != "" {
+				gotoTarget = o.Goto
+			}
+			outcomeValue = o.Value
+		}
+	}
 	eventType := "approval.granted"
 	decisionName := "resume"
 	if decision == ApprovalAbort {
 		eventType, decisionName = "approval.rejected", "abort"
 	}
-	metadata := map[string]any{"decision": decisionName, "actor": response.Actor, "channel": response.Channel, "feedback": response.Feedback, "values": response.Values}
+	metadata := map[string]any{"decision": decisionName, "outcome": outcomeValue, "actor": response.Actor, "channel": response.Channel, "feedback": response.Feedback, "values": response.Values}
 	e.recordExecutionEvent(ctx, r, eventType, metadata)
-	stepID := r.waitingStep
-	structured := map[string]any{"approval_decision": decisionName, "approval_feedback": response.Feedback}
-	write := []string{"approval_decision", "approval_feedback"}
+	structured := map[string]any{"approval_decision": decisionName, "approval_feedback": response.Feedback, "approval_outcome": outcomeValue}
+	write := []string{"approval_decision", "approval_feedback", "approval_outcome"}
 	for key, value := range response.Values {
 		structured[key] = value
 		write = append(write, key)
@@ -176,6 +204,13 @@ func (e *Engine) ResolveApprovalResponse(ctx context.Context, instanceID string,
 	r.contrib[stepID] = MemoryStep{StepID: stepID, WriteFields: write, Structured: structured, Summary: response.Feedback}
 
 	r.resolveApproval(decision)
+	if gotoTarget != "" {
+		// Reuse the loop-back primitive on_fail.goto uses: the target and
+		// everything downstream of it are reset. A forward target then runs next
+		// (its dependencies, including this gate, are already passed); a backward
+		// target re-enters the gate, which the store answers as a new attempt.
+		r.resetLoop(gotoTarget)
+	}
 	outcome := e.driveDAG(ctx, r)
 	return e.settle(ctx, r, outcome), nil
 }

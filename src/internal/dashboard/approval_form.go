@@ -126,9 +126,9 @@ func (a *App) answerApproval(req *db.ApprovalRequest, key string) (tea.Model, te
 	}
 	switch {
 	case key == "n":
-		return a, a.approvalResponseCmd(req.ID, "reject", nil, "")
+		return a, a.approvalResponseCmd(req.ID, "reject", "reject", nil, "")
 	case key == "y" && len(approvalFields(req)) == 0:
-		return a, a.approvalResponseCmd(req.ID, "approve", nil, "")
+		return a, a.approvalResponseCmd(req.ID, "approve", "approve", nil, "")
 	default:
 		a.openApprovalForm(req)
 		return a, nil
@@ -169,7 +169,7 @@ func (a *App) handleApprovalFormKey(key string) (tea.Model, tea.Cmd) {
 	case "ctrl+r":
 		id := req.ID
 		a.closeApprovalForm()
-		return a, a.approvalResponseCmd(id, "reject", nil, "")
+		return a, a.approvalResponseCmd(id, "reject", "reject", nil, "")
 
 	case "enter":
 		values, err := a.collectApprovalValues(fields)
@@ -179,7 +179,7 @@ func (a *App) handleApprovalFormKey(key string) (tea.Model, tea.Cmd) {
 		}
 		id := req.ID
 		a.closeApprovalForm()
-		return a, a.approvalResponseCmd(id, "approve", values, "")
+		return a, a.approvalResponseCmd(id, "approve", "approve", values, "")
 
 	case "up", "shift+tab":
 		if a.model.approvalIdx > 0 {

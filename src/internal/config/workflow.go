@@ -1,6 +1,9 @@
 package config
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Step type identifiers. A step with an empty Type is treated as StepTypeAgent.
 const (
@@ -336,6 +339,9 @@ type StepConfig struct {
 	EscalateAfter     string              `yaml:"escalate_after,omitempty"`
 	EscalateTo        []string            `yaml:"escalate_to,omitempty"`
 	Delegates         map[string][]string `yaml:"delegates,omitempty"`
+	// ApprovalOutcomes are the answers this gate offers. Empty means the
+	// default approve/reject pair.
+	ApprovalOutcomes []ApprovalOutcome `yaml:"outcomes,omitempty"`
 
 	// ── wait_for step ─────────────────────────────────────────────
 	// WaitFor holds configuration for a wait_for step (e.g., wait for CI). The
@@ -396,6 +402,55 @@ type ApprovalField struct {
 	Type     string   `yaml:"type,omitempty" json:"type,omitempty"`
 	Required bool     `yaml:"required,omitempty" json:"required,omitempty"`
 	Options  []string `yaml:"options,omitempty" json:"options,omitempty"`
+}
+
+// ApprovalOutcome is one answer an approval gate offers.
+//
+// There is no fixed taxonomy of outcomes: the workflow says what each one does,
+// using the same routing primitives it uses everywhere else. An outcome with no
+// routing keys simply continues, and later steps branch on
+// memory.approval_outcome; `fail` ends the gate the way a rejection does, so
+// on_reject and on_fail apply; `goto` jumps to a step, which is how a "needs
+// rework" answer loops back.
+type ApprovalOutcome struct {
+	Value string `yaml:"value" json:"value"`
+	Label string `yaml:"label,omitempty" json:"label,omitempty"`
+	// Goto names the step to continue at. Everything downstream of it is reset,
+	// so a forward target runs next and a backward target re-enters the gate.
+	Goto string `yaml:"goto,omitempty" json:"goto,omitempty"`
+	// Fail ends the gate as a rejection rather than continuing.
+	Fail bool `yaml:"fail,omitempty" json:"fail,omitempty"`
+}
+
+// DefaultApprovalOutcomes is the pair a gate offers when it declares none:
+// approve continues, reject fails.
+func DefaultApprovalOutcomes() []ApprovalOutcome {
+	return []ApprovalOutcome{
+		{Value: "approve", Label: "Approve"},
+		{Value: "reject", Label: "Reject", Fail: true},
+	}
+}
+
+// ApprovalOutcomesOr returns the gate's declared outcomes, or the default pair.
+func (s StepConfig) ApprovalOutcomesOr() []ApprovalOutcome {
+	if len(s.ApprovalOutcomes) > 0 {
+		return s.ApprovalOutcomes
+	}
+	return DefaultApprovalOutcomes()
+}
+
+// ApprovalOutcomeByValue finds a declared outcome by value.
+//
+// Matching ignores case and surrounding space: the value travels through YAML,
+// JSON, a CLI flag and a TUI cursor, and a stray capital is not a different
+// answer.
+func ApprovalOutcomeByValue(outcomes []ApprovalOutcome, value string) (ApprovalOutcome, bool) {
+	for _, o := range outcomes {
+		if strings.EqualFold(strings.TrimSpace(o.Value), strings.TrimSpace(value)) {
+			return o, true
+		}
+	}
+	return ApprovalOutcome{}, false
 }
 
 // StepType returns the step's type, defaulting to StepTypeAgent when unset.

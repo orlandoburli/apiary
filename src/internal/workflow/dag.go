@@ -560,12 +560,19 @@ func (e *Engine) enterApproval(ctx context.Context, r *dagRun, step config.StepC
 	for _, f := range step.ApprovalFields {
 		fields = append(fields, map[string]any{"name": f.Name, "label": f.Label, "type": f.Type, "required": f.Required, "options": f.Options})
 	}
+	// The gate's answers travel with the request so every answer channel — the
+	// dashboard, the CLI, a webhook integration — renders the same choices
+	// without loading the workflow config.
+	outcomes := make([]db.ApprovalOutcome, 0, len(step.ApprovalOutcomes))
+	for _, o := range step.ApprovalOutcomesOr() {
+		outcomes = append(outcomes, db.ApprovalOutcome{Value: o.Value, Label: o.Label, Goto: o.Goto, Fail: o.Fail})
+	}
 	var expires *time.Time
 	if timeout := step.ParsedTimeout(); timeout > 0 {
 		deadline := r.parkedAt.Add(timeout)
 		expires = &deadline
 	}
-	request := &db.ApprovalRequest{ID: requestID, WorkflowInstanceID: r.instID, TaskID: r.task.ID, WorkflowID: r.wf.ID, StepID: step.ID, Message: step.Message, Approvers: step.Approvers, Delegates: step.Delegates, RequiredApprovals: step.RequiredApprovals, Fields: fields, CreatedAt: r.parkedAt, ExpiresAt: expires}
+	request := &db.ApprovalRequest{ID: requestID, WorkflowInstanceID: r.instID, TaskID: r.task.ID, WorkflowID: r.wf.ID, StepID: step.ID, Message: step.Message, Approvers: step.Approvers, Delegates: step.Delegates, RequiredApprovals: step.RequiredApprovals, Fields: fields, Outcomes: outcomes, CreatedAt: r.parkedAt, ExpiresAt: expires}
 	if store, ok := e.store.(approvalRequestStore); ok {
 		// The store owns the lap number: a rework loop re-enters this same step id
 		// on this same instance, and each visit needs its own answerable request.

@@ -228,11 +228,49 @@ func validApprovalSignature(secret string, body []byte, header string) bool {
 	return err == nil && hmac.Equal(want, got)
 }
 
+// findApprovalOutcome resolves a submitted answer against the gate's declared
+// outcomes, ignoring case and surrounding space: the value arrives from YAML,
+// JSON, a CLI flag or a TUI cursor, and a stray capital is not a different
+// answer.
+func findApprovalOutcome(outcomes []db.ApprovalOutcome, value string) (db.ApprovalOutcome, bool) {
+	for _, o := range outcomes {
+		if strings.EqualFold(strings.TrimSpace(o.Value), strings.TrimSpace(value)) {
+			return o, true
+		}
+	}
+	return db.ApprovalOutcome{}, false
+}
+
 func validateApprovalResponse(request *db.ApprovalRequest, response *db.ApprovalResponse) error {
 	decision := strings.ToLower(response.Decision)
-	if decision != "approve" && decision != "approved" && decision != "reject" && decision != "rejected" {
-		return fmt.Errorf("decision must be approve or reject")
+	// When the gate declares outcomes, the workflow defines what the answer is:
+	// the client sends an outcome value and the binary decision is derived from
+	// it, so a `fail` outcome routes down the rejection path the engine and the
+	// store already know. A gate without outcomes keeps the classic pair.
+	if len(request.Outcomes) > 0 {
+		value := strings.TrimSpace(response.Outcome)
+		if value == "" && decision != "" {
+			value = decision
+		}
+		o, ok := findApprovalOutcome(request.Outcomes, value)
+		if !ok {
+			return fmt.Errorf("outcome must be one of the gate's declared answers")
+		}
+		response.Outcome = o.Value
+		if o.Fail {
+			response.Decision = "reject"
+		} else {
+			response.Decision = "approve"
+		}
+	} else {
+		if decision != "approve" && decision != "approved" && decision != "reject" && decision != "rejected" {
+			return fmt.Errorf("decision must be approve or reject")
+		}
+		if response.Outcome == "" {
+			response.Outcome = decision
+		}
 	}
+	decision = strings.ToLower(response.Decision)
 	if response.Actor == "" {
 		return fmt.Errorf("actor is required")
 	}

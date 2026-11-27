@@ -312,6 +312,17 @@ func (c *Config) validateStep(
 		}
 	}
 
+	// An approval outcome may jump to a step, exactly like on_fail.goto. This is
+	// the only place that knows the workflow's step ids, so the reference is
+	// checked here rather than in the per-type validator.
+	if s.StepType() == StepTypeApproval {
+		for _, o := range s.ApprovalOutcomes {
+			if o.Goto != "" && !stepIDs[o.Goto] {
+				errs = append(errs, fmt.Errorf("%s: outcome %q goto references unknown step %q", sctx, o.Value, o.Goto))
+			}
+		}
+	}
+
 	return errs
 }
 
@@ -635,6 +646,23 @@ func validateApprovalStep(sctx string, s StepConfig) []error {
 		if field.Type == "choice" && len(field.Options) == 0 {
 			errs = append(errs, fmt.Errorf("%s: choice field %q requires options", sctx, field.Name))
 		}
+	}
+	// Outcomes are the gate's answers. Their values are what a response carries
+	// and what memory keys off, so ambiguity here is a config error rather than
+	// a runtime surprise. The routing itself (goto) is checked by validateStep,
+	// which is the only place that knows the workflow's step ids.
+	outcomeSeen := map[string]bool{}
+	for _, o := range s.ApprovalOutcomes {
+		value := strings.TrimSpace(o.Value)
+		if value == "" {
+			errs = append(errs, fmt.Errorf("%s: approval outcome value is required", sctx))
+			continue
+		}
+		key := strings.ToLower(value)
+		if outcomeSeen[key] {
+			errs = append(errs, fmt.Errorf("%s: duplicate approval outcome %q", sctx, value))
+		}
+		outcomeSeen[key] = true
 	}
 	if s.Timeout != "" {
 		if _, err := time.ParseDuration(s.Timeout); err != nil {
