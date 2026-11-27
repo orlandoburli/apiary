@@ -324,3 +324,30 @@ func (d *Dispatcher) cellForInstance(ctx context.Context, inst *db.WorkflowInsta
 	title, _ := d.db.GetTaskTitle(ctx, inst.CellID)
 	return model.SourceItem{ID: inst.CellID, SourceID: inst.SourceID, Title: title}
 }
+
+// workflowFromSnapshot rebuilds an instance's definition from the snapshot
+// written when it started.
+//
+// It is the fallback for rehydration when the live config no longer defines the
+// workflow — removed or renamed by a hot reload. No current definition means
+// there is no current env to merge in, so this is exactly what the instance
+// began with.
+func (d *Dispatcher) workflowFromSnapshot(ctx context.Context, instanceID string) (config.WorkflowConfig, bool) {
+	if d.db == nil {
+		return config.WorkflowConfig{}, false
+	}
+	snapshot, err := d.db.GetWorkflowSnapshot(ctx, instanceID)
+	if err != nil {
+		aplog.Warn("snapshot %s: %v", instanceID, err)
+		return config.WorkflowConfig{}, false
+	}
+	if snapshot == "" {
+		return config.WorkflowConfig{}, false
+	}
+	var wf config.WorkflowConfig
+	if err := json.Unmarshal([]byte(snapshot), &wf); err != nil {
+		aplog.Warn("snapshot %s: decode: %v", instanceID, err)
+		return config.WorkflowConfig{}, false
+	}
+	return wf, true
+}
