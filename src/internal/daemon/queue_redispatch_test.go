@@ -60,8 +60,7 @@ func newQueueDispatcher(t *testing.T, once bool) (*Dispatcher, *mutableAdapter, 
 		t.Fatalf("router: %v", err)
 	}
 	adapter := &mutableAdapter{items: []model.SourceItem{{ID: "c1", SourceID: "src", Title: "Do it", Labels: []string{"ai-ready"}}}}
-	d := &Dispatcher{
-		cfg:            cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:             dbc,
 		router:         r,
 		sources:        map[string]source.Adapter{"src": adapter},
@@ -71,7 +70,7 @@ func newQueueDispatcher(t *testing.T, once bool) (*Dispatcher, *mutableAdapter, 
 		stats:          map[string]*sourceStat{"src": {}},
 		dispatchQueue:  dbc.Queue(),
 		queueProjectID: "proj",
-	}
+	})
 	d.binder = source.NewSourceBinder(dbc)
 	return d, adapter, dbc
 }
@@ -114,7 +113,7 @@ func instancesFor(t *testing.T, dbc *db.Client, taskID, workflowID string) []db.
 func TestQueuePoll_LabelHandoffDispatchesOnNextPoll(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, dbc := newQueueDispatcher(t, false)
-	sc := d.cfg.Sources[0]
+	sc := d.config().Sources[0]
 
 	d.poll(ctx, sc, adapter, time.Time{})
 	triage := queueJobFor(t, dbc, "triage")
@@ -160,7 +159,7 @@ func TestQueuePoll_LabelHandoffDispatchesOnNextPoll(t *testing.T) {
 func TestExecuteQueuedJob_RunsRedispatchAfterEarlierCompletion(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, dbc := newQueueDispatcher(t, false)
-	sc := d.cfg.Sources[0]
+	sc := d.config().Sources[0]
 
 	d.poll(ctx, sc, adapter, time.Time{})
 	first := queueJobFor(t, dbc, "triage")
@@ -204,7 +203,7 @@ func TestExecuteQueuedJob_RunsRedispatchAfterEarlierCompletion(t *testing.T) {
 func TestExecuteQueuedJob_SkipsRedeliveryOfCompletedWorkflow(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, dbc := newQueueDispatcher(t, false)
-	sc := d.cfg.Sources[0]
+	sc := d.config().Sources[0]
 
 	d.poll(ctx, sc, adapter, time.Time{})
 	job := queueJobFor(t, dbc, "triage")
@@ -227,7 +226,7 @@ func TestExecuteQueuedJob_SkipsRedeliveryOfCompletedWorkflow(t *testing.T) {
 func TestExecuteQueuedJob_SkipsOnceRouteAfterCompletion(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, dbc := newQueueDispatcher(t, true)
-	sc := d.cfg.Sources[0]
+	sc := d.config().Sources[0]
 
 	d.poll(ctx, sc, adapter, time.Time{})
 	job := queueJobFor(t, dbc, "triage")

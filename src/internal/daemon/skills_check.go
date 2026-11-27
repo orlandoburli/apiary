@@ -13,10 +13,11 @@ import (
 // Without this the run proceeds with the skill simply absent from the agent's
 // context and nothing anywhere says so (issue #429).
 func (d *Dispatcher) warnUnresolvedSkills() {
-	if d.cfg == nil {
+	cfg := d.config()
+	if cfg == nil {
 		return
 	}
-	for _, ac := range d.cfg.Agents {
+	for _, ac := range cfg.Agents {
 		for _, name := range ac.Skills {
 			if name == "" {
 				continue

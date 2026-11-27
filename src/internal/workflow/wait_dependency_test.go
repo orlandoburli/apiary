@@ -25,7 +25,7 @@ func dependencyWorkflow(wait *config.WaitForConfig) config.WorkflowConfig {
 func depWaitEngine(store Store, exec StepExecutor, clock *time.Time,
 	dep func() ([]source.BlockerRef, error)) *Engine {
 	var seq atomic.Int64
-	return NewEngine(baseCfg(), store, exec,
+	return NewEngine(func() *config.Config { return baseCfg() }, store, exec,
 		WithSideEffects(&fakeSide{}),
 		WithClock(func() time.Time { return *clock }),
 		WithIDGen(func(prefix string) string { return prefix + "-" + itoa(int(seq.Add(1))) }),
@@ -206,7 +206,7 @@ func TestDependencyWait_NoCheckerConfiguredFails(t *testing.T) {
 	exec := &fakeExecutor{}
 	clock := time.Unix(1000, 0)
 	var seq atomic.Int64
-	eng := NewEngine(baseCfg(), store, exec,
+	eng := NewEngine(func() *config.Config { return baseCfg() }, store, exec,
 		WithSideEffects(&fakeSide{}),
 		WithClock(func() time.Time { return clock }),
 		WithIDGen(func(prefix string) string { return prefix + "-" + itoa(int(seq.Add(1))) }),
@@ -224,7 +224,7 @@ func TestDependencyWait_LinkTypeReachesChecker(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	var gotLinkType string
 	var seq atomic.Int64
-	eng := NewEngine(baseCfg(), store, exec,
+	eng := NewEngine(func() *config.Config { return baseCfg() }, store, exec,
 		WithSideEffects(&fakeSide{}),
 		WithClock(func() time.Time { return clock }),
 		WithIDGen(func(prefix string) string { return prefix + "-" + itoa(int(seq.Add(1))) }),

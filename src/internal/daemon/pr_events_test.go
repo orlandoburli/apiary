@@ -57,8 +57,7 @@ func newEventDispatcher(t *testing.T) (*Dispatcher, *db.Client, *envRecordingRun
 		t.Fatal(err)
 	}
 	runner := &envRecordingRunner{}
-	d := &Dispatcher{
-		cfg:         cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:          dbc,
 		router:      r,
 		sources:     map[string]source.Adapter{},
@@ -66,7 +65,7 @@ func newEventDispatcher(t *testing.T) (*Dispatcher, *db.Client, *envRecordingRun
 		agentRunner: map[string]string{"eng": "claude"},
 		agentSem:    map[string]chan struct{}{},
 		stats:       map[string]*sourceStat{},
-	}
+	})
 	// Teardown order matters: a dispatch runs on its own goroutine and keeps
 	// writing (execution events, outstanding counters) after routePREvent
 	// returns. Closing the store first leaves those writes failing with

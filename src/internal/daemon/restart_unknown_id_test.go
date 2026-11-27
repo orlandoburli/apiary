@@ -47,18 +47,17 @@ func (f *countingSource) SetState(_ context.Context, _ model.SourceItem, state s
 }
 
 func restartUnknownDispatcher(dbc *db.Client, fake *countingSource) *Dispatcher {
-	return &Dispatcher{
-		db: dbc,
-		cfg: &config.Config{
-			Sources: []config.SourceConfig{{ID: "jira"}},
-			Workflows: []config.WorkflowConfig{
-				{ID: "eng", Trigger: &config.TriggerConfig{Match: config.RouteMatch{
-					ExcludeLabels: []string{"in-progress"},
-				}}, Steps: []config.StepConfig{{ID: "run", Agent: "engineer"}}},
-			},
+	return dispatcherWithConfig(&config.Config{
+		Sources: []config.SourceConfig{{ID: "jira"}},
+		Workflows: []config.WorkflowConfig{
+			{ID: "eng", Trigger: &config.TriggerConfig{Match: config.RouteMatch{
+				ExcludeLabels: []string{"in-progress"},
+			}}, Steps: []config.StepConfig{{ID: "run", Agent: "engineer"}}},
 		},
+	}, &Dispatcher{
+		db:      dbc,
 		sources: map[string]source.Adapter{"jira": fake},
-	}
+	})
 }
 
 // TestForceRestart_UnknownIDIsRejected covers issue #377: `apiary restart <id>`

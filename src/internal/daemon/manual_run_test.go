@@ -33,7 +33,7 @@ func TestRunWorkflowManual_IgnoresTriggerMatch(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, dbc := manualDispatcher(t)
 
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{}) // binds the item
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{}) // binds the item
 	if got := len(jobsFor(t, d, "impl")); got != 0 {
 		t.Fatalf("setup: %d impl job(s) from the poll, want 0 — the item does not match its trigger", got)
 	}
@@ -64,7 +64,7 @@ func TestRunWorkflowManual_StartsConcurrentInstance(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, dbc := manualDispatcher(t)
 
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	if got := len(jobsFor(t, d, "triage")); got != 1 {
 		t.Fatalf("setup: %d triage job(s) after the poll, want 1", got)
 	}
@@ -113,7 +113,7 @@ func TestRunWorkflowManual_LeavesForeignInFlightMarker(t *testing.T) {
 	ctx := context.Background()
 	d, adapter, _ := manualDispatcher(t)
 
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	d.inFlight.Store("c1", time.Now()) // stand in for a poll still working the cell
 
 	if _, err := d.RunWorkflowManual(ctx, ManualRunRequest{WorkflowID: "impl", ItemRef: "c1"}); err != nil {
@@ -272,7 +272,7 @@ func TestRunWorkflowManual_KnownItemSkipsDiscovery(t *testing.T) {
 	d, base, dbc := newQueueDispatcher(t, false)
 	adapter := &pollableAdapter{mutableAdapter: *base}
 	d.sources["src"] = adapter
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	task := taskForCell(t, dbc, "src", "c1")
 
 	res, err := d.RunWorkflowManual(ctx, ManualRunRequest{WorkflowID: "impl", ItemRef: "c1"})
@@ -289,7 +289,7 @@ func TestRunWorkflowManual_KnownItemSkipsDiscovery(t *testing.T) {
 func TestRunWorkflowManual_AmbiguousSourceAsksForOne(t *testing.T) {
 	ctx := context.Background()
 	d, _, _ := newQueueDispatcher(t, false)
-	d.cfg.Sources = append(d.cfg.Sources, config.SourceConfig{ID: "other", Type: "fake"})
+	d.config().Sources = append(d.config().Sources, config.SourceConfig{ID: "other", Type: "fake"})
 	d.sources["src"] = &keyedAdapter{id: "10042", key: "PSP-199"}
 	d.sources["other"] = &keyedAdapter{id: "77", key: "PSP-199"}
 
@@ -429,7 +429,7 @@ func TestRunWorkflowManual_IgnoresSpentOnce(t *testing.T) {
 	adapter := &pollableAdapter{mutableAdapter: *base}
 	d.sources["src"] = adapter
 
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	job := queueJobFor(t, dbc, "triage")
 	if res := d.ExecuteQueuedJob(ctx, job, "w1"); !res.Success {
 		t.Fatalf("triage job failed: %+v", res)
@@ -437,7 +437,7 @@ func TestRunWorkflowManual_IgnoresSpentOnce(t *testing.T) {
 	task := taskForCell(t, dbc, "src", "c1")
 
 	// A poll now drops the workflow: `once` is spent.
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Now())
+	d.poll(ctx, d.config().Sources[0], adapter, time.Now())
 	if got := len(jobsFor(t, d, "triage")); got != 1 {
 		t.Fatalf("setup: re-poll of a spent `once` workflow produced %d job(s), want 1", got)
 	}

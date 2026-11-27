@@ -95,7 +95,7 @@ func TestApprovalProviderReceivesTransportNeutralRequest(t *testing.T) {
 	cfg := baseCfg()
 	store := newFakeStore()
 	exec := &fakeExecutor{}
-	eng := NewEngine(cfg, store, exec, WithSideEffects(&fakeSide{}), WithApprovalProvider(provider), WithIDGen(func(prefix string) string { return prefix + "-1" }))
+	eng := NewEngine(func() *config.Config { return cfg }, store, exec, WithSideEffects(&fakeSide{}), WithApprovalProvider(provider), WithIDGen(func(prefix string) string { return prefix + "-1" }))
 	wf := approvalWorkflow()
 	wf.Steps[1].Approvers = []string{"alice"}
 	wf.Steps[1].RequiredApprovals = 1
@@ -118,7 +118,7 @@ func TestApprovalAuditEventsPersistForRequestAndGrant(t *testing.T) {
 	}
 	defer dbc.Close()
 	exec := &fakeExecutor{}
-	eng := NewEngine(baseCfg(), dbc, exec, WithSideEffects(&fakeSide{}), WithIDGen(func(prefix string) string { return prefix + "-audit" }))
+	eng := NewEngine(func() *config.Config { return baseCfg() }, dbc, exec, WithSideEffects(&fakeSide{}), WithIDGen(func(prefix string) string { return prefix + "-audit" }))
 	wf := approvalWorkflow()
 	wf.Steps[1].Approvers = []string{"alice"}
 	wf.Steps[1].ResumeOn = nil
@@ -155,7 +155,7 @@ func TestApprovalTimeoutPersistsAndCannotResume(t *testing.T) {
 	}
 	defer dbc.Close()
 	clock := time.Unix(1000, 0)
-	eng := NewEngine(baseCfg(), dbc, &fakeExecutor{}, WithSideEffects(&fakeSide{}), WithClock(func() time.Time { return clock }), WithIDGen(func(prefix string) string { return prefix + "-timeout" }))
+	eng := NewEngine(func() *config.Config { return baseCfg() }, dbc, &fakeExecutor{}, WithSideEffects(&fakeSide{}), WithClock(func() time.Time { return clock }), WithIDGen(func(prefix string) string { return prefix + "-timeout" }))
 	wf := approvalWorkflow()
 	wf.Steps[1].Approvers = []string{"alice"}
 	wf.Steps[1].ResumeOn = nil
@@ -289,7 +289,7 @@ func TestApproval_CheckTimesOut(t *testing.T) {
 
 	// Controllable clock: park at t0, then advance well past the 48h timeout.
 	clock := time.Unix(0, 0)
-	eng := NewEngine(cfg, store, exec,
+	eng := NewEngine(func() *config.Config { return cfg }, store, exec,
 		WithSideEffects(&fakeSide{}),
 		WithClock(func() time.Time { return clock }),
 		WithIDGen(func(p string) string { return p + "-1" }),

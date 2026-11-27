@@ -67,7 +67,7 @@ func TestQueuePolicyIncludesWorkflowLimits(t *testing.T) {
 		DefaultWorkflow: 3,
 		Workflows:       map[string]int{"sweep": 1},
 	}
-	policy := (&Dispatcher{cfg: cfg}).queuePolicy()
+	policy := (dispatcherWithConfig(cfg, &Dispatcher{})).queuePolicy()
 	if policy.DefaultWorkflow != 3 {
 		t.Errorf("DefaultWorkflow = %d, want 3", policy.DefaultWorkflow)
 	}

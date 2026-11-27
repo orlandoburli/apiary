@@ -60,7 +60,7 @@ func TestE2E_ClassifyImplementReviewQA(t *testing.T) {
 		},
 		Settings: config.Settings{Concurrency: 1},
 	}
-	eng := NewEngine(cfg, client, exec)
+	eng := NewEngine(func() *config.Config { return cfg }, client, exec)
 
 	// Build a v2-authored workflow, lower it, then run it.
 	rawWF := config.WorkflowConfig{
@@ -174,7 +174,7 @@ func TestE2E_V2ConditionSkipsTrack(t *testing.T) {
 		Agents:   []config.AgentConfig{{ID: "ag", Model: "m"}},
 		Settings: config.Settings{Concurrency: 1},
 	}
-	eng := NewEngine(cfg, client, exec)
+	eng := NewEngine(func() *config.Config { return cfg }, client, exec)
 
 	// V2 workflow with two mutually exclusive conditional steps after classify.
 	// simple-impl runs (track=simple), complex-impl is skipped.

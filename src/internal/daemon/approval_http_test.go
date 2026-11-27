@@ -40,7 +40,7 @@ func TestApprovalWebhookPersistsAuthorizedResponse(t *testing.T) {
 	if err := dbc.CreateApprovalRequest(ctx, request); err != nil {
 		t.Fatal(err)
 	}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{Settings: config.Settings{Approvals: config.ApprovalSettings{WebhookSecret: "secret"}}}}
+	d := dispatcherWithConfig(&config.Config{Settings: config.Settings{Approvals: config.ApprovalSettings{WebhookSecret: "secret"}}}, &Dispatcher{db: dbc})
 	body := []byte(`{"decision":"approve","actor":"alice","idempotency_key":"delivery-1"}`)
 	mac := hmac.New(sha256.New, []byte("secret"))
 	_, _ = mac.Write(body)
@@ -147,7 +147,7 @@ func TestApprovalResponseOnResolvedRequestConflicts(t *testing.T) {
 	if err := dbc.CreateApprovalRequest(ctx, request); err != nil {
 		t.Fatal(err)
 	}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 
 	post := func() *httptest.ResponseRecorder {
 		body := []byte(`{"decision":"approve","actor":"orlando","idempotency_key":"cli:inst:gate:approve"}`)
@@ -180,7 +180,7 @@ func TestApprovalResponseReportsQuorumProgress(t *testing.T) {
 	if err := dbc.CreateApprovalRequest(ctx, request); err != nil {
 		t.Fatal(err)
 	}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{}}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc})
 
 	body := []byte(`{"decision":"approve","actor":"alice","idempotency_key":"cli:inst:gate:alice"}`)
 	req := httptest.NewRequest(http.MethodPost, "/approvals/inst:gate/respond", bytes.NewReader(body))

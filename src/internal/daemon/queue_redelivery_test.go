@@ -17,7 +17,7 @@ import (
 func redeliveredJob(t *testing.T, d *Dispatcher, dbc *db.Client, workflowID string) (queue.Job, *model.InternalTask) {
 	t.Helper()
 	ctx := context.Background()
-	d.poll(ctx, d.cfg.Sources[0], d.sources["src"], time.Time{})
+	d.poll(ctx, d.config().Sources[0], d.sources["src"], time.Time{})
 	job := queueJobFor(t, dbc, workflowID)
 	job.AttemptCount = 2
 	return job, taskForCell(t, dbc, "src", "c1")

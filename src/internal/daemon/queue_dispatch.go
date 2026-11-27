@@ -32,32 +32,33 @@ type dispatchJobPayload struct {
 }
 
 func (d *Dispatcher) configureDispatchQueue() error {
-	if d.db == nil || !d.cfg.Settings.Queue.IsEnabled() {
+	cfg := d.config()
+	if d.db == nil || !cfg.Settings.Queue.IsEnabled() {
 		return nil
 	}
 	d.dispatchQueue = d.db.Queue()
-	d.queueProjectID = strings.TrimSpace(d.cfg.Settings.Queue.ProjectID)
+	d.queueProjectID = strings.TrimSpace(cfg.Settings.Queue.ProjectID)
 	if d.queueProjectID == "" {
 		absolute, _ := filepath.Abs(d.configFile)
 		d.queueProjectID = filepath.Dir(absolute)
 	}
-	if !d.cfg.Settings.Queue.UsesEmbeddedWorker() {
+	if !cfg.Settings.Queue.UsesEmbeddedWorker() {
 		return nil
 	}
-	workerID := strings.TrimSpace(d.cfg.Settings.Queue.WorkerID)
+	workerID := strings.TrimSpace(cfg.Settings.Queue.WorkerID)
 	if workerID == "" {
 		workerID = defaultQueueWorkerID(d.queueProjectID)
 	}
 	d.queueWorkerID = workerID
-	labels := append([]string{"local", "trusted", runtime.GOOS}, d.cfg.Settings.Queue.WorkerLabels...)
-	capabilities := append([]string{"apiary.workflow"}, d.cfg.Settings.Queue.WorkerCapabilities...)
+	labels := append([]string{"local", "trusted", runtime.GOOS}, cfg.Settings.Queue.WorkerLabels...)
+	capabilities := append([]string{"apiary.workflow"}, cfg.Settings.Queue.WorkerCapabilities...)
 	for _, adapter := range d.agentRunner {
 		capabilities = append(capabilities, "runner:"+adapter)
 	}
-	d.queueWorker = queue.Worker{ID: workerID, ProtocolVersion: queue.WorkerProtocolVersion, Pool: defaultString(d.cfg.Settings.Queue.WorkerPool, "default"), Labels: uniqueStrings(labels), Capabilities: uniqueStrings(capabilities), Capacity: d.cfg.Settings.Queue.WorkerCapacityValue(), Ready: true}
+	d.queueWorker = queue.Worker{ID: workerID, ProtocolVersion: queue.WorkerProtocolVersion, Pool: defaultString(cfg.Settings.Queue.WorkerPool, "default"), Labels: uniqueStrings(labels), Capabilities: uniqueStrings(capabilities), Capacity: cfg.Settings.Queue.WorkerCapacityValue(), Ready: true}
 	runtimeWorker, err := worker.New(d.dispatchQueue, worker.ExecutorFunc(d.executeQueuedJob), worker.Config{
 		Worker:        d.queueWorker,
-		LeaseDuration: d.cfg.Settings.Queue.LeaseDurationValue(), HeartbeatInterval: d.cfg.Settings.Queue.HeartbeatIntervalValue(), WorkerHeartbeat: d.cfg.Settings.Queue.HeartbeatIntervalValue(), WorkerTimeout: d.cfg.Settings.Queue.WorkerTimeoutValue(), PollInterval: d.cfg.Settings.Queue.PollIntervalValue(), Policy: d.queuePolicy(),
+		LeaseDuration: cfg.Settings.Queue.LeaseDurationValue(), HeartbeatInterval: cfg.Settings.Queue.HeartbeatIntervalValue(), WorkerHeartbeat: cfg.Settings.Queue.HeartbeatIntervalValue(), WorkerTimeout: cfg.Settings.Queue.WorkerTimeoutValue(), PollInterval: cfg.Settings.Queue.PollIntervalValue(), Policy: d.queuePolicy(),
 		OnError: func(err error) { aplog.Error("embedded worker: %v", err) },
 	})
 	if err != nil {
@@ -68,15 +69,16 @@ func (d *Dispatcher) configureDispatchQueue() error {
 }
 
 func (d *Dispatcher) queuePolicy() queue.ConcurrencyPolicy {
-	configured := d.cfg.Settings.Queue.Concurrency
+	cfg := d.config()
+	configured := cfg.Settings.Queue.Concurrency
 	policy := queue.ConcurrencyPolicy{DefaultProject: configured.DefaultProject, Projects: configured.Projects, DefaultSource: configured.DefaultSource, Sources: configured.Sources, DefaultAgent: configured.DefaultAgent, Agents: copyLimits(configured.Agents), DefaultRunner: configured.DefaultRunner, Runners: configured.Runners, DefaultPool: configured.DefaultPool, Pools: configured.Pools, DefaultWorkflow: configured.DefaultWorkflow, Workflows: copyLimits(configured.Workflows)}
 	if policy.DefaultProject == 0 {
-		policy.DefaultProject = d.cfg.Settings.Concurrency
+		policy.DefaultProject = cfg.Settings.Concurrency
 	}
 	if policy.Agents == nil {
 		policy.Agents = map[string]int{}
 	}
-	for _, agent := range d.cfg.Agents {
+	for _, agent := range cfg.Agents {
 		if _, explicit := policy.Agents[agent.ID]; !explicit && agent.MaxWorkers > 0 {
 			policy.Agents[agent.ID] = agent.MaxWorkers
 		}
@@ -147,7 +149,7 @@ func (d *Dispatcher) enqueueFanOut(ctx context.Context, cell model.SourceItem, t
 			continue
 		}
 		pool, labels, capabilities, affinity := d.requirementsForMatch(task.ID, match)
-		job := &queue.Job{IdempotencyKey: dispatchIdempotencyKey(task.ID, generation, match.Route.ID, idemSuffix), ProjectID: d.queueProjectID, SourceID: cell.SourceID, TaskID: task.ID, WorkflowID: match.Route.ID, AgentID: match.Route.Agent, RunnerID: d.agentRunner[match.Route.Agent], Pool: pool, RequiredLabels: labels, RequiredCapabilities: capabilities, AffinityKey: affinity, PayloadVersion: dispatchPayloadVersion, Payload: payload, Priority: -match.Route.Priority, MaxAttempts: d.cfg.Settings.MaxAttempts}
+		job := &queue.Job{IdempotencyKey: dispatchIdempotencyKey(task.ID, generation, match.Route.ID, idemSuffix), ProjectID: d.queueProjectID, SourceID: cell.SourceID, TaskID: task.ID, WorkflowID: match.Route.ID, AgentID: match.Route.Agent, RunnerID: d.agentRunner[match.Route.Agent], Pool: pool, RequiredLabels: labels, RequiredCapabilities: capabilities, AffinityKey: affinity, PayloadVersion: dispatchPayloadVersion, Payload: payload, Priority: -match.Route.Priority, MaxAttempts: d.config().Settings.MaxAttempts}
 		result, err := d.enqueueDispatchJob(ctx, job, match.Route.MaxPending, idemSuffix)
 		if err != nil {
 			d.rollbackQueuedOutstanding(ctx, task.ID, fmt.Errorf("enqueue workflow %s: %w", match.Route.ID, err))
@@ -566,7 +568,7 @@ func (d *Dispatcher) warnStalledQueueJob(ctx context.Context, job queue.Job, wor
 	if _, warned := d.warnedStalled.LoadOrStore(job.ID, struct{}{}); warned {
 		return
 	}
-	timeout := d.cfg.Settings.Queue.WorkerTimeoutValue()
+	timeout := d.config().Settings.Queue.WorkerTimeoutValue()
 	var reasons []string
 	for _, w := range workers {
 		if !jobSatisfiableByAnyWorker(job, []queue.Worker{w}) {
@@ -644,8 +646,9 @@ func (d *Dispatcher) reconcileTerminalQueueJobs(ctx context.Context) {
 }
 
 func (d *Dispatcher) requirementsForMatch(taskID string, match router.Match) (string, []string, []string, string) {
+	cfg := d.config()
 	agents := []string{match.Route.Agent}
-	for _, workflow := range d.cfg.Workflows {
+	for _, workflow := range cfg.Workflows {
 		if workflow.ID == match.Route.ID {
 			agents = workflowAgentIDs(workflow.Steps)
 			break
@@ -654,7 +657,7 @@ func (d *Dispatcher) requirementsForMatch(taskID string, match router.Match) (st
 	pool, affinity := "default", ""
 	var labels, capabilities []string
 	for _, id := range uniqueStrings(agents) {
-		for _, agent := range d.cfg.Agents {
+		for _, agent := range cfg.Agents {
 			if agent.ID != id {
 				continue
 			}

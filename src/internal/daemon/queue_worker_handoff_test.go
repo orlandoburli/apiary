@@ -86,8 +86,7 @@ func newWorkerDispatcher(t *testing.T, dbPath string, adapter *lockedAdapter) (*
 	if err != nil {
 		t.Fatalf("router: %v", err)
 	}
-	d := &Dispatcher{
-		cfg:         cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:          dbc,
 		router:      r,
 		sources:     map[string]source.Adapter{"src": adapter},
@@ -96,7 +95,7 @@ func newWorkerDispatcher(t *testing.T, dbPath string, adapter *lockedAdapter) (*
 		agentSem:    map[string]chan struct{}{},
 		stats:       map[string]*sourceStat{"src": {}},
 		configFile:  filepath.Join(filepath.Dir(dbPath), "apiary.yaml"),
-	}
+	})
 	d.binder = source.NewSourceBinder(dbc)
 	if err := d.configureDispatchQueue(); err != nil {
 		t.Fatalf("configure dispatch queue: %v", err)
@@ -196,13 +195,13 @@ func TestQueueWorker_HandoffWithBothLabelsRetained(t *testing.T) {
 	stop := runWorker(t, d)
 	defer stop()
 
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	if !waitForInstance(t, dbc, "c1", "triage", 15*time.Second) {
 		t.Fatalf("triage never completed:%s", queueDiagnostics(t, dbc))
 	}
 
 	adapter.setLabels("ai-ready", "ai-implement")
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Now())
+	d.poll(ctx, d.config().Sources[0], adapter, time.Now())
 	if !waitForInstance(t, dbc, "c1", "impl", 15*time.Second) {
 		t.Fatalf("hand-off never ran when the triage label stayed on the item:%s", queueDiagnostics(t, dbc))
 	}
@@ -220,7 +219,7 @@ func TestQueueWorker_FirstHandoffDispatchesWithoutRestart(t *testing.T) {
 	defer stop()
 
 	ctx := context.Background()
-	sc := d.cfg.Sources[0]
+	sc := d.config().Sources[0]
 	d.poll(ctx, sc, adapter, time.Time{})
 	if !waitForInstance(t, dbc, "c1", "triage", 15*time.Second) {
 		t.Fatalf("triage never completed:%s", queueDiagnostics(t, dbc))
@@ -248,7 +247,7 @@ func TestQueueWorker_HandoffAfterRestartWithStaleWorkerRow(t *testing.T) {
 
 	d1, dbc1 := newWorkerDispatcher(t, dbPath, adapter)
 	stop1 := runWorker(t, d1)
-	d1.poll(ctx, d1.cfg.Sources[0], adapter, time.Time{})
+	d1.poll(ctx, d1.config().Sources[0], adapter, time.Time{})
 	if !waitForInstance(t, dbc1, "c1", "triage", 15*time.Second) {
 		t.Fatalf("triage never completed:%s", queueDiagnostics(t, dbc1))
 	}
@@ -263,7 +262,7 @@ func TestQueueWorker_HandoffAfterRestartWithStaleWorkerRow(t *testing.T) {
 	d2, dbc2 := newWorkerDispatcher(t, dbPath, adapter)
 	stop2 := runWorker(t, d2)
 	defer stop2()
-	d2.poll(ctx, d2.cfg.Sources[0], adapter, time.Now())
+	d2.poll(ctx, d2.config().Sources[0], adapter, time.Now())
 	if !waitForInstance(t, dbc2, "c1", "impl", 15*time.Second) {
 		t.Fatalf("hand-off never ran after restart with a stale worker row:%s", queueDiagnostics(t, dbc2))
 	}
@@ -280,7 +279,7 @@ func TestQueueWorker_PlaceholderInstanceDoesNotBlockHandoff(t *testing.T) {
 	stop := runWorker(t, d)
 	defer stop()
 
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	if !waitForInstance(t, dbc, "c1", "triage", 15*time.Second) {
 		t.Fatalf("triage never completed:%s", queueDiagnostics(t, dbc))
 	}
@@ -290,7 +289,7 @@ func TestQueueWorker_PlaceholderInstanceDoesNotBlockHandoff(t *testing.T) {
 	}
 
 	adapter.setLabels("ai-implement")
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Now())
+	d.poll(ctx, d.config().Sources[0], adapter, time.Now())
 	if !waitForInstance(t, dbc, "c1", "impl", 15*time.Second) {
 		t.Fatalf("hand-off never ran with a done placeholder instance present:%s", queueDiagnostics(t, dbc))
 	}
@@ -335,7 +334,7 @@ func TestQueueWorker_HandoffEnqueuedWhileWorkerBusyRunsWhenSlotFrees(t *testing.
 	adapter := &lockedAdapter{items: []model.SourceItem{{ID: "c1", SourceID: "src", Title: "Do it", Labels: []string{"ai-ready"}}}}
 	d, dbc := newWorkerDispatcher(t, filepath.Join(t.TempDir(), "queue.db"), adapter)
 	// A lease long enough that the held job is not reclaimed while it blocks.
-	d.cfg.Settings.Queue.LeaseDuration = "60s"
+	d.config().Settings.Queue.LeaseDuration = "60s"
 	if err := d.configureDispatchQueue(); err != nil {
 		t.Fatalf("reconfigure queue: %v", err)
 	}
@@ -344,7 +343,7 @@ func TestQueueWorker_HandoffEnqueuedWhileWorkerBusyRunsWhenSlotFrees(t *testing.
 	stop := runWorker(t, d)
 	defer stop()
 
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	select {
 	case <-gated.runs:
 	case <-time.After(15 * time.Second):
@@ -354,7 +353,7 @@ func TestQueueWorker_HandoffEnqueuedWhileWorkerBusyRunsWhenSlotFrees(t *testing.
 	// The hand-off arrives while the worker is saturated: the incremental poll
 	// observes it and must enqueue now so it runs as soon as the slot frees.
 	adapter.setLabels("ai-ready", "ai-implement")
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Now())
+	d.poll(ctx, d.config().Sources[0], adapter, time.Now())
 	queued, err := dbc.Queue().ListJobs(ctx, queue.JobQueued, 10)
 	if err != nil {
 		t.Fatalf("list queued: %v", err)

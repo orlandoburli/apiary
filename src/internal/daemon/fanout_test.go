@@ -77,8 +77,7 @@ func newFanoutDispatcher(t *testing.T, workflows []config.WorkflowConfig) (*Disp
 	}
 
 	runner := &countingRunner{}
-	d := &Dispatcher{
-		cfg:         cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:          dbc,
 		router:      r,
 		sources:     map[string]source.Adapter{"src": &fanoutAdapter{items: []model.SourceItem{{ID: "c1", SourceID: "src", Title: "Do it"}}}},
@@ -86,7 +85,7 @@ func newFanoutDispatcher(t *testing.T, workflows []config.WorkflowConfig) (*Disp
 		agentRunner: map[string]string{"a": "claude", "b": "claude"},
 		agentSem:    map[string]chan struct{}{},
 		stats:       map[string]*sourceStat{"src": {}},
-	}
+	})
 	d.binder = source.NewSourceBinder(dbc)
 	return d, runner, dbc
 }

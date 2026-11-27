@@ -164,7 +164,7 @@ type TaskTracker interface {
 // same reasoning applies to the routability check: when it cannot be
 // established, it reports false.
 func (e *Engine) retryPending(ctx context.Context, r *dagRun) bool {
-	limit := e.cfg.Settings.MaxAttempts
+	limit := e.conf().Settings.MaxAttempts
 	if limit <= 0 || e.tracker == nil || r.task.ID == "" || r.wf.ID == "" {
 		return false
 	}
@@ -449,7 +449,7 @@ type CIStatusChecker func(ctx context.Context, req CIStatusRequest) (source.CISt
 type DependencyChecker func(ctx context.Context, sourceID, sourceItemID, linkType string) ([]source.BlockerRef, error)
 
 type Engine struct {
-	cfg               *config.Config
+	cfgProvider       func() *config.Config
 	store             Store
 	exec              StepExecutor
 	side              SideEffects
@@ -522,15 +522,29 @@ func WithApprovalProvider(provider ApprovalProvider) Option {
 	}
 }
 
+// conf returns the current configuration. The provider is nil only for engines
+// assembled as a bare struct rather than through NewEngine, so fall back to a
+// zero config instead of LoadDefaults: the latter sets concurrency 4 and would
+// silently change dispatch for a mis-wired engine, whereas the zero value keeps
+// the documented sequential default and still never returns nil.
+func (e *Engine) conf() *config.Config {
+	if e.cfgProvider != nil {
+		if c := e.cfgProvider(); c != nil {
+			return c
+		}
+	}
+	return &config.Config{}
+}
+
 // NewEngine builds an Engine. cfg, store, and exec are required.
-func NewEngine(cfg *config.Config, store Store, exec StepExecutor, opts ...Option) *Engine {
+func NewEngine(cfg func() *config.Config, store Store, exec StepExecutor, opts ...Option) *Engine {
 	e := &Engine{
-		cfg:      cfg,
-		store:    store,
-		exec:     exec,
-		now:      time.Now,
-		parked:   map[string]*dagRun{},
-		resuming: map[string]*dagRun{},
+		cfgProvider: cfg,
+		store:       store,
+		exec:        exec,
+		now:         time.Now,
+		parked:      map[string]*dagRun{},
+		resuming:    map[string]*dagRun{},
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -642,7 +656,7 @@ func (e *Engine) runCreatedInstance(ctx context.Context, instID string, wf confi
 	}
 
 	// state_lock fires once at workflow start (not per step).
-	if e.cfg.Settings.StateLock && e.side != nil {
+	if e.conf().Settings.StateLock && e.side != nil {
 		_ = e.side.StateLock(ctx, task, bindings)
 	}
 
@@ -855,12 +869,12 @@ func (e *Engine) completeTask(ctx context.Context, r *dagRun, failed bool) {
 	}
 	e.recordExecutionEvent(ctx, r, eventType, map[string]any{"state": finalState})
 
-	if e.cfg.Tasks == nil || e.side == nil {
+	if e.conf().Tasks == nil || e.side == nil {
 		return
 	}
-	hook := e.cfg.Tasks.OnComplete
+	hook := e.conf().Tasks.OnComplete
 	if anyFailed {
-		hook = e.cfg.Tasks.OnFail
+		hook = e.conf().Tasks.OnFail
 	}
 	if hook != nil {
 		_ = e.side.ApplyHook(ctx, r.task, r.bindings, *hook)
@@ -1052,7 +1066,7 @@ func (e *Engine) renderRecall(ctx context.Context, task model.InternalTask, step
 			}
 		}
 	}
-	return e.memStore.RenderRecall(lineage, step.MemoryRecallTiers(), e.cfg.Settings.Memory.MaxInjectChars)
+	return e.memStore.RenderRecall(lineage, step.MemoryRecallTiers(), e.conf().Settings.Memory.MaxInjectChars)
 }
 
 // memorizeStep persists the step's APIARY_MEMORIZE requests: global-scope
@@ -1289,7 +1303,7 @@ func (e *Engine) resultCommentMode(wf config.WorkflowConfig) string {
 	if wf.ResultComment != "" {
 		return wf.ResultComment
 	}
-	if e.cfg.Settings.ResultComment {
+	if e.conf().Settings.ResultComment {
 		return config.ResultCommentOnComplete
 	}
 	return config.ResultCommentOff
@@ -1298,17 +1312,17 @@ func (e *Engine) resultCommentMode(wf config.WorkflowConfig) string {
 // concurrencyLimit returns the effective global concurrency cap from config.
 // If not set, defaults to 1 (sequential — preserves existing behaviour).
 func (e *Engine) concurrencyLimit() int {
-	if e.cfg.Settings.Concurrency > 0 {
-		return e.cfg.Settings.Concurrency
+	if e.conf().Settings.Concurrency > 0 {
+		return e.conf().Settings.Concurrency
 	}
 	return 1
 }
 
 // findAgent returns the agent config by ID, or nil.
 func (e *Engine) findAgent(id string) *config.AgentConfig {
-	for i := range e.cfg.Agents {
-		if e.cfg.Agents[i].ID == id {
-			return &e.cfg.Agents[i]
+	for i := range e.conf().Agents {
+		if e.conf().Agents[i].ID == id {
+			return &e.conf().Agents[i]
 		}
 	}
 	return nil

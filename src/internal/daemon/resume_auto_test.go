@@ -100,15 +100,14 @@ func autoResumeFixture(t *testing.T, policy string) (*Dispatcher, *db.Client, *s
 		t.Fatalf("router: %v", err)
 	}
 	runner := &stepRecordingRunner{}
-	d := &Dispatcher{
-		cfg:         cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:          dbc,
 		router:      rt,
 		runners:     map[string]runnerpkg.Runner{"agent-a": runner},
 		agentRunner: map[string]string{"a": "claude"},
 		agentSem:    map[string]chan struct{}{},
 		stats:       map[string]*sourceStat{"src": {}},
-	}
+	})
 	return d, dbc, runner, task.ID
 }
 
@@ -299,8 +298,7 @@ func TestPollDoesNotRestartWhileAutoResuming(t *testing.T) {
 		t.Fatalf("router: %v", err)
 	}
 	runner := &blockingRunner{release: make(chan struct{})}
-	d := &Dispatcher{
-		cfg:         cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:          dbc,
 		router:      rt,
 		sources:     map[string]source.Adapter{"src": adapter},
@@ -308,7 +306,7 @@ func TestPollDoesNotRestartWhileAutoResuming(t *testing.T) {
 		agentRunner: map[string]string{"a": "claude"},
 		agentSem:    map[string]chan struct{}{},
 		stats:       map[string]*sourceStat{"src": {}},
-	}
+	})
 	d.binder = source.NewSourceBinder(dbc)
 
 	// Bind the item exactly as a poll would, so the interrupted instance hangs off

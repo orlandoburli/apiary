@@ -30,7 +30,7 @@ func waitForWorkflow() config.WorkflowConfig {
 func waitForEngine(cfg *config.Config, store Store, exec StepExecutor, side SideEffects,
 	clock *time.Time, ci func() (source.CIStatus, error)) *Engine {
 	var seq atomic.Int64
-	return NewEngine(cfg, store, exec,
+	return NewEngine(func() *config.Config { return cfg }, store, exec,
 		WithSideEffects(side),
 		WithClock(func() time.Time { return *clock }),
 		WithIDGen(func(prefix string) string { return prefix + "-" + itoa(int(seq.Add(1))) }),

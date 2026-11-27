@@ -25,7 +25,7 @@ func restartTestConfig() *config.Config {
 }
 
 func TestControlLabels_DerivesFromRouteExclusions(t *testing.T) {
-	d := &Dispatcher{cfg: restartTestConfig()}
+	d := dispatcherWithConfig(restartTestConfig(), &Dispatcher{})
 	cell := model.SourceItem{Labels: []string{"agent:engineer", "in-progress", "bug", "area:backend"}}
 
 	got := d.controlLabels(cell)
@@ -42,7 +42,7 @@ func TestControlLabels_DerivesFromRouteExclusions(t *testing.T) {
 }
 
 func TestControlLabels_NoneWhenOnlyPlainLabels(t *testing.T) {
-	d := &Dispatcher{cfg: restartTestConfig()}
+	d := dispatcherWithConfig(restartTestConfig(), &Dispatcher{})
 	cell := model.SourceItem{Labels: []string{"bug", "area:backend", "prioridade:alta"}}
 	if got := d.controlLabels(cell); len(got) != 0 {
 		t.Errorf("controlLabels = %v, want none", got)
@@ -86,10 +86,9 @@ func TestForceRestart_StripsControlLabels(t *testing.T) {
 		ID:     "42",
 		Labels: []string{"agent:engineer", "in-progress", "bug"},
 	}}
-	d := &Dispatcher{
-		cfg:     restartTestConfig(),
+	d := dispatcherWithConfig(restartTestConfig(), &Dispatcher{
 		sources: map[string]source.Adapter{"fake": fake},
-	}
+	})
 
 	if _, err := d.ForceRestart(context.Background(), "42"); err != nil {
 		t.Fatalf("ForceRestart: %v", err)

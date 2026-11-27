@@ -20,17 +20,16 @@ import (
 func TestStatusReportsLiveAgentProcesses(t *testing.T) {
 	ctx := context.Background()
 	dbc := openDropTestDB(t, "status.db")
-	d := &Dispatcher{
+	d := dispatcherWithConfig(&config.Config{
+		Settings: config.Settings{Concurrency: 6},
+		Agents: []config.AgentConfig{
+			{ID: "engineer", MaxWorkers: 3},
+			{ID: "qa", MaxWorkers: 3},
+		},
+	}, &Dispatcher{
 		db:            dbc,
 		dispatchQueue: dbc.Queue(),
-		cfg: &config.Config{
-			Settings: config.Settings{Concurrency: 6},
-			Agents: []config.AgentConfig{
-				{ID: "engineer", MaxWorkers: 3},
-				{ID: "qa", MaxWorkers: 3},
-			},
-		},
-	}
+	})
 
 	// Two engineer processes running at once (a fan-out of one workflow) and
 	// one qa process.

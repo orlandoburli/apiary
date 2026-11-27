@@ -32,7 +32,7 @@ func realEngine(t *testing.T, client *db.Client, exec StepExecutor) *Engine {
 			{ID: "agent-c", Model: "claude-sonnet-4-6"},
 		},
 	}
-	return NewEngine(cfg, client, exec)
+	return NewEngine(func() *config.Config { return cfg }, client, exec)
 }
 
 // stepIDs returns the step IDs from a list of step runs in order.

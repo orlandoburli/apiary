@@ -229,7 +229,7 @@ type WorkflowListResponse struct {
 // WorkflowList returns all workflows defined in the config.
 func (d *Dispatcher) WorkflowList() WorkflowListResponse {
 	resp := WorkflowListResponse{}
-	for _, wf := range d.cfg.Workflows {
+	for _, wf := range d.config().Workflows {
 		ws := WorkflowSummary{
 			ID:          wf.ID,
 			Description: wf.Description,
@@ -401,7 +401,7 @@ func (d *Dispatcher) Instances(ctx context.Context, state, workflowID string, li
 	}
 	var ticketSourceIDs []string
 	if ticketsOnly {
-		ticketSourceIDs = d.cfg.TicketSourceIDs()
+		ticketSourceIDs = d.config().TicketSourceIDs()
 	}
 	views, err := d.db.ListWorkflowInstanceViews(ctx, state, workflowID, ticketSourceIDs, limit)
 	if err != nil {

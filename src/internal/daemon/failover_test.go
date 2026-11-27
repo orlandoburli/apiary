@@ -34,14 +34,13 @@ func newFailoverDispatcher(t *testing.T, primary, fallback runnerpkg.Runner, fbT
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = dbc.Close() })
-	d := &Dispatcher{
-		cfg:             &config.Config{},
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{
 		db:              dbc,
 		runners:         map[string]runnerpkg.Runner{"agent-engineer": primary},
 		agentRunner:     map[string]string{"engineer": "claude"},
 		agentFallbacks:  map[string][]runnerCandidate{"engineer": {{adapter: fallback, runnerType: fbType, model: fbModel}}},
 		rateLimitPaused: map[string]time.Time{},
-	}
+	})
 	return d, dbc
 }
 

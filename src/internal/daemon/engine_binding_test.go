@@ -125,8 +125,7 @@ func TestRunOnce_PublishWritesBackToBinding(t *testing.T) {
 		t.Fatalf("router: %v", err)
 	}
 
-	d := &Dispatcher{
-		cfg:         cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:          dbc,
 		router:      r,
 		sources:     map[string]source.Adapter{"src": adapter},
@@ -134,7 +133,7 @@ func TestRunOnce_PublishWritesBackToBinding(t *testing.T) {
 		agentRunner: map[string]string{"a": "claude"},
 		agentSem:    map[string]chan struct{}{},
 		stats:       map[string]*sourceStat{"src": {}},
-	}
+	})
 	d.binder = source.NewSourceBinder(dbc)
 
 	if err := d.RunOnce(ctx); err != nil {
@@ -187,8 +186,7 @@ func TestRunOnce_SideEffectsResolveViaBinding(t *testing.T) {
 		t.Fatalf("router: %v", err)
 	}
 
-	d := &Dispatcher{
-		cfg:         cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:          dbc,
 		router:      r,
 		sources:     map[string]source.Adapter{"src": adapter},
@@ -196,7 +194,7 @@ func TestRunOnce_SideEffectsResolveViaBinding(t *testing.T) {
 		agentRunner: map[string]string{"a": "claude"},
 		agentSem:    map[string]chan struct{}{},
 		stats:       map[string]*sourceStat{"src": {}},
-	}
+	})
 	d.binder = source.NewSourceBinder(dbc)
 
 	if err := d.RunOnce(ctx); err != nil {
@@ -273,8 +271,7 @@ func TestRunOnce_SpawnCreatesChildTask(t *testing.T) {
 		t.Fatalf("router: %v", err)
 	}
 
-	d := &Dispatcher{
-		cfg:     cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:      dbc,
 		router:  r,
 		sources: map[string]source.Adapter{"src": adapter},
@@ -285,7 +282,7 @@ func TestRunOnce_SpawnCreatesChildTask(t *testing.T) {
 		agentRunner: map[string]string{"triage": "claude", "collector": "claude"},
 		agentSem:    map[string]chan struct{}{},
 		stats:       map[string]*sourceStat{"src": {}},
-	}
+	})
 	d.binder = source.NewSourceBinder(dbc)
 
 	if err := d.RunOnce(ctx); err != nil {
@@ -365,8 +362,7 @@ func TestTaskCompletion_NoBindingsAppliesHookWithoutError(t *testing.T) {
 		t.Fatalf("router: %v", err)
 	}
 
-	d := &Dispatcher{
-		cfg:         cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:          dbc,
 		router:      r,
 		sources:     map[string]source.Adapter{}, // no sources: nothing to fan a hook out to
@@ -374,7 +370,7 @@ func TestTaskCompletion_NoBindingsAppliesHookWithoutError(t *testing.T) {
 		agentRunner: map[string]string{"collector": "claude"},
 		agentSem:    map[string]chan struct{}{},
 		stats:       map[string]*sourceStat{},
-	}
+	})
 
 	// A binding-less task with one outstanding workflow, as the spawner would leave it.
 	task := model.InternalTask{ID: "T-spawned", Title: "Collect", State: model.TaskStateRegistered, Input: map[string]any{}}

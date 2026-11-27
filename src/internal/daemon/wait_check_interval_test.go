@@ -38,14 +38,13 @@ func TestCheckWaits_HonoursCheckInterval(t *testing.T) {
 	}
 	adapter := newCIAdapter()
 	runner := &gateRunner{entered: make(chan struct{}), release: make(chan struct{})}
-	d := &Dispatcher{
-		cfg:         cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:          dbc,
 		sources:     map[string]source.Adapter{"src": adapter},
 		runners:     map[string]runnerpkg.Runner{"agent-eng": runner},
 		agentRunner: map[string]string{"eng": "claude"},
 		agentSem:    map[string]chan struct{}{"eng": make(chan struct{}, 1)},
-	}
+	})
 	d.binder = source.NewSourceBinder(dbc)
 
 	task, err := d.binder.Bind(ctx, model.SourceItem{ID: "A", SourceID: "src", Title: "A"})

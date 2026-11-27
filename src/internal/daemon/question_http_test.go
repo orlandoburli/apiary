@@ -23,7 +23,7 @@ func newQuestionTestDispatcher(t *testing.T) (*Dispatcher, *db.Client) {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = dbc.Close() })
-	return &Dispatcher{db: dbc, cfg: &config.Config{}}, dbc
+	return dispatcherWithConfig(&config.Config{}, &Dispatcher{db: dbc}), dbc
 }
 
 func postJSON(t *testing.T, d *Dispatcher, path, body string) *httptest.ResponseRecorder {
@@ -206,7 +206,7 @@ func TestQuestionLongPollUnknownIs404(t *testing.T) {
 }
 
 func TestQuestionMCPServerInjection(t *testing.T) {
-	d := &Dispatcher{cfg: &config.Config{}, configFile: filepath.Join(t.TempDir(), "apiary.yaml")}
+	d := dispatcherWithConfig(&config.Config{}, &Dispatcher{configFile: filepath.Join(t.TempDir(), "apiary.yaml")})
 	cfgMap := d.runnerConfigWithMCPs(map[string]any{"command": "claude"}, nil, nil)
 	mcps, ok := cfgMap["mcps"].([]model.MCPServer)
 	if !ok || len(mcps) != 1 {
@@ -227,7 +227,7 @@ func TestQuestionMCPServerInjection(t *testing.T) {
 
 	// settings.questions.enabled: false removes the injection entirely.
 	disabled := false
-	d.cfg.Settings.Questions.Enabled = &disabled
+	d.config().Settings.Questions.Enabled = &disabled
 	if got := d.runnerConfigWithMCPs(map[string]any{"command": "claude"}, nil, nil); got["mcps"] != nil {
 		t.Fatalf("disabled still injected mcps=%v", got["mcps"])
 	}

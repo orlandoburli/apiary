@@ -73,9 +73,10 @@ func resumableState(st, reason string) bool {
 
 // workflowByID resolves a workflow definition by id, covering both declared
 func (d *Dispatcher) workflowByID(id string) (config.WorkflowConfig, bool) {
-	for i := range d.cfg.Workflows {
-		if d.cfg.Workflows[i].ID == id {
-			return d.cfg.Workflows[i], true
+	cfg := d.config()
+	for i := range cfg.Workflows {
+		if cfg.Workflows[i].ID == id {
+			return cfg.Workflows[i], true
 		}
 	}
 	return config.WorkflowConfig{}, false

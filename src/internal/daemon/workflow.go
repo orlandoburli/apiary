@@ -70,7 +70,7 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 		if d.db != nil {
 			store = pluginExportStore{Client: d.db, dispatcher: d}
 		}
-		d.engine = workflow.NewEngine(d.cfg, store, &wfStepExecutor{d: d}, opts...)
+		d.engine = workflow.NewEngine(d.config, store, &wfStepExecutor{d: d}, opts...)
 	})
 	return d.engine
 }
@@ -181,9 +181,10 @@ func (d *Dispatcher) rehydrateParkedWaits(ctx context.Context) {
 // (handled by the engine as a step error if a marker is emitted).
 func (d *Dispatcher) newSpawner() workflow.WorkflowSpawner {
 	resolve := func(id string) (config.WorkflowConfig, bool) {
-		for i := range d.cfg.Workflows {
-			if d.cfg.Workflows[i].ID == id {
-				return d.cfg.Workflows[i], true
+		cfg := d.config()
+		for i := range cfg.Workflows {
+			if cfg.Workflows[i].ID == id {
+				return cfg.Workflows[i], true
 			}
 		}
 		return config.WorkflowConfig{}, false
@@ -262,9 +263,10 @@ func (d *Dispatcher) dispatchWorkflow(ctx context.Context, cell model.SourceItem
 // whose id equals the route id (a full multi-step definition), or a synthesized
 // single-step workflow for a plain route.
 func (d *Dispatcher) resolveWorkflow(match router.Match) config.WorkflowConfig {
-	for i := range d.cfg.Workflows {
-		if d.cfg.Workflows[i].ID == match.Route.ID {
-			return d.cfg.Workflows[i]
+	cfg := d.config()
+	for i := range cfg.Workflows {
+		if cfg.Workflows[i].ID == match.Route.ID {
+			return cfg.Workflows[i]
 		}
 	}
 	return config.WorkflowConfig{}
@@ -426,6 +428,7 @@ type wfStepExecutor struct {
 }
 
 func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepRequest) workflow.StepResult {
+	cfg := x.d.config()
 	pseudoWorkerID := fmt.Sprintf("agent-%s", req.Step.Agent)
 	ra, ok := x.d.runners[pseudoWorkerID]
 	if !ok {
@@ -456,10 +459,10 @@ func (x *wfStepExecutor) ExecuteStep(ctx context.Context, req workflow.StepReque
 		SummaryPrompt:      req.Step.SummaryPrompt,
 		StepID:             req.Step.ID,
 		WorkflowInstanceID: req.InstanceID,
-		WorkingDir:         x.d.cfg.ResolveWorkingDir(req.Agent, req.WorkflowWorkingDir, req.Step.WorkingDir),
+		WorkingDir:         cfg.ResolveWorkingDir(req.Agent, req.WorkflowWorkingDir, req.Step.WorkingDir),
 		Env:                env,
-		Timeout:            x.d.cfg.Settings.TaskTimeoutDuration(),
-		StallTimeout:       x.d.cfg.Settings.StallTimeoutDuration(),
+		Timeout:            cfg.Settings.TaskTimeoutDuration(),
+		StallTimeout:       cfg.Settings.StallTimeoutDuration(),
 	}
 
 	// Tell the stall watchdog when this run is blocked on a human rather than
@@ -972,8 +975,8 @@ func (s *wfSideEffects) ApplyHook(ctx context.Context, task model.InternalTask, 
 	// on_complete, task-level hooks, and the failure-cap park), so this is the
 	// single choke point. Fired once per label per hook, not per binding.
 	var notifCfg *config.NotificationsConfig
-	if s.d.cfg != nil {
-		notifCfg = s.d.cfg.Notifications
+	if cfg := s.d.config(); cfg != nil {
+		notifCfg = cfg.Notifications
 	}
 	if matched := matchedEscalationLabels(notifCfg, hook.AddLabels); len(matched) > 0 {
 		ev := escalationEvent{

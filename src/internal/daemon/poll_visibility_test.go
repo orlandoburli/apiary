@@ -74,7 +74,7 @@ func TestPollLoop_FailedPollDoesNotAdvanceWatermark(t *testing.T) {
 	adapter := &flakyAdapter{failOn: map[int]bool{1: true}}
 	d, _ := newWorkerDispatcher(t, filepath.Join(t.TempDir(), "queue.db"), &lockedAdapter{items: []model.SourceItem{{ID: "c1", SourceID: "src"}}})
 	d.sources["src"] = adapter
-	sc := d.cfg.Sources[0]
+	sc := d.config().Sources[0]
 	sc.PollInterval = "40ms"
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -110,7 +110,7 @@ func TestPoll_ReportsStaleInFlightMarker(t *testing.T) {
 	d, dbc := newWorkerDispatcher(t, filepath.Join(t.TempDir(), "queue.db"), adapter)
 
 	d.inFlight.Store("c1", time.Now().Add(-2*inFlightStaleAfter))
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 
 	events := eventsWithReason(t, dbc, "stale in-flight marker")
 	if len(events) != 1 {
@@ -118,7 +118,7 @@ func TestPoll_ReportsStaleInFlightMarker(t *testing.T) {
 	}
 
 	// Reported once, not once per poll.
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	if events := eventsWithReason(t, dbc, "stale in-flight marker"); len(events) != 1 {
 		t.Fatalf("re-poll re-reported the same stale marker: %d event(s)", len(events))
 	}
@@ -140,7 +140,7 @@ func TestQueueWatchdog_ReportsSatisfiableButUnleasedJob(t *testing.T) {
 	if err := dbc.Queue().RegisterWorker(ctx, &d.queueWorker); err != nil {
 		t.Fatalf("register worker: %v", err)
 	}
-	d.poll(ctx, d.cfg.Sources[0], adapter, time.Time{})
+	d.poll(ctx, d.config().Sources[0], adapter, time.Time{})
 	job := queueJobFor(t, dbc, "triage")
 	if job.State != queue.JobQueued {
 		t.Fatalf("job state = %q, want queued", job.State)

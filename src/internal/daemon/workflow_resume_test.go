@@ -60,12 +60,12 @@ type errOther struct{}
 func (errOther) Error() string { return "other" }
 
 func TestWorkflowByID(t *testing.T) {
-	d := &Dispatcher{cfg: &config.Config{
+	d := dispatcherWithConfig(&config.Config{
 		Workflows: []config.WorkflowConfig{
 			{ID: "feature-development"},
 			{ID: "backend-bugs", Steps: []config.StepConfig{{ID: "run", Agent: "backend-dev"}}},
 		},
-	}}
+	}, &Dispatcher{})
 
 	if wf, ok := d.workflowByID("feature-development"); !ok || wf.ID != "feature-development" {
 		t.Errorf("declared workflow not resolved: %+v ok=%v", wf, ok)
@@ -97,7 +97,7 @@ func TestResumePreviewUsesOriginalSnapshotAndFromStep(t *testing.T) {
 	if err := dbc.CreateStepRun(ctx, &db.StepRun{ID: "plan", WorkflowInstanceID: inst.ID, StepID: "plan", State: db.StepStatePassed}); err != nil {
 		t.Fatal(err)
 	}
-	d := &Dispatcher{db: dbc, cfg: &config.Config{Workflows: []config.WorkflowConfig{{ID: "feature", Steps: []config.StepConfig{{ID: "replacement"}}}}}}
+	d := dispatcherWithConfig(&config.Config{Workflows: []config.WorkflowConfig{{ID: "feature", Steps: []config.StepConfig{{ID: "replacement"}}}}}, &Dispatcher{db: dbc})
 	preview, err := d.ResumePreview(ctx, inst.ID, ResumeOptions{FromStep: "build", ConfigMode: ResumeConfigOriginal})
 	if err != nil {
 		t.Fatal(err)

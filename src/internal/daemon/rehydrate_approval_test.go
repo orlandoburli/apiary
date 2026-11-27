@@ -83,8 +83,7 @@ func TestRehydrateParkedApprovals_ResumesAndSettlesTask(t *testing.T) {
 	}
 
 	impl := &countingRunner{}
-	d := &Dispatcher{
-		cfg:     cfg,
+	d := dispatcherWithConfig(cfg, &Dispatcher{
 		db:      dbc,
 		router:  r,
 		sources: map[string]source.Adapter{"src": approvingPoller{}},
@@ -95,7 +94,7 @@ func TestRehydrateParkedApprovals_ResumesAndSettlesTask(t *testing.T) {
 		agentRunner: map[string]string{"architect": "claude", "backend-dev": "claude"},
 		agentSem:    map[string]chan struct{}{},
 		stats:       map[string]*sourceStat{"src": {}},
-	}
+	})
 	d.binder = source.NewSourceBinder(dbc)
 
 	// --- seed the DB as if a previous daemon parked an instance at the approval. ---
