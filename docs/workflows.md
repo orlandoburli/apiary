@@ -837,9 +837,22 @@ workflows:
 - The task's own source needs no CI capability at all: with `ci_source` set,
   `apiary validate` checks the *named* source instead, rejecting one that is not
   configured or whose adapter cannot poll a PR's checks.
-- The named source must be configured for the repository the PRs live in. A PR
-  URL from a different repository is refused rather than answered with a
-  same-numbered PR of the configured one.
+- The named source must be configured for the repository the PRs live in — or
+  list that repository under its `ci_repos` (see
+  [GitHub as a CI source](github-source.md#as-a-ci-source-for-another-tracker)).
+  A PR URL from a repository the source neither owns nor allows is refused
+  rather than answered with a same-numbered PR of another repository.
+- **A repository that reports no CI concludes `no_checks`.** Declaring a repo in
+  `ci_repos` with `require_checks: false` says its PRs may legitimately have no
+  checks at all (only a release workflow, no CI on the code paths). Once such a
+  PR is older than `no_checks_after` (default `10m`, counted from its
+  `created_at`) and still shows no check run and no commit status, the step
+  completes **successfully** with `ci_status: no_checks`, an empty `checks` list
+  and the poll recorded as `no_checks`. The grace period is what separates
+  "this repo never runs CI" from "CI has not started yet": inside it, the step
+  stays pending. A PR that reports any signal is aggregated normally, and
+  `fail_if_not_passed` does not apply to `no_checks` — it is about red CI, not
+  absent CI. The source's own repository always requires checks.
 - Everything else is unchanged: conflict detection, `fail_if_not_passed`,
   `on_conflict`, poll history, restart-safe parking.
 

@@ -256,7 +256,7 @@ type WorkflowInstanceItem struct {
 // when, and what each poll returned.
 type CIPollItem struct {
 	StepID    string
-	Status    string // passed|failed|pending|timeout|error|unknown
+	Status    string // passed|failed|pending|no_checks|timeout|error|unknown
 	PRURL     string
 	Detail    string // JSON of per-check states, or an error message
 	CheckedAt time.Time

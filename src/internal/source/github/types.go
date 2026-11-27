@@ -81,6 +81,7 @@ type pullRequest struct {
 	HTMLURL        string `json:"html_url"`
 	Body           string `json:"body"`
 	User           user   `json:"user"`
+	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
 	Mergeable      *bool  `json:"mergeable"`
 	MergeableState string `json:"mergeable_state"`

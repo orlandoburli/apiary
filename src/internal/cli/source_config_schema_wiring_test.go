@@ -30,7 +30,7 @@ func TestSourceConfigSchemaWiring_RealAdapters(t *testing.T) {
 		required []string
 	}{
 		"github": {
-			keys:     []string{"api_key", "base_url", "repo"},
+			keys:     []string{"api_key", "base_url", "ci_repos", "repo"},
 			required: []string{"repo"},
 		},
 		"plane": {
@@ -132,4 +132,34 @@ func sameSet(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// TestSourceConfigSchemaWiring_ValidateAcceptsCIRepos is the acceptance check for
+// #8151: the ci_repos config documented in docs/github-source.md must pass
+// `apiary validate`. The schema lint is strict, so a key the adapter reads but
+// never declares is rejected — declaring it is what makes the documented config
+// usable.
+func TestSourceConfigSchemaWiring_ValidateAcceptsCIRepos(t *testing.T) {
+	cfg := &config.Config{
+		Version: "1",
+		Sources: []config.SourceConfig{{
+			ID:   "gh",
+			Type: "github",
+			Config: map[string]any{
+				"repo":    "orlandoburli/project-erp",
+				"api_key": "ghp_secret",
+				"ci_repos": []any{map[string]any{
+					"repo":            "orlandoburli/apiary",
+					"require_checks":  false,
+					"no_checks_after": "10m",
+				}},
+			},
+		}},
+	}
+
+	for _, e := range cfg.Validate() {
+		if strings.Contains(e.Error(), "ci_repos") {
+			t.Fatalf("Validate() rejected the documented ci_repos config: %v", e)
+		}
+	}
 }

@@ -136,7 +136,7 @@ erDiagram
         INTEGER id PK
         TEXT workflow_instance_id FK "-> workflow_instances.id"
         TEXT step_id "wait_for step config id"
-        TEXT status "passed|failed|pending|timeout|error|unknown"
+        TEXT status "passed|failed|pending|no_checks|timeout|error|unknown"
         TEXT pr_url
         TEXT detail "JSON of per-check states, or error message"
         TIMESTAMP checked_at "one row per poll"
@@ -283,7 +283,7 @@ read as two separate problems.
 A `wait_for` step does not get a `step_runs` row — it parks the workflow
 instance (`workflow_instances.state = 'waiting'`) and is re-evaluated each poll
 cycle. Every one of those polls is appended to **`ci_poll_checks`**: one row per
-poll with its `status` (passed/failed/pending/timeout/error/unknown), the PR
+poll with its `status` (passed/failed/pending/no_checks/timeout/error/unknown), the PR
 `pr_url`, the per-check `detail` (JSON), and `checked_at`. This makes a parked CI
 wait auditable — how many times it polled, when, and what each poll returned —
 which the dashboard surfaces in the task detail and history views.

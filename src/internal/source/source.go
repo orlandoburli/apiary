@@ -65,7 +65,15 @@ type TaskPoller interface {
 // CIStatus represents the result of a CI status check. Used by poll steps waiting
 // for CI to complete.
 type CIStatus struct {
-	Status string // "passed", "failed", "pending", "conflict"
+	// Status is one of:
+	//   "passed"    — every check that reported a result is green;
+	//   "failed"    — at least one failed;
+	//   "pending"   — CI is running, or has not registered a check yet;
+	//   "conflict"  — the PR cannot merge as-is; waiting is pointless;
+	//   "no_checks" — the repository reports no CI at all for this PR, so there
+	//                 is nothing to wait for. Terminal and distinct from
+	//                 "pending": it says CI is absent, not late.
+	Status string
 	URL    string // Link to the CI run
 	Checks []struct {
 		Name   string // Check name (e.g., "test", "lint")
