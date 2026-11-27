@@ -243,13 +243,16 @@ func TestMetricsWindowKeyInertWhileOverlayOwnsKeyboard(t *testing.T) {
 func TestMetricsWindowAppearsInHeaders(t *testing.T) {
 	a := newTestApp(140, 60)
 	a.model.metricsWindow = MetricsWindowLast30Days
-	a.model.overviewTab = &OverviewTab{Status: "Healthy", CompletedToday: 7, RunsTotal: 9}
+	a.model.overviewTab = &OverviewTab{
+		Status: "Healthy", TasksDone: 7, TasksFailed: 1,
+		Durations: &db.ActivityDurations{Instances: db.DurationStats{N: 9, P50: time.Minute}},
+	}
 
 	out := stripANSI(a.renderOverviewTab(60))
 	for _, want := range []string{
 		"OVERVIEW · last 30 days",
-		"Tasks (last 30 days)",
-		"Runs (last 30 days)",
+		"Finished (last 30 days)",
+		"Durations (last 30 days)",
 		"Usage (last 30 days)",
 	} {
 		if !strings.Contains(out, want) {
@@ -263,7 +266,7 @@ func TestMetricsWindowAppearsInHeaders(t *testing.T) {
 
 	// All time is a window like any other and is named as such.
 	a.model.metricsWindow = MetricsWindowAllTime
-	if out := stripANSI(a.renderOverviewTab(60)); !strings.Contains(out, "Tasks (all time)") {
+	if out := stripANSI(a.renderOverviewTab(60)); !strings.Contains(out, "Finished (all time)") {
 		t.Errorf("Overview did not name the all-time window:\n%s", out)
 	}
 
@@ -326,14 +329,14 @@ func TestMetricsFetchUsesTheWindowTheHeaderNames(t *testing.T) {
 // dropped: the `w` press asked for its own fetch.
 func TestStaleMetricsWindowResultIsDropped(t *testing.T) {
 	a := newTestApp(100, 30)
-	a.Update(overviewDataMsg{data: OverviewTab{CompletedToday: 11}, window: MetricsWindowLast7Days})
-	if got := a.model.overviewTab.CompletedToday; got != 11 {
-		t.Fatalf("matching window result not applied: CompletedToday = %d", got)
+	a.Update(overviewDataMsg{data: OverviewTab{TasksDone: 11}, window: MetricsWindowLast7Days})
+	if got := a.model.overviewTab.TasksDone; got != 11 {
+		t.Fatalf("matching window result not applied: TasksDone = %d", got)
 	}
 
-	a.Update(overviewDataMsg{data: OverviewTab{CompletedToday: 99}, window: MetricsWindowLast30Days})
-	if got := a.model.overviewTab.CompletedToday; got != 11 {
-		t.Errorf("stale 30-day result applied under a 7-day window: CompletedToday = %d", got)
+	a.Update(overviewDataMsg{data: OverviewTab{TasksDone: 99}, window: MetricsWindowLast30Days})
+	if got := a.model.overviewTab.TasksDone; got != 11 {
+		t.Errorf("stale 30-day result applied under a 7-day window: TasksDone = %d", got)
 	}
 
 	a.model.workflowsTab.Workflows = []WorkflowConfigItem{{ID: "impl"}}

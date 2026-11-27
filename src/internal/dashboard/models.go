@@ -180,12 +180,13 @@ type AgentCount struct {
 	MaxWorkers int
 }
 
-// OverviewTab shows dispatcher status and summary metrics.
+// OverviewTab shows dispatcher status, live activity, and how long work took in
+// the selected metrics window (see MetricsWindow).
 //
-// The counters below the agent list cover the model's selected metrics window
-// (see MetricsWindow), not a calendar day: every header names the window the
-// figure was measured over. The field names still say "Today" from when the
-// window was fixed at local midnight.
+// The windowed part is a set of duration distributions, not a tally: "how long
+// does a run take" is the question the hive has to answer, and counting tasks
+// says nothing about it. Counts survive only as sample sizes, because a
+// percentile without its N is not interpretable.
 type OverviewTab struct {
 	Status       string
 	Uptime       string
@@ -198,24 +199,18 @@ type OverviewTab struct {
 	// with no timeout waits forever, and until now nothing outside the Tasks tab
 	// said one was waiting.
 	PendingApprovals int
-	CompletedToday   int
-	FailedToday      int
-	// TasksPerDay and AvgDuration are task-level: a task is one unit of work
-	// however many agent runs it took. The rate divides by the window, so a
-	// 90-day window reads as tasks per day rather than a number near zero.
-	TasksPerDay string
-	AvgDuration string
-	SuccessRate string
 
-	// Runs are the agent processes underneath the tasks: how many actually
-	// executed, how much of that failed, and how long one run takes.
-	RunsTotal      int
-	RunsCompleted  int
-	RunsFailed     int
-	RunsRunning    int
-	AvgRunDuration string
-	RunsPerDay     string
-	RunSuccessRate string
+	// TasksDone and TasksFailed are task outcomes in the window. They are no
+	// longer the headline — the durations below are — but a failure is still
+	// the thing an operator must notice, and the counts state the sample size
+	// behind the workflow distributions.
+	TasksDone   int
+	TasksFailed int
+
+	// Durations is the window's wall and active workflow distributions plus the
+	// agent-run distribution, or nil when the query failed. Nil means unknown,
+	// which is not the same claim as "nothing finished".
+	Durations *db.ActivityDurations
 
 	AgentBreakdown    []AgentCount
 	TodayCostUSD      float64

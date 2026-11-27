@@ -3088,27 +3088,24 @@ func (a *App) fetchOverview() tea.Cmd {
 				data.ActiveRuns = stats.ActiveRuns
 				data.QueuedTasks = stats.QueuedTasks
 
-				// Task headline.
-				data.CompletedToday = stats.TasksCompleted
-				data.FailedToday = stats.TasksFailed
-				data.AvgDuration = formatMetricDuration(stats.AvgTaskDurationMs)
-				data.SuccessRate = fmt.Sprintf("%.1f%%", stats.SuccessRate*100)
-				data.TasksPerDay = fmt.Sprintf("%.1f", stats.TasksPerDay)
-
-				// Run detail.
-				data.RunsTotal = stats.RunsCompleted + stats.RunsFailed + stats.ActiveRuns
-				data.RunsCompleted = stats.RunsCompleted
-				data.RunsFailed = stats.RunsFailed
-				data.RunsRunning = stats.ActiveRuns
-				data.AvgRunDuration = formatMetricDuration(stats.AvgRunDurationMs)
-				data.RunsPerDay = fmt.Sprintf("%.1f", stats.RunsPerDay)
-				data.RunSuccessRate = fmt.Sprintf("%.1f%%", stats.RunSuccessRate*100)
+				// Task outcomes, kept for the failure signal and as the sample
+				// size the duration distributions are drawn from.
+				data.TasksDone = stats.TasksCompleted
+				data.TasksFailed = stats.TasksFailed
 
 				data.TodayCostUSD = stats.TodayCostUSD
 				data.TodayTokens = stats.TodayTokens
 				data.TodayInputTokens = stats.TodayInputTokens
 				data.TodayOutputTokens = stats.TodayOutputTokens
 			}
+
+			// The windowed figures are distributions, not counts. A failed
+			// query leaves Durations nil: unknown, which the render says rather
+			// than printing zeros as "nothing finished".
+			if d, err := dbConn.GetActivityDurations(ctx, since); err == nil {
+				data.Durations = &d
+			}
+
 			// Fill agent running counts from agent stats
 			if agentRows, err := dbConn.GetAgentStats(ctx); err == nil {
 				runMap := map[string]int{}
@@ -4413,41 +4410,26 @@ func (a *App) renderOverviewTab(height int) string {
 		approvals = StyleWarning.Render(fmt.Sprintf("%d ⏸ — Shift+A to list, a on the task to answer", o.PendingApprovals))
 	}
 
-	// Two blocks, because they answer different questions: the task block is
-	// how much work finished, the run block is how many agent processes that
-	// took. Mixing them in one list is what produced a "tasks/min" figure that
-	// was neither per task nor per minute.
-	//
-	// Every header names the window the figures were measured over. The window
-	// is selectable now, so "since midnight" would be a lie on most of them.
-	// Running, Queued and Approvals stay under the windowed header because they
-	// are present-tense to-dos, not measurements of the window: "running" is
-	// not a claim about the last seven days.
+	// The windowed figures lead: how long work takes is the question this tab
+	// answers, and counting tasks said nothing about it. Running, Queued and
+	// Approvals follow as live to-dos — present tense, not windowed — and Usage
+	// closes the block.
 	window := a.model.metricsWindow.Label()
+	innerWidth := a.model.width - 2
+	if innerWidth < 22 {
+		innerWidth = 22 // the floor box() applies
+	}
+	b.WriteString("\n")
+	b.WriteString(overviewDurationsBlock(o.Durations, o.TasksDone, o.TasksFailed, window, innerWidth))
+
 	fmt.Fprintf(&b,
-		"\nTasks (%s):\n"+
+		"\nLive:\n"+
 			"  Running:    %d\n"+
 			"  Queued:     %d\n"+
-			"  Approvals:  %s\n"+
-			"  Completed:  %s\n"+
-			"  Failed:     %s\n",
-		window,
+			"  Approvals:  %s\n",
 		o.ActiveRuns,
 		o.QueuedTasks,
 		approvals,
-		StyleSuccess.Render(fmt.Sprintf("%d ✓", o.CompletedToday)),
-		StyleError.Render(fmt.Sprintf("%d ✗", o.FailedToday)),
-	)
-
-	fmt.Fprintf(&b,
-		"\nRuns (%s):\n"+
-			"  Total:      %d — %d ok · %d failed · %d running\n"+
-			"  Avg Run:    %s\n"+
-			"  Throughput: %s runs/day\n",
-		window,
-		o.RunsTotal, o.RunsCompleted, o.RunsFailed, o.RunsRunning,
-		valueOr(o.AvgRunDuration, "—"),
-		valueOr(o.RunsPerDay, "0.0"),
 	)
 
 	fmt.Fprintf(&b,
@@ -4458,18 +4440,131 @@ func (a *App) renderOverviewTab(height int) string {
 		costStr,
 		tokensStr,
 	)
-
-	fmt.Fprintf(&b,
-		"\nMetrics:\n"+
-			"  Throughput:   %s tasks/day\n"+
-			"  Avg Duration: %s per task (started and finished in the window)\n"+
-			"  Success Rate: %s of finished tasks\n",
-		valueOr(o.TasksPerDay, "0.0"),
-		valueOr(o.AvgDuration, "—"),
-		valueOr(o.SuccessRate, "—"),
-	)
 	b.WriteString(a.renderOverviewResources())
 	return a.box(a.metricsBoxTitle("OVERVIEW"), b.String(), height)
+}
+
+// overviewDurationsBlock is the Overview's windowed answer: how long workflow
+// runs took, wall and active side by side, and how long a single agent run took
+// underneath. Counts appear only as sample sizes.
+//
+// The two workflow distributions are adjacent and labelled on purpose: the gap
+// between them is the information (wall includes the waiting, active is the
+// time something executed), so one without the other says very little.
+//
+// The block is built widest-first and takes the first layout that fits: with
+// the maxima, then without them, then without the p90s. The wall/active pair
+// and every N are never dropped — a percentile without its sample size is not
+// interpretable, and the pair is the question.
+func overviewDurationsBlock(d *db.ActivityDurations, tasksDone, tasksFailed int, window string, width int) string {
+	const indent = "  "
+	if d == nil {
+		return indent + StyleMuted.Render("durations unavailable — the database could not be read") + "\n"
+	}
+
+	hasInstances := d.Instances.N > 0
+	hasRuns := d.Runs.N > 0
+	if !hasInstances && !hasRuns {
+		// No finished run is not a run of zero seconds. The window scopes the
+		// absence, or it would read as "never" on a seven-day window.
+		return StyleFooterDim.Render(indent+"no finished runs "+window) + "\n"
+	}
+
+	var b strings.Builder
+	if hasInstances {
+		// Tasks and workflow runs are different units and must not be added: a
+		// task can run several workflows, and it is the runs that carry the
+		// durations below. Each figure is labelled with its unit so the line
+		// cannot be read as one partitioned total (640 tasks, 781 runs).
+		tasks := tasksDone + tasksFailed
+		taskWord := "tasks"
+		if tasks == 1 {
+			taskWord = "task"
+		}
+		title := "Finished (" + window + "):  "
+		runs := StyleValueStrong.Render(sampleSize(d.Instances.N, "run", "runs"))
+		split := ""
+		if tasks > 0 {
+			split = StyleMuted.Render(fmt.Sprintf(" · %d %s done · ", tasksDone, taskWord)) +
+				StyleError.Render(strconv.Itoa(tasksFailed)) + StyleMuted.Render(" failed")
+		}
+		// A clipped "105 task…" would read as a figure, so on a narrow terminal
+		// the split is dropped rather than half-drawn; the run count is the
+		// part that must survive.
+		if lipgloss.Width(title+runs+split) <= width {
+			b.WriteString(title + runs + split + "\n")
+		} else {
+			b.WriteString(title + runs + "\n")
+		}
+	} else {
+		b.WriteString(StyleFooterDim.Render(indent+"no finished runs "+window) + "\n")
+	}
+
+	// layout builds the whole duration group for one degradation tier, from
+	// scratch: the widest candidate must not share backing array with a later
+	// one, or appending would overwrite it.
+	layout := func(withMax, withP90 bool) []string {
+		lines := []string{"Durations (" + window + "):"}
+		if hasInstances {
+			lines = append(lines,
+				durationRow("Wall:    ", d.Instances, withMax, withP90),
+				durationRow("Active:  ", d.Active, withMax, withP90))
+		}
+		if hasRuns {
+			agents := durationRow("Agents:  ", d.Runs, false, withP90)
+			// The agent-run distribution has no separate counts line, so its N
+			// rides on the row itself.
+			agents += StyleMuted.Render("  (" + sampleSize(d.Runs.N, "run", "runs") + ")")
+			lines = append(lines, agents)
+		}
+		return lines
+	}
+
+	// The shortest layout is the fallback when even that overflows; box() clips
+	// the row, which is better than dropping the pair or an N.
+	lines := layout(false, false)
+	for _, tier := range [][2]bool{{true, true}, {false, true}} {
+		if candidate := layout(tier[0], tier[1]); blockFits(candidate, width) {
+			lines = candidate
+			break
+		}
+	}
+	for _, line := range lines {
+		b.WriteString(line + "\n")
+	}
+	return b.String()
+}
+
+// durationRow is one labelled percentile group, with the label padded so the
+// three p50s line up: an operator compares those columns directly.
+func durationRow(label string, s db.DurationStats, withMax, withP90 bool) string {
+	out := "  " + StyleMuted.Render(label) +
+		StyleMuted.Render("p50 ") + StyleValueStrong.Render(formatCompactDuration(s.P50))
+	if withP90 {
+		out += StyleMuted.Render(" · p90 ") + StyleValueStrong.Render(formatCompactDuration(s.P90))
+	}
+	if withMax {
+		out += StyleMuted.Render(" · max ") + StyleValueStrong.Render(formatCompactDuration(s.Max))
+	}
+	return out
+}
+
+// blockFits reports whether every line of a layout fits the panel width.
+func blockFits(lines []string, width int) bool {
+	for _, line := range lines {
+		if lipgloss.Width(line) > width {
+			return false
+		}
+	}
+	return true
+}
+
+// sampleSize renders a count with its noun: "1 run", "114 runs".
+func sampleSize(n int, singular, plural string) string {
+	if n == 1 {
+		return "1 " + singular
+	}
+	return strconv.Itoa(n) + " " + plural
 }
 
 // metricsBoxTitle names a metrics tab and the window its figures cover, so no

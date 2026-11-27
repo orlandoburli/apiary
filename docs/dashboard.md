@@ -90,13 +90,11 @@ the same one, so the two tabs always describe the same stretch of time. Press
 | `last 90 days` | the last 2,160 hours |
 | `all time` | everything the store holds |
 
-Every header names the window it is showing — `Tasks (last 30 days)`,
-`Runs (all time)`, `WORKFLOWS · last 90 days`, `no runs last 30 days` — so no
-figure appears without the period it was measured over. Rates are always **per
-day** across the chosen window: a 90-day throughput stays readable as
-`9.0 tasks/day` instead of collapsing to a fraction of a task per hour. "All
-time" divides by the hive's real history, starting at its first recorded
-execution, not by an invented span.
+Every header names the window it is showing — `Finished (last 30 days)`,
+`Durations (all time)`, `WORKFLOWS · last 90 days`, `no finished runs last 30
+days` — so no figure appears without the period it was measured over. "All
+time" covers the whole history the store holds, starting at the first recorded
+execution.
 
 The key is scoped to the screen: on the Logs tab `w` toggles word wrap, and in
 the Agents detail view it cycles an agent's `max_workers`, exactly as before.
@@ -105,40 +103,62 @@ the Agents detail view it cycles an agent's `max_workers`, exactly as before.
 
 ### Overview
 
-Your at-a-glance health check. Use this tab to answer "is everything moving?"
+Your at-a-glance health check: what the hive is doing right now, and how long
+its work takes.
+
+**Live** — present tense, not tied to the selected window:
 
 - **Status** — dispatcher health indicator (Healthy / Degraded / Unknown) with a live glyph.
-- **Uptime** — how long the dispatcher has been running.
 - **Concurrency** — worker pool size (configured in `apiary.yaml`).
-- **Active Agents** — agents that have processed work in the last hour.
-- **Running** — how many tasks are being worked on this instant.
+- **Agents** — each agent's running workers over its configured maximum, plus how many agents have run in the last hour.
+- **Running** — how many task executions are being worked on this instant.
 - **Queued** — tasks that failed and are waiting to be retried automatically.
-- **Completed / Failed** — how many **tasks** reached `done` / `failed` in the
-  selected window.
-- **Success Rate** — done ÷ (done + failed) over the window's finished tasks.
-  Work still in flight is not in the denominator, so the rate does not dip merely
-  because something is running. A sudden drop is your cue to check the Logs tab.
-- **Avg Duration** — how long a task takes, measured over the tasks that both
-  **started and finished in the window**. A task created weeks ago and finished
-  today is counted as finished, but its multi-week life is not treated as "how
-  long the work takes".
-- **Throughput** — **tasks/day** across the window, divided by the days
-  actually elapsed (clamped to one hour, so a single task in a short window does
-  not turn into an enormous rate).
+- **Approvals** — decisions parked on a human, with a shortcut to list them.
 
-The **Runs** block is the detail underneath those task figures: one run is one
-agent process, and a task that takes four steps is four runs. It shows the
-total with its outcome split, the average run duration, and runs/day. Finished
-runs only are averaged and rated — a run still in flight has no duration.
+**Finished** — how much finished in the selected window, and how long it took:
 
-Both blocks cover the **selected metrics window** (see
-[Choosing the metrics window](#choosing-the-metrics-window)) and the headers
-name it. Running, Queued and the run split's "running" are live right-now
-numbers, not windowed ones.
+```
+Finished (last 7 days):  114 runs · 105 tasks done · 9 failed
+Durations (last 7 days):
+  Wall:    p50 4.4h · p90 22.5h · max 47.8h
+  Active:  p50 51m · p90 2.6h · max 13h
+  Agents:  p50 9.8m · p90 30m  (1306 runs)
+```
 
-**Task** counts come from the task registry, so a retried task is one task that
-eventually finished, not a failure plus a success. **Run** counts come from
-executions, so they show the actual work underneath.
+- **Wall** — how long a workflow run took end to end, from creation to finish,
+  **waiting included**.
+- **Active** — how much of that time something was actually executing: the
+  union of the run's step intervals. Approvals, CI waits and other parked time
+  are not steps, so they do not appear here, and steps that ran in parallel are
+  counted once rather than twice.
+- **Agents** — how long a single agent run (one process) took. The other two are
+  about whole workflows; this one is about the unit a task spends its time in.
+
+`Wall` and `Active` sit next to each other because the **gap between them is
+the information**: a workflow that spends most of its life waiting for a person
+has a high wall and a low active time, while one that is genuinely slow has both
+high. One figure without the other says very little.
+
+The figures are **percentiles, not averages**. Run durations are heavy-tailed —
+a handful of runs parked for most of a day can drag a mean far above anything
+you will typically experience — so a mean describes no run in particular. `p50`
+is the typical run, `p90` is the slow tail, and `max` is the worst one. On a
+narrow terminal the lines drop `max` first and then the p90s; the wall/active
+pair and the sample sizes always stay.
+
+The counts are **sample sizes now**, not the headline: `114 runs` is the N behind
+the wall and active distributions, and `(1306 runs)` is the N behind the agent
+distribution. A percentile without its sample size is not interpretable. The
+task split (`105 done · 9 failed`) is kept because a failure is still the thing
+to notice; it comes from the task registry, so a retried task is one task that
+eventually finished, not a failure plus a success.
+
+A window with no finished runs says so (`no finished runs last 7 days`) rather
+than printing zeros, and a failed durations query says the figures are
+unavailable rather than implying nothing ran. Everything here covers the
+**selected metrics window** (see
+[Choosing the metrics window](#choosing-the-metrics-window)); the box title and
+each header name it.
 
 **Running** counts the task executions the database still marks as running.
 That is not the same as the number of processes actually working: a process
@@ -148,8 +168,8 @@ of those executions are provably alive and which are stale.
 
 #### Resources
 
-Below the counters, a **Resources** section reports what the hive costs on this
-machine right now:
+At the bottom of the tab, a **Resources** section reports what the hive costs on
+this machine right now:
 
 ```
 Hive:     12.3% CPU  412.5 MiB  14 processes
