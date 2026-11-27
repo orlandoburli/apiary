@@ -36,16 +36,21 @@ type Model struct {
 	pickerTaskID     string // focused task at open time; empty means nothing was focused
 	pickerStandalone bool   // run with no source item even though one is focused
 
-	// Approval form (a, or y/n on a request that carries fields). Renders the
-	// request's declared fields as editable rows and posts decision + values in
-	// one response. See approval_form.go.
-	approvalActive bool
-	approvalReq    *db.ApprovalRequest
-	approvalIdx    int               // cursor over the field rows
-	approvalVals   map[string]any    // committed values, by field name
-	approvalDraft  map[string]string // in-progress text for typed fields
-	approvalErr    string            // local validation message, cleared on edit
-	approvalMsg    []string          // the request's message, markdown-rendered once on open
+	// Approval sheet (a, y, or n on a parked request). Renders the request's
+	// declared outcomes and fields, takes an optional reason, and posts decision
+	// + outcome + values + feedback in one response. See approval_form.go.
+	approvalActive   bool
+	approvalReq      *db.ApprovalRequest
+	approvalOutcomes []db.ApprovalOutcome // the gate's answers; the implicit pair when undeclared
+	approvalOutcome  int                  // the radio selection, which is what gets submitted
+	approvalCursor   int                  // the ▶ row; enter moves it into approvalOutcome
+	approvalFocus    int                  // which section owns the cursor (approvalFocus*)
+	approvalIdx      int                  // cursor over the field rows
+	approvalVals     map[string]any       // committed values, by field name
+	approvalDraft    map[string]string    // in-progress text for typed fields
+	approvalReason   string               // the optional free-text reason, sent as feedback
+	approvalErr      string               // local validation message, cleared on edit
+	approvalMsg      []string             // the request's message, markdown-rendered once on open
 
 	notice      string    // one-line result banner for the last IPC action
 	noticeIsErr bool      // render the banner as an error

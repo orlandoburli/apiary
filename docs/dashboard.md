@@ -255,17 +255,28 @@ in the workflow monitor. Answer it there:
 
 | Key | Action |
 |---|---|
-| `y` | approve — or open the form, when the step declares fields |
-| `n` | reject |
-| `a` | open the form |
+| `a` | open the decision sheet |
+| `y` / `n` | open it with approve / reject preselected |
 
-The form renders the step's declared fields: `↑` / `↓` move between them, a
-choice is selected with `←` / `→` or its number, a boolean toggles with space,
-`Enter` approves, `Ctrl+R` rejects, `Esc` cancels. Submitted values reach the
-workflow as `${{ memory.<field> }}`.
+The sheet shows the question, the answers the workflow offers (not just
+yes/no), any declared fields, and a reason box:
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | move between rows; at a section edge, into the next section |
+| `←` / `→` or `1`-`9` | choose an answer |
+| `tab` / `shift+tab` | move between Answers, Fields and Reason |
+| `enter` | on an answer: select it; on a field or the reason: submit |
+| `ctrl+s` | submit from anywhere |
+| `esc` | cancel — nothing is recorded |
+
+The reason is optional and is always offered. Submitted values reach the
+workflow as `${{ memory.<field> }}`, the chosen answer as
+`${{ memory.approval_outcome }}`, and the reason as
+`${{ memory.approval_feedback }}`.
 
 The result is reported in the banner — including a refusal, such as a gate
-someone else has already answered. Rejecting never asks for the fields.
+someone else has already answered. A failing answer never asks for the fields.
 
 The same requests are answerable from the terminal with `apiary approvals`; see
 [Human-in-the-loop approvals](human-approvals.md).
