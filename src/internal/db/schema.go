@@ -348,6 +348,22 @@ CREATE TABLE IF NOT EXISTS approval_responses (
 );
 CREATE INDEX IF NOT EXISTS idx_approval_requests_status ON approval_requests(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_approval_requests_instance ON approval_requests(workflow_instance_id);
+
+-- agent_questions backs the ask_human MCP tool: an agent running as a one-shot
+-- subprocess cannot be paused, so it asks the daemon over HTTP and long-polls
+-- until a human answers. Options are JSON [{value,label}] so an answer channel
+-- can render the choices without reading any workflow config.
+CREATE TABLE IF NOT EXISTS agent_questions (
+  id TEXT PRIMARY KEY,
+  workflow_instance_id TEXT, step_id TEXT, task_id TEXT, agent_id TEXT,
+  question TEXT NOT NULL, options TEXT NOT NULL DEFAULT '[]',
+  allow_free_text INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'pending', answer TEXT, answer_reason TEXT,
+  answered_by TEXT, created_at DATETIME NOT NULL, expires_at DATETIME,
+  answered_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_agent_questions_pending ON agent_questions(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_questions_instance ON agent_questions(workflow_instance_id);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_state ON workflow_instances(state);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_cell ON workflow_instances(cell_id);
 CREATE INDEX IF NOT EXISTS idx_wf_instances_parent ON workflow_instances(parent_instance_id);
