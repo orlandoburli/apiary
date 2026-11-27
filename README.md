@@ -84,6 +84,8 @@ Apiary runs end-to-end today and ships with the safeguards that make unattended 
 - **Re-dispatch cap** (`settings.max_attempts`) — a task whose workflow keeps failing stops being re-dispatched after N consecutive failures, so a broken task can't loop forever.
 - **Non-blocking dispatch** — a busy agent parks its own runs without stalling polling or dispatch for any other source or agent.
 - **Approval rehydration** — runs parked on a manual-approval gate survive a daemon restart.
+- **Answers the workflow defines** — a gate offers whatever answers its workflow declares (`approve`, `rework`, `abort`…), each saying what it does, and always records a reason.
+- **Agents that ask** — a running agent can call `ask_human` mid-run and block until someone answers in the dashboard; if nobody does, it continues with its best judgement.
 - **Scoped env vars** — set environment variables per agent, workflow, or step, merged with precedence.
 - **Schema-validated config** — `apiary.yaml` is validated against a JSON Schema, with live validation in the VS Code extension.
 - **Agent memory** — agents persist lessons (`APIARY_MEMORIZE`) as plain markdown: per-task working notes that survive retries and fan-out, plus a curated store of durable project facts recalled into every prompt.
@@ -102,6 +104,8 @@ See [Rate Limits & Resilience](docs/resilience.md) for details.
 | [Workflows](docs/workflows.md) | Triggers, steps, approval gates, CI waits, retry loops |
 | [Tasks & Fan-out](docs/tasks-and-fanout.md) | `APIARY_PUBLISH`, `APIARY_SPAWN`, task-level hooks |
 | [Agent Memory](docs/memory.md) | `APIARY_MEMORIZE`, task/global memory tiers, recall, curation |
+| [Approvals](docs/human-approvals.md) | Gates the workflow defines — answers, fields, reasons, quorums, webhooks |
+| [Agent Questions](docs/agent-questions.md) | `ask_human` — a running agent asks, blocks, and continues when answered |
 | [Rate Limits & Resilience](docs/resilience.md) | Failover chains and unattended-dispatch safeguards |
 | [Plugins](docs/plugins.md) | Out-of-process extensions — architecture, custom sources, event exporters |
 | [Plugin SDK](docs/plugin-sdk.md) | Writing plugins in Go, Python, Rust, Bash — or any language |
