@@ -261,7 +261,12 @@ type agentTaskLogsMsg struct {
 }
 type logsDataMsg struct{ logs []LogEntry }
 type usageDataMsg struct{ data UsageTab }
-type workflowsConfigMsg struct{ workflows []WorkflowConfigItem }
+type workflowsConfigMsg struct {
+	workflows []WorkflowConfigItem
+	// metricsUnavailable is set when today's activity query failed. The rows
+	// still render; only the stats are withheld.
+	metricsUnavailable bool
+}
 type workflowMonitorMsg struct {
 	taskID    string
 	instances []*WorkflowInstanceItem // all instances for the task, newest-first
@@ -586,6 +591,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case workflowsConfigMsg:
 		if a.model.workflowsTab != nil {
 			a.model.workflowsTab.Workflows = msg.workflows
+			a.model.workflowsTab.MetricsUnavailable = msg.metricsUnavailable
 		}
 		a.model.loading = false
 		a.model.lastRefresh = time.Now()
@@ -2691,9 +2697,16 @@ func (a *App) fetchWorkflowStepLogs(cellID, stepID string, from, to *time.Time, 
 	}
 }
 
-// fetchWorkflowsConfig fetches workflow definitions from the local config (no IPC needed).
+// fetchWorkflowsConfig fetches workflow definitions from the local config and
+// enriches them with today's activity from the database.
+//
+// The two reads are deliberately independent: the tab's primary job is showing
+// what the config defines, so a locked, missing or slow database must cost it
+// the stats, not the rows. The metrics query is bounded like every other tab
+// query, and a workflow or step with no row simply did not run today.
 func (a *App) fetchWorkflowsConfig() tea.Cmd {
 	cfg := a.cfg
+	dbConn := a.dbConn
 	return func() tea.Msg {
 		var items []WorkflowConfigItem
 		if cfg != nil {
@@ -2718,7 +2731,60 @@ func (a *App) fetchWorkflowsConfig() tea.Cmd {
 				items = append(items, item)
 			}
 		}
-		return workflowsConfigMsg{workflows: items}
+
+		msg := workflowsConfigMsg{workflows: items}
+		if dbConn == nil {
+			msg.metricsUnavailable = true
+			return msg
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+
+		// Local midnight, the same window the Overview uses: "today" is a
+		// local-day question, and truncating to UTC midnight would silently
+		// include yesterday evening.
+		now := time.Now()
+		since := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+
+		workflowRows, stepRows, err := dbConn.GetWorkflowMetrics(ctx, since)
+		if err != nil {
+			msg.metricsUnavailable = true
+			return msg
+		}
+
+		byWorkflow := make(map[string]*WorkflowActivity, len(workflowRows))
+		for _, m := range workflowRows {
+			byWorkflow[m.WorkflowID] = &WorkflowActivity{
+				Runs:          m.Runs,
+				Completed:     m.Completed,
+				Failed:        m.Failed,
+				AvgDurationMs: m.AvgDurationMs,
+			}
+		}
+		byStep := make(map[string]map[string]*WorkflowActivity, len(items))
+		for _, m := range stepRows {
+			if byStep[m.WorkflowID] == nil {
+				byStep[m.WorkflowID] = make(map[string]*WorkflowActivity, len(stepRows))
+			}
+			byStep[m.WorkflowID][m.StepID] = &WorkflowActivity{
+				Runs:          m.Runs,
+				Completed:     m.Completed,
+				Failed:        m.Failed,
+				AvgDurationMs: m.AvgDurationMs,
+			}
+		}
+
+		// Attach by id rather than relying on the query's ordering: the config
+		// list has its own order and the metrics come back busiest-first.
+		for i := range items {
+			items[i].Activity = byWorkflow[items[i].ID]
+			steps := byStep[items[i].ID]
+			for j := range items[i].Steps {
+				items[i].Steps[j].Activity = steps[items[i].Steps[j].ID]
+			}
+		}
+		return msg
 	}
 }
 
@@ -7504,9 +7570,13 @@ func (a *App) renderWorkflowsTab(height int) string {
 	leftW := 28
 	rightW := totalW - leftW - 1
 
-	// ── left panel: workflow list ───────────────────────────────────────────
+	// ── left panel: workflow list, one activity hint line per row ──────────
 	var left strings.Builder
 	left.WriteString(StyleTableHeader.Render(fitLine("WORKFLOW", leftW)) + "\n")
+	if wt.MetricsUnavailable {
+		// Said once, above the list: repeating it per row would bury the ids.
+		left.WriteString(StyleWarning.Render(fitLine("  metrics unavailable", leftW)) + "\n")
+	}
 	for i, wf := range wt.Workflows {
 		selected := i == wt.SelectedIdx
 		label := truncate(wf.ID, leftW-4)
@@ -7516,6 +7586,18 @@ func (a *App) renderWorkflowsTab(height int) string {
 			left.WriteString(StyleAccent.Render(fitLine(" ● "+label, leftW)) + "\n")
 		} else {
 			left.WriteString(fitLine("   "+label, leftW) + "\n")
+		}
+
+		// The hint gets its own line rather than sharing the id's: 28 columns
+		// cannot hold both a readable workflow id and 12·10✓·1✗ 45m.
+		if wt.MetricsUnavailable {
+			continue
+		}
+		if hint := workflowActivityHint(wf.Activity); hint != "" {
+			left.WriteString(fitLine("     "+StyleMuted.Render(hint), leftW) + "\n")
+		} else {
+			// No row is not a row of zeros: this workflow did not run today.
+			left.WriteString(fitLine("     "+StyleFooterDim.Render("no runs today"), leftW) + "\n")
 		}
 	}
 
@@ -7529,8 +7611,9 @@ func (a *App) renderWorkflowsTab(height int) string {
 		wf := wt.Workflows[wt.SelectedIdx]
 		desc := valueOr(wf.Description, "(no description)")
 
-		// Header: 2 lines (title + divider).
+		// Header: title, today's summary, divider.
 		right.WriteString(StyleValueStrong.Render(wf.ID) + "  " + StyleMuted.Render(desc) + "\n")
+		right.WriteString(workflowSummaryLine(wf.Activity, wt.MetricsUnavailable) + "\n")
 		right.WriteString(StyleMuted.Render(strings.Repeat("─", rightW)) + "\n")
 
 		if len(wf.Steps) == 0 {
@@ -7559,6 +7642,12 @@ func (a *App) renderWorkflowsTab(height int) string {
 						StyleFocusedArrow.Render("▶")+" "+StyleSelectedRow.Render(fitLine(ansi.Strip(headline), rightW-2)))
 				} else {
 					bl = append(bl, fitLine("  "+headline, rightW))
+				}
+
+				// Today's stats, only for a step that has activity: a step
+				// nobody reached today says nothing rather than "0 ran".
+				if step.Activity.Any() {
+					bl = append(bl, "    "+StyleMuted.Render(stepActivitySummary(step.Activity)))
 				}
 
 				// Sub-lines: always rendered, height stable regardless of selection.
@@ -7592,8 +7681,9 @@ func (a *App) renderWorkflowsTab(height int) string {
 			}
 
 			// Auto-scroll: keep the selected step visible in the body window.
-			// bodyRows = total visible lines minus the 2-line header.
-			bodyRows := height - 4 - 2
+			// bodyRows = total visible lines minus the 3-line header (title,
+			// today's summary, divider).
+			bodyRows := height - 4 - 3
 			if bodyRows < 1 {
 				bodyRows = 1
 			}
@@ -7655,6 +7745,56 @@ func (a *App) renderWorkflowsTab(height int) string {
 		body.WriteString(fitLine(l, leftW) + sep + fitLine(r, rightW) + "\n")
 	}
 	return a.box("WORKFLOWS", body.String(), height)
+}
+
+// workflowActivityHint is the left panel's compact form of a workflow's
+// activity: runs · completed✓ · failed✗, then the average duration when there
+// is one. The full words live in the right panel's summary; here every column
+// counts.
+func workflowActivityHint(m *WorkflowActivity) string {
+	if !m.Any() {
+		return ""
+	}
+	s := fmt.Sprintf("%d·%d✓·%d✗", m.Runs, m.Completed, m.Failed)
+	if m.AvgDurationMs > 0 {
+		s += " " + formatMetricDuration(m.AvgDurationMs)
+	}
+	return s
+}
+
+// stepActivitySummary is the one muted line under a step that ran today.
+// Duration is omitted when zero: an unfinished run has no average yet, and
+// "avg 0s" would read as very fast rather than unknown.
+func stepActivitySummary(m *WorkflowActivity) string {
+	s := fmt.Sprintf("ran %d · %d ok · %d failed", m.Runs, m.Completed, m.Failed)
+	if m.AvgDurationMs > 0 {
+		s += " · avg " + formatMetricDuration(m.AvgDurationMs)
+	}
+	return s
+}
+
+// workflowSummaryLine spells out the same numbers the left panel abbreviates,
+// so the glyphs there have a legend on the selected workflow.
+func workflowSummaryLine(m *WorkflowActivity, unavailable bool) string {
+	const indent = "  "
+	if unavailable {
+		return indent + StyleMuted.Render("metrics unavailable — the database could not be read")
+	}
+	if !m.Any() {
+		return indent + StyleFooterDim.Render("no runs since midnight")
+	}
+	runs := "runs"
+	if m.Runs == 1 {
+		runs = "run"
+	}
+	s := indent + StyleMuted.Render("Today: ") +
+		StyleValueStrong.Render(strconv.Itoa(m.Runs)) + StyleMuted.Render(" "+runs+" · ") +
+		StyleValueStrong.Render(strconv.Itoa(m.Completed)) + StyleMuted.Render(" completed · ") +
+		StyleValueStrong.Render(strconv.Itoa(m.Failed)) + StyleMuted.Render(" failed")
+	if m.AvgDurationMs > 0 {
+		s += StyleMuted.Render(" · avg ") + StyleValueStrong.Render(formatMetricDuration(m.AvgDurationMs))
+	}
+	return s
 }
 
 func styleStepType(t string) string {
