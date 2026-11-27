@@ -148,8 +148,8 @@ func (d *Dispatcher) RefreshTaskPullRequests(ctx context.Context, taskRef string
 	}
 
 	for _, sourceID := range order {
-		adapter, ok := d.sources[sourceID]
-		if !ok {
+		adapter := d.source(sourceID)
+		if adapter == nil {
 			continue
 		}
 		lister, ok := adapter.(source.PullRequestLister)

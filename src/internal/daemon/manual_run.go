@@ -417,7 +417,10 @@ func (d *Dispatcher) discoverItem(ctx context.Context, ref, sourceID string) (mo
 	if err != nil {
 		return model.SourceItem{}, nil, err
 	}
-	adapter := d.sources[id]
+	adapter := d.source(id)
+	if adapter == nil {
+		return model.SourceItem{}, nil, fmt.Errorf("%w: %q", ErrUnknownSource, id)
+	}
 
 	cell, err := adapter.(source.TaskPoller).PollTask(ctx, strings.TrimSpace(ref))
 	if err != nil {
@@ -442,7 +445,7 @@ func (d *Dispatcher) discoverItem(ctx context.Context, ref, sourceID string) (mo
 
 // manualSource returns the configured, connected source with this id.
 func (d *Dispatcher) manualSource(id string) (source.Adapter, error) {
-	if adapter, ok := d.sources[id]; ok {
+	if adapter := d.source(id); adapter != nil {
 		return adapter, nil
 	}
 	return nil, fmt.Errorf("%w: %q (configured: %s)", ErrUnknownSource, id, strings.Join(d.sourceIDs(), ", "))
@@ -469,7 +472,7 @@ func (d *Dispatcher) manualSourceForDiscovery(sourceID string) (string, error) {
 
 	var candidates []string
 	for _, sc := range d.config().Sources {
-		if adapter, ok := d.sources[sc.ID]; ok {
+		if adapter := d.source(sc.ID); adapter != nil {
 			if _, ok := adapter.(source.TaskPoller); ok {
 				candidates = append(candidates, sc.ID)
 			}
@@ -512,8 +515,8 @@ func (d *Dispatcher) fetchCell(ctx context.Context, cellID, sourceID string) (mo
 		if sourceID != "" && sc.ID != sourceID {
 			continue
 		}
-		adapter, ok := d.sources[sc.ID]
-		if !ok {
+		adapter := d.source(sc.ID)
+		if adapter == nil {
 			continue
 		}
 		poller, ok := adapter.(source.TaskPoller)

@@ -42,8 +42,8 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 			if req.CISourceID != "" {
 				return d.pollCIForLinkedPR(ctx, req)
 			}
-			adapter, ok := d.sources[req.SourceID]
-			if !ok {
+			adapter := d.source(req.SourceID)
+			if adapter == nil {
 				return source.CIStatus{}, fmt.Errorf("source %q not found", req.SourceID)
 			}
 			poller, ok := adapter.(source.CIStatusPoller)
@@ -56,8 +56,8 @@ func (d *Dispatcher) workflowEngine() *workflow.Engine {
 		}))
 		// Wire up blocker listing for wait_for steps with kind: dependency.
 		opts = append(opts, workflow.WithDependencyChecker(func(ctx context.Context, sourceID, sourceItemID, linkType string) ([]source.BlockerRef, error) {
-			adapter, ok := d.sources[sourceID]
-			if !ok {
+			adapter := d.source(sourceID)
+			if adapter == nil {
 				return nil, fmt.Errorf("source %q not found", sourceID)
 			}
 			lister, ok := adapter.(source.BlockerLister)
@@ -310,8 +310,8 @@ func (d *Dispatcher) checkApprovals(ctx context.Context) {
 		return
 	}
 	poll := func(sourceID, cellID string) (model.SourceItem, error) {
-		adapter, ok := d.sources[sourceID]
-		if !ok {
+		adapter := d.source(sourceID)
+		if adapter == nil {
 			return model.SourceItem{}, fmt.Errorf("source %q not found", sourceID)
 		}
 		poller, ok := adapter.(source.TaskPoller)
@@ -848,7 +848,7 @@ func sourceItemFromBinding(task model.InternalTask, b model.SourceBinding) model
 
 func (s *wfSideEffects) StateLock(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding) error {
 	for _, b := range bindings {
-		adapter := s.d.sources[b.SourceID]
+		adapter := s.d.source(b.SourceID)
 		if adapter == nil {
 			aplog.Error("task %s: no adapter for source %q (state_lock)", task.ID, b.SourceID)
 			continue
@@ -863,7 +863,7 @@ func (s *wfSideEffects) StateLock(ctx context.Context, task model.InternalTask, 
 
 func (s *wfSideEffects) PostComment(ctx context.Context, task model.InternalTask, bindings []model.SourceBinding, comment string) error {
 	for _, b := range bindings {
-		adapter := s.d.sources[b.SourceID]
+		adapter := s.d.source(b.SourceID)
 		if adapter == nil {
 			aplog.Error("task %s: no adapter for source %q (post_comment)", task.ID, b.SourceID)
 			continue
@@ -890,8 +890,8 @@ func (s *wfSideEffects) PostComment(ctx context.Context, task model.InternalTask
 // linked yet is neither — it is workflow.ErrPRNotLinked, which keeps the wait
 // pending until a step reports one.
 func (d *Dispatcher) pollCIForLinkedPR(ctx context.Context, req workflow.CIStatusRequest) (source.CIStatus, error) {
-	adapter, ok := d.sources[req.CISourceID]
-	if !ok {
+	adapter := d.source(req.CISourceID)
+	if adapter == nil {
 		return source.CIStatus{}, fmt.Errorf("ci_source %q is not a configured source: %w", req.CISourceID, source.ErrUnsupported)
 	}
 	poller, ok := adapter.(source.PRCIStatusPoller)
@@ -952,7 +952,7 @@ func (s *wfSideEffects) ApplyHook(ctx context.Context, task model.InternalTask, 
 	defer cancel()
 
 	for _, b := range bindings {
-		adapter := s.d.sources[b.SourceID]
+		adapter := s.d.source(b.SourceID)
 		if adapter == nil {
 			aplog.Error("task %s: no adapter for source %q (apply_hook)", task.ID, b.SourceID)
 			continue
@@ -1026,7 +1026,7 @@ func (s *wfSideEffects) MaterializeChild(ctx context.Context, parent model.Inter
 	}
 	// A sub-issue belongs under exactly one parent item; anchor under the first.
 	b := parentBindings[0]
-	adapter := s.d.sources[b.SourceID]
+	adapter := s.d.source(b.SourceID)
 	if adapter == nil {
 		return fmt.Errorf("materialize child %s: no adapter for source %q", child.ID, b.SourceID)
 	}

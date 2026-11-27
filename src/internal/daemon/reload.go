@@ -91,7 +91,7 @@ func (d *Dispatcher) ReloadConfig(ctx context.Context) ReloadResult {
 }
 
 // reloadConfigLocked does the work of ReloadConfig. The caller holds reloadMu.
-func (d *Dispatcher) reloadConfigLocked(_ context.Context) ReloadResult {
+func (d *Dispatcher) reloadConfigLocked(ctx context.Context) ReloadResult {
 	res := ReloadResult{
 		Applied:    false,
 		ReloadedAt: time.Now(),
@@ -126,15 +126,15 @@ func (d *Dispatcher) reloadConfigLocked(_ context.Context) ReloadResult {
 	res.Sources = diffByID(old.Sources, cfg.Sources, func(s config.SourceConfig) string { return s.ID })
 	res.SettingsChanged = diffSettings(old.Settings, cfg.Settings)
 
-	// Sources are built at startup: each one's adapter is connected and its poll
-	// loop is started from the config snapshot New/Start received. Applying a
-	// source change here would list a source nothing polls — or poll one that
-	// was removed — which is worse than refusing the reload. The next stage
-	// lifts this by rebuilding adapters and restarting their poll loops; it is
-	// deliberate, not an oversight.
+	// Sources are reconciled only after every adapter that may be needed has been
+	// built. A build failure therefore rejects the reload before any loop is
+	// stopped or adapter replaced: the old config and every running poll loop
+	// stay exactly as they were.
 	if !res.Sources.Empty() {
-		res.Error = "source changes require a restart (poll loops and adapters are built at startup)"
-		return res
+		if err := d.reconcileSources(ctx, cfg, res.Sources); err != nil {
+			res.Error = err.Error()
+			return res
+		}
 	}
 
 	for _, name := range res.SettingsChanged {
@@ -155,6 +155,86 @@ func (d *Dispatcher) reloadConfigLocked(_ context.Context) ReloadResult {
 	res.Applied = true
 	aplog.Info("config reloaded: %s", res.Summary())
 	return res
+}
+
+// reconcileSources applies a source diff to the live adapters and poll loops.
+// The order is the contract behind "a rejected reload changes nothing":
+//
+//  1. build adapters for every added and changed source (the only step that can
+//     fail), before touching any live state;
+//  2. stop removed and changed loops, waiting for each goroutine to return so a
+//     changed id never has two loops polling it;
+//  3. install adapters and per-source stats;
+//  4. start the added and changed loops, under the daemon lifetime captured at
+//     Start.
+//
+// Only after this returns does ReloadConfig store the new config pointer.
+func (d *Dispatcher) reconcileSources(ctx context.Context, cfg *config.Config, changes ChangeSet) error {
+	byID := make(map[string]config.SourceConfig, len(cfg.Sources))
+	for _, sc := range cfg.Sources {
+		byID[sc.ID] = sc
+	}
+
+	rebuild := make(map[string]bool, len(changes.Added)+len(changes.Changed))
+	for _, id := range changes.Added {
+		rebuild[id] = true
+	}
+	for _, id := range changes.Changed {
+		rebuild[id] = true
+	}
+
+	built, errs := d.buildSourceAdaptersFor(ctx, cfg, rebuild)
+	if len(errs) > 0 {
+		return fmt.Errorf("source adapters: %w", errs[0])
+	}
+
+	// Stop before swapping. stopSourceLoop waits for pollLoop to return, which is
+	// what guarantees a changed source is never polled by both the old and the
+	// new loop.
+	for _, id := range changes.Removed {
+		d.stopSourceLoop(id)
+	}
+	for _, id := range changes.Changed {
+		d.stopSourceLoop(id)
+	}
+
+	d.srcMu.Lock()
+	for _, id := range changes.Removed {
+		delete(d.sources, id)
+	}
+	for id, adapter := range built {
+		d.sources[id] = adapter
+	}
+	d.srcMu.Unlock()
+
+	// Stats belong to the source id, not the adapter: a changed source keeps its
+	// poll history, a removed one stops being reported (Status iterates the new
+	// config) and its counter goes.
+	d.statMu.Lock()
+	for _, id := range changes.Removed {
+		delete(d.stats, id)
+	}
+	for id := range built {
+		if _, ok := d.stats[id]; !ok {
+			d.stats[id] = &sourceStat{}
+		}
+	}
+	d.statMu.Unlock()
+
+	// Loops start last. Before Start there is no daemon lifetime to attach to:
+	// the adapters are installed and Start will start every configured source,
+	// including these.
+	parent, running := d.sourceLoopParent()
+	if !running {
+		return nil
+	}
+	for _, id := range changes.Added {
+		d.startSourceLoop(parent, byID[id], built[id])
+	}
+	for _, id := range changes.Changed {
+		d.startSourceLoop(parent, byID[id], built[id])
+	}
+	return nil
 }
 
 // lastReloadResult returns a copy of the most recent reload attempt for /status,
@@ -178,6 +258,9 @@ func (r ReloadResult) Summary() string {
 	}
 	if !r.Agents.Empty() {
 		parts = append(parts, "agents "+r.Agents.counts())
+	}
+	if !r.Sources.Empty() {
+		parts = append(parts, "sources "+r.Sources.counts())
 	}
 	if len(r.SettingsChanged) > 0 {
 		parts = append(parts, "settings "+strings.Join(r.SettingsChanged, ","))
