@@ -114,6 +114,11 @@ func (d *Dispatcher) reloadConfigLocked(ctx context.Context) ReloadResult {
 		return res
 	}
 
+	// The file carries the base agents; --profile is applied on top, exactly as
+	// it was at startup. Without this a reload would drop the overrides — and
+	// so would the watcher, on the first save.
+	applyProfileOverrides(cfg, d.profileName)
+
 	old := d.config()
 	if old == nil {
 		// Only reachable for a Dispatcher built by hand (tests); an empty
