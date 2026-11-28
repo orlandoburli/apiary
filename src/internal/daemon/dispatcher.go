@@ -61,7 +61,11 @@ type sourceLoop struct {
 type Dispatcher struct {
 	cfgPtr     atomic.Pointer[config.Config]
 	configFile string
-	startedAt  time.Time
+	// profileName is the --profile this daemon started with. The profile is not
+	// in the file, so a config loaded fresh on reload has the base agents;
+	// without it, every reload would silently drop the overrides.
+	profileName string
+	startedAt   time.Time
 
 	// reloadMu serializes reloads and guards lastReload, the most recent
 	// attempt reported by /status.
@@ -273,6 +277,44 @@ func (d *Dispatcher) config() *config.Config {
 // Pass nil for db and logger to skip state persistence and logging to SQLite.
 // profileName selects a named runner profile (from cfg.Profiles) that overrides
 // per-agent runner/model/fallbacks settings. An empty string means base config.
+
+// applyProfileOverrides rewrites the agents with the named profile's settings.
+//
+// It runs on every config that will be used — at startup, and again on every
+// reload. The profile is not part of the file, so a config loaded fresh from
+// disk already has the base agents: storing that without re-applying the
+// profile would silently drop --profile on the first save.
+func applyProfileOverrides(cfg *config.Config, name string) {
+	if cfg == nil || name == "" {
+		return
+	}
+	profile, ok := cfg.Profiles[name]
+	if !ok {
+		aplog.Warn("profile %q not found — continuing with base config", name)
+		return
+	}
+	for i := range cfg.Agents {
+		ac := &cfg.Agents[i]
+		overrides, ok := profile[ac.ID]
+		if !ok {
+			continue
+		}
+		if overrides.Runner != "" {
+			ac.Runner = overrides.Runner
+		}
+		if overrides.Model != "" {
+			ac.Model = overrides.Model
+		}
+		if overrides.Fallbacks != nil {
+			ac.Fallbacks = overrides.Fallbacks
+		}
+		if overrides.FallbackStrategy != "" {
+			ac.FallbackStrategy = overrides.FallbackStrategy
+		}
+	}
+	aplog.Info("active profile: %s (%d agent overrides)", name, len(profile))
+}
+
 func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *db.Client, logger *logging.Logger, profileName ...string) (*Dispatcher, error) {
 	// Privilege ceiling: agent CLIs inherit the daemon's uid, so running as root
 	// means a prompt-injected agent executes as root. Warn by default (a hard
@@ -388,33 +430,10 @@ func New(ctx context.Context, cfg *config.Config, configFile string, dbClient *d
 	if len(profileName) > 0 {
 		activeProfile = profileName[0]
 	}
-	if activeProfile != "" {
-		profile, ok := cfg.Profiles[activeProfile]
-		if !ok {
-			aplog.Warn("profile %q not found — continuing with base config", activeProfile)
-		} else {
-			for i := range cfg.Agents {
-				ac := &cfg.Agents[i]
-				overrides, ok := profile[ac.ID]
-				if !ok {
-					continue
-				}
-				if overrides.Runner != "" {
-					ac.Runner = overrides.Runner
-				}
-				if overrides.Model != "" {
-					ac.Model = overrides.Model
-				}
-				if overrides.Fallbacks != nil {
-					ac.Fallbacks = overrides.Fallbacks
-				}
-				if overrides.FallbackStrategy != "" {
-					ac.FallbackStrategy = overrides.FallbackStrategy
-				}
-			}
-			aplog.Info("active profile: %s (%d agent overrides)", activeProfile, len(profile))
-		}
-	}
+	applyProfileOverrides(cfg, activeProfile)
+	// Remember it for reloads: the file has the base agents, and a fresh load
+	// has to be overlaid again or the profile silently disappears on save.
+	d.profileName = activeProfile
 
 	// Instantiate runners from agents
 	for _, ac := range cfg.Agents {
